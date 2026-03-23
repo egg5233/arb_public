@@ -1,0 +1,987 @@
+package bingx
+
+import (
+	"crypto/rand"
+	"encoding/json"
+	"fmt"
+	"math"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"arb/pkg/exchange"
+	"arb/pkg/utils"
+)
+
+var log = utils.NewLogger("bingx")
+
+// Adapter implements the exchange.Exchange interface for BingX.
+type Adapter struct {
+	client     *Client
+	cfg        exchange.ExchangeConfig
+	priceStore sync.Map // symbol -> exchange.BBO
+	depthStore sync.Map // symbol -> *exchange.Orderbook
+	orderStore sync.Map // orderID -> exchange.OrderUpdate
+	publicWS   *PublicWS
+	privateWS  *PrivateWS
+}
+
+// NewAdapter creates a new BingX exchange adapter.
+func NewAdapter(cfg exchange.ExchangeConfig) *Adapter {
+	return &Adapter{
+		client: NewClient(cfg.ApiKey, cfg.SecretKey),
+		cfg:    cfg,
+	}
+}
+
+// Client returns the underlying REST client.
+func (a *Adapter) Client() *Client { return a.client }
+
+// Name returns the exchange name.
+func (a *Adapter) Name() string {
+	return "bingx"
+}
+
+// ---------- Symbol conversion ----------
+// Internal: BTCUSDT -> BingX: BTC-USDT
+
+func toBingXSymbol(symbol string) string {
+	// BTCUSDT -> BTC-USDT
+	if strings.HasSuffix(symbol, "USDT") && !strings.Contains(symbol, "-") {
+		base := strings.TrimSuffix(symbol, "USDT")
+		return base + "-USDT"
+	}
+	return symbol
+}
+
+func fromBingXSymbol(symbol string) string {
+	// BTC-USDT -> BTCUSDT
+	return strings.ReplaceAll(symbol, "-", "")
+}
+
+// ---------- Side helpers ----------
+
+func toBingXSide(side exchange.Side) string {
+	switch side {
+	case exchange.SideBuy:
+		return "BUY"
+	case exchange.SideSell:
+		return "SELL"
+	default:
+		return strings.ToUpper(string(side))
+	}
+}
+
+func fromBingXSide(side string) string {
+	return strings.ToLower(side)
+}
+
+// ---------- Time-in-force mapping ----------
+
+func toBingXTIF(force string) string {
+	switch strings.ToLower(force) {
+	case "gtc":
+		return "GTC"
+	case "ioc":
+		return "IOC"
+	case "fok":
+		return "FOK"
+	case "post_only":
+		return "PostOnly"
+	default:
+		return "GTC"
+	}
+}
+
+// ---------- Order type mapping ----------
+
+func toBingXOrderType(orderType string) string {
+	switch strings.ToLower(orderType) {
+	case "limit":
+		return "LIMIT"
+	case "market":
+		return "MARKET"
+	default:
+		return strings.ToUpper(orderType)
+	}
+}
+
+// ---------- Orders ----------
+
+// PlaceOrder places a new order on BingX.
+func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
+	params := map[string]string{
+		"symbol":   toBingXSymbol(req.Symbol),
+		"type":     toBingXOrderType(req.OrderType),
+		"side":     toBingXSide(req.Side),
+		"quantity": req.Size,
+	}
+	if req.Price != "" && strings.ToLower(req.OrderType) == "limit" {
+		params["price"] = req.Price
+		params["timeInForce"] = toBingXTIF(req.Force)
+	}
+	// BingX one-way mode: positionSide=BOTH, reduceOnly for close orders.
+	params["positionSide"] = "BOTH"
+	if req.ReduceOnly {
+		params["reduceOnly"] = "true"
+	}
+	if req.ClientOid != "" {
+		params["clientOrderID"] = req.ClientOid
+	}
+
+	result, err := a.client.Post("/openApi/swap/v2/trade/order", params)
+	if err != nil {
+		return "", fmt.Errorf("bingx PlaceOrder: %w", err)
+	}
+
+	var resp struct {
+		Order struct {
+			OrderID json.Number `json:"orderId"`
+		} `json:"order"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return "", fmt.Errorf("bingx PlaceOrder parse: %w", err)
+	}
+	return resp.Order.OrderID.String(), nil
+}
+
+// CancelOrder cancels an order. Idempotent: returns nil if already cancelled/filled.
+func (a *Adapter) CancelOrder(symbol, orderID string) error {
+	params := map[string]string{
+		"symbol":  toBingXSymbol(symbol),
+		"orderId": orderID,
+	}
+	_, err := a.client.Delete("/openApi/swap/v2/trade/order", params)
+	if err != nil {
+		// 80018 = already filled, 80016 = order not exist
+		if apiErr, ok := err.(*APIError); ok {
+			if apiErr.Code == 80018 || apiErr.Code == 80016 {
+				return nil
+			}
+		}
+		return fmt.Errorf("bingx CancelOrder: %w", err)
+	}
+	return nil
+}
+
+// GetPendingOrders returns open orders for a symbol.
+func (a *Adapter) GetPendingOrders(symbol string) ([]exchange.Order, error) {
+	params := map[string]string{
+		"symbol": toBingXSymbol(symbol),
+	}
+	result, err := a.client.Get("/openApi/swap/v2/trade/openOrders", params)
+	if err != nil {
+		return nil, fmt.Errorf("bingx GetPendingOrders: %w", err)
+	}
+
+	var resp struct {
+		Orders []struct {
+			OrderID       json.Number `json:"orderId"`
+			ClientOrderID string      `json:"clientOrderID"`
+			Symbol        string      `json:"symbol"`
+			Side          string      `json:"side"`
+			Type          string      `json:"type"`
+			Price         string      `json:"price"`
+			Quantity      string      `json:"quantity"`
+			Status        string      `json:"status"`
+		} `json:"orders"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return nil, fmt.Errorf("bingx GetPendingOrders parse: %w", err)
+	}
+
+	orders := make([]exchange.Order, 0, len(resp.Orders))
+	for _, o := range resp.Orders {
+		orders = append(orders, exchange.Order{
+			OrderID:   o.OrderID.String(),
+			ClientOid: o.ClientOrderID,
+			Symbol:    fromBingXSymbol(o.Symbol),
+			Side:      fromBingXSide(o.Side),
+			OrderType: strings.ToLower(o.Type),
+			Price:     o.Price,
+			Size:      o.Quantity,
+			Status:    normalizeBingXOrderStatus(o.Status),
+		})
+	}
+	return orders, nil
+}
+
+// GetOrderFilledQty returns the cumulative filled quantity for an order.
+// It also stores the avg price in the order store so confirmFill can pick it up.
+func (a *Adapter) GetOrderFilledQty(orderID, symbol string) (float64, error) {
+	params := map[string]string{
+		"symbol":  toBingXSymbol(symbol),
+		"orderId": orderID,
+	}
+	result, err := a.client.Get("/openApi/swap/v2/trade/order", params)
+	if err != nil {
+		return 0, fmt.Errorf("bingx GetOrderFilledQty: %w", err)
+	}
+
+	var resp struct {
+		Order struct {
+			ExecutedQty string `json:"executedQty"`
+			AvgPrice    string `json:"avgPrice"`
+			Status      string `json:"status"`
+		} `json:"order"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return 0, fmt.Errorf("bingx GetOrderFilledQty parse: %w", err)
+	}
+
+	qty, err := strconv.ParseFloat(resp.Order.ExecutedQty, 64)
+	if err != nil {
+		return 0, fmt.Errorf("bingx GetOrderFilledQty parse qty: %w", err)
+	}
+
+	// Store avg price in order store so confirmFill can retrieve it.
+	avgPrice, _ := strconv.ParseFloat(resp.Order.AvgPrice, 64)
+	if qty > 0 && avgPrice > 0 {
+		a.orderStore.Store(orderID, exchange.OrderUpdate{
+			OrderID:      orderID,
+			Status:       normalizeBingXOrderStatus(resp.Order.Status),
+			FilledVolume: qty,
+			AvgPrice:     avgPrice,
+		})
+	}
+
+	return qty, nil
+}
+
+// ---------- Positions ----------
+
+// GetPosition returns positions for a specific symbol.
+func (a *Adapter) GetPosition(symbol string) ([]exchange.Position, error) {
+	params := map[string]string{
+		"symbol": toBingXSymbol(symbol),
+	}
+	result, err := a.client.Get("/openApi/swap/v2/user/positions", params)
+	if err != nil {
+		return nil, fmt.Errorf("bingx GetPosition: %w", err)
+	}
+	return a.parsePositions(result)
+}
+
+// GetAllPositions returns all open positions.
+func (a *Adapter) GetAllPositions() ([]exchange.Position, error) {
+	result, err := a.client.Get("/openApi/swap/v2/user/positions", map[string]string{})
+	if err != nil {
+		return nil, fmt.Errorf("bingx GetAllPositions: %w", err)
+	}
+	return a.parsePositions(result)
+}
+
+func (a *Adapter) parsePositions(data json.RawMessage) ([]exchange.Position, error) {
+	var positions []struct {
+		Symbol           string `json:"symbol"`
+		PositionSide     string `json:"positionSide"` // LONG or SHORT
+		PositionAmt      string `json:"positionAmt"`
+		AvailableAmt     string `json:"availableAmt"`
+		AvgPrice         string `json:"avgPrice"`
+		UnrealizedProfit string `json:"unrealizedProfit"`
+		Leverage         json.Number `json:"leverage"`
+		Isolated         bool   `json:"isolated"`
+		LiquidationPrice json.Number `json:"liquidationPrice"`
+		MarkPrice        json.Number `json:"markPrice"`
+	}
+	if err := json.Unmarshal(data, &positions); err != nil {
+		return nil, fmt.Errorf("bingx parsePositions: %w", err)
+	}
+
+	result := make([]exchange.Position, 0, len(positions))
+	for _, p := range positions {
+		size, _ := strconv.ParseFloat(p.PositionAmt, 64)
+		if size == 0 {
+			continue
+		}
+
+		holdSide := "long"
+		if size < 0 || strings.ToUpper(p.PositionSide) == "SHORT" {
+			holdSide = "short"
+		}
+
+		// BingX one-way mode: size can be negative for shorts
+		absSize := fmt.Sprintf("%g", abs(size))
+
+		marginMode := "cross"
+		if p.Isolated {
+			marginMode = "isolated"
+		}
+
+		avail := p.AvailableAmt
+		if avail == "" {
+			avail = absSize
+		}
+
+		result = append(result, exchange.Position{
+			Symbol:           fromBingXSymbol(p.Symbol),
+			HoldSide:         holdSide,
+			Total:            absSize,
+			Available:        avail,
+			AverageOpenPrice: p.AvgPrice,
+			UnrealizedPL:     p.UnrealizedProfit,
+			Leverage:         p.Leverage.String(),
+			MarginMode:       marginMode,
+			LiquidationPrice: p.LiquidationPrice.String(),
+			MarkPrice:        p.MarkPrice.String(),
+		})
+	}
+	return result, nil
+}
+
+func abs(v float64) float64 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// ---------- Account Config ----------
+
+// SetLeverage sets the leverage for a symbol.
+func (a *Adapter) SetLeverage(symbol string, leverage string, holdSide string) error {
+	// BingX one-way mode: set leverage with side=BOTH
+	sides := []string{"BOTH"}
+	for _, side := range sides {
+		params := map[string]string{
+			"symbol":   toBingXSymbol(symbol),
+			"side":     side,
+			"leverage": leverage,
+		}
+		_, err := a.client.Post("/openApi/swap/v2/trade/leverage", params)
+		if err != nil {
+			// Idempotent: "already set" or "no need to change" errors are ok
+			if apiErr, ok := err.(*APIError); ok {
+				errMsg := strings.ToLower(apiErr.Msg)
+				if strings.Contains(errMsg, "no need") || strings.Contains(errMsg, "already") ||
+					strings.Contains(errMsg, "not modified") {
+					continue
+				}
+			}
+			return fmt.Errorf("bingx SetLeverage (%s): %w", side, err)
+		}
+	}
+	return nil
+}
+
+// SetMarginMode sets the margin mode for a symbol.
+// mode: "cross" or "isolated"
+func (a *Adapter) SetMarginMode(symbol string, mode string) error {
+	marginType := "CROSSED"
+	if strings.ToLower(mode) == "isolated" {
+		marginType = "ISOLATED"
+	}
+	params := map[string]string{
+		"symbol":     toBingXSymbol(symbol),
+		"marginType": marginType,
+	}
+	_, err := a.client.Post("/openApi/swap/v2/trade/marginType", params)
+	if err != nil {
+		// Idempotent: already in requested mode
+		if apiErr, ok := err.(*APIError); ok {
+			errMsg := strings.ToLower(apiErr.Msg)
+			if strings.Contains(errMsg, "no need to change") || strings.Contains(errMsg, "already") {
+				return nil
+			}
+		}
+		return fmt.Errorf("bingx SetMarginMode: %w", err)
+	}
+	return nil
+}
+
+// ---------- Contract Info ----------
+
+// LoadAllContracts loads all USDT perpetual contract specifications.
+func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
+	result, err := a.client.Get("/openApi/swap/v2/quote/contracts", map[string]string{})
+	if err != nil {
+		return nil, fmt.Errorf("bingx LoadAllContracts: %w", err)
+	}
+
+	var contracts []struct {
+		Symbol            string      `json:"symbol"`
+		Size              json.Number `json:"size"`              // stepSize
+		TradeMinQuantity  json.Number `json:"tradeMinQuantity"`  // minSize
+		PricePrecision    int         `json:"pricePrecision"`
+		QuantityPrecision int         `json:"quantityPrecision"`
+		Status            int         `json:"status"` // 1 = trading
+	}
+	if err := json.Unmarshal(result, &contracts); err != nil {
+		return nil, fmt.Errorf("bingx LoadAllContracts parse: %w", err)
+	}
+
+	out := make(map[string]exchange.ContractInfo, len(contracts))
+	for _, c := range contracts {
+		if c.Status != 1 {
+			continue
+		}
+
+		// Only include USDT pairs
+		internalSymbol := fromBingXSymbol(c.Symbol)
+		if !strings.HasSuffix(internalSymbol, "USDT") {
+			continue
+		}
+
+		minSize, _ := c.TradeMinQuantity.Float64()
+		stepSize, _ := c.Size.Float64()
+
+		// Compute price step from precision
+		priceStep := 1.0
+		for i := 0; i < c.PricePrecision; i++ {
+			priceStep /= 10
+		}
+
+		out[internalSymbol] = exchange.ContractInfo{
+			Symbol:        internalSymbol,
+			MinSize:       minSize,
+			StepSize:      stepSize,
+			SizeDecimals:  c.QuantityPrecision,
+			PriceStep:     priceStep,
+			PriceDecimals: c.PricePrecision,
+		}
+	}
+	return out, nil
+}
+
+// ---------- Funding Rate ----------
+
+// GetFundingRate returns the current funding rate for a symbol.
+func (a *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
+	params := map[string]string{
+		"symbol": toBingXSymbol(symbol),
+	}
+	result, err := a.client.Get("/openApi/swap/v2/quote/premiumIndex", params)
+	if err != nil {
+		return nil, fmt.Errorf("bingx GetFundingRate: %w", err)
+	}
+
+	var resp struct {
+		Symbol               string `json:"symbol"`
+		LastFundingRate      string `json:"lastFundingRate"`
+		NextFundingTime      int64  `json:"nextFundingTime"`
+		MarkPrice            string `json:"markPrice"`
+		IndexPrice           string `json:"indexPrice"`
+		FundingIntervalHours int    `json:"fundingIntervalHours"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return nil, fmt.Errorf("bingx GetFundingRate parse: %w", err)
+	}
+
+	rate, _ := strconv.ParseFloat(resp.LastFundingRate, 64)
+	nextTime := time.UnixMilli(resp.NextFundingTime)
+
+	interval := 8 * time.Hour
+	if resp.FundingIntervalHours > 0 {
+		interval = time.Duration(resp.FundingIntervalHours) * time.Hour
+	}
+
+	return &exchange.FundingRate{
+		Symbol:      fromBingXSymbol(resp.Symbol),
+		Rate:        rate,
+		Interval:    interval,
+		NextFunding: nextTime,
+	}, nil
+}
+
+// GetFundingInterval returns the funding interval for a symbol.
+// BingX default is 8h for most pairs.
+func (a *Adapter) GetFundingInterval(symbol string) (time.Duration, error) {
+	// BingX doesn't have a dedicated funding interval field in premiumIndex.
+	// Default to 8 hours; LoadAllContracts can be checked if needed.
+	return 8 * time.Hour, nil
+}
+
+// ---------- Account ----------
+
+// GetFuturesBalance returns the futures account balance.
+func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
+	result, err := a.client.Get("/openApi/swap/v3/user/balance", map[string]string{})
+	if err != nil {
+		return nil, fmt.Errorf("bingx GetFuturesBalance: %w", err)
+	}
+
+	var balances []struct {
+		Asset           string `json:"asset"`
+		Equity          string `json:"equity"`
+		AvailableMargin string `json:"availableMargin"`
+		UsedMargin      string `json:"usedMargin"`
+	}
+	if err := json.Unmarshal(result, &balances); err != nil {
+		return nil, fmt.Errorf("bingx GetFuturesBalance parse: %w", err)
+	}
+
+	for _, b := range balances {
+		if b.Asset == "USDT" {
+			total, _ := strconv.ParseFloat(b.Equity, 64)
+			available, _ := strconv.ParseFloat(b.AvailableMargin, 64)
+			used, _ := strconv.ParseFloat(b.UsedMargin, 64)
+			return &exchange.Balance{
+				Total:     total,
+				Available: available,
+				Frozen:    used,
+				Currency:  "USDT",
+			}, nil
+		}
+	}
+	return &exchange.Balance{Currency: "USDT"}, nil
+}
+
+// GetSpotBalance returns the spot/funding account balance.
+func (a *Adapter) GetSpotBalance() (*exchange.Balance, error) {
+	result, err := a.client.Get("/openApi/spot/v1/account/balance", map[string]string{})
+	if err != nil {
+		return nil, fmt.Errorf("bingx GetSpotBalance: %w", err)
+	}
+
+	var resp struct {
+		Balances []struct {
+			Asset  string `json:"asset"`
+			Free   string `json:"free"`
+			Locked string `json:"locked"`
+		} `json:"balances"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return nil, fmt.Errorf("bingx GetSpotBalance parse: %w", err)
+	}
+
+	for _, b := range resp.Balances {
+		if b.Asset == "USDT" {
+			free, _ := strconv.ParseFloat(b.Free, 64)
+			locked, _ := strconv.ParseFloat(b.Locked, 64)
+			return &exchange.Balance{
+				Total:     free + locked,
+				Available: free,
+				Frozen:    locked,
+				Currency:  "USDT",
+			}, nil
+		}
+	}
+	return &exchange.Balance{Currency: "USDT"}, nil
+}
+
+// ---------- Withdraw & Transfer ----------
+
+// TransferToSpot moves funds from perpetual futures to fund account.
+func (a *Adapter) TransferToSpot(coin string, amount string) error {
+	params := map[string]string{
+		"coin":                coin,
+		"amount":              amount,
+		"transferAccountType": "3", // PERPETUAL_FUTURES
+		"targetAccountType":   "1", // FUND
+	}
+	_, err := a.client.Post("/openApi/wallets/v1/capital/innerTransfer/apply", params)
+	if err != nil {
+		return fmt.Errorf("bingx TransferToSpot: %w", err)
+	}
+	return nil
+}
+
+// TransferToFutures moves funds from fund account to perpetual futures.
+func (a *Adapter) TransferToFutures(coin string, amount string) error {
+	params := map[string]string{
+		"coin":                coin,
+		"amount":              amount,
+		"transferAccountType": "1", // FUND
+		"targetAccountType":   "3", // PERPETUAL_FUTURES
+	}
+	_, err := a.client.Post("/openApi/wallets/v1/capital/innerTransfer/apply", params)
+	if err != nil {
+		return fmt.Errorf("bingx TransferToFutures: %w", err)
+	}
+	return nil
+}
+
+// Withdraw initiates a withdrawal from BingX.
+func (a *Adapter) Withdraw(params exchange.WithdrawParams) (*exchange.WithdrawResult, error) {
+	reqParams := map[string]string{
+		"coin":    params.Coin,
+		"network": mapChainToBingX(params.Chain),
+		"address": params.Address,
+		"amount":  params.Amount,
+	}
+	result, err := a.client.Post("/openApi/wallets/v1/capital/withdraw/apply", reqParams)
+	if err != nil {
+		return nil, fmt.Errorf("bingx Withdraw: %w", err)
+	}
+
+	var resp struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return nil, fmt.Errorf("bingx Withdraw parse: %w", err)
+	}
+	return &exchange.WithdrawResult{
+		TxID:   resp.ID,
+		Status: "submitted",
+	}, nil
+}
+
+func mapChainToBingX(chain string) string {
+	switch chain {
+	case "BEP20":
+		return "BSC"
+	case "APT":
+		return "Aptos"
+	default:
+		return chain
+	}
+}
+
+// ---------- Orderbook ----------
+
+// GetOrderbook returns the order book for a symbol.
+func (a *Adapter) GetOrderbook(symbol string, depth int) (*exchange.Orderbook, error) {
+	params := map[string]string{
+		"symbol": toBingXSymbol(symbol),
+		"limit":  strconv.Itoa(depth),
+	}
+	result, err := a.client.Get("/openApi/swap/v2/quote/depth", params)
+	if err != nil {
+		return nil, fmt.Errorf("bingx GetOrderbook: %w", err)
+	}
+
+	var resp struct {
+		Bids [][]string `json:"bids"` // [["price","qty"],...]
+		Asks [][]string `json:"asks"`
+		T    int64      `json:"T"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return nil, fmt.Errorf("bingx GetOrderbook parse: %w", err)
+	}
+
+	ob := &exchange.Orderbook{
+		Symbol: symbol,
+		Bids:   make([]exchange.PriceLevel, 0, len(resp.Bids)),
+		Asks:   make([]exchange.PriceLevel, 0, len(resp.Asks)),
+		Time:   time.UnixMilli(resp.T),
+	}
+
+	for _, level := range resp.Bids {
+		if len(level) < 2 {
+			continue
+		}
+		price, _ := strconv.ParseFloat(level[0], 64)
+		qty, _ := strconv.ParseFloat(level[1], 64)
+		ob.Bids = append(ob.Bids, exchange.PriceLevel{Price: price, Quantity: qty})
+	}
+	for _, level := range resp.Asks {
+		if len(level) < 2 {
+			continue
+		}
+		price, _ := strconv.ParseFloat(level[0], 64)
+		qty, _ := strconv.ParseFloat(level[1], 64)
+		ob.Asks = append(ob.Asks, exchange.PriceLevel{Price: price, Quantity: qty})
+	}
+
+	return ob, nil
+}
+
+// ---------- WebSocket: Prices ----------
+
+// StartPriceStream starts the public WebSocket for price streaming.
+func (a *Adapter) StartPriceStream(symbols []string) {
+	// Convert symbols to BingX format
+	bxSymbols := make([]string, len(symbols))
+	for i, s := range symbols {
+		bxSymbols[i] = toBingXSymbol(s)
+	}
+	a.publicWS = NewPublicWS(&a.priceStore, &a.depthStore)
+	a.publicWS.Connect(bxSymbols)
+}
+
+// SubscribeSymbol subscribes to a new symbol on the public WebSocket.
+func (a *Adapter) SubscribeSymbol(symbol string) bool {
+	if a.publicWS == nil {
+		return false
+	}
+	return a.publicWS.Subscribe(toBingXSymbol(symbol))
+}
+
+// GetBBO returns the best bid/offer for a symbol.
+func (a *Adapter) GetBBO(symbol string) (exchange.BBO, bool) {
+	val, ok := a.priceStore.Load(symbol)
+	if !ok {
+		return exchange.BBO{}, false
+	}
+	bbo, ok := val.(exchange.BBO)
+	return bbo, ok
+}
+
+// GetPriceStore returns the underlying sync.Map for BBO data.
+func (a *Adapter) GetPriceStore() *sync.Map {
+	return &a.priceStore
+}
+
+// ---------- WebSocket: Depth ----------
+
+// SubscribeDepth subscribes to orderbook depth via the public WebSocket.
+func (a *Adapter) SubscribeDepth(symbol string) bool {
+	if a.publicWS == nil {
+		return false
+	}
+	return a.publicWS.SubscribeDepth(toBingXSymbol(symbol))
+}
+
+// UnsubscribeDepth unsubscribes from orderbook depth.
+func (a *Adapter) UnsubscribeDepth(symbol string) bool {
+	if a.publicWS == nil {
+		return false
+	}
+	return a.publicWS.UnsubscribeDepth(toBingXSymbol(symbol))
+}
+
+// GetDepth returns the latest orderbook depth snapshot.
+func (a *Adapter) GetDepth(symbol string) (*exchange.Orderbook, bool) {
+	val, ok := a.depthStore.Load(symbol)
+	if !ok {
+		return nil, false
+	}
+	return val.(*exchange.Orderbook), true
+}
+
+// ---------- WebSocket: Private ----------
+
+// StartPrivateStream starts the private WebSocket for order updates.
+func (a *Adapter) StartPrivateStream() {
+	a.privateWS = NewPrivateWS(a.client, &a.orderStore)
+	a.privateWS.Connect()
+}
+
+// GetOrderUpdate returns the latest order update for an order ID.
+func (a *Adapter) GetOrderUpdate(orderID string) (exchange.OrderUpdate, bool) {
+	val, ok := a.orderStore.Load(orderID)
+	if !ok {
+		return exchange.OrderUpdate{}, false
+	}
+	upd, ok := val.(exchange.OrderUpdate)
+	return upd, ok
+}
+
+// ---------- Stop-Loss ----------
+
+// PlaceStopLoss places a stop-market order on BingX.
+func (a *Adapter) PlaceStopLoss(params exchange.StopLossParams) (string, error) {
+	// BingX one-way mode: positionSide=BOTH, reduceOnly for SL.
+	p := map[string]string{
+		"symbol":       toBingXSymbol(params.Symbol),
+		"type":         "STOP_MARKET",
+		"side":         toBingXSide(params.Side),
+		"positionSide": "BOTH",
+		"quantity":     params.Size,
+		"stopPrice":    params.TriggerPrice,
+		"reduceOnly":   "true",
+	}
+
+	result, err := a.client.Post("/openApi/swap/v2/trade/order", p)
+	if err != nil {
+		return "", fmt.Errorf("bingx PlaceStopLoss: %w", err)
+	}
+
+	var resp struct {
+		Order struct {
+			OrderID json.Number `json:"orderId"`
+		} `json:"order"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return "", fmt.Errorf("bingx PlaceStopLoss parse: %w", err)
+	}
+	return resp.Order.OrderID.String(), nil
+}
+
+// CancelStopLoss cancels a stop-loss order (same as CancelOrder on BingX).
+func (a *Adapter) CancelStopLoss(symbol, orderID string) error {
+	return a.CancelOrder(symbol, orderID)
+}
+
+// ---------- Trade History ----------
+
+// GetUserTrades returns filled trades for a symbol since startTime.
+func (a *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) ([]exchange.Trade, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	params := map[string]string{
+		"symbol":    toBingXSymbol(symbol),
+		"startTime": strconv.FormatInt(startTime.UnixMilli(), 10),
+		"limit":     strconv.Itoa(limit),
+	}
+	result, err := a.client.Get("/openApi/swap/v2/trade/allFillOrders", params)
+	if err != nil {
+		return nil, fmt.Errorf("bingx GetUserTrades: %w", err)
+	}
+
+	var resp struct {
+		FillOrders []struct {
+			FilledTm    string `json:"filledTm"` // ms timestamp
+			OrderID     string `json:"orderId"`
+			Symbol      string `json:"symbol"`
+			Side        string `json:"side"`
+			Price       string `json:"price"`
+			Volume      string `json:"volume"`
+			Fee         string `json:"fee"`
+			FeeCurrency string `json:"feeCurrency"`
+			TradeID     string `json:"tradeId"`
+		} `json:"fill_orders"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return nil, fmt.Errorf("bingx GetUserTrades parse: %w", err)
+	}
+
+	trades := make([]exchange.Trade, 0, len(resp.FillOrders))
+	for _, t := range resp.FillOrders {
+		price, _ := strconv.ParseFloat(t.Price, 64)
+		qty, _ := strconv.ParseFloat(t.Volume, 64)
+		fee, _ := strconv.ParseFloat(t.Fee, 64)
+		if fee < 0 {
+			fee = -fee
+		}
+		ms, _ := strconv.ParseInt(t.FilledTm, 10, 64)
+		trades = append(trades, exchange.Trade{
+			TradeID:  t.TradeID,
+			OrderID:  t.OrderID,
+			Symbol:   fromBingXSymbol(t.Symbol),
+			Side:     fromBingXSide(t.Side),
+			Price:    price,
+			Quantity: qty,
+			Fee:      fee,
+			FeeCoin:  t.FeeCurrency,
+			Time:     time.UnixMilli(ms),
+		})
+	}
+	return trades, nil
+}
+
+// ---------- Funding Fee History ----------
+
+// GetFundingFees returns funding fee history for a symbol since the given time.
+func (a *Adapter) GetFundingFees(symbol string, since time.Time) ([]exchange.FundingPayment, error) {
+	params := map[string]string{
+		"symbol":     toBingXSymbol(symbol),
+		"incomeType": "FUNDING_FEE",
+		"startTime":  strconv.FormatInt(since.UnixMilli(), 10),
+		"limit":      "50",
+	}
+	result, err := a.client.Get("/openApi/swap/v2/user/income", params)
+	if err != nil {
+		return nil, fmt.Errorf("bingx GetFundingFees: %w", err)
+	}
+
+	var records []struct {
+		Income string `json:"income"`
+		Time   int64  `json:"time"`
+	}
+	if err := json.Unmarshal(result, &records); err != nil {
+		return nil, fmt.Errorf("bingx GetFundingFees parse: %w", err)
+	}
+
+	out := make([]exchange.FundingPayment, 0, len(records))
+	for _, r := range records {
+		amt, _ := strconv.ParseFloat(r.Income, 64)
+		out = append(out, exchange.FundingPayment{
+			Amount: amt,
+			Time:   time.UnixMilli(r.Time),
+		})
+	}
+	return out, nil
+}
+
+// ---------- Close PnL ----------
+
+// GetClosePnL returns exchange-reported position-level PnL for recently closed positions.
+func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.ClosePnL, error) {
+	params := map[string]string{
+		"symbol":  toBingXSymbol(symbol),
+		"startTs": strconv.FormatInt(since.UnixMilli(), 10),
+		"endTs":   strconv.FormatInt(time.Now().UnixMilli(), 10),
+	}
+	result, err := a.client.Get("/openApi/swap/v1/trade/positionHistory", params)
+	if err != nil {
+		return nil, fmt.Errorf("bingx GetClosePnL: %w", err)
+	}
+
+	var resp struct {
+		PositionHistory []struct {
+			NetProfit          string  `json:"netProfit"`
+			RealisedProfit     string  `json:"realisedProfit"`
+			PositionCommission string  `json:"positionCommission"`
+			TotalFunding       string  `json:"totalFunding"`
+			AvgPrice           string  `json:"avgPrice"`
+			AvgClosePrice      string  `json:"avgClosePrice"`
+			PositionAmt        string  `json:"positionAmt"`
+			PositionSide       string  `json:"positionSide"`
+			UpdateTime         int64   `json:"updateTime"`
+		} `json:"positionHistory"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return nil, fmt.Errorf("bingx GetClosePnL parse: %w", err)
+	}
+
+	out := make([]exchange.ClosePnL, 0, len(resp.PositionHistory))
+	for _, r := range resp.PositionHistory {
+		netPnL, _ := strconv.ParseFloat(r.NetProfit, 64)
+		pricePnL, _ := strconv.ParseFloat(r.RealisedProfit, 64)
+		fees, _ := strconv.ParseFloat(r.PositionCommission, 64)
+		funding, _ := strconv.ParseFloat(r.TotalFunding, 64)
+		entryPrice, _ := strconv.ParseFloat(r.AvgPrice, 64)
+		exitPrice, _ := strconv.ParseFloat(r.AvgClosePrice, 64)
+		closeSize, _ := strconv.ParseFloat(r.PositionAmt, 64)
+
+		// Normalize side: BingX uses "LONG"/"SHORT"
+		side := "long"
+		if r.PositionSide == "SHORT" {
+			side = "short"
+		}
+
+		out = append(out, exchange.ClosePnL{
+			PricePnL:   pricePnL,
+			Fees:       fees,
+			Funding:    funding,
+			NetPnL:     netPnL,
+			EntryPrice: entryPrice,
+			ExitPrice:  exitPrice,
+			CloseSize:  math.Abs(closeSize),
+			Side:       side,
+			CloseTime:  time.UnixMilli(r.UpdateTime),
+		})
+	}
+	return out, nil
+}
+
+// ---------- Helpers ----------
+
+// normalizeBingXOrderStatus converts BingX order status to lowercase standard format.
+func normalizeBingXOrderStatus(status string) string {
+	switch status {
+	case "Pending", "NEW":
+		return "new"
+	case "PartiallyFilled", "PARTIALLY_FILLED":
+		return "partially_filled"
+	case "Filled", "FILLED":
+		return "filled"
+	case "Cancelled", "CANCELED":
+		return "cancelled"
+	case "Failed", "EXPIRED":
+		return "failed"
+	default:
+		return strings.ToLower(status)
+	}
+}
+
+// generateUUID creates a random UUID v4 string.
+func generateUUID() string {
+	var b [16]byte
+	rand.Read(b[:])
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// Ensure Adapter implements exchange.Exchange at compile time.
+var _ exchange.Exchange = (*Adapter)(nil)
+
+// EnsureOneWayMode is a no-op for BingX — position mode is set via UI only.
+// The adapter already uses positionSide=BOTH (one-way mode).
+func (a *Adapter) EnsureOneWayMode() error {
+	return nil
+}

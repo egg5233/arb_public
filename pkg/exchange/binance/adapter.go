@@ -1,0 +1,872 @@
+package binance
+
+import (
+	"encoding/json"
+	"fmt"
+	"math"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"arb/pkg/exchange"
+
+	"github.com/gorilla/websocket"
+)
+
+// Compile-time check that *Adapter satisfies exchange.Exchange.
+var _ exchange.Exchange = (*Adapter)(nil)
+
+// Adapter implements the exchange.Exchange interface for Binance USDT-M Futures.
+type Adapter struct {
+	client    *Client
+	apiKey    string
+	secretKey string
+
+	// Price stream
+	priceStore sync.Map // symbol -> exchange.BBO
+	priceConn  *websocket.Conn
+	priceMu    sync.Mutex
+	priceSyms  map[string]bool // tracked symbols
+
+	// Depth stream (top-5 orderbook via WS)
+	depthStore sync.Map        // symbol -> *exchange.Orderbook
+	depthSyms  map[string]bool // symbols with active depth subscriptions
+
+	// Private stream
+	listenKey  string
+	privConn   *websocket.Conn
+	orderStore sync.Map // orderID (string) -> exchange.OrderUpdate
+}
+
+// NewAdapter creates a Binance Adapter from ExchangeConfig.
+func NewAdapter(cfg exchange.ExchangeConfig) *Adapter {
+	return &Adapter{
+		client:    NewClient(cfg.ApiKey, cfg.SecretKey),
+		apiKey:    cfg.ApiKey,
+		secretKey: cfg.SecretKey,
+		priceSyms: make(map[string]bool),
+		depthSyms: make(map[string]bool),
+	}
+}
+
+func (b *Adapter) Name() string { return "binance" }
+
+// ---------------------------------------------------------------------------
+// Orders
+// ---------------------------------------------------------------------------
+
+func (b *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
+	params := map[string]string{
+		"symbol":   req.Symbol,
+		"side":     mapSide(req.Side),
+		"type":     mapOrderType(req.OrderType),
+		"quantity": req.Size,
+	}
+	if req.OrderType == "limit" {
+		params["price"] = req.Price
+		params["timeInForce"] = mapTimeInForce(req.Force)
+	}
+	if req.ReduceOnly {
+		params["reduceOnly"] = "true"
+	}
+	if req.ClientOid != "" {
+		params["newClientOrderId"] = req.ClientOid
+	}
+
+	body, err := b.client.Post("/fapi/v1/order", params)
+	if err != nil {
+		return "", fmt.Errorf("PlaceOrder: %w", err)
+	}
+
+	var resp struct {
+		OrderID       int64  `json:"orderId"`
+		ClientOrderID string `json:"clientOrderId"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("PlaceOrder unmarshal: %w", err)
+	}
+	return strconv.FormatInt(resp.OrderID, 10), nil
+}
+
+func (b *Adapter) CancelOrder(symbol, orderID string) error {
+	params := map[string]string{
+		"symbol":  symbol,
+		"orderId": orderID,
+	}
+	_, err := b.client.Delete("/fapi/v1/order", params)
+	if err != nil {
+		// Ignore "Unknown order" -- already cancelled or filled
+		if isAPIError(err, -2011) {
+			return nil
+		}
+		return fmt.Errorf("CancelOrder: %w", err)
+	}
+	return nil
+}
+
+func (b *Adapter) GetPendingOrders(symbol string) ([]exchange.Order, error) {
+	params := map[string]string{"symbol": symbol}
+	body, err := b.client.Get("/fapi/v1/openOrders", params)
+	if err != nil {
+		return nil, fmt.Errorf("GetPendingOrders: %w", err)
+	}
+
+	var raw []struct {
+		OrderID       int64  `json:"orderId"`
+		ClientOrderID string `json:"clientOrderId"`
+		Symbol        string `json:"symbol"`
+		Side          string `json:"side"`
+		Type          string `json:"type"`
+		Price         string `json:"price"`
+		OrigQty       string `json:"origQty"`
+		Status        string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("GetPendingOrders unmarshal: %w", err)
+	}
+
+	out := make([]exchange.Order, 0, len(raw))
+	for _, o := range raw {
+		// Skip stop orders
+		if o.Type == "STOP_MARKET" || o.Type == "TAKE_PROFIT_MARKET" {
+			continue
+		}
+		out = append(out, exchange.Order{
+			OrderID:   strconv.FormatInt(o.OrderID, 10),
+			ClientOid: o.ClientOrderID,
+			Symbol:    o.Symbol,
+			Side:      strings.ToLower(o.Side),
+			OrderType: strings.ToLower(o.Type),
+			Price:     o.Price,
+			Size:      o.OrigQty,
+			Status:    o.Status,
+		})
+	}
+	return out, nil
+}
+
+func (b *Adapter) GetOrderFilledQty(orderID, symbol string) (float64, error) {
+	params := map[string]string{
+		"symbol":  symbol,
+		"orderId": orderID,
+	}
+	body, err := b.client.Get("/fapi/v1/order", params)
+	if err != nil {
+		return 0, fmt.Errorf("GetOrderFilledQty: %w", err)
+	}
+
+	var resp struct {
+		ExecutedQty string `json:"executedQty"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return 0, fmt.Errorf("GetOrderFilledQty unmarshal: %w", err)
+	}
+	qty, _ := strconv.ParseFloat(resp.ExecutedQty, 64)
+	return qty, nil
+}
+
+// ---------------------------------------------------------------------------
+// Positions
+// ---------------------------------------------------------------------------
+
+func (b *Adapter) GetPosition(symbol string) ([]exchange.Position, error) {
+	params := map[string]string{"symbol": symbol}
+	return b.fetchPositions(params)
+}
+
+func (b *Adapter) GetAllPositions() ([]exchange.Position, error) {
+	positions, err := b.fetchPositions(nil)
+	if err != nil {
+		return nil, err
+	}
+	// Filter to only non-zero positions
+	out := make([]exchange.Position, 0)
+	for _, p := range positions {
+		amt, _ := strconv.ParseFloat(p.Total, 64)
+		if amt != 0 {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func (b *Adapter) fetchPositions(params map[string]string) ([]exchange.Position, error) {
+	body, err := b.client.Get("/fapi/v2/positionRisk", params)
+	if err != nil {
+		return nil, fmt.Errorf("GetPosition: %w", err)
+	}
+
+	var raw []struct {
+		Symbol           string `json:"symbol"`
+		PositionAmt      string `json:"positionAmt"`
+		EntryPrice       string `json:"entryPrice"`
+		UnRealizedProfit string `json:"unRealizedProfit"`
+		Leverage         string `json:"leverage"`
+		MarginType       string `json:"marginType"`
+		LiquidationPrice string `json:"liquidationPrice"`
+		MarkPrice        string `json:"markPrice"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("GetPosition unmarshal: %w", err)
+	}
+
+	out := make([]exchange.Position, 0, len(raw))
+	for _, p := range raw {
+		amt, _ := strconv.ParseFloat(p.PositionAmt, 64)
+		holdSide := "long"
+		if amt < 0 {
+			holdSide = "short"
+		}
+		absAmt := strconv.FormatFloat(math.Abs(amt), 'f', -1, 64)
+
+		marginMode := "crossed"
+		if strings.ToLower(p.MarginType) == "isolated" {
+			marginMode = "isolated"
+		}
+
+		out = append(out, exchange.Position{
+			Symbol:           p.Symbol,
+			HoldSide:         holdSide,
+			Total:            absAmt,
+			Available:        absAmt,
+			AverageOpenPrice: p.EntryPrice,
+			UnrealizedPL:     p.UnRealizedProfit,
+			Leverage:         p.Leverage,
+			MarginMode:       marginMode,
+			LiquidationPrice: p.LiquidationPrice,
+			MarkPrice:        p.MarkPrice,
+		})
+	}
+	return out, nil
+}
+
+// ---------------------------------------------------------------------------
+// Account Config
+// ---------------------------------------------------------------------------
+
+func (b *Adapter) SetLeverage(symbol string, leverage string, holdSide string) error {
+	params := map[string]string{
+		"symbol":   symbol,
+		"leverage": leverage,
+	}
+	_, err := b.client.Post("/fapi/v1/leverage", params)
+	if err != nil {
+		return fmt.Errorf("SetLeverage: %w", err)
+	}
+	return nil
+}
+
+func (b *Adapter) SetMarginMode(symbol string, mode string) error {
+	binanceMode := "CROSSED"
+	if strings.ToLower(mode) == "isolated" {
+		binanceMode = "ISOLATED"
+	}
+
+	params := map[string]string{
+		"symbol":     symbol,
+		"marginType": binanceMode,
+	}
+	_, err := b.client.Post("/fapi/v1/marginType", params)
+	if err != nil {
+		// -4046: "No need to change margin type" -- already set
+		if isAPIError(err, -4046) {
+			return nil
+		}
+		return fmt.Errorf("SetMarginMode: %w", err)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Contract Info
+// ---------------------------------------------------------------------------
+
+func (b *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
+	body, err := b.client.Get("/fapi/v1/exchangeInfo", nil)
+	if err != nil {
+		return nil, fmt.Errorf("LoadAllContracts: %w", err)
+	}
+
+	var resp struct {
+		Symbols []struct {
+			Symbol  string `json:"symbol"`
+			Status  string `json:"status"`
+			Filters []struct {
+				FilterType string `json:"filterType"`
+				MinQty     string `json:"minQty"`
+				MaxQty     string `json:"maxQty"`
+				StepSize   string `json:"stepSize"`
+				TickSize   string `json:"tickSize"`
+			} `json:"filters"`
+		} `json:"symbols"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("LoadAllContracts unmarshal: %w", err)
+	}
+
+	result := make(map[string]exchange.ContractInfo, len(resp.Symbols))
+	for _, sym := range resp.Symbols {
+		if sym.Status != "TRADING" {
+			continue
+		}
+		ci := exchange.ContractInfo{Symbol: sym.Symbol}
+		for _, f := range sym.Filters {
+			switch f.FilterType {
+			case "LOT_SIZE":
+				ci.MinSize, _ = strconv.ParseFloat(f.MinQty, 64)
+				ci.MaxSize, _ = strconv.ParseFloat(f.MaxQty, 64)
+				ci.StepSize, _ = strconv.ParseFloat(f.StepSize, 64)
+				ci.SizeDecimals = countDecimals(f.StepSize)
+			case "PRICE_FILTER":
+				ci.PriceStep, _ = strconv.ParseFloat(f.TickSize, 64)
+				ci.PriceDecimals = countDecimals(f.TickSize)
+			}
+		}
+		result[sym.Symbol] = ci
+	}
+
+	if len(result) == 0 {
+		return nil, fmt.Errorf("no contracts loaded from Binance exchangeInfo")
+	}
+	return result, nil
+}
+
+// ---------------------------------------------------------------------------
+// Funding Rate
+// ---------------------------------------------------------------------------
+
+func (b *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
+	params := map[string]string{"symbol": symbol}
+	body, err := b.client.Get("/fapi/v1/premiumIndex", params)
+	if err != nil {
+		return nil, fmt.Errorf("GetFundingRate: %w", err)
+	}
+
+	var resp struct {
+		Symbol               string `json:"symbol"`
+		LastFundingRate      string `json:"lastFundingRate"`
+		NextFundingTime      int64  `json:"nextFundingTime"`
+		InterestRate         string `json:"interestRate"`
+		EstimatedSettlePrice string `json:"estimatedSettlePrice"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("GetFundingRate unmarshal: %w", err)
+	}
+
+	rate, _ := strconv.ParseFloat(resp.LastFundingRate, 64)
+	nextFunding := time.UnixMilli(resp.NextFundingTime)
+
+	// Try to get the funding interval from fundingInfo
+	interval, err := b.GetFundingInterval(symbol)
+	if err != nil {
+		// Default to 8 hours if we can't determine the interval
+		interval = 8 * time.Hour
+	}
+
+	return &exchange.FundingRate{
+		Symbol:      resp.Symbol,
+		Rate:        rate,
+		Interval:    interval,
+		NextFunding: nextFunding,
+	}, nil
+}
+
+func (b *Adapter) GetFundingInterval(symbol string) (time.Duration, error) {
+	body, err := b.client.Get("/fapi/v1/fundingInfo", nil)
+	if err != nil {
+		return 0, fmt.Errorf("GetFundingInterval: %w", err)
+	}
+
+	var infos []struct {
+		Symbol               string `json:"symbol"`
+		FundingIntervalHours int    `json:"fundingIntervalHours"`
+	}
+	if err := json.Unmarshal(body, &infos); err != nil {
+		return 0, fmt.Errorf("GetFundingInterval unmarshal: %w", err)
+	}
+
+	for _, info := range infos {
+		if info.Symbol == symbol {
+			if info.FundingIntervalHours > 0 {
+				return time.Duration(info.FundingIntervalHours) * time.Hour, nil
+			}
+			break
+		}
+	}
+
+	// Default to 8 hours
+	return 8 * time.Hour, nil
+}
+
+// ---------------------------------------------------------------------------
+// Balance
+// ---------------------------------------------------------------------------
+
+func (b *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
+	body, err := b.client.Get("/fapi/v2/account", nil)
+	if err != nil {
+		return nil, fmt.Errorf("GetFuturesBalance: %w", err)
+	}
+
+	var resp struct {
+		TotalMarginBalance string `json:"totalMarginBalance"`
+		TotalMaintMargin   string `json:"totalMaintMargin"`
+		AvailableBalance   string `json:"availableBalance"`
+		Assets             []struct {
+			Asset            string `json:"asset"`
+			WalletBalance    string `json:"walletBalance"`
+			AvailableBalance string `json:"availableBalance"`
+		} `json:"assets"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("GetFuturesBalance unmarshal: %w", err)
+	}
+
+	// Compute margin ratio from account-level fields
+	var marginRatio float64
+	marginBal, _ := strconv.ParseFloat(resp.TotalMarginBalance, 64)
+	maintMargin, _ := strconv.ParseFloat(resp.TotalMaintMargin, 64)
+	if marginBal > 0 {
+		marginRatio = maintMargin / marginBal
+	}
+
+	for _, asset := range resp.Assets {
+		if asset.Asset == "USDT" {
+			total, _ := strconv.ParseFloat(asset.WalletBalance, 64)
+			available, _ := strconv.ParseFloat(asset.AvailableBalance, 64)
+
+			// Defensive: if availableBalance is 0 but wallet has funds, fall back.
+			if available <= 0 && total > 0 {
+				available = total
+			}
+
+			return &exchange.Balance{
+				Total:       total,
+				Available:   available,
+				Frozen:      total - available,
+				Currency:    "USDT",
+				MarginRatio: marginRatio,
+			}, nil
+		}
+	}
+	return &exchange.Balance{Currency: "USDT", MarginRatio: marginRatio}, nil
+}
+
+func (b *Adapter) GetSpotBalance() (*exchange.Balance, error) {
+	body, err := b.client.SpotGet("/sapi/v1/capital/config/getall", nil)
+	if err != nil {
+		return nil, fmt.Errorf("GetSpotBalance: %w", err)
+	}
+	var coins []struct {
+		Coin   string `json:"coin"`
+		Free   string `json:"free"`
+		Locked string `json:"locked"`
+	}
+	if err := json.Unmarshal(body, &coins); err != nil {
+		return nil, fmt.Errorf("GetSpotBalance unmarshal: %w", err)
+	}
+	for _, c := range coins {
+		if strings.EqualFold(c.Coin, "USDT") {
+			free, _ := strconv.ParseFloat(c.Free, 64)
+			locked, _ := strconv.ParseFloat(c.Locked, 64)
+			return &exchange.Balance{
+				Total:     free + locked,
+				Available: free,
+				Frozen:    locked,
+				Currency:  "USDT",
+			}, nil
+		}
+	}
+	return &exchange.Balance{Currency: "USDT"}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Orderbook
+// ---------------------------------------------------------------------------
+
+func (b *Adapter) GetOrderbook(symbol string, depth int) (*exchange.Orderbook, error) {
+	if depth <= 0 {
+		depth = 20
+	}
+	params := map[string]string{
+		"symbol": symbol,
+		"limit":  strconv.Itoa(depth),
+	}
+	body, err := b.client.Get("/fapi/v1/depth", params)
+	if err != nil {
+		return nil, fmt.Errorf("GetOrderbook: %w", err)
+	}
+
+	var resp struct {
+		Bids [][]json.RawMessage `json:"bids"` // [[price, qty], ...]
+		Asks [][]json.RawMessage `json:"asks"`
+		T    int64               `json:"T"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("GetOrderbook unmarshal: %w", err)
+	}
+
+	parseLevels := func(raw [][]json.RawMessage) []exchange.PriceLevel {
+		levels := make([]exchange.PriceLevel, 0, len(raw))
+		for _, entry := range raw {
+			if len(entry) < 2 {
+				continue
+			}
+			var priceStr, qtyStr string
+			if json.Unmarshal(entry[0], &priceStr) != nil {
+				continue
+			}
+			if json.Unmarshal(entry[1], &qtyStr) != nil {
+				continue
+			}
+			price, _ := strconv.ParseFloat(priceStr, 64)
+			qty, _ := strconv.ParseFloat(qtyStr, 64)
+			levels = append(levels, exchange.PriceLevel{Price: price, Quantity: qty})
+		}
+		return levels
+	}
+
+	ob := &exchange.Orderbook{
+		Symbol: symbol,
+		Bids:   parseLevels(resp.Bids),
+		Asks:   parseLevels(resp.Asks),
+		Time:   time.UnixMilli(resp.T),
+	}
+	return ob, nil
+}
+
+// ---------------------------------------------------------------------------
+// Internal Transfer / Withdraw
+// ---------------------------------------------------------------------------
+
+// TransferToSpot is a no-op for Binance — Withdraw already handles
+// the futures→spot transfer internally when spot balance is insufficient.
+func (b *Adapter) TransferToSpot(coin string, amount string) error { return nil }
+
+// TransferToFutures moves funds from spot to futures account.
+func (b *Adapter) TransferToFutures(coin string, amount string) error {
+	params := map[string]string{
+		"asset":  coin,
+		"amount": amount,
+		"type":   "1", // 1 = spot -> futures
+	}
+	_, err := b.client.SpotPost("/sapi/v1/futures/transfer", params)
+	if err != nil {
+		return fmt.Errorf("TransferToFutures: %w", err)
+	}
+	return nil
+}
+
+func (b *Adapter) Withdraw(params exchange.WithdrawParams) (*exchange.WithdrawResult, error) {
+	// Check spot balance first; only transfer from futures if spot is insufficient
+	amt, _ := strconv.ParseFloat(params.Amount, 64)
+	spotBal := b.getSpotAvailable(params.Coin)
+	if spotBal < amt {
+		need := fmt.Sprintf("%.8f", amt-spotBal)
+		transferParams := map[string]string{
+			"asset":  params.Coin,
+			"amount": need,
+			"type":   "2", // 2 = futures -> spot
+		}
+		_, err := b.client.SpotPost("/sapi/v1/futures/transfer", transferParams)
+		if err != nil {
+			return nil, fmt.Errorf("Withdraw (futures->spot transfer): %w", err)
+		}
+	}
+
+	network := mapChainToNetwork(params.Chain)
+	reqParams := map[string]string{
+		"coin":    params.Coin,
+		"network": network,
+		"address": params.Address,
+		"amount":  params.Amount,
+	}
+
+	body, err := b.client.SpotPost("/sapi/v1/capital/withdraw/apply", reqParams)
+	if err != nil {
+		return nil, fmt.Errorf("Withdraw: %w", err)
+	}
+
+	var resp struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("Withdraw unmarshal: %w", err)
+	}
+	return &exchange.WithdrawResult{
+		TxID:   resp.ID,
+		Status: "submitted",
+	}, nil
+}
+
+// getSpotBalance queries the spot account balance for a specific asset.
+func (b *Adapter) getSpotAvailable(asset string) float64 {
+	bal, err := b.GetSpotBalance()
+	if err != nil {
+		return 0
+	}
+	return bal.Available
+}
+
+func mapChainToNetwork(chain string) string {
+	switch chain {
+	case "BEP20":
+		return "BSC"
+	case "APT":
+		return "APT"
+	default:
+		return chain
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+func mapSide(s exchange.Side) string {
+	switch s {
+	case exchange.SideBuy:
+		return "BUY"
+	case exchange.SideSell:
+		return "SELL"
+	default:
+		return strings.ToUpper(string(s))
+	}
+}
+
+func mapOrderType(t string) string {
+	switch strings.ToLower(t) {
+	case "limit":
+		return "LIMIT"
+	case "market":
+		return "MARKET"
+	default:
+		return strings.ToUpper(t)
+	}
+}
+
+func mapTimeInForce(f string) string {
+	switch strings.ToLower(f) {
+	case "gtc", "":
+		return "GTC"
+	case "ioc":
+		return "IOC"
+	case "fok":
+		return "FOK"
+	case "post_only", "gtx":
+		return "GTX"
+	default:
+		return strings.ToUpper(f)
+	}
+}
+
+func countDecimals(s string) int {
+	idx := strings.IndexByte(s, '.')
+	if idx < 0 {
+		return 0
+	}
+	d := strings.TrimRight(s[idx+1:], "0")
+	return len(d)
+}
+
+func isAPIError(err error, code int) bool {
+	if apiErr, ok := err.(*APIError); ok {
+		return apiErr.Code == code
+	}
+	return false
+}
+
+// GetUserTrades returns filled trades for a symbol since startTime.
+// Binance endpoint: GET /fapi/v1/userTrades
+func (b *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) ([]exchange.Trade, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	params := map[string]string{
+		"symbol":    symbol,
+		"startTime": strconv.FormatInt(startTime.UnixMilli(), 10),
+		"limit":     strconv.Itoa(limit),
+	}
+	body, err := b.client.Get("/fapi/v1/userTrades", params)
+	if err != nil {
+		return nil, fmt.Errorf("GetUserTrades: %w", err)
+	}
+
+	var resp []struct {
+		ID            int64  `json:"id"`
+		OrderID       int64  `json:"orderId"`
+		Symbol        string `json:"symbol"`
+		Side          string `json:"side"` // BUY or SELL
+		Price         string `json:"price"`
+		Qty           string `json:"qty"`
+		Commission    string `json:"commission"`
+		CommissionAsset string `json:"commissionAsset"`
+		Time          int64  `json:"time"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("GetUserTrades unmarshal: %w", err)
+	}
+
+	trades := make([]exchange.Trade, 0, len(resp))
+	for _, t := range resp {
+		price, _ := strconv.ParseFloat(t.Price, 64)
+		qty, _ := strconv.ParseFloat(t.Qty, 64)
+		fee, _ := strconv.ParseFloat(t.Commission, 64)
+		if fee < 0 {
+			fee = -fee
+		}
+		trades = append(trades, exchange.Trade{
+			TradeID:  strconv.FormatInt(t.ID, 10),
+			OrderID:  strconv.FormatInt(t.OrderID, 10),
+			Symbol:   t.Symbol,
+			Side:     strings.ToLower(t.Side),
+			Price:    price,
+			Quantity: qty,
+			Fee:      fee,
+			FeeCoin:  t.CommissionAsset,
+			Time:     time.UnixMilli(t.Time),
+		})
+	}
+	return trades, nil
+}
+
+// GetFundingFees returns funding fee history for a symbol since the given time.
+func (b *Adapter) GetFundingFees(symbol string, since time.Time) ([]exchange.FundingPayment, error) {
+	params := map[string]string{
+		"symbol":     symbol,
+		"incomeType": "FUNDING_FEE",
+		"startTime":  strconv.FormatInt(since.UnixMilli(), 10),
+		"limit":      "1000",
+	}
+	body, err := b.client.Get("/fapi/v1/income", params)
+	if err != nil {
+		return nil, fmt.Errorf("GetFundingFees: %w", err)
+	}
+
+	var resp []struct {
+		Income string `json:"income"`
+		Time   int64  `json:"time"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("GetFundingFees unmarshal: %w", err)
+	}
+
+	out := make([]exchange.FundingPayment, 0, len(resp))
+	for _, r := range resp {
+		amt, _ := strconv.ParseFloat(r.Income, 64)
+		out = append(out, exchange.FundingPayment{
+			Amount: amt,
+			Time:   time.UnixMilli(r.Time),
+		})
+	}
+	return out, nil
+}
+
+// GetClosePnL returns position-level PnL by aggregating income records.
+// Binance has no single position-close endpoint, so we sum REALIZED_PNL,
+// COMMISSION, and FUNDING_FEE income records for the symbol.
+func (b *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.ClosePnL, error) {
+	var pricePnL, fees, funding float64
+
+	// Query each income type separately for reliability.
+	for _, incomeType := range []string{"REALIZED_PNL", "COMMISSION", "FUNDING_FEE"} {
+		params := map[string]string{
+			"symbol":     symbol,
+			"incomeType": incomeType,
+			"startTime":  strconv.FormatInt(since.UnixMilli(), 10),
+			"limit":      "1000",
+		}
+		body, err := b.client.Get("/fapi/v1/income", params)
+		if err != nil {
+			return nil, fmt.Errorf("GetClosePnL income(%s): %w", incomeType, err)
+		}
+
+		var records []struct {
+			Income string `json:"income"`
+		}
+		if err := json.Unmarshal(body, &records); err != nil {
+			return nil, fmt.Errorf("GetClosePnL unmarshal(%s): %w", incomeType, err)
+		}
+
+		for _, r := range records {
+			amt, _ := strconv.ParseFloat(r.Income, 64)
+			switch incomeType {
+			case "REALIZED_PNL":
+				pricePnL += amt
+			case "COMMISSION":
+				fees += amt
+			case "FUNDING_FEE":
+				funding += amt
+			}
+		}
+	}
+
+	// Return a single aggregated record (no side info available from income API).
+	return []exchange.ClosePnL{{
+		PricePnL:  pricePnL,
+		Fees:      fees,
+		Funding:   funding,
+		NetPnL:    pricePnL + fees + funding,
+		Side:      "", // Binance income API doesn't provide position side
+		CloseTime: time.Now().UTC(),
+	}}, nil
+}
+
+// PlaceStopLoss places a STOP_MARKET algo order on Binance futures.
+// Since 2025-12-09, conditional orders must use POST /fapi/v1/algoOrder.
+func (b *Adapter) PlaceStopLoss(params exchange.StopLossParams) (string, error) {
+	p := map[string]string{
+		"algoType":      "CONDITIONAL",
+		"symbol":        params.Symbol,
+		"side":          mapSide(params.Side),
+		"type":          "STOP_MARKET",
+		"triggerPrice":  params.TriggerPrice,
+		"closePosition": "true",
+	}
+
+	body, err := b.client.Post("/fapi/v1/algoOrder", p)
+	if err != nil {
+		return "", fmt.Errorf("PlaceStopLoss: %w", err)
+	}
+
+	var resp struct {
+		AlgoID int64 `json:"algoId"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("PlaceStopLoss unmarshal: %w", err)
+	}
+	return strconv.FormatInt(resp.AlgoID, 10), nil
+}
+
+// CancelStopLoss cancels an algo stop-loss order on Binance futures.
+func (b *Adapter) CancelStopLoss(symbol, orderID string) error {
+	params := map[string]string{
+		"algoId": orderID,
+	}
+	_, err := b.client.Delete("/fapi/v1/algoOrder", params)
+	if err != nil {
+		if isAPIError(err, -2011) {
+			return nil
+		}
+		return fmt.Errorf("CancelStopLoss: %w", err)
+	}
+	return nil
+}
+
+// EnsureOneWayMode sets the account to one-way position mode (not hedge).
+func (b *Adapter) EnsureOneWayMode() error {
+	params := map[string]string{
+		"dualSidePosition": "false",
+	}
+	_, err := b.client.Post("/fapi/v1/positionSide/dual", params)
+	if err != nil {
+		// "No need to change position side" = already one-way
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "No need") || strings.Contains(errMsg, "-4059") || strings.Contains(errMsg, "-4067") {
+			return nil
+		}
+		return fmt.Errorf("EnsureOneWayMode: %w", err)
+	}
+	return nil
+}

@@ -1,0 +1,2244 @@
+package engine
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"strconv"
+	"sync"
+	"time"
+
+	"arb/internal/api"
+	"arb/internal/config"
+	"arb/internal/database"
+	"arb/internal/discovery"
+	"arb/pkg/exchange"
+	"arb/internal/models"
+	"arb/internal/risk"
+	"arb/pkg/utils"
+)
+
+// Engine is the core arbitrage engine. It orchestrates discovery, risk
+// approval, trade execution, position management and exit logic.
+type Engine struct {
+	exchanges     map[string]exchange.Exchange
+	contracts     map[string]map[string]exchange.ContractInfo // exchange -> symbol -> info
+	discovery     *discovery.Scanner
+	risk          *risk.Manager
+	monitor       *risk.Monitor
+	healthMonitor *risk.HealthMonitor
+	db            *database.Client
+	api           *api.Server
+	cfg           *config.Config
+	log           *utils.Logger
+	stopCh        chan struct{}
+
+	// Exit goroutine tracking for L4/L5 preemption.
+	exitMu      sync.Mutex
+	exitCancels map[string]context.CancelFunc // posID → cancel running exit goroutine
+	exitActive  map[string]bool               // posID → true while exit goroutine is running
+
+	// Entry tracking: prevents consolidator from treating mid-fill positions as orphans.
+	entryMu     sync.Mutex
+	entryActive map[string]string // "exchange:symbol" → posID while depth fill is running
+
+	// Global capacity lock for manual open to prevent concurrent over-subscription.
+	capacityMu sync.Mutex
+
+	// Rejection tracking for dashboard display.
+	rejStore *models.RejectionStore
+}
+
+// NewEngine creates a new Engine with all required dependencies.
+func NewEngine(
+	exchanges map[string]exchange.Exchange,
+	disc *discovery.Scanner,
+	riskMgr *risk.Manager,
+	riskMon *risk.Monitor,
+	healthMon *risk.HealthMonitor,
+	db *database.Client,
+	apiSrv *api.Server,
+	cfg *config.Config,
+) *Engine {
+	e := &Engine{
+		exchanges:     exchanges,
+		discovery:     disc,
+		risk:          riskMgr,
+		monitor:       riskMon,
+		healthMonitor: healthMon,
+		db:            db,
+		api:           apiSrv,
+		cfg:           cfg,
+		log:           utils.NewLogger("engine"),
+		stopCh:        make(chan struct{}),
+		exitCancels:   make(map[string]context.CancelFunc),
+		exitActive:    make(map[string]bool),
+		entryActive:   make(map[string]string),
+	}
+	return e
+}
+
+// ManualClose initiates an exit for the given position from the dashboard.
+// It atomically transitions active → exiting before spawning the exit goroutine.
+func (e *Engine) ManualClose(posID string) error {
+	pos, err := e.db.GetPosition(posID)
+	if err != nil {
+		return fmt.Errorf("position %s not found", posID)
+	}
+	if pos.Status != models.StatusActive {
+		return fmt.Errorf("position %s is not active (status=%s)", posID, pos.Status)
+	}
+	// Atomic: only proceed if we win the active → exiting transition.
+	err = e.db.UpdatePositionFields(posID, func(fresh *models.ArbitragePosition) bool {
+		if fresh.Status != models.StatusActive {
+			return false
+		}
+		fresh.Status = models.StatusExiting
+		return true
+	})
+	if err != nil {
+		return fmt.Errorf("position %s already being handled", posID)
+	}
+	// Re-read to confirm we won the transition.
+	pos, _ = e.db.GetPosition(posID)
+	if pos.Status != models.StatusExiting {
+		return fmt.Errorf("position %s already being handled (status=%s)", posID, pos.Status)
+	}
+	e.log.Info("manual close requested for %s (%s)", posID, pos.Symbol)
+	e.spawnExitGoroutine(pos, "manual close from dashboard")
+	return nil
+}
+
+// ManualOpen opens a position for a cached opportunity, running risk checks
+// synchronously and executing the depth fill asynchronously.
+// If force is true, risk approval is skipped (user override from dashboard).
+func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bool) error {
+	// 1. Find opportunity in scanner cache (thread-safe)
+	opps := e.discovery.GetOpportunities()
+	var opp *models.Opportunity
+	for i := range opps {
+		if opps[i].Symbol == symbol && opps[i].LongExchange == longExchange && opps[i].ShortExchange == shortExchange {
+			opp = &opps[i]
+			break
+		}
+	}
+	if opp == nil {
+		return fmt.Errorf("opportunity not found in latest scan")
+	}
+
+	// 2. Hold global capacity lock to prevent concurrent requests from
+	//    over-subscribing MaxPositions. Released before async execution.
+	e.log.Info("ManualOpen %s: acquiring capacity lock...", symbol)
+	e.capacityMu.Lock()
+	e.log.Info("ManualOpen %s: capacity lock acquired", symbol)
+
+	active, err := e.db.GetActivePositions()
+	if err != nil {
+		e.capacityMu.Unlock()
+		return fmt.Errorf("failed to check active positions")
+	}
+	hasSibling := false
+	for _, pos := range active {
+		if pos.Symbol == symbol {
+			if pos.LongExchange == longExchange && pos.ShortExchange == shortExchange {
+				hasSibling = true // same pair — will merge during execution
+				continue
+			}
+			e.capacityMu.Unlock()
+			return fmt.Errorf("position for %s already open on different exchanges", symbol)
+		}
+	}
+
+	// 3. Check capacity (same-pair add-ons don't consume a new slot)
+	slots := e.cfg.MaxPositions - len(active)
+	if !hasSibling && slots <= 0 {
+		e.capacityMu.Unlock()
+		return fmt.Errorf("at max capacity (%d/%d)", len(active), e.cfg.MaxPositions)
+	}
+
+	// 4. Acquire execution lock
+	lockResource := fmt.Sprintf("execute:%s", symbol)
+	acquired, err := e.db.AcquireLock(lockResource, 5*time.Minute)
+	if err != nil {
+		e.capacityMu.Unlock()
+		return fmt.Errorf("failed to acquire lock for %s", symbol)
+	}
+	if !acquired {
+		e.capacityMu.Unlock()
+		return fmt.Errorf("execution already in progress for %s", symbol)
+	}
+
+	// 5. Risk approval (synchronous, under capacity lock to prevent races)
+	approval, err := e.risk.Approve(*opp)
+	if err != nil {
+		e.capacityMu.Unlock()
+		_ = e.db.ReleaseLock(lockResource)
+		return fmt.Errorf("risk check failed: %v", err)
+	}
+	if !approval.Approved {
+		if force {
+			e.log.Info("ManualOpen %s: force=true, overriding risk rejection: %s", symbol, approval.Reason)
+		} else {
+			e.capacityMu.Unlock()
+			_ = e.db.ReleaseLock(lockResource)
+			return fmt.Errorf("risk rejected: %s", approval.Reason)
+		}
+	}
+
+	// 6. Dry run check
+	if e.cfg.DryRun {
+		e.capacityMu.Unlock()
+		_ = e.db.ReleaseLock(lockResource)
+		return fmt.Errorf("dry run mode — trade not executed")
+	}
+
+	// 7. Reserve a slot by persisting a pending position *after* risk approval
+	//    but *before* releasing the capacity mutex, so concurrent requests
+	//    see the occupied slot without the reservation self-rejecting.
+	now := time.Now().UTC()
+	posID := utils.GenerateID(symbol, now.UnixMilli())
+	nextFunding := e.computeNextFunding(symbol, longExchange, shortExchange)
+	pendingPos := &models.ArbitragePosition{
+		ID:            posID,
+		Symbol:        symbol,
+		LongExchange:  longExchange,
+		ShortExchange: shortExchange,
+		Status:        models.StatusPending,
+		EntrySpread:   opp.Spread,
+		AllExchanges:  []string{longExchange, shortExchange},
+		NextFunding:   nextFunding,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := e.db.SavePosition(pendingPos); err != nil {
+		e.capacityMu.Unlock()
+		_ = e.db.ReleaseLock(lockResource)
+		return fmt.Errorf("failed to reserve position slot: %v", err)
+	}
+	e.api.BroadcastPositionUpdate(pendingPos)
+
+	// Slot reserved — release capacity mutex now.
+	e.capacityMu.Unlock()
+
+	// 8. Async execution (depth fill is slow — return 202 to user)
+	e.log.Info("manual open: executing trade for %s (L:%s S:%s) size=%.6f price=%.5f",
+		symbol, longExchange, shortExchange, approval.Size, approval.Price)
+	go func() {
+		defer func() { _ = e.db.ReleaseLock(lockResource) }()
+		if err := e.executeTradeV2WithPos(*opp, pendingPos, approval.Size, approval.Price, approval.GapBPS); err != nil {
+			e.log.Error("manual open: trade execution failed for %s: %v", symbol, err)
+			e.removePendingPosition(pendingPos)
+		}
+	}()
+	return nil
+}
+
+// SetContracts stores loaded contract info for tick-size-aware price formatting.
+func (e *Engine) SetContracts(contracts map[string]map[string]exchange.ContractInfo) {
+	e.contracts = contracts
+}
+
+// SetRejectionStore sets the shared rejection store for recording filtered opportunities.
+func (e *Engine) SetRejectionStore(store *models.RejectionStore) {
+	e.rejStore = store
+}
+
+// formatPrice rounds a price to the exchange's tick size for the given symbol.
+func (e *Engine) formatPrice(exchName, symbol string, price float64) string {
+	if e.contracts != nil {
+		if exContracts, ok := e.contracts[exchName]; ok {
+			if ci, ok := exContracts[symbol]; ok && ci.PriceStep > 0 {
+				rounded := utils.RoundToStep(price, ci.PriceStep)
+				return utils.FormatPrice(rounded, ci.PriceDecimals)
+			}
+		}
+	}
+	return utils.FormatPrice(price, 8)
+}
+
+// Start launches all engine goroutines: the main loop, scheduler, exit
+// manager, funding tracker and alert forwarder.
+func (e *Engine) Start() {
+	e.log.Info("engine starting")
+
+	// Subscribe BBO for any existing active positions (survives restart).
+	if active, err := e.db.GetActivePositions(); err == nil {
+		for _, pos := range active {
+			if longExch, ok := e.exchanges[pos.LongExchange]; ok {
+				longExch.SubscribeSymbol(pos.Symbol)
+			}
+			if shortExch, ok := e.exchanges[pos.ShortExchange]; ok {
+				shortExch.SubscribeSymbol(pos.Symbol)
+			}
+		}
+	}
+
+	go e.run()
+	go e.forwardAlerts()
+	go e.trackFunding()
+	go e.consumeHealthActions()
+	e.StartConsolidator()
+
+	e.log.Info("engine started")
+}
+
+// rebalanceFunds analyzes upcoming opportunities and ensures each exchange
+// has enough margin. Performs same-exchange spot→futures transfers first,
+// then cross-exchange withdrawals for remaining deficits.
+func (e *Engine) rebalanceFunds() {
+	opps := e.discovery.GetOpportunities()
+	if len(opps) == 0 {
+		e.log.Info("rebalance: no opportunities, skipping")
+		return
+	}
+
+	// Determine capital needs per exchange, capped to what we can actually
+	// open (max_positions × capital_per_leg). Without the cap, 5 discovered
+	// opportunities using the same exchange would request 5× the capital,
+	// triggering unnecessary cross-exchange transfers.
+	margin := e.cfg.CapitalPerLeg
+	if margin <= 0 {
+		margin = 50 // fallback
+	}
+	maxTotal := float64(e.cfg.MaxPositions) * margin
+	needs := map[string]float64{}
+	for _, opp := range opps {
+		needs[opp.LongExchange] += margin
+		needs[opp.ShortExchange] += margin
+	}
+	for name := range needs {
+		if needs[name] > maxTotal {
+			needs[name] = maxTotal
+		}
+	}
+
+	e.log.Info("rebalance: analyzing %d opportunities, needs: %v", len(opps), needs)
+
+	// Query all exchange balances (futures + spot).
+	type balInfo struct {
+		futures     float64
+		spot        float64
+		marginRatio float64
+	}
+	balances := map[string]balInfo{}
+	for name, exch := range e.exchanges {
+		var bi balInfo
+		if futBal, err := exch.GetFuturesBalance(); err == nil {
+			bi.futures = futBal.Available
+			bi.marginRatio = futBal.MarginRatio
+		}
+		if spotBal, err := exch.GetSpotBalance(); err == nil {
+			bi.spot = spotBal.Available
+		}
+		balances[name] = bi
+		e.log.Info("rebalance: %s futures=%.2f spot=%.2f marginRatio=%.4f", name, bi.futures, bi.spot, bi.marginRatio)
+	}
+
+	// Phase 1: Same-exchange spot→futures transfers (instant).
+	type deficit struct {
+		exchange string
+		amount   float64
+	}
+	var crossDeficits []deficit
+
+	for name, need := range needs {
+		bal := balances[name]
+		if bal.futures >= need {
+			continue
+		}
+		shortfall := need - bal.futures
+		if bal.spot > 0 {
+			transferAmt := shortfall
+			if transferAmt > bal.spot {
+				transferAmt = bal.spot
+			}
+			amtStr := fmt.Sprintf("%.4f", transferAmt)
+			e.log.Info("rebalance: %s spot→futures %s USDT (same-exchange, instant)", name, amtStr)
+			if !e.cfg.DryRun {
+				if err := e.exchanges[name].TransferToFutures("USDT", amtStr); err != nil {
+					e.log.Error("rebalance: %s spot→futures failed: %v", name, err)
+				} else {
+					shortfall -= transferAmt
+					// Update local balance tracking
+					bi := balances[name]
+					bi.futures += transferAmt
+					bi.spot -= transferAmt
+					balances[name] = bi
+				}
+			}
+		}
+		if shortfall > 10 {
+			crossDeficits = append(crossDeficits, deficit{name, shortfall})
+		}
+	}
+
+	if len(crossDeficits) == 0 {
+		e.log.Info("rebalance: all exchanges funded, no cross-exchange transfers needed")
+		return
+	}
+
+	// Phase 2: Cross-exchange transfers for remaining deficits.
+	// Calculate surplus per exchange.
+	surplus := map[string]float64{}
+	for name := range e.exchanges {
+		bal := balances[name]
+		total := bal.futures + bal.spot
+		surplus[name] = total - needs[name]
+	}
+
+	for _, def := range crossDeficits {
+		// Find best donor: highest surplus, margin healthy (below L3), not the recipient.
+		var bestDonor string
+		var bestSurplus float64
+		for name, s := range surplus {
+			if name == def.exchange || s <= def.amount {
+				continue
+			}
+			// Only withdraw from L0/L1/L2 exchanges (marginRatio below L3 threshold).
+			if balances[name].marginRatio >= e.cfg.MarginL3Threshold {
+				e.log.Info("rebalance: skipping donor %s (marginRatio=%.4f >= L3=%.4f)",
+					name, balances[name].marginRatio, e.cfg.MarginL3Threshold)
+				continue
+			}
+			if s > bestSurplus {
+				bestDonor = name
+				bestSurplus = s
+			}
+		}
+
+		if bestDonor == "" {
+			e.log.Warn("rebalance: no donor found for %s deficit=%.2f", def.exchange, def.amount)
+			continue
+		}
+
+		// Find shared chain (prefer APT, fallback BEP20).
+		recipientAddrs := e.cfg.ExchangeAddresses[def.exchange]
+		if len(recipientAddrs) == 0 {
+			e.log.Warn("rebalance: no deposit addresses for %s", def.exchange)
+			continue
+		}
+
+		var chain, destAddr string
+		for _, c := range []string{"APT", "BEP20"} {
+			if addr, ok := recipientAddrs[c]; ok && addr != "" {
+				chain = c
+				destAddr = addr
+				break
+			}
+		}
+		if chain == "" {
+			e.log.Warn("rebalance: no shared chain between %s and %s", bestDonor, def.exchange)
+			continue
+		}
+
+		amount := def.amount * 1.05 // 5% buffer for fees
+		amtStr := fmt.Sprintf("%.4f", amount)
+
+		e.log.Info("rebalance: cross-exchange %s→%s %.2f USDT via %s",
+			bestDonor, def.exchange, amount, chain)
+
+		if e.cfg.DryRun {
+			e.log.Info("[DRY RUN] would transfer %.2f USDT from %s to %s via %s",
+				amount, bestDonor, def.exchange, chain)
+			continue
+		}
+
+		// Step 1: Donor futures→spot (if needed)
+		donorBal := balances[bestDonor]
+		if donorBal.spot < amount {
+			moveAmt := amount - donorBal.spot
+			// Cap to what's actually available in futures (leave needs covered)
+			maxMove := donorBal.futures - needs[bestDonor]
+			if moveAmt > maxMove && maxMove > 0 {
+				moveAmt = maxMove
+			}
+			if moveAmt <= 0 {
+				e.log.Warn("rebalance: %s has no excess futures to move to spot", bestDonor)
+				continue
+			}
+			moveStr := fmt.Sprintf("%.4f", moveAmt)
+			e.log.Info("rebalance: %s futures→spot %s USDT", bestDonor, moveStr)
+			if err := e.exchanges[bestDonor].TransferToSpot("USDT", moveStr); err != nil {
+				e.log.Error("rebalance: %s futures→spot failed: %v", bestDonor, err)
+				continue
+			}
+			e.recordTransfer(bestDonor, bestDonor+" spot", "USDT", "internal", moveStr, "0", "", "completed", "rebalance-prep")
+		}
+
+		// Verify donor spot balance before withdrawing
+		donorSpotBal, err := e.exchanges[bestDonor].GetSpotBalance()
+		if err != nil {
+			e.log.Error("rebalance: %s get spot balance failed: %v", bestDonor, err)
+			continue
+		}
+		withdrawAmt := amount
+		if donorSpotBal.Available < withdrawAmt {
+			withdrawAmt = donorSpotBal.Available
+		}
+		if withdrawAmt < 10 {
+			e.log.Warn("rebalance: %s spot balance too low to withdraw (%.2f)", bestDonor, donorSpotBal.Available)
+			continue
+		}
+		amtStr = fmt.Sprintf("%.4f", withdrawAmt)
+
+		// Step 2: Withdraw from donor
+		result, err := e.exchanges[bestDonor].Withdraw(exchange.WithdrawParams{
+			Coin:    "USDT",
+			Chain:   chain,
+			Address: destAddr,
+			Amount:  amtStr,
+		})
+		if err != nil {
+			e.log.Error("rebalance: withdraw from %s failed: %v", bestDonor, err)
+			continue
+		}
+		e.log.Info("rebalance: withdraw from %s txid=%s (%.2f USDT), waiting for deposit on %s...",
+			bestDonor, result.TxID, withdrawAmt, def.exchange)
+		e.recordTransfer(bestDonor, def.exchange, "USDT", chain, amtStr, result.Fee, result.TxID, "completed", "rebalance")
+
+		// Step 3: Poll recipient spot balance for arrival (up to 3min).
+		recipientExch := e.exchanges[def.exchange]
+		startBal := balances[def.exchange].spot
+		arrived := false
+		pollDeadline := time.Now().Add(3 * time.Minute)
+		for time.Now().Before(pollDeadline) {
+			time.Sleep(5 * time.Second)
+			spotBal, err := recipientExch.GetSpotBalance()
+			if err != nil {
+				continue
+			}
+			if spotBal.Available >= startBal+withdrawAmt*0.9 {
+				arrived = true
+				e.log.Info("rebalance: deposit confirmed on %s (spot=%.2f)", def.exchange, spotBal.Available)
+				break
+			}
+		}
+
+		if !arrived {
+			e.log.Warn("rebalance: deposit on %s not confirmed within 3min, skipping spot→futures", def.exchange)
+			continue
+		}
+
+		// Step 4: Recipient spot→futures (only if deposit confirmed)
+		transferStr := fmt.Sprintf("%.4f", withdrawAmt)
+		if err := recipientExch.TransferToFutures("USDT", transferStr); err != nil {
+			e.log.Error("rebalance: %s spot→futures failed: %v", def.exchange, err)
+		} else {
+			e.log.Info("rebalance: %s spot→futures %s USDT complete", def.exchange, transferStr)
+			e.recordTransfer(def.exchange+" spot", def.exchange, "USDT", "internal", transferStr, "0", "", "completed", "rebalance-recv")
+		}
+
+		// Reduce donor surplus
+		surplus[bestDonor] -= amount
+	}
+
+	e.log.Info("rebalance: complete")
+}
+
+// recordTransfer saves a transfer record to the database for dashboard display.
+func (e *Engine) recordTransfer(from, to, coin, chain, amount, fee, txID, status, reason string) {
+	now := time.Now().UTC()
+	id := fmt.Sprintf("xfer-%d", now.UnixMilli())
+	label := reason
+	if label != "" {
+		label = " [" + label + "]"
+	}
+	record := &database.TransferRecord{
+		ID:        id,
+		From:      from + label,
+		To:        to,
+		Coin:      coin,
+		Chain:     chain,
+		Amount:    amount,
+		Fee:       fee,
+		TxID:      txID,
+		Status:    status,
+		CreatedAt: now.Format(time.RFC3339),
+	}
+	if err := e.db.SaveTransfer(record); err != nil {
+		e.log.Error("recordTransfer: failed to save: %v", err)
+	}
+}
+
+// Stop signals all goroutines to exit.
+func (e *Engine) Stop() {
+	e.log.Info("engine stopping")
+	close(e.stopCh)
+	e.log.Info("engine stopped")
+}
+
+// run is the main event loop. It listens for new opportunity batches from
+// discovery and dispatches actions based on scan type:
+//   - RebalanceScan (:20) → rebalance funds across exchanges
+//   - ExitScan      (:25) → check exit conditions
+//   - EntryScan     (:35) → execute new arb positions
+//   - RotateScan    (:45) → check leg rotations
+func (e *Engine) run() {
+	oppCh := e.discovery.OpportunityChan()
+
+	for {
+		select {
+		case result := <-oppCh:
+			e.log.Info("run loop: received %d opportunities (type=%s), dispatching...",
+				len(result.Opps), result.Type)
+
+			// Always forward to dashboard.
+			e.api.SetOpportunities(result.Opps)
+			e.api.BroadcastOpportunities(result.Opps)
+
+			switch result.Type {
+			case discovery.RebalanceScan:
+				e.rebalanceFunds()
+				e.log.Info("run loop: rebalanceScan handler done")
+			case discovery.ExitScan:
+				e.checkExitsV2()
+				e.log.Info("run loop: exitScan handler done")
+			case discovery.RotateScan:
+				e.checkRotations()
+				e.log.Info("run loop: rotateScan handler done")
+			case discovery.EntryScan:
+				if len(result.Opps) > 0 {
+					e.log.Info("entry scan complete, triggering trade execution")
+					e.executeArbitrage(result.Opps)
+					e.log.Info("run loop: entryScan handler done")
+				}
+			}
+
+		case <-e.stopCh:
+			e.log.Info("main loop exiting")
+			return
+		}
+	}
+}
+
+// forwardAlerts relays risk monitor alerts to the dashboard WebSocket.
+func (e *Engine) forwardAlerts() {
+	alertCh := e.monitor.AlertChan()
+	for {
+		select {
+		case alert := <-alertCh:
+			e.api.BroadcastAlert(alert)
+		case <-e.stopCh:
+			return
+		}
+	}
+}
+
+// consumeHealthActions processes protective actions from the health monitor.
+func (e *Engine) consumeHealthActions() {
+	actionCh := e.healthMonitor.ActionChan()
+	for {
+		select {
+		case action := <-actionCh:
+			switch action.Type {
+			case "transfer":
+				e.handleTransfer(action)
+			case "reduce":
+				e.handleReduce(action)
+			case "close":
+				e.handleEmergencyClose(action)
+			default:
+				e.log.Warn("unknown health action type: %s", action.Type)
+			}
+		case <-e.stopCh:
+			return
+		}
+	}
+}
+
+func (e *Engine) handleTransfer(action risk.HealthAction) {
+	if e.cfg.DryRun {
+		e.log.Info("[DRY RUN] L3 would transfer %.2f USDT from %s to %s",
+			action.Amount, action.DonorExch, action.Exchange)
+		return
+	}
+
+	donorExch, ok := e.exchanges[action.DonorExch]
+	if !ok {
+		e.log.Error("L3 transfer: donor exchange %s not found", action.DonorExch)
+		return
+	}
+
+	targetExch, ok := e.exchanges[action.Exchange]
+	if !ok {
+		e.log.Error("L3 transfer: target exchange %s not found", action.Exchange)
+		return
+	}
+
+	amountStr := fmt.Sprintf("%.4f", action.Amount)
+
+	// Transfer from donor's futures to spot first
+	if err := donorExch.TransferToSpot("USDT", amountStr); err != nil {
+		e.log.Error("L3 transfer: donor %s futures->spot failed: %v", action.DonorExch, err)
+		return
+	}
+
+	// Transfer into target's futures account
+	if err := targetExch.TransferToFutures("USDT", amountStr); err != nil {
+		e.log.Error("L3 transfer: target %s spot->futures failed: %v", action.Exchange, err)
+		return
+	}
+
+	e.log.Info("L3 transfer complete: %.2f USDT from %s to %s",
+		action.Amount, action.DonorExch, action.Exchange)
+	e.recordTransfer(action.DonorExch, action.Exchange, "USDT", "internal", amountStr, "0", "", "completed", "L3-health")
+}
+
+// cancelExitGoroutine cancels a running exit goroutine for the given position
+// and waits briefly for it to clean up.
+func (e *Engine) cancelExitGoroutine(posID string) {
+	e.exitMu.Lock()
+	cancel, ok := e.exitCancels[posID]
+	e.exitMu.Unlock()
+	if ok {
+		e.log.Info("cancelling exit goroutine for %s (preempted by L4/L5)", posID)
+		cancel()
+		time.Sleep(500 * time.Millisecond) // grace period for cleanup
+	}
+}
+
+func (e *Engine) handleReduce(action risk.HealthAction) {
+	if e.cfg.DryRun {
+		e.log.Info("[DRY RUN] L4 would reduce %d positions on %s by %.0f%%",
+			len(action.Positions), action.Exchange, action.Fraction*100)
+		return
+	}
+
+	for _, pos := range action.Positions {
+		e.cancelExitGoroutine(pos.ID)
+
+		e.log.Info("L4 reducing position %s (exchange=%s fraction=%.2f)",
+			pos.ID, action.Exchange, action.Fraction)
+
+		if err := e.reducePosition(pos, action.Fraction); err != nil {
+			e.log.Error("L4 reduce position %s failed: %v", pos.ID, err)
+		}
+
+		// Re-check margin ratio after each reduction
+		exch, ok := e.exchanges[action.Exchange]
+		if !ok {
+			continue
+		}
+		bal, err := exch.GetFuturesBalance()
+		if err != nil {
+			continue
+		}
+		if bal.MarginRatio < e.cfg.MarginL4Threshold {
+			e.log.Info("L4 margin ratio %.4f now below threshold %.4f, stopping reductions",
+				bal.MarginRatio, e.cfg.MarginL4Threshold)
+			break
+		}
+	}
+}
+
+func (e *Engine) handleEmergencyClose(action risk.HealthAction) {
+	if e.cfg.DryRun {
+		e.log.Info("[DRY RUN] L5 would emergency close %d positions on %s",
+			len(action.Positions), action.Exchange)
+		return
+	}
+
+	for _, pos := range action.Positions {
+		e.cancelExitGoroutine(pos.ID)
+
+		e.log.Error("L5 EMERGENCY CLOSE: position %s (exchange=%s)", pos.ID, action.Exchange)
+		if err := e.closePositionEmergency(pos); err != nil {
+			e.log.Error("L5 emergency close %s failed: %v", pos.ID, err)
+		}
+	}
+
+	// Transfer remaining futures balance to spot for safety
+	exch, ok := e.exchanges[action.Exchange]
+	if !ok {
+		return
+	}
+	bal, err := exch.GetFuturesBalance()
+	if err != nil || bal.Available <= 0 {
+		return
+	}
+	amountStr := fmt.Sprintf("%.4f", bal.Available)
+	if err := exch.TransferToSpot("USDT", amountStr); err != nil {
+		e.log.Error("L5 safety transfer on %s failed: %v", action.Exchange, err)
+	} else {
+		e.log.Info("L5 safety transfer: moved %.2f USDT to spot on %s", bal.Available, action.Exchange)
+		e.recordTransfer(action.Exchange, action.Exchange+" spot", "USDT", "internal", amountStr, "0", "", "completed", "L5-safety")
+	}
+}
+
+// trackFunding updates FundingCollected for all active positions.
+// Runs once on startup, then every hour at HH:10:00.
+func (e *Engine) trackFunding() {
+	// Run immediately on startup.
+	e.updateFundingCollected()
+
+	for {
+		now := time.Now().UTC()
+		// Next HH:10:00.
+		next := now.Truncate(time.Hour).Add(10 * time.Minute)
+		if !next.After(now) {
+			next = next.Add(time.Hour)
+		}
+		timer := time.NewTimer(time.Until(next))
+
+		select {
+		case <-timer.C:
+			e.updateFundingCollected()
+		case <-e.stopCh:
+			timer.Stop()
+			return
+		}
+	}
+}
+
+// updateFundingCollected queries exchange positions for realized funding and
+// updates each active position's FundingCollected field.
+func (e *Engine) updateFundingCollected() {
+	positions, err := e.db.GetActivePositions()
+	if err != nil {
+		e.log.Error("trackFunding: failed to get active positions: %v", err)
+		return
+	}
+
+	for _, pos := range positions {
+		if pos.Status != models.StatusActive {
+			continue
+		}
+
+		longExch, ok := e.exchanges[pos.LongExchange]
+		if !ok {
+			continue
+		}
+		shortExch, ok := e.exchanges[pos.ShortExchange]
+		if !ok {
+			continue
+		}
+
+		// Fetch actual funding fees from each exchange independently.
+		// Use position FundingFee field if available (Bitget, OKX, Gate.io),
+		// otherwise fall back to GetFundingFees history (Binance, Bybit).
+		var fundingAccrued float64
+		var gotLong, gotShort bool
+
+		longPos, err1 := longExch.GetPosition(pos.Symbol)
+		if err1 == nil {
+			for _, p := range longPos {
+				if p.HoldSide == "long" && p.FundingFee != "" {
+					f, _ := strconv.ParseFloat(p.FundingFee, 64)
+					fundingAccrued += f
+					gotLong = true
+				}
+			}
+		}
+		if !gotLong {
+			if fees, err := longExch.GetFundingFees(pos.Symbol, pos.CreatedAt); err == nil {
+				for _, f := range fees {
+					fundingAccrued += f.Amount
+				}
+				gotLong = true
+			}
+		}
+
+		shortPos, err2 := shortExch.GetPosition(pos.Symbol)
+		if err2 == nil {
+			for _, p := range shortPos {
+				if p.HoldSide == "short" && p.FundingFee != "" {
+					f, _ := strconv.ParseFloat(p.FundingFee, 64)
+					fundingAccrued += f
+					gotShort = true
+				}
+			}
+		}
+		if !gotShort {
+			if fees, err := shortExch.GetFundingFees(pos.Symbol, pos.CreatedAt); err == nil {
+				for _, f := range fees {
+					fundingAccrued += f.Amount
+				}
+				gotShort = true
+			}
+		}
+
+		if !gotLong || !gotShort {
+			continue // skip if either side failed
+		}
+
+		if fundingAccrued != 0 && fundingAccrued != pos.FundingCollected {
+			nextFunding := e.computeNextFunding(pos.Symbol, pos.LongExchange, pos.ShortExchange)
+
+			// Re-read position from Redis and update atomically to avoid
+			// overwriting status changes made by closePosition or reducePosition.
+			if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+				if fresh.Status != models.StatusActive {
+					return false // position is closing/closed, skip update
+				}
+				fresh.FundingCollected = fundingAccrued
+				if !fresh.NextFunding.IsZero() && time.Now().UTC().After(fresh.NextFunding) {
+					fresh.NextFunding = nextFunding
+				}
+				return true
+			}); err != nil {
+				e.log.Error("trackFunding: failed to save position %s: %v", pos.ID, err)
+			} else {
+				e.api.BroadcastPositionUpdate(pos)
+			}
+		}
+	}
+}
+
+// nextStandardSnapshot returns the next standard hourly funding snapshot at or after t.
+func nextStandardSnapshot(t time.Time) time.Time {
+	next := time.Date(t.Year(), t.Month(), t.Day(), t.Hour()+1, 0, 0, 0, time.UTC)
+	return next
+}
+
+// computeNextFunding determines the next funding time for a symbol by querying
+// both exchanges and returning the earliest next funding snapshot.
+func (e *Engine) computeNextFunding(symbol, longExchName, shortExchName string) time.Time {
+	var earliest time.Time
+
+	if longExch, ok := e.exchanges[longExchName]; ok {
+		if fr, err := longExch.GetFundingRate(symbol); err == nil && !fr.NextFunding.IsZero() {
+			earliest = fr.NextFunding
+		}
+	}
+	if shortExch, ok := e.exchanges[shortExchName]; ok {
+		if fr, err := shortExch.GetFundingRate(symbol); err == nil && !fr.NextFunding.IsZero() {
+			if earliest.IsZero() || fr.NextFunding.Before(earliest) {
+				earliest = fr.NextFunding
+			}
+		}
+	}
+
+	// Fallback: next standard 4h snapshot.
+	if earliest.IsZero() {
+		earliest = nextStandardSnapshot(time.Now().UTC())
+	}
+
+	return earliest
+}
+
+// SimExecuteTradeV2 is a public wrapper around executeTradeV2 for use by
+// the simtrade CLI tool.
+func (e *Engine) SimExecuteTradeV2(opp models.Opportunity, size, price, gapBPS float64) error {
+	return e.executeTradeV2(opp, size, price, gapBPS)
+}
+
+// executeArbitrage attempts to open arbitrage positions for a batch of
+// opportunities. Phase 1 sequentially filters and approves candidates,
+// Phase 2 executes approved trades in parallel goroutines.
+func (e *Engine) executeArbitrage(opps []models.Opportunity) {
+	e.log.Info("executeArbitrage: acquiring capacity lock...")
+	e.capacityMu.Lock()
+	e.log.Info("executeArbitrage: capacity lock acquired")
+
+	active, err := e.db.GetActivePositions()
+	if err != nil {
+		e.capacityMu.Unlock()
+		e.log.Error("failed to get active positions: %v", err)
+		return
+	}
+	e.log.Info("executeArbitrage: %d active positions, MaxPositions=%d", len(active), e.cfg.MaxPositions)
+	slots := e.cfg.MaxPositions - len(active)
+
+	// Build set of active (symbol, longExchange, shortExchange) pairs for merge detection.
+	type pairKey struct{ symbol, long, short string }
+	activePairs := make(map[pairKey]bool)
+	for _, p := range active {
+		if p.Status == models.StatusActive {
+			activePairs[pairKey{p.Symbol, p.LongExchange, p.ShortExchange}] = true
+		}
+	}
+
+	if slots <= 0 && len(activePairs) == 0 {
+		e.capacityMu.Unlock()
+		e.log.Info("at max capacity (%d/%d), skipping", len(active), e.cfg.MaxPositions)
+		return
+	}
+
+	// Phase 1: Sequential pre-filter — approve up to `slots` candidates.
+	// Same-pair add-ons (will merge) don't consume a slot.
+	type candidate struct {
+		opp     models.Opportunity
+		size    float64
+		price   float64
+		gapBPS  float64
+		lockKey string
+	}
+	var candidates []candidate
+	newSlotCandidates := 0
+
+	for _, opp := range opps {
+		isMerge := activePairs[pairKey{opp.Symbol, opp.LongExchange, opp.ShortExchange}]
+		if !isMerge && newSlotCandidates >= slots {
+			continue // skip new-pair candidates when at capacity, but keep scanning for merges
+		}
+
+		lockResource := fmt.Sprintf("execute:%s", opp.Symbol)
+		acquired, err := e.db.AcquireLock(lockResource, 5*time.Minute)
+		if err != nil {
+			e.log.Error("failed to acquire lock for %s: %v", opp.Symbol, err)
+			continue
+		}
+		if !acquired {
+			e.log.Info("lock busy for %s, skipping", opp.Symbol)
+			continue
+		}
+
+		e.log.Info("executeArbitrage: risk.Approve %s (merge=%v)...", opp.Symbol, isMerge)
+		approval, err := e.risk.Approve(opp)
+		if err != nil {
+			e.log.Error("risk approval error for %s: %v", opp.Symbol, err)
+			if e.rejStore != nil {
+				e.rejStore.AddOpp(opp, "risk", fmt.Sprintf("error: %v", err))
+			}
+			_ = e.db.ReleaseLock(lockResource)
+			continue
+		}
+		if !approval.Approved {
+			e.log.Info("risk rejected %s: %s", opp.Symbol, approval.Reason)
+			if e.rejStore != nil {
+				e.rejStore.AddOpp(opp, "risk", approval.Reason)
+			}
+			_ = e.db.ReleaseLock(lockResource)
+			continue
+		}
+		e.log.Info("executeArbitrage: risk approved %s size=%.6f", opp.Symbol, approval.Size)
+
+		if e.cfg.DryRun {
+			e.log.Info("[DRY RUN] would execute trade for %s: size=%.6f price=%.2f spread=%.2f bps/h", opp.Symbol, approval.Size, approval.Price, opp.Spread)
+			_ = e.db.ReleaseLock(lockResource)
+			continue
+		}
+
+		candidates = append(candidates, candidate{opp, approval.Size, approval.Price, approval.GapBPS, lockResource})
+		if !isMerge {
+			newSlotCandidates++
+		}
+	}
+
+	// Release capacity lock — candidates hold per-symbol locks and will
+	// create pending positions inside executeTradeV2.
+	e.log.Info("executeArbitrage: releasing capacity lock, %d candidates approved", len(candidates))
+	e.capacityMu.Unlock()
+
+	if len(candidates) == 0 {
+		return
+	}
+
+	// Phase 2: Parallel execution — launch all candidates simultaneously.
+	e.log.Info("parallel execution: %d candidates approved, launching", len(candidates))
+
+	var wg sync.WaitGroup
+	for _, c := range candidates {
+		wg.Add(1)
+		go func(c candidate) {
+			defer wg.Done()
+			defer func() { _ = e.db.ReleaseLock(c.lockKey) }()
+
+			e.log.Info("executing trade for %s: size=%.6f price=%.5f gapBPS=%.1f", c.opp.Symbol, c.size, c.price, c.gapBPS)
+			if err := e.executeTradeV2(c.opp, c.size, c.price, c.gapBPS); err != nil {
+				e.log.Error("trade execution failed for %s: %v", c.opp.Symbol, err)
+				e.cleanupFailedPosition(c.opp.Symbol)
+			}
+		}(c)
+	}
+	e.log.Info("executeArbitrage: waiting for %d goroutines to complete...", len(candidates))
+	wg.Wait()
+	e.log.Info("executeArbitrage: all goroutines complete")
+}
+
+// removePendingPosition marks a specific pending position as closed and broadcasts
+// the update, so the frontend immediately removes the row.
+func (e *Engine) removePendingPosition(pos *models.ArbitragePosition) {
+	pos.Status = models.StatusClosed
+	pos.UpdatedAt = time.Now().UTC()
+	if err := e.db.SavePosition(pos); err != nil {
+		e.log.Error("removePendingPosition: failed to close %s: %v", pos.ID, err)
+	}
+	if e.api != nil {
+		e.api.BroadcastPositionUpdate(pos)
+	}
+}
+
+// findSiblingPosition returns an existing active position for the same symbol
+// and exchange pair, excluding the given position ID.
+func (e *Engine) findSiblingPosition(symbol, longExch, shortExch, excludeID string) *models.ArbitragePosition {
+	positions, err := e.db.GetActivePositions()
+	if err != nil {
+		return nil
+	}
+	for _, p := range positions {
+		if p.ID == excludeID {
+			continue
+		}
+		if p.Symbol == symbol && p.LongExchange == longExch && p.ShortExchange == shortExch && p.Status == models.StatusActive {
+			return p
+		}
+	}
+	return nil
+}
+
+// mergeIntoPosition merges new fills into an existing active position using
+// weighted average entry prices. Cancels old SLs and places new ones.
+// Returns true if merge succeeded, false if the sibling changed state and
+// merge was skipped (caller should keep the pending position as-is).
+func (e *Engine) mergeIntoPosition(existing, pending *models.ArbitragePosition,
+	addLong, addShort, longPrice, shortPrice float64, spread float64) bool {
+
+	merged := false
+	err := e.db.UpdatePositionFields(existing.ID, func(fresh *models.ArbitragePosition) bool {
+		// Guard: only merge into active positions with matching exchanges
+		if fresh.Status != models.StatusActive {
+			return false
+		}
+		if fresh.LongExchange != pending.LongExchange || fresh.ShortExchange != pending.ShortExchange {
+			return false
+		}
+
+		// Weighted average entry prices
+		oldLong := fresh.LongSize
+		oldShort := fresh.ShortSize
+		totalLong := oldLong + addLong
+		totalShort := oldShort + addShort
+		if totalLong > 0 {
+			fresh.LongEntry = (oldLong*fresh.LongEntry + addLong*longPrice) / totalLong
+		}
+		if totalShort > 0 {
+			fresh.ShortEntry = (oldShort*fresh.ShortEntry + addShort*shortPrice) / totalShort
+		}
+		fresh.LongSize = totalLong
+		fresh.ShortSize = totalShort
+
+		// Weighted average entry spread (feeds exit logic)
+		if totalLong > 0 {
+			fresh.EntrySpread = (oldLong*fresh.EntrySpread + addLong*spread) / totalLong
+		}
+
+		fresh.UpdatedAt = time.Now().UTC()
+		merged = true
+		return true
+	})
+	if err != nil {
+		e.log.Error("mergeIntoPosition: failed to update %s: %v", existing.ID, err)
+		return false
+	}
+	if !merged {
+		e.log.Warn("mergeIntoPosition: sibling %s changed state, skipping merge", existing.ID)
+		return false
+	}
+
+	// Cancel old SLs and place new ones with combined size
+	e.cancelStopLosses(existing)
+
+	// Re-read for accurate state (after SL cancel, before SL attach)
+	updated, err := e.db.GetPosition(existing.ID)
+	if err != nil {
+		e.log.Error("mergeIntoPosition: failed to re-read %s, attaching SLs with stale data: %v", existing.ID, err)
+		e.attachStopLosses(existing) // fallback: use stale pointer so position isn't left unprotected
+		return true
+	}
+
+	e.attachStopLosses(updated)
+
+	// Broadcast after SL attachment so UI has correct SL IDs
+	e.api.BroadcastPositionUpdate(updated)
+
+	e.log.Info("merge complete: %s now size=%.6f long=%.6f@%.6f short=%.6f@%.6f",
+		updated.ID, updated.LongSize, updated.LongSize, updated.LongEntry, updated.ShortSize, updated.ShortEntry)
+	return true
+}
+
+// MergeExistingDuplicates finds and merges any active positions that share the
+// same symbol + exchange pair. Called once on startup to clean up pre-existing duplicates.
+func (e *Engine) MergeExistingDuplicates() {
+	positions, err := e.db.GetActivePositions()
+	if err != nil {
+		e.log.Error("MergeExistingDuplicates: failed to get positions: %v", err)
+		return
+	}
+
+	// Group by (symbol, longExchange, shortExchange)
+	type key struct{ symbol, long, short string }
+	groups := make(map[key][]*models.ArbitragePosition)
+	for _, p := range positions {
+		if p.Status != models.StatusActive {
+			continue
+		}
+		k := key{p.Symbol, p.LongExchange, p.ShortExchange}
+		groups[k] = append(groups[k], p)
+	}
+
+	for k, group := range groups {
+		if len(group) < 2 {
+			continue
+		}
+
+		// Keep the earliest position as survivor
+		survivor := group[0]
+		for _, p := range group[1:] {
+			if p.CreatedAt.Before(survivor.CreatedAt) {
+				survivor = p
+			}
+		}
+
+		// Merge all others into survivor
+		for _, p := range group {
+			if p.ID == survivor.ID {
+				continue
+			}
+			e.log.Info("startup merge: absorbing %s into %s (%s %s→%s)",
+				p.ID, survivor.ID, k.symbol, k.long, k.short)
+
+			// Cancel SLs on the absorbed position
+			e.cancelStopLosses(p)
+
+			// Merge sizes and funding into survivor
+			_ = e.db.UpdatePositionFields(survivor.ID, func(fresh *models.ArbitragePosition) bool {
+				oldLong := fresh.LongSize
+				oldShort := fresh.ShortSize
+				totalLong := oldLong + p.LongSize
+				totalShort := oldShort + p.ShortSize
+				if totalLong > 0 {
+					fresh.LongEntry = (oldLong*fresh.LongEntry + p.LongSize*p.LongEntry) / totalLong
+				}
+				if totalShort > 0 {
+					fresh.ShortEntry = (oldShort*fresh.ShortEntry + p.ShortSize*p.ShortEntry) / totalShort
+				}
+				fresh.LongSize = totalLong
+				fresh.ShortSize = totalShort
+				fresh.FundingCollected += p.FundingCollected
+				fresh.RotationPnL += p.RotationPnL
+				if totalLong > 0 {
+					fresh.EntrySpread = (oldLong*fresh.EntrySpread + p.LongSize*p.EntrySpread) / totalLong
+				}
+				// Merge AllExchanges
+				for _, ex := range p.AllExchanges {
+					found := false
+					for _, e := range fresh.AllExchanges {
+						if e == ex {
+							found = true
+							break
+						}
+					}
+					if !found {
+						fresh.AllExchanges = append(fresh.AllExchanges, ex)
+					}
+				}
+				fresh.UpdatedAt = time.Now().UTC()
+				return true
+			})
+
+			// Mark absorbed position as closed
+			e.removePendingPosition(p)
+		}
+
+		// Re-read survivor, replace SLs with combined size
+		updated, _ := e.db.GetPosition(survivor.ID)
+		if updated != nil {
+			e.cancelStopLosses(updated)
+			e.attachStopLosses(updated)
+			e.api.BroadcastPositionUpdate(updated)
+			e.log.Info("startup merge complete: %s size=%.6f long@%.6f short@%.6f",
+				updated.ID, updated.LongSize, updated.LongEntry, updated.ShortEntry)
+		}
+	}
+}
+
+// cleanupFailedPosition finds pending or partial positions for the given symbol
+// with zero fills on both legs and marks them as closed so they don't block
+// MAX_POSITIONS capacity.
+func (e *Engine) cleanupFailedPosition(symbol string) {
+	positions, err := e.db.GetActivePositions()
+	if err != nil {
+		e.log.Error("cleanupFailedPosition: failed to get positions: %v", err)
+		return
+	}
+
+	for _, pos := range positions {
+		if pos.Symbol != symbol {
+			continue
+		}
+		if pos.Status != models.StatusPending && pos.Status != models.StatusPartial {
+			continue
+		}
+		if pos.LongSize > 0 || pos.ShortSize > 0 {
+			continue
+		}
+		e.log.Info("cleaning up orphaned %s position %s (status=%s)", symbol, pos.ID, pos.Status)
+		pos.Status = models.StatusClosed
+		pos.UpdatedAt = time.Now().UTC()
+		if err := e.db.SavePosition(pos); err != nil {
+			e.log.Error("cleanupFailedPosition: failed to close %s: %v", pos.ID, err)
+		}
+		// Broadcast removal so the frontend drops the phantom row immediately.
+		if e.api != nil {
+			e.api.BroadcastPositionUpdate(pos)
+		}
+	}
+}
+
+// executeTrade opens a delta-neutral position across two exchanges using
+// simultaneous IOC limit orders with price protection ceilings. Both legs
+// fire concurrently for near-simultaneous execution, then partial fills
+// are trimmed to the smaller leg.
+func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float64) error {
+	now := time.Now().UTC()
+	posID := utils.GenerateID(opp.Symbol, now.UnixMilli())
+
+	// Compute NextFunding from exchange APIs before creating the position.
+	nextFunding := e.computeNextFunding(opp.Symbol, opp.LongExchange, opp.ShortExchange)
+
+	pos := &models.ArbitragePosition{
+		ID:            posID,
+		Symbol:        opp.Symbol,
+		LongExchange:  opp.LongExchange,
+		ShortExchange: opp.ShortExchange,
+		Status:        models.StatusPending,
+		EntrySpread:   opp.Spread,
+		AllExchanges:  []string{opp.LongExchange, opp.ShortExchange},
+		NextFunding:   nextFunding,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+
+	if err := e.db.SavePosition(pos); err != nil {
+		return fmt.Errorf("save pending position: %w", err)
+	}
+	e.api.BroadcastPositionUpdate(pos)
+
+	longExch, ok := e.exchanges[opp.LongExchange]
+	if !ok {
+		return fmt.Errorf("long exchange %s not found", opp.LongExchange)
+	}
+	shortExch, ok := e.exchanges[opp.ShortExchange]
+	if !ok {
+		return fmt.Errorf("short exchange %s not found", opp.ShortExchange)
+	}
+
+	// Set leverage and margin mode on both exchanges.
+	leverage := strconv.Itoa(e.cfg.Leverage)
+	for _, setup := range []struct {
+		exch exchange.Exchange
+		name string
+		side string
+	}{
+		{longExch, opp.LongExchange, "long"},
+		{shortExch, opp.ShortExchange, "short"},
+	} {
+		if err := setup.exch.SetLeverage(opp.Symbol, leverage, setup.side); err != nil {
+			e.log.Warn("set leverage on %s: %v", setup.name, err)
+		}
+		if err := setup.exch.SetMarginMode(opp.Symbol, "cross"); err != nil {
+			e.log.Warn("set margin mode on %s: %v", setup.name, err)
+		}
+	}
+
+	sizeStr := utils.FormatSize(size, 6)
+
+	// ---------------------------------------------------------------
+	// BBO snapshot → compute IOC limit prices with slippage ceiling
+	// ---------------------------------------------------------------
+	longBBO, ok := longExch.GetBBO(opp.Symbol)
+	if !ok {
+		longBBO = exchange.BBO{Bid: price, Ask: price}
+	}
+	shortBBO, ok := shortExch.GetBBO(opp.Symbol)
+	if !ok {
+		shortBBO = exchange.BBO{Bid: price, Ask: price}
+	}
+
+	slippage := e.cfg.SlippageBPS / 10000.0
+	longCeiling := longBBO.Ask * (1 + slippage)
+	shortFloor := shortBBO.Bid * (1 - slippage)
+
+	e.log.Info("IOC entry for %s: long=%s ask=%.6f ceiling=%.6f | short=%s bid=%.6f floor=%.6f | size=%s",
+		opp.Symbol, opp.LongExchange, longBBO.Ask, longCeiling,
+		opp.ShortExchange, shortBBO.Bid, shortFloor, sizeStr)
+
+	// ---------------------------------------------------------------
+	// Fire both IOC limit orders concurrently
+	// ---------------------------------------------------------------
+	type orderResult struct {
+		orderID string
+		err     error
+	}
+	longCh := make(chan orderResult, 1)
+	shortCh := make(chan orderResult, 1)
+
+	go func() {
+		oid, err := longExch.PlaceOrder(exchange.PlaceOrderParams{
+			Symbol:    opp.Symbol,
+			Side:      exchange.SideBuy,
+			OrderType: "limit",
+			Price:     e.formatPrice(opp.LongExchange, opp.Symbol, longCeiling),
+			Size:      sizeStr,
+			Force:     "ioc",
+		})
+		longCh <- orderResult{oid, err}
+	}()
+	go func() {
+		oid, err := shortExch.PlaceOrder(exchange.PlaceOrderParams{
+			Symbol:    opp.Symbol,
+			Side:      exchange.SideSell,
+			OrderType: "limit",
+			Price:     e.formatPrice(opp.ShortExchange, opp.Symbol, shortFloor),
+			Size:      sizeStr,
+			Force:     "ioc",
+		})
+		shortCh <- orderResult{oid, err}
+	}()
+
+	longRes := <-longCh
+	shortRes := <-shortCh
+
+	// Handle placement failures.
+	if longRes.err != nil && shortRes.err != nil {
+		e.log.Error("both IOC orders failed: long=%v short=%v", longRes.err, shortRes.err)
+		pos.Status = models.StatusClosed
+		pos.UpdatedAt = time.Now().UTC()
+		_ = e.db.SavePosition(pos)
+		return fmt.Errorf("both IOC orders failed")
+	}
+	if longRes.err != nil {
+		e.log.Error("long IOC failed: %v, closing short leg", longRes.err)
+		e.closeLeg(shortExch, opp.Symbol, exchange.SideBuy, sizeStr) // buy to close short
+		pos.Status = models.StatusClosed
+		pos.UpdatedAt = time.Now().UTC()
+		_ = e.db.SavePosition(pos)
+		return fmt.Errorf("long IOC failed: %w", longRes.err)
+	}
+	if shortRes.err != nil {
+		e.log.Error("short IOC failed: %v, closing long leg", shortRes.err)
+		e.closeLeg(longExch, opp.Symbol, exchange.SideSell, sizeStr) // sell to close long
+		pos.Status = models.StatusClosed
+		pos.UpdatedAt = time.Now().UTC()
+		_ = e.db.SavePosition(pos)
+		return fmt.Errorf("short IOC failed: %w", shortRes.err)
+	}
+
+	pos.LongOrderID = longRes.orderID
+	pos.ShortOrderID = shortRes.orderID
+	pos.Status = models.StatusPartial
+	pos.UpdatedAt = time.Now().UTC()
+	_ = e.db.SavePosition(pos)
+
+	e.log.Info("IOC pair fired: long=%s short=%s", longRes.orderID, shortRes.orderID)
+
+	// ---------------------------------------------------------------
+	// Confirm fills (WS + REST fallback, 5s timeout)
+	// ---------------------------------------------------------------
+	longFilled, longAvg := e.confirmFill(longExch, longRes.orderID, opp.Symbol)
+	shortFilled, shortAvg := e.confirmFill(shortExch, shortRes.orderID, opp.Symbol)
+
+	e.log.Info("IOC fills for %s: long=%.6f@%.6f short=%.6f@%.6f",
+		opp.Symbol, longFilled, longAvg, shortFilled, shortAvg)
+
+	// ---------------------------------------------------------------
+	// Trim to smaller leg
+	// ---------------------------------------------------------------
+	minFill := math.Min(longFilled, shortFilled)
+	const minPositionUSDT = 10.0
+
+	if minFill*price < minPositionUSDT {
+		// Too small to keep — close whatever filled.
+		e.log.Warn("IOC fills too small for %s (min=%.2f USDT), aborting", posID, minFill*price)
+		if longFilled > 0 {
+			e.closeLeg(longExch, opp.Symbol, exchange.SideSell, utils.FormatSize(longFilled, 6))
+		}
+		if shortFilled > 0 {
+			e.closeLeg(shortExch, opp.Symbol, exchange.SideBuy, utils.FormatSize(shortFilled, 6))
+		}
+		pos.Status = models.StatusClosed
+		pos.UpdatedAt = time.Now().UTC()
+		_ = e.db.SavePosition(pos)
+		return fmt.Errorf("IOC fills below minimum (%s: long=%.6f short=%.6f)", opp.Symbol, longFilled, shortFilled)
+	}
+
+	// Trim excess from the larger leg.
+	if longFilled > minFill {
+		excess := longFilled - minFill
+		e.log.Info("trimming long excess %.6f on %s", excess, opp.LongExchange)
+		e.closeLeg(longExch, opp.Symbol, exchange.SideSell, utils.FormatSize(excess, 6))
+	}
+	if shortFilled > minFill {
+		excess := shortFilled - minFill
+		e.log.Info("trimming short excess %.6f on %s", excess, opp.ShortExchange)
+		e.closeLeg(shortExch, opp.Symbol, exchange.SideBuy, utils.FormatSize(excess, 6))
+	}
+
+	// ---------------------------------------------------------------
+	// Merge into existing sibling or activate as new position
+	// ---------------------------------------------------------------
+	finalLongEntry := longAvg
+	finalShortEntry := shortAvg
+	if finalLongEntry <= 0 {
+		finalLongEntry = longBBO.Ask
+	}
+	if finalShortEntry <= 0 {
+		finalShortEntry = shortBBO.Bid
+	}
+
+	// Check for an existing active position on the same symbol + exchange pair.
+	sibling := e.findSiblingPosition(opp.Symbol, opp.LongExchange, opp.ShortExchange, pos.ID)
+	if sibling != nil && sibling.Status == models.StatusActive {
+		e.log.Info("merging %s into existing position %s (add long=%.6f@%.6f short=%.6f@%.6f)",
+			posID, sibling.ID, minFill, finalLongEntry, minFill, finalShortEntry)
+		if e.mergeIntoPosition(sibling, pos, minFill, minFill, finalLongEntry, finalShortEntry, opp.Spread) {
+			e.removePendingPosition(pos)
+			return nil
+		}
+		// Merge skipped (sibling changed state) — fall through to activate as new position.
+		e.log.Warn("merge into %s skipped, activating %s as separate position", sibling.ID, posID)
+	}
+
+	// No sibling — activate as new position.
+	pos.LongSize = minFill
+	pos.ShortSize = minFill
+	pos.LongEntry = finalLongEntry
+	pos.ShortEntry = finalShortEntry
+
+	pos.Status = models.StatusActive
+	pos.UpdatedAt = time.Now().UTC()
+	if err := e.db.SavePosition(pos); err != nil {
+		return fmt.Errorf("save active position: %w", err)
+	}
+	e.api.BroadcastPositionUpdate(pos)
+
+	e.log.Info("position %s active: size=%.6f long=%.6f@%.6f(%s) short=%.6f@%.6f(%s) nextFunding=%s",
+		posID, minFill, pos.LongSize, pos.LongEntry, opp.LongExchange,
+		pos.ShortSize, pos.ShortEntry, opp.ShortExchange,
+		pos.NextFunding.Format("15:04:05 UTC"))
+	return nil
+}
+
+// formatSize rounds a size to the contract step size for a given exchange/symbol.
+func (e *Engine) formatSize(exchName, symbol string, size float64) string {
+	if e.contracts != nil {
+		if exContracts, ok := e.contracts[exchName]; ok {
+			if ci, ok := exContracts[symbol]; ok && ci.StepSize > 0 {
+				rounded := utils.RoundToStep(size, ci.StepSize)
+				return utils.FormatSize(rounded, ci.SizeDecimals)
+			}
+		}
+	}
+	return utils.FormatSize(size, 6)
+}
+
+// executeTradeV2 opens a delta-neutral position using depth-driven sequential
+// IOC orders. It reads the live orderbook depth on each tick, sizes to available
+// liquidity, and places the less-liquid leg first. If the first leg fails, it
+// aborts for free (no position to unwind).
+func (e *Engine) executeTradeV2(opp models.Opportunity, targetSize float64, price float64, gapBPS float64) error {
+	now := time.Now().UTC()
+	posID := utils.GenerateID(opp.Symbol, now.UnixMilli())
+	nextFunding := e.computeNextFunding(opp.Symbol, opp.LongExchange, opp.ShortExchange)
+
+	pos := &models.ArbitragePosition{
+		ID:            posID,
+		Symbol:        opp.Symbol,
+		LongExchange:  opp.LongExchange,
+		ShortExchange: opp.ShortExchange,
+		Status:        models.StatusPending,
+		EntrySpread:   opp.Spread,
+		AllExchanges:  []string{opp.LongExchange, opp.ShortExchange},
+		NextFunding:   nextFunding,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+
+	if err := e.db.SavePosition(pos); err != nil {
+		return fmt.Errorf("save pending position: %w", err)
+	}
+	e.api.BroadcastPositionUpdate(pos)
+
+	return e.executeTradeV2WithPos(opp, pos, targetSize, price, gapBPS)
+}
+
+// executeTradeV2WithPos executes a trade using a pre-created pending position.
+func (e *Engine) executeTradeV2WithPos(opp models.Opportunity, pos *models.ArbitragePosition, targetSize float64, price float64, gapBPS float64) error {
+	posID := pos.ID
+
+	longExch, ok := e.exchanges[opp.LongExchange]
+	if !ok {
+		return fmt.Errorf("long exchange %s not found", opp.LongExchange)
+	}
+	shortExch, ok := e.exchanges[opp.ShortExchange]
+	if !ok {
+		return fmt.Errorf("short exchange %s not found", opp.ShortExchange)
+	}
+
+	// Set leverage and margin mode on both exchanges.
+	leverage := strconv.Itoa(e.cfg.Leverage)
+	for _, setup := range []struct {
+		exch exchange.Exchange
+		name string
+		side string
+	}{
+		{longExch, opp.LongExchange, "long"},
+		{shortExch, opp.ShortExchange, "short"},
+	} {
+		if err := setup.exch.SetLeverage(opp.Symbol, leverage, setup.side); err != nil {
+			e.log.Warn("set leverage on %s: %v", setup.name, err)
+		}
+		if err := setup.exch.SetMarginMode(opp.Symbol, "cross"); err != nil {
+			e.log.Warn("set margin mode on %s: %v", setup.name, err)
+		}
+	}
+
+	// ---------------------------------------------------------------
+	// Subscribe to depth on both exchanges
+	// ---------------------------------------------------------------
+	longExch.SubscribeDepth(opp.Symbol)
+	shortExch.SubscribeDepth(opp.Symbol)
+	defer longExch.UnsubscribeDepth(opp.Symbol)
+	defer shortExch.UnsubscribeDepth(opp.Symbol)
+
+	// Wait up to 2s for depth data to arrive
+	depthReady := false
+	for i := 0; i < 20; i++ {
+		_, lok := longExch.GetDepth(opp.Symbol)
+		_, sok := shortExch.GetDepth(opp.Symbol)
+		if lok && sok {
+			depthReady = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !depthReady {
+		pos.Status = models.StatusClosed
+		pos.UpdatedAt = time.Now().UTC()
+		_ = e.db.SavePosition(pos)
+		return fmt.Errorf("depth data not available after 2s for %s", opp.Symbol)
+	}
+
+	// ---------------------------------------------------------------
+	// Depth-driven fill loop
+	// ---------------------------------------------------------------
+	var confirmedLong, confirmedShort float64
+	var longVWAP, shortVWAP float64
+	var lastSavedFill float64 // for debounced position saves
+	var longConsecFails, shortConsecFails int
+	const maxConsecFails = 5 // abort if an exchange fails this many times in a row
+	var spreadRejected bool  // only log spread rejection on state change
+	deadline := time.Now().Add(time.Duration(e.cfg.EntryTimeoutSec) * time.Second)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	// Mark both exchange:symbol pairs as mid-entry so the consolidator skips them.
+	longKey := opp.LongExchange + ":" + opp.Symbol
+	shortKey := opp.ShortExchange + ":" + opp.Symbol
+	e.entryMu.Lock()
+	e.entryActive[longKey] = posID
+	e.entryActive[shortKey] = posID
+	e.entryMu.Unlock()
+	defer func() {
+		e.entryMu.Lock()
+		delete(e.entryActive, longKey)
+		delete(e.entryActive, shortKey)
+		e.entryMu.Unlock()
+	}()
+
+	e.log.Info("depth fill loop starting for %s: target=%.6f timeout=%ds",
+		opp.Symbol, targetSize, e.cfg.EntryTimeoutSec)
+
+fillLoop:
+	for {
+		remaining := targetSize - math.Min(confirmedLong, confirmedShort)
+		if remaining <= 0 {
+			e.log.Info("depth fill loop: target reached for %s", opp.Symbol)
+			break
+		}
+		if time.Now().After(deadline) {
+			e.log.Warn("depth fill loop: timeout for %s (long=%.6f short=%.6f)",
+				opp.Symbol, confirmedLong, confirmedShort)
+			break
+		}
+		if longConsecFails >= maxConsecFails || shortConsecFails >= maxConsecFails {
+			e.log.Error("depth fill loop: circuit breaker for %s — %s has %d consecutive failures, aborting",
+				opp.Symbol, func() string {
+					if longConsecFails >= maxConsecFails {
+						return opp.LongExchange
+					}
+					return opp.ShortExchange
+				}(), max(longConsecFails, shortConsecFails))
+			break
+		}
+
+		select {
+		case <-ticker.C:
+		case <-e.stopCh:
+			e.log.Info("depth fill loop: engine stopped")
+			break fillLoop
+		}
+
+		// Read depth from both exchanges
+		shortDepth, sok := shortExch.GetDepth(opp.Symbol)
+		longDepth, lok := longExch.GetDepth(opp.Symbol)
+		if !sok || !lok || len(shortDepth.Bids) == 0 || len(longDepth.Asks) == 0 {
+			continue
+		}
+
+		// Staleness check: skip if depth is older than 5 seconds
+		if time.Since(shortDepth.Time) > 5*time.Second || time.Since(longDepth.Time) > 5*time.Second {
+			continue
+		}
+
+		if len(shortDepth.Bids) == 0 || len(longDepth.Asks) == 0 {
+			continue
+		}
+
+		bestBid := shortDepth.Bids[0].Price
+		bestAsk := longDepth.Asks[0].Price
+		if bestBid <= 0 || bestAsk <= 0 {
+			continue
+		}
+
+		// Use the price gap measured at risk approval as the allowed spread.
+		// The risk manager already validated this gap is recoverable.
+		maxSpread := gapBPS
+
+		// Top-of-book spread check
+		spreadBPS := (bestAsk/bestBid - 1) * 10000
+		if spreadBPS > maxSpread {
+			if !spreadRejected {
+				e.log.Debug("depth tick: %s spread=%.1fbps > max=%.1fbps (ask=%.6f bid=%.6f), waiting...",
+					opp.Symbol, spreadBPS, maxSpread, bestAsk, bestBid)
+				spreadRejected = true
+			}
+			continue
+		}
+		if spreadRejected {
+			e.log.Debug("depth tick: %s spread=%.1fbps recovered (max=%.1fbps), resuming",
+				opp.Symbol, spreadBPS, maxSpread)
+			spreadRejected = false
+		}
+
+		// Aggregate depth across all levels within the spread threshold.
+		// This captures liquidity at deeper levels (e.g. OKX fine-grained
+		// ticks with small qty each but large aggregate volume).
+		var bidQty, askQty float64
+		var bidPrice, askPrice float64 // worst price we'd fill at
+		for _, lvl := range shortDepth.Bids {
+			levelSpread := (bestAsk/lvl.Price - 1) * 10000
+			if levelSpread > maxSpread {
+				break
+			}
+			bidQty += lvl.Quantity
+			bidPrice = lvl.Price // worst (lowest) bid we'd accept
+		}
+		for _, lvl := range longDepth.Asks {
+			levelSpread := (lvl.Price/bestBid - 1) * 10000
+			if levelSpread > maxSpread {
+				break
+			}
+			askQty += lvl.Quantity
+			askPrice = lvl.Price // worst (highest) ask we'd pay
+		}
+
+		if bidQty <= 0 || askQty <= 0 {
+			continue
+		}
+
+		// Size to available aggregated liquidity
+		size := math.Min(remaining, math.Min(bidQty, askQty))
+
+		// Round to contract step size (use short exchange as reference for step)
+		if e.contracts != nil {
+			if exContracts, ok := e.contracts[opp.ShortExchange]; ok {
+				if ci, ok := exContracts[opp.Symbol]; ok && ci.StepSize > 0 {
+					size = utils.RoundToStep(size, ci.StepSize)
+					if size < ci.MinSize {
+						continue
+					}
+				}
+			}
+		}
+
+		// Min notional check
+		if size*bidPrice < e.cfg.MinChunkUSDT {
+			continue
+		}
+
+		// Determine less-liquid leg (higher consumption ratio = riskier → goes first)
+		shortFirst := (size / bidQty) >= (size / askQty)
+
+		sizeStr := e.formatSize(opp.ShortExchange, opp.Symbol, size)
+		shortPriceStr := e.formatPrice(opp.ShortExchange, opp.Symbol, bidPrice)
+		longPriceStr := e.formatPrice(opp.LongExchange, opp.Symbol, askPrice)
+
+		var longFilled, longAvg, shortFilled, shortAvg float64
+
+		if shortFirst {
+			e.log.Info("depth tick: short-first %s size=%s bid=%.2f ask=%.2f spread=%.1fbps",
+				opp.Symbol, sizeStr, bidPrice, askPrice, spreadBPS)
+
+			// Short leg first (sell into bids)
+			shortOID, err := shortExch.PlaceOrder(exchange.PlaceOrderParams{
+				Symbol:    opp.Symbol,
+				Side:      exchange.SideSell,
+				OrderType: "limit",
+				Price:     shortPriceStr,
+				Size:      sizeStr,
+				Force:     "ioc",
+			})
+			if err != nil {
+				shortConsecFails++
+				e.log.Warn("depth tick: short IOC failed (%d/%d): %v", shortConsecFails, maxConsecFails, err)
+				continue
+			}
+			shortFilled, shortAvg = e.confirmFill(shortExch, shortOID, opp.Symbol)
+			if shortFilled == 0 {
+				e.log.Info("depth tick: short leg got 0 fill, free abort")
+				continue
+			}
+			shortConsecFails = 0
+
+			// Long leg second (buy from asks) — only fill what short filled
+			longSizeStr := e.formatSize(opp.LongExchange, opp.Symbol, shortFilled)
+			longOID, err := longExch.PlaceOrder(exchange.PlaceOrderParams{
+				Symbol:    opp.Symbol,
+				Side:      exchange.SideBuy,
+				OrderType: "limit",
+				Price:     longPriceStr,
+				Size:      longSizeStr,
+				Force:     "ioc",
+			})
+			if err != nil {
+				longConsecFails++
+				e.log.Warn("depth tick: long IOC failed (%d/%d) after short filled %.6f, closing short: %v", longConsecFails, maxConsecFails, shortFilled, err)
+				e.closeLeg(shortExch, opp.Symbol, exchange.SideBuy, e.formatSize(opp.ShortExchange, opp.Symbol, shortFilled))
+				continue
+			}
+			longConsecFails = 0
+			longFilled, longAvg = e.confirmFill(longExch, longOID, opp.Symbol)
+			if longFilled < shortFilled {
+				excess := shortFilled - longFilled
+				e.log.Info("depth tick: trimming short excess %.6f", excess)
+				e.closeLeg(shortExch, opp.Symbol, exchange.SideBuy, e.formatSize(opp.ShortExchange, opp.Symbol, excess))
+				shortFilled = longFilled // only count matched portion
+			}
+		} else {
+			e.log.Info("depth tick: long-first %s size=%s bid=%.2f ask=%.2f spread=%.1fbps",
+				opp.Symbol, sizeStr, bidPrice, askPrice, spreadBPS)
+
+			// Long leg first (buy from asks)
+			longOID, err := longExch.PlaceOrder(exchange.PlaceOrderParams{
+				Symbol:    opp.Symbol,
+				Side:      exchange.SideBuy,
+				OrderType: "limit",
+				Price:     longPriceStr,
+				Size:      sizeStr,
+				Force:     "ioc",
+			})
+			if err != nil {
+				longConsecFails++
+				e.log.Warn("depth tick: long IOC failed (%d/%d): %v", longConsecFails, maxConsecFails, err)
+				continue
+			}
+			longFilled, longAvg = e.confirmFill(longExch, longOID, opp.Symbol)
+			if longFilled == 0 {
+				e.log.Info("depth tick: long leg got 0 fill, free abort")
+				continue
+			}
+			longConsecFails = 0
+
+			// Short leg second — only fill what long filled
+			shortSizeStr := e.formatSize(opp.ShortExchange, opp.Symbol, longFilled)
+			shortOID, err := shortExch.PlaceOrder(exchange.PlaceOrderParams{
+				Symbol:    opp.Symbol,
+				Side:      exchange.SideSell,
+				OrderType: "limit",
+				Price:     shortPriceStr,
+				Size:      shortSizeStr,
+				Force:     "ioc",
+			})
+			if err != nil {
+				shortConsecFails++
+				e.log.Warn("depth tick: short IOC failed (%d/%d) after long filled %.6f, closing long: %v", shortConsecFails, maxConsecFails, longFilled, err)
+				e.closeLeg(longExch, opp.Symbol, exchange.SideSell, e.formatSize(opp.LongExchange, opp.Symbol, longFilled))
+				continue
+			}
+			shortConsecFails = 0
+			shortFilled, shortAvg = e.confirmFill(shortExch, shortOID, opp.Symbol)
+			if shortFilled < longFilled {
+				excess := longFilled - shortFilled
+				e.log.Info("depth tick: trimming long excess %.6f", excess)
+				e.closeLeg(longExch, opp.Symbol, exchange.SideSell, e.formatSize(opp.LongExchange, opp.Symbol, excess))
+				longFilled = shortFilled // only count matched portion
+			}
+		}
+
+		// Accumulate fills with VWAP
+		if longFilled > 0 {
+			if longAvg <= 0 {
+				longAvg = askPrice // fallback to IOC limit price
+			}
+			if confirmedLong > 0 {
+				longVWAP = (longVWAP*confirmedLong + longAvg*longFilled) / (confirmedLong + longFilled)
+			} else {
+				longVWAP = longAvg
+			}
+			confirmedLong += longFilled
+		}
+		if shortFilled > 0 {
+			if shortAvg <= 0 {
+				shortAvg = bidPrice
+			}
+			if confirmedShort > 0 {
+				shortVWAP = (shortVWAP*confirmedShort + shortAvg*shortFilled) / (confirmedShort + shortFilled)
+			} else {
+				shortVWAP = shortAvg
+			}
+			confirmedShort += shortFilled
+		}
+
+		minSoFar := math.Min(confirmedLong, confirmedShort)
+		e.log.Info("depth fill: %s cumulative long=%.6f short=%.6f (%.1f%% of target)",
+			opp.Symbol, confirmedLong, confirmedShort, minSoFar/targetSize*100)
+
+		// Debounced position save: update on ≥10% fill increment
+		if minSoFar-lastSavedFill >= targetSize*0.10 || minSoFar >= targetSize {
+			pos.LongSize = confirmedLong
+			pos.ShortSize = confirmedShort
+			pos.Status = models.StatusPartial
+			pos.UpdatedAt = time.Now().UTC()
+			_ = e.db.SavePosition(pos)
+			e.api.BroadcastPositionUpdate(pos)
+			lastSavedFill = minSoFar
+		}
+	}
+
+	// ---------------------------------------------------------------
+	// Post-loop reconciliation
+	// ---------------------------------------------------------------
+	minFill := math.Min(confirmedLong, confirmedShort)
+	const minPositionUSDT = 10.0
+
+	if minFill*price < minPositionUSDT {
+		e.log.Warn("depth fill too small for %s (%.2f USDT), aborting", posID, minFill*price)
+		if confirmedLong > 0 {
+			e.closeLeg(longExch, opp.Symbol, exchange.SideSell, e.formatSize(opp.LongExchange, opp.Symbol, confirmedLong))
+		}
+		if confirmedShort > 0 {
+			e.closeLeg(shortExch, opp.Symbol, exchange.SideBuy, e.formatSize(opp.ShortExchange, opp.Symbol, confirmedShort))
+		}
+		pos.Status = models.StatusClosed
+		pos.UpdatedAt = time.Now().UTC()
+		_ = e.db.SavePosition(pos)
+		return fmt.Errorf("depth fills below minimum (%s: long=%.6f short=%.6f)", opp.Symbol, confirmedLong, confirmedShort)
+	}
+
+	// Trim excess from the larger leg
+	if confirmedLong > minFill {
+		excess := confirmedLong - minFill
+		e.log.Info("trimming long excess %.6f on %s", excess, opp.LongExchange)
+		e.closeLeg(longExch, opp.Symbol, exchange.SideSell, e.formatSize(opp.LongExchange, opp.Symbol, excess))
+	}
+	if confirmedShort > minFill {
+		excess := confirmedShort - minFill
+		e.log.Info("trimming short excess %.6f on %s", excess, opp.ShortExchange)
+		e.closeLeg(shortExch, opp.Symbol, exchange.SideBuy, e.formatSize(opp.ShortExchange, opp.Symbol, excess))
+	}
+
+	// Finalize entry prices
+	finalLongEntry := longVWAP
+	finalShortEntry := shortVWAP
+	if finalLongEntry <= 0 {
+		bbo, _ := longExch.GetBBO(opp.Symbol)
+		finalLongEntry = bbo.Ask
+	}
+	if finalShortEntry <= 0 {
+		bbo, _ := shortExch.GetBBO(opp.Symbol)
+		finalShortEntry = bbo.Bid
+	}
+
+	// Check for existing active position on the same symbol + exchange pair — merge if found.
+	sibling := e.findSiblingPosition(opp.Symbol, opp.LongExchange, opp.ShortExchange, pos.ID)
+	if sibling != nil && sibling.Status == models.StatusActive {
+		e.log.Info("merging %s into existing position %s (add long=%.6f@%.6f short=%.6f@%.6f)",
+			posID, sibling.ID, minFill, finalLongEntry, minFill, finalShortEntry)
+		if e.mergeIntoPosition(sibling, pos, minFill, minFill, finalLongEntry, finalShortEntry, opp.Spread) {
+			e.removePendingPosition(pos)
+			return nil
+		}
+		e.log.Warn("merge into %s skipped, activating %s as separate position", sibling.ID, posID)
+	}
+
+	// Activate position
+	pos.LongSize = minFill
+	pos.ShortSize = minFill
+	pos.LongEntry = finalLongEntry
+	pos.ShortEntry = finalShortEntry
+
+	pos.Status = models.StatusActive
+	pos.UpdatedAt = time.Now().UTC()
+	if err := e.db.SavePosition(pos); err != nil {
+		return fmt.Errorf("save active position: %w", err)
+	}
+	e.api.BroadcastPositionUpdate(pos)
+
+	// Subscribe both exchanges to the symbol's BBO price stream so that
+	// exit close (Smart Close) can use IOC limit orders instead of falling
+	// back to market orders when BBO is unavailable.
+	longExch.SubscribeSymbol(opp.Symbol)
+	shortExch.SubscribeSymbol(opp.Symbol)
+
+	e.log.Info("position %s active (depth-v2): size=%.6f long=%.6f@%.6f(%s) short=%.6f@%.6f(%s) nextFunding=%s",
+		posID, minFill, pos.LongSize, pos.LongEntry, opp.LongExchange,
+		pos.ShortSize, pos.ShortEntry, opp.ShortExchange,
+		pos.NextFunding.Format("15:04:05 UTC"))
+
+	// Attach protective stop-loss orders on both legs.
+	e.attachStopLosses(pos)
+
+	return nil
+}
+
+// confirmFill checks WS then REST to get fill quantity and average price for
+// an IOC order. IOC orders complete within the API round-trip, so this is
+// just confirmation with a short timeout.
+func (e *Engine) confirmFill(exch exchange.Exchange, orderID, symbol string) (filledQty, avgPrice float64) {
+	deadline := time.Now().Add(5 * time.Second)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		// Try WS first — wait for terminal state (filled/cancelled) so we
+		// get the final fill quantity, not a partial mid-fill snapshot.
+		if upd, ok := exch.GetOrderUpdate(orderID); ok {
+			if upd.Status == "filled" || upd.Status == "cancelled" {
+				return upd.FilledVolume, upd.AvgPrice
+			}
+		}
+		if time.Now().After(deadline) {
+			// Check if WS already has a terminal state.
+			if upd, ok := exch.GetOrderUpdate(orderID); ok {
+				if upd.Status == "filled" || upd.Status == "cancelled" {
+					return upd.FilledVolume, upd.AvgPrice
+				}
+			}
+			// Cancel any resting/partial order to prevent untracked fills.
+			if err := exch.CancelOrder(symbol, orderID); err != nil {
+				e.log.Warn("confirmFill: cancel %s on %s: %v", orderID, exch.Name(), err)
+			}
+			// Re-query after cancel to get the true terminal fill state.
+			time.Sleep(200 * time.Millisecond)
+			if filled, err := exch.GetOrderFilledQty(orderID, symbol); err == nil && filled > 0 {
+				if upd, ok := exch.GetOrderUpdate(orderID); ok && upd.AvgPrice > 0 {
+					return filled, upd.AvgPrice
+				}
+				return filled, 0
+			}
+			return 0, 0
+		}
+		select {
+		case <-ticker.C:
+		case <-e.stopCh:
+			return 0, 0
+		}
+	}
+}
+
+// closeLeg places a reduce-only market IOC order to close or trim a position leg.
+func (e *Engine) closeLeg(exch exchange.Exchange, symbol string, side exchange.Side, size string) {
+	oid, err := exch.PlaceOrder(exchange.PlaceOrderParams{
+		Symbol:     symbol,
+		Side:       side,
+		OrderType:  "market",
+		Size:       size,
+		Force:      "ioc",
+		ReduceOnly: true,
+	})
+	if err != nil {
+		e.log.Error("closeLeg %s %s %s: %v", exch.Name(), symbol, side, err)
+		return
+	}
+	e.log.Info("closeLeg %s %s %s order=%s", exch.Name(), symbol, side, oid)
+}
+
+// attachStopLosses places protective stop-loss orders on both legs of a position.
+// SL distance = 90% / leverage (e.g. 3x → 30%).
+// Logs errors but does not fail — position is already open.
+func (e *Engine) attachStopLosses(pos *models.ArbitragePosition) {
+	leverage := float64(e.cfg.Leverage)
+	if leverage <= 0 {
+		leverage = 3
+	}
+	distance := 0.9 / leverage
+
+	longExch, lok := e.exchanges[pos.LongExchange]
+	shortExch, sok := e.exchanges[pos.ShortExchange]
+
+	var longSLID, shortSLID string
+
+	// Long SL: trigger when price drops → sell to close.
+	if lok && pos.LongEntry > 0 {
+		triggerPrice := pos.LongEntry * (1 - distance)
+		tp := e.formatPrice(pos.LongExchange, pos.Symbol, triggerPrice)
+		oid, err := longExch.PlaceStopLoss(exchange.StopLossParams{
+			Symbol:       pos.Symbol,
+			Side:         exchange.SideSell,
+			Size:         e.formatSize(pos.LongExchange, pos.Symbol, pos.LongSize),
+			TriggerPrice: tp,
+		})
+		if err != nil {
+			e.log.Error("SL placement failed on %s %s (long): %v", pos.LongExchange, pos.Symbol, err)
+		} else {
+			longSLID = oid
+			e.log.Info("SL placed on %s %s: sell trigger=%s (long entry=%.4f, %.1f%% distance)",
+				pos.LongExchange, pos.Symbol, tp, pos.LongEntry, distance*100)
+		}
+	}
+
+	// Short SL: trigger when price rises → buy to close.
+	if sok && pos.ShortEntry > 0 {
+		triggerPrice := pos.ShortEntry * (1 + distance)
+		tp := e.formatPrice(pos.ShortExchange, pos.Symbol, triggerPrice)
+		oid, err := shortExch.PlaceStopLoss(exchange.StopLossParams{
+			Symbol:       pos.Symbol,
+			Side:         exchange.SideBuy,
+			Size:         e.formatSize(pos.ShortExchange, pos.Symbol, pos.ShortSize),
+			TriggerPrice: tp,
+		})
+		if err != nil {
+			e.log.Error("SL placement failed on %s %s (short): %v", pos.ShortExchange, pos.Symbol, err)
+		} else {
+			shortSLID = oid
+			e.log.Info("SL placed on %s %s: buy trigger=%s (short entry=%.4f, %.1f%% distance)",
+				pos.ShortExchange, pos.Symbol, tp, pos.ShortEntry, distance*100)
+		}
+	}
+
+	// Persist SL order IDs.
+	if longSLID != "" || shortSLID != "" {
+		_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+			if longSLID != "" {
+				fresh.LongSLOrderID = longSLID
+			}
+			if shortSLID != "" {
+				fresh.ShortSLOrderID = shortSLID
+			}
+			return true
+		})
+		pos.LongSLOrderID = longSLID
+		pos.ShortSLOrderID = shortSLID
+	}
+}
+
+// cancelStopLosses cancels any active stop-loss orders on both legs.
+// Logs errors but does not block exit.
+func (e *Engine) cancelStopLosses(pos *models.ArbitragePosition) {
+	if pos.LongSLOrderID != "" {
+		if exch, ok := e.exchanges[pos.LongExchange]; ok {
+			if err := exch.CancelStopLoss(pos.Symbol, pos.LongSLOrderID); err != nil {
+				e.log.Warn("cancel long SL %s on %s: %v", pos.LongSLOrderID, pos.LongExchange, err)
+			} else {
+				e.log.Info("cancelled long SL %s on %s", pos.LongSLOrderID, pos.LongExchange)
+			}
+		}
+	}
+	if pos.ShortSLOrderID != "" {
+		if exch, ok := e.exchanges[pos.ShortExchange]; ok {
+			if err := exch.CancelStopLoss(pos.Symbol, pos.ShortSLOrderID); err != nil {
+				e.log.Warn("cancel short SL %s on %s: %v", pos.ShortSLOrderID, pos.ShortExchange, err)
+			} else {
+				e.log.Info("cancelled short SL %s on %s", pos.ShortSLOrderID, pos.ShortExchange)
+			}
+		}
+	}
+}
+
+// waitForFill polls a single order until it is filled or the deadline passes.
+// Used by exit.go for market order fill confirmation.
+func (e *Engine) waitForFill(exch exchange.Exchange, orderID, symbol string, deadline time.Time) (float64, error) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if upd, ok := exch.GetOrderUpdate(orderID); ok {
+				if upd.Status == "filled" || upd.FilledVolume > 0 {
+					return upd.FilledVolume, nil
+				}
+			}
+			// Fallback to REST.
+			filled, err := exch.GetOrderFilledQty(orderID, symbol)
+			if err == nil && filled > 0 {
+				return filled, nil
+			}
+			if time.Now().After(deadline) {
+				return 0, fmt.Errorf("fill timeout for order %s", orderID)
+			}
+		case <-e.stopCh:
+			return 0, fmt.Errorf("engine stopped")
+		}
+	}
+}
+
+// getExchangePositionSize returns the actual position size for a given symbol
+// and side from an exchange.
+func getExchangePositionSize(exch exchange.Exchange, symbol, side string) (float64, error) {
+	positions, err := exch.GetPosition(symbol)
+	if err != nil {
+		return 0, err
+	}
+	var total float64
+	for _, p := range positions {
+		if p.HoldSide == side {
+			s, _ := utils.ParseFloat(p.Total)
+			total += s
+		}
+	}
+	return total, nil
+}
+
+// getUnrealizedPnL returns the combined unrealized PnL for a position's two
+// legs by querying each exchange.
+func getUnrealizedPnL(longExch, shortExch exchange.Exchange, symbol string) float64 {
+	var pnl float64
+
+	longPositions, err := longExch.GetPosition(symbol)
+	if err == nil {
+		for _, p := range longPositions {
+			if p.HoldSide == "long" {
+				v, _ := utils.ParseFloat(p.UnrealizedPL)
+				pnl += v
+			}
+		}
+	}
+
+	shortPositions, err := shortExch.GetPosition(symbol)
+	if err == nil {
+		for _, p := range shortPositions {
+			if p.HoldSide == "short" {
+				v, _ := utils.ParseFloat(p.UnrealizedPL)
+				pnl += v
+			}
+		}
+	}
+
+	return pnl
+}
+
+// abs returns the absolute value of a float64.
+func abs(v float64) float64 {
+	return math.Abs(v)
+}
+
+// effectiveAdvanceMin scales the order advance window based on the opportunity's
+// funding interval. For short intervals (< 8h), it uses 20% of the interval
+// to avoid consuming too much of the cycle. Returns cfgAdvance for standard
+// or unknown intervals.
+func effectiveAdvanceMin(cfgAdvance int, intervalHours float64) int {
+	if intervalHours <= 0 || intervalHours >= 8 {
+		return cfgAdvance
+	}
+	scaled := int(intervalHours * 60 * 0.20) // 20% of interval
+	if scaled < 3 {
+		scaled = 3 // minimum 3 minutes
+	}
+	if scaled > cfgAdvance {
+		return cfgAdvance
+	}
+	return scaled
+}

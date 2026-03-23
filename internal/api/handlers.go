@@ -1,0 +1,1016 @@
+package api
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"arb/internal/database"
+	"arb/pkg/exchange"
+	"arb/pkg/utils"
+)
+
+// Response is the standard JSON response wrapper.
+type Response struct {
+	OK    bool        `json:"ok"`
+	Data  interface{} `json:"data,omitempty"`
+	Error string      `json:"error,omitempty"`
+}
+
+// writeJSON serialises v as JSON and writes it with the given status code.
+func writeJSON(w http.ResponseWriter, status int, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
+// handleGetPositions returns all active positions.
+func (s *Server) handleGetPositions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	positions, err := s.db.GetActivePositions()
+	if err != nil {
+		s.log.Error("get active positions: %v", err)
+		writeJSON(w, http.StatusInternalServerError, Response{Error: "failed to fetch positions"})
+		return
+	}
+
+	if positions == nil {
+		writeJSON(w, http.StatusOK, Response{OK: true, Data: []interface{}{}})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: positions})
+}
+
+// handleClosePosition triggers a manual close for an active position.
+func (s *Server) handleClosePosition(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		PositionID string `json:"position_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.PositionID == "" {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "position_id required"})
+		return
+	}
+	if s.closePosition == nil {
+		writeJSON(w, http.StatusServiceUnavailable, Response{Error: "close handler not available"})
+		return
+	}
+	if err := s.closePosition(req.PositionID); err != nil {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "not found") {
+			writeJSON(w, http.StatusNotFound, Response{Error: errMsg})
+		} else if strings.Contains(errMsg, "not active") || strings.Contains(errMsg, "already") {
+			writeJSON(w, http.StatusConflict, Response{Error: errMsg})
+		} else {
+			writeJSON(w, http.StatusInternalServerError, Response{Error: errMsg})
+		}
+		return
+	}
+	writeJSON(w, http.StatusAccepted, Response{OK: true})
+}
+
+// handleOpenPosition triggers a manual open for an opportunity.
+func (s *Server) handleOpenPosition(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Symbol        string `json:"symbol"`
+		LongExchange  string `json:"long_exchange"`
+		ShortExchange string `json:"short_exchange"`
+		Force         bool   `json:"force"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Symbol == "" || req.LongExchange == "" || req.ShortExchange == "" {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "symbol, long_exchange, short_exchange required"})
+		return
+	}
+	if s.openPosition == nil {
+		writeJSON(w, http.StatusServiceUnavailable, Response{Error: "open handler not available"})
+		return
+	}
+	if err := s.openPosition(req.Symbol, req.LongExchange, req.ShortExchange, req.Force); err != nil {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "not found") {
+			writeJSON(w, http.StatusNotFound, Response{Error: errMsg})
+		} else if strings.Contains(errMsg, "rejected") || strings.Contains(errMsg, "risk check failed") || strings.Contains(errMsg, "dry run") {
+			writeJSON(w, http.StatusUnprocessableEntity, Response{Error: errMsg})
+		} else if strings.Contains(errMsg, "already") || strings.Contains(errMsg, "capacity") {
+			writeJSON(w, http.StatusConflict, Response{Error: errMsg})
+		} else {
+			writeJSON(w, http.StatusInternalServerError, Response{Error: errMsg})
+		}
+		return
+	}
+	writeJSON(w, http.StatusAccepted, Response{OK: true})
+}
+
+// handleGetHistory returns completed trades.
+func (s *Server) handleGetHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	limit := 50
+	if q := r.URL.Query().Get("limit"); q != "" {
+		if n, err := strconv.Atoi(q); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	history, err := s.db.GetHistory(limit)
+	if err != nil {
+		s.log.Error("get history: %v", err)
+		writeJSON(w, http.StatusInternalServerError, Response{Error: "failed to fetch history"})
+		return
+	}
+
+	if history == nil {
+		writeJSON(w, http.StatusOK, Response{OK: true, Data: []interface{}{}})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: history})
+}
+
+// handleGetOpportunities returns the cached opportunities slice.
+func (s *Server) handleGetOpportunities(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	opps := s.opps
+	if opps == nil {
+		writeJSON(w, http.StatusOK, Response{OK: true, Data: []interface{}{}})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: opps})
+}
+
+// handleGetStats returns PnL, win rate, and trade count.
+func (s *Server) handleGetStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	stats, err := s.db.GetStats()
+	if err != nil {
+		s.log.Error("get stats: %v", err)
+		writeJSON(w, http.StatusInternalServerError, Response{Error: "failed to fetch stats"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: stats})
+}
+
+// ---------- Nested config API response structs ----------
+
+type configResponse struct {
+	DryRun   bool                   `json:"dry_run"`
+	Strategy configStrategyResponse `json:"strategy"`
+	Fund     configFundResponse     `json:"fund"`
+	Risk     configRiskResponse     `json:"risk"`
+	AI       configAIResponse       `json:"ai"`
+}
+
+type configAIResponse struct {
+	Endpoint  string `json:"endpoint"`
+	Model     string `json:"model"`
+	MaxTokens int    `json:"max_tokens"`
+	HasKey    bool   `json:"has_key"`
+}
+
+type configStrategyResponse struct {
+	TopOpportunities    int                     `json:"top_opportunities"`
+	ScanMinutes         []int                   `json:"scan_minutes"`
+	EntryScanMinute     int                     `json:"entry_scan_minute"`
+	ExitScanMinute      int                     `json:"exit_scan_minute"`
+	RotateScanMinute    int                     `json:"rotate_scan_minute"`
+	RebalanceScanMinute int                     `json:"rebalance_scan_minute"`
+	Discovery           configDiscoveryResponse `json:"discovery"`
+	Entry               configEntryResponse     `json:"entry"`
+	Exit                configExitResponse      `json:"exit"`
+	Rotation            configRotationResponse  `json:"rotation"`
+}
+
+type configDiscoveryResponse struct {
+	MinHoldTimeHours        int                       `json:"min_hold_time_hours"`
+	MaxCostRatio            float64                   `json:"max_cost_ratio"`
+	MaxPriceGapBPS          float64                   `json:"max_price_gap_bps"`
+	PriceGapFreeBPS         float64                   `json:"price_gap_free_bps"`
+	MaxGapRecoveryIntervals float64                   `json:"max_gap_recovery_intervals"`
+	Persistence             configPersistenceResponse `json:"persistence"`
+}
+
+type configPersistenceResponse struct {
+	LookbackMin1h int `json:"lookback_min_1h"`
+	MinCount1h    int `json:"min_count_1h"`
+	LookbackMin4h int `json:"lookback_min_4h"`
+	MinCount4h    int `json:"min_count_4h"`
+	LookbackMin8h int `json:"lookback_min_8h"`
+	MinCount8h    int `json:"min_count_8h"`
+
+	SpreadStabilityRatio1h  float64 `json:"spread_stability_ratio_1h"`
+	SpreadStabilityOIRank1h int     `json:"spread_stability_oi_rank_1h"`
+	SpreadStabilityRatio4h  float64 `json:"spread_stability_ratio_4h"`
+	SpreadStabilityOIRank4h int     `json:"spread_stability_oi_rank_4h"`
+	SpreadStabilityRatio8h  float64 `json:"spread_stability_ratio_8h"`
+	SpreadStabilityOIRank8h int     `json:"spread_stability_oi_rank_8h"`
+
+	SpreadVolatilityMaxCV      float64 `json:"spread_volatility_max_cv"`
+	SpreadVolatilityMinSamples int     `json:"spread_volatility_min_samples"`
+	FundingWindowMin           int     `json:"funding_window_min"`
+}
+
+type configEntryResponse struct {
+	SlippageLimitBPS     float64 `json:"slippage_limit_bps"`
+	MinChunkUSDT         float64 `json:"min_chunk_usdt"`
+	EntryTimeoutSec      int     `json:"entry_timeout_sec"`
+	LossCooldownHours    float64 `json:"loss_cooldown_hours"`
+	ReEnterCooldownHours float64 `json:"re_enter_cooldown_hours"`
+}
+
+type configExitResponse struct {
+	DepthTimeoutSec         int `json:"depth_timeout_sec"`
+	SpreadReversalTolerance int `json:"spread_reversal_tolerance"`
+}
+
+type configRotationResponse struct {
+	ThresholdBPS float64 `json:"threshold_bps"`
+	CooldownMin  int     `json:"cooldown_min"`
+}
+
+type configFundResponse struct {
+	MaxPositions  int     `json:"max_positions"`
+	Leverage      int     `json:"leverage"`
+	CapitalPerLeg float64 `json:"capital_per_leg"`
+}
+
+type configRiskResponse struct {
+	MarginL3Threshold      float64 `json:"margin_l3_threshold"`
+	MarginL4Threshold      float64 `json:"margin_l4_threshold"`
+	MarginL5Threshold      float64 `json:"margin_l5_threshold"`
+	L4ReduceFraction       float64 `json:"l4_reduce_fraction"`
+	RiskMonitorIntervalSec int     `json:"risk_monitor_interval_sec"`
+}
+
+func (s *Server) buildConfigResponse() configResponse {
+	return configResponse{
+		DryRun: s.cfg.DryRun,
+		Strategy: configStrategyResponse{
+			TopOpportunities:    s.cfg.TopOpportunities,
+			ScanMinutes:         s.cfg.ScanMinutes,
+			EntryScanMinute:     s.cfg.EntryScanMinute,
+			ExitScanMinute:      s.cfg.ExitScanMinute,
+			RotateScanMinute:    s.cfg.RotateScanMinute,
+			RebalanceScanMinute: s.cfg.RebalanceScanMinute,
+			Discovery: configDiscoveryResponse{
+				MinHoldTimeHours:        int(s.cfg.MinHoldTime.Hours()),
+				MaxCostRatio:            s.cfg.MaxCostRatio,
+				MaxPriceGapBPS:          s.cfg.MaxPriceGapBPS,
+				PriceGapFreeBPS:         s.cfg.PriceGapFreeBPS,
+				MaxGapRecoveryIntervals: s.cfg.MaxGapRecoveryIntervals,
+				Persistence: configPersistenceResponse{
+					LookbackMin1h: int(s.cfg.PersistLookback1h.Minutes()),
+					MinCount1h:    s.cfg.PersistMinCount1h,
+					LookbackMin4h: int(s.cfg.PersistLookback4h.Minutes()),
+					MinCount4h:    s.cfg.PersistMinCount4h,
+					LookbackMin8h: int(s.cfg.PersistLookback8h.Minutes()),
+					MinCount8h:    s.cfg.PersistMinCount8h,
+
+					SpreadStabilityRatio1h:  s.cfg.SpreadStabilityRatio1h,
+					SpreadStabilityOIRank1h: s.cfg.SpreadStabilityOIRank1h,
+					SpreadStabilityRatio4h:  s.cfg.SpreadStabilityRatio4h,
+					SpreadStabilityOIRank4h: s.cfg.SpreadStabilityOIRank4h,
+					SpreadStabilityRatio8h:  s.cfg.SpreadStabilityRatio8h,
+					SpreadStabilityOIRank8h: s.cfg.SpreadStabilityOIRank8h,
+
+					SpreadVolatilityMaxCV:      s.cfg.SpreadVolatilityMaxCV,
+					SpreadVolatilityMinSamples: s.cfg.SpreadVolatilityMinSamples,
+					FundingWindowMin:           s.cfg.FundingWindowMin,
+				},
+			},
+			Entry: configEntryResponse{
+				SlippageLimitBPS:     s.cfg.SlippageBPS,
+				MinChunkUSDT:        s.cfg.MinChunkUSDT,
+				EntryTimeoutSec:     s.cfg.EntryTimeoutSec,
+				LossCooldownHours:   s.cfg.LossCooldownHours,
+				ReEnterCooldownHours: s.cfg.ReEnterCooldownHours,
+			},
+			Exit: configExitResponse{
+				DepthTimeoutSec:         s.cfg.ExitDepthTimeoutSec,
+				SpreadReversalTolerance: s.cfg.SpreadReversalTolerance,
+			},
+			Rotation: configRotationResponse{
+				ThresholdBPS: s.cfg.RotationThresholdBPS,
+				CooldownMin:  s.cfg.RotationCooldownMin,
+			},
+		},
+		Fund: configFundResponse{
+			MaxPositions:  s.cfg.MaxPositions,
+			Leverage:      s.cfg.Leverage,
+			CapitalPerLeg: s.cfg.CapitalPerLeg,
+		},
+		Risk: configRiskResponse{
+			MarginL3Threshold:      s.cfg.MarginL3Threshold,
+			MarginL4Threshold:      s.cfg.MarginL4Threshold,
+			MarginL5Threshold:      s.cfg.MarginL5Threshold,
+			L4ReduceFraction:       s.cfg.L4ReduceFraction,
+			RiskMonitorIntervalSec: s.cfg.RiskMonitorIntervalSec,
+		},
+		AI: configAIResponse{
+			Endpoint:  s.cfg.AIEndpoint,
+			Model:     s.cfg.AIModel,
+			MaxTokens: s.cfg.AIMaxTokens,
+			HasKey:    s.cfg.AIAPIKey != "",
+		},
+	}
+}
+
+// handleGetConfig returns the current runtime configuration (safe fields only).
+func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: s.buildConfigResponse()})
+}
+
+// ---------- Nested config update structs (pointer fields to detect presence) ----------
+
+type configUpdate struct {
+	DryRun   *bool           `json:"dry_run"`
+	Strategy *strategyUpdate `json:"strategy"`
+	Fund     *fundUpdate     `json:"fund"`
+	Risk     *riskUpdate     `json:"risk"`
+	AI       *aiUpdate       `json:"ai"`
+}
+
+type aiUpdate struct {
+	Endpoint  *string `json:"endpoint"`
+	APIKey    *string `json:"api_key"`
+	Model     *string `json:"model"`
+	MaxTokens *int    `json:"max_tokens"`
+}
+
+type strategyUpdate struct {
+	TopOpportunities    *int             `json:"top_opportunities"`
+	ScanMinutes         []int            `json:"scan_minutes"`
+	EntryScanMinute     *int             `json:"entry_scan_minute"`
+	ExitScanMinute      *int             `json:"exit_scan_minute"`
+	RotateScanMinute    *int             `json:"rotate_scan_minute"`
+	RebalanceScanMinute *int             `json:"rebalance_scan_minute"`
+	Discovery           *discoveryUpdate `json:"discovery"`
+	Entry               *entryUpdate     `json:"entry"`
+	Exit                *exitUpdate      `json:"exit"`
+	Rotation            *rotationUpdate  `json:"rotation"`
+}
+
+type discoveryUpdate struct {
+	MinHoldTimeHours        *int               `json:"min_hold_time_hours"`
+	MaxCostRatio            *float64           `json:"max_cost_ratio"`
+	MaxPriceGapBPS          *float64           `json:"max_price_gap_bps"`
+	PriceGapFreeBPS         *float64           `json:"price_gap_free_bps"`
+	MaxGapRecoveryIntervals *float64           `json:"max_gap_recovery_intervals"`
+	Persistence             *persistenceUpdate `json:"persistence"`
+}
+
+type persistenceUpdate struct {
+	LookbackMin1h *int `json:"lookback_min_1h"`
+	MinCount1h    *int `json:"min_count_1h"`
+	LookbackMin4h *int `json:"lookback_min_4h"`
+	MinCount4h    *int `json:"min_count_4h"`
+	LookbackMin8h *int `json:"lookback_min_8h"`
+	MinCount8h    *int `json:"min_count_8h"`
+
+	SpreadStabilityRatio1h  *float64 `json:"spread_stability_ratio_1h"`
+	SpreadStabilityOIRank1h *int     `json:"spread_stability_oi_rank_1h"`
+	SpreadStabilityRatio4h  *float64 `json:"spread_stability_ratio_4h"`
+	SpreadStabilityOIRank4h *int     `json:"spread_stability_oi_rank_4h"`
+	SpreadStabilityRatio8h  *float64 `json:"spread_stability_ratio_8h"`
+	SpreadStabilityOIRank8h *int     `json:"spread_stability_oi_rank_8h"`
+
+	SpreadVolatilityMaxCV      *float64 `json:"spread_volatility_max_cv"`
+	SpreadVolatilityMinSamples *int     `json:"spread_volatility_min_samples"`
+	FundingWindowMin           *int     `json:"funding_window_min"`
+}
+
+type entryUpdate struct {
+	SlippageLimitBPS     *float64 `json:"slippage_limit_bps"`
+	MinChunkUSDT         *float64 `json:"min_chunk_usdt"`
+	EntryTimeoutSec      *int     `json:"entry_timeout_sec"`
+	LossCooldownHours    *float64 `json:"loss_cooldown_hours"`
+	ReEnterCooldownHours *float64 `json:"re_enter_cooldown_hours"`
+}
+
+type exitUpdate struct {
+	DepthTimeoutSec         *int `json:"depth_timeout_sec"`
+	SpreadReversalTolerance *int `json:"spread_reversal_tolerance"`
+}
+
+type rotationUpdate struct {
+	ThresholdBPS *float64 `json:"threshold_bps"`
+	CooldownMin  *int     `json:"cooldown_min"`
+}
+
+type fundUpdate struct {
+	MaxPositions  *int     `json:"max_positions"`
+	Leverage      *int     `json:"leverage"`
+	CapitalPerLeg *float64 `json:"capital_per_leg"`
+}
+
+type riskUpdate struct {
+	MarginL3Threshold      *float64 `json:"margin_l3_threshold"`
+	MarginL4Threshold      *float64 `json:"margin_l4_threshold"`
+	MarginL5Threshold      *float64 `json:"margin_l5_threshold"`
+	L4ReduceFraction       *float64 `json:"l4_reduce_fraction"`
+	RiskMonitorIntervalSec *int     `json:"risk_monitor_interval_sec"`
+}
+
+// handlePostConfig accepts a nested JSON body and updates config fields,
+// persisting changes to Redis at key arb:config.
+func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
+	var upd configUpdate
+	if err := json.NewDecoder(r.Body).Decode(&upd); err != nil {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "invalid request body"})
+		return
+	}
+
+	// Apply updates
+	if upd.DryRun != nil {
+		s.cfg.DryRun = *upd.DryRun
+	}
+
+	if st := upd.Strategy; st != nil {
+		if len(st.ScanMinutes) > 0 {
+			s.cfg.ScanMinutes = st.ScanMinutes
+		}
+		if st.EntryScanMinute != nil && *st.EntryScanMinute >= 0 && *st.EntryScanMinute < 60 {
+			s.cfg.EntryScanMinute = *st.EntryScanMinute
+		}
+		if st.ExitScanMinute != nil && *st.ExitScanMinute >= 0 && *st.ExitScanMinute < 60 {
+			s.cfg.ExitScanMinute = *st.ExitScanMinute
+		}
+		if st.RotateScanMinute != nil && *st.RotateScanMinute >= 0 && *st.RotateScanMinute < 60 {
+			s.cfg.RotateScanMinute = *st.RotateScanMinute
+		}
+		if st.RebalanceScanMinute != nil && *st.RebalanceScanMinute >= 0 && *st.RebalanceScanMinute < 60 {
+			s.cfg.RebalanceScanMinute = *st.RebalanceScanMinute
+		}
+		if st.TopOpportunities != nil && *st.TopOpportunities > 0 {
+			s.cfg.TopOpportunities = *st.TopOpportunities
+		}
+		// Ensure special scan minutes are in the schedule after any updates.
+		s.cfg.EnsureScanMinutes()
+		if d := st.Discovery; d != nil {
+			if d.MinHoldTimeHours != nil && *d.MinHoldTimeHours > 0 {
+				s.cfg.MinHoldTime = time.Duration(*d.MinHoldTimeHours) * time.Hour
+			}
+			if d.MaxCostRatio != nil && *d.MaxCostRatio > 0 {
+				s.cfg.MaxCostRatio = *d.MaxCostRatio
+			}
+			if d.MaxPriceGapBPS != nil && *d.MaxPriceGapBPS >= 0 {
+				s.cfg.MaxPriceGapBPS = *d.MaxPriceGapBPS
+			}
+			if d.PriceGapFreeBPS != nil && *d.PriceGapFreeBPS >= 0 {
+				s.cfg.PriceGapFreeBPS = *d.PriceGapFreeBPS
+			}
+			if d.MaxGapRecoveryIntervals != nil && *d.MaxGapRecoveryIntervals >= 0 {
+				s.cfg.MaxGapRecoveryIntervals = *d.MaxGapRecoveryIntervals
+			}
+			if p := d.Persistence; p != nil {
+				if p.LookbackMin1h != nil && *p.LookbackMin1h > 0 {
+					s.cfg.PersistLookback1h = time.Duration(*p.LookbackMin1h) * time.Minute
+				}
+				if p.MinCount1h != nil && *p.MinCount1h > 0 {
+					s.cfg.PersistMinCount1h = *p.MinCount1h
+				}
+				if p.LookbackMin4h != nil && *p.LookbackMin4h > 0 {
+					s.cfg.PersistLookback4h = time.Duration(*p.LookbackMin4h) * time.Minute
+				}
+				if p.MinCount4h != nil && *p.MinCount4h > 0 {
+					s.cfg.PersistMinCount4h = *p.MinCount4h
+				}
+				if p.LookbackMin8h != nil && *p.LookbackMin8h > 0 {
+					s.cfg.PersistLookback8h = time.Duration(*p.LookbackMin8h) * time.Minute
+				}
+				if p.MinCount8h != nil && *p.MinCount8h > 0 {
+					s.cfg.PersistMinCount8h = *p.MinCount8h
+				}
+				if p.SpreadStabilityRatio1h != nil && *p.SpreadStabilityRatio1h >= 0 {
+					s.cfg.SpreadStabilityRatio1h = *p.SpreadStabilityRatio1h
+				}
+				if p.SpreadStabilityOIRank1h != nil && *p.SpreadStabilityOIRank1h >= 0 {
+					s.cfg.SpreadStabilityOIRank1h = *p.SpreadStabilityOIRank1h
+				}
+				if p.SpreadStabilityRatio4h != nil && *p.SpreadStabilityRatio4h >= 0 {
+					s.cfg.SpreadStabilityRatio4h = *p.SpreadStabilityRatio4h
+				}
+				if p.SpreadStabilityOIRank4h != nil && *p.SpreadStabilityOIRank4h >= 0 {
+					s.cfg.SpreadStabilityOIRank4h = *p.SpreadStabilityOIRank4h
+				}
+				if p.SpreadStabilityRatio8h != nil && *p.SpreadStabilityRatio8h >= 0 {
+					s.cfg.SpreadStabilityRatio8h = *p.SpreadStabilityRatio8h
+				}
+				if p.SpreadStabilityOIRank8h != nil && *p.SpreadStabilityOIRank8h >= 0 {
+					s.cfg.SpreadStabilityOIRank8h = *p.SpreadStabilityOIRank8h
+				}
+				if p.SpreadVolatilityMaxCV != nil && *p.SpreadVolatilityMaxCV >= 0 {
+					s.cfg.SpreadVolatilityMaxCV = *p.SpreadVolatilityMaxCV
+				}
+				if p.SpreadVolatilityMinSamples != nil && *p.SpreadVolatilityMinSamples >= 0 {
+					s.cfg.SpreadVolatilityMinSamples = *p.SpreadVolatilityMinSamples
+				}
+				if p.FundingWindowMin != nil && *p.FundingWindowMin > 0 {
+					s.cfg.FundingWindowMin = *p.FundingWindowMin
+				}
+			}
+		}
+		if e := st.Entry; e != nil {
+			if e.SlippageLimitBPS != nil && *e.SlippageLimitBPS >= 0 {
+				s.cfg.SlippageBPS = *e.SlippageLimitBPS
+			}
+			if e.MinChunkUSDT != nil && *e.MinChunkUSDT >= 0 {
+				s.cfg.MinChunkUSDT = *e.MinChunkUSDT
+			}
+			if e.EntryTimeoutSec != nil && *e.EntryTimeoutSec > 0 {
+				s.cfg.EntryTimeoutSec = *e.EntryTimeoutSec
+			}
+			if e.LossCooldownHours != nil && *e.LossCooldownHours >= 0 {
+				s.cfg.LossCooldownHours = *e.LossCooldownHours
+			}
+			if e.ReEnterCooldownHours != nil && *e.ReEnterCooldownHours >= 0 {
+				s.cfg.ReEnterCooldownHours = *e.ReEnterCooldownHours
+			}
+		}
+		if x := st.Exit; x != nil {
+			if x.DepthTimeoutSec != nil && *x.DepthTimeoutSec > 0 {
+				s.cfg.ExitDepthTimeoutSec = *x.DepthTimeoutSec
+			}
+			if x.SpreadReversalTolerance != nil && *x.SpreadReversalTolerance >= 0 {
+				s.cfg.SpreadReversalTolerance = *x.SpreadReversalTolerance
+			}
+		}
+		if rot := st.Rotation; rot != nil {
+			if rot.ThresholdBPS != nil && *rot.ThresholdBPS >= 0 {
+				s.cfg.RotationThresholdBPS = *rot.ThresholdBPS
+			}
+			if rot.CooldownMin != nil && *rot.CooldownMin >= 0 {
+				s.cfg.RotationCooldownMin = *rot.CooldownMin
+			}
+		}
+	}
+
+	if f := upd.Fund; f != nil {
+		if f.MaxPositions != nil && *f.MaxPositions > 0 {
+			s.cfg.MaxPositions = *f.MaxPositions
+		}
+		if f.Leverage != nil && *f.Leverage > 0 {
+			s.cfg.Leverage = *f.Leverage
+		}
+		if f.CapitalPerLeg != nil && *f.CapitalPerLeg >= 0 {
+			s.cfg.CapitalPerLeg = *f.CapitalPerLeg
+		}
+	}
+
+	if rk := upd.Risk; rk != nil {
+		if rk.MarginL3Threshold != nil && *rk.MarginL3Threshold > 0 && *rk.MarginL3Threshold <= 1 {
+			s.cfg.MarginL3Threshold = *rk.MarginL3Threshold
+		}
+		if rk.MarginL4Threshold != nil && *rk.MarginL4Threshold > 0 && *rk.MarginL4Threshold <= 1 {
+			s.cfg.MarginL4Threshold = *rk.MarginL4Threshold
+		}
+		if rk.MarginL5Threshold != nil && *rk.MarginL5Threshold > 0 && *rk.MarginL5Threshold <= 1 {
+			s.cfg.MarginL5Threshold = *rk.MarginL5Threshold
+		}
+		if rk.L4ReduceFraction != nil && *rk.L4ReduceFraction > 0 && *rk.L4ReduceFraction <= 1 {
+			s.cfg.L4ReduceFraction = *rk.L4ReduceFraction
+		}
+		if rk.RiskMonitorIntervalSec != nil && *rk.RiskMonitorIntervalSec > 0 {
+			s.cfg.RiskMonitorIntervalSec = *rk.RiskMonitorIntervalSec
+		}
+	}
+
+	if ai := upd.AI; ai != nil {
+		if ai.Endpoint != nil {
+			s.cfg.AIEndpoint = *ai.Endpoint
+		}
+		if ai.APIKey != nil {
+			s.cfg.AIAPIKey = *ai.APIKey
+		}
+		if ai.Model != nil && *ai.Model != "" {
+			s.cfg.AIModel = *ai.Model
+		}
+		if ai.MaxTokens != nil && *ai.MaxTokens > 0 {
+			s.cfg.AIMaxTokens = *ai.MaxTokens
+		}
+	}
+
+	// Persist config fields to Redis HASH (arb:config) using flat keys.
+	snapshot := s.buildConfigResponse()
+
+	fields := map[string]interface{}{
+		"min_hold_time_hours":           strconv.Itoa(snapshot.Strategy.Discovery.MinHoldTimeHours),
+		"max_cost_ratio":                strconv.FormatFloat(snapshot.Strategy.Discovery.MaxCostRatio, 'f', -1, 64),
+		"max_positions":                 strconv.Itoa(snapshot.Fund.MaxPositions),
+		"leverage":                      strconv.Itoa(snapshot.Fund.Leverage),
+		"slippage_limit_bps":            strconv.FormatFloat(snapshot.Strategy.Entry.SlippageLimitBPS, 'f', -1, 64),
+		"rebalance_scan_minute":         strconv.Itoa(snapshot.Strategy.RebalanceScanMinute),
+		"top_opportunities":             strconv.Itoa(snapshot.Strategy.TopOpportunities),
+		"entry_scan_minute":             strconv.Itoa(snapshot.Strategy.EntryScanMinute),
+		"exit_scan_minute":              strconv.Itoa(snapshot.Strategy.ExitScanMinute),
+		"rotate_scan_minute":            strconv.Itoa(snapshot.Strategy.RotateScanMinute),
+		"capital_per_leg":               strconv.FormatFloat(snapshot.Fund.CapitalPerLeg, 'f', -1, 64),
+		"dry_run":                       strconv.FormatBool(snapshot.DryRun),
+		"entry_timeout_sec":             strconv.Itoa(snapshot.Strategy.Entry.EntryTimeoutSec),
+		"min_chunk_usdt":                strconv.FormatFloat(snapshot.Strategy.Entry.MinChunkUSDT, 'f', -1, 64),
+		"price_gap_free_bps":            strconv.FormatFloat(snapshot.Strategy.Discovery.PriceGapFreeBPS, 'f', -1, 64),
+		"max_price_gap_bps":             strconv.FormatFloat(snapshot.Strategy.Discovery.MaxPriceGapBPS, 'f', -1, 64),
+		"max_gap_recovery_intervals":    strconv.FormatFloat(snapshot.Strategy.Discovery.MaxGapRecoveryIntervals, 'f', -1, 64),
+		"margin_l3_threshold":           strconv.FormatFloat(snapshot.Risk.MarginL3Threshold, 'f', -1, 64),
+		"margin_l4_threshold":           strconv.FormatFloat(snapshot.Risk.MarginL4Threshold, 'f', -1, 64),
+		"margin_l5_threshold":           strconv.FormatFloat(snapshot.Risk.MarginL5Threshold, 'f', -1, 64),
+		"l4_reduce_fraction":            strconv.FormatFloat(snapshot.Risk.L4ReduceFraction, 'f', -1, 64),
+		"risk_monitor_interval_sec":     strconv.Itoa(snapshot.Risk.RiskMonitorIntervalSec),
+		"exit_depth_timeout_sec":        strconv.Itoa(snapshot.Strategy.Exit.DepthTimeoutSec),
+		"spread_reversal_tolerance":     strconv.Itoa(snapshot.Strategy.Exit.SpreadReversalTolerance),
+		"rotation_threshold_bps":        strconv.FormatFloat(snapshot.Strategy.Rotation.ThresholdBPS, 'f', -1, 64),
+		"rotation_cooldown_min":         strconv.Itoa(snapshot.Strategy.Rotation.CooldownMin),
+		"persist_lookback_min_1h":       strconv.Itoa(snapshot.Strategy.Discovery.Persistence.LookbackMin1h),
+		"persist_min_count_1h":          strconv.Itoa(snapshot.Strategy.Discovery.Persistence.MinCount1h),
+		"persist_lookback_min_4h":       strconv.Itoa(snapshot.Strategy.Discovery.Persistence.LookbackMin4h),
+		"persist_min_count_4h":          strconv.Itoa(snapshot.Strategy.Discovery.Persistence.MinCount4h),
+		"persist_lookback_min_8h":       strconv.Itoa(snapshot.Strategy.Discovery.Persistence.LookbackMin8h),
+		"persist_min_count_8h":          strconv.Itoa(snapshot.Strategy.Discovery.Persistence.MinCount8h),
+		"spread_stability_ratio_1h":     strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadStabilityRatio1h, 'f', -1, 64),
+		"spread_stability_oi_rank_1h":   strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadStabilityOIRank1h),
+		"spread_stability_ratio_4h":     strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadStabilityRatio4h, 'f', -1, 64),
+		"spread_stability_oi_rank_4h":   strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadStabilityOIRank4h),
+		"spread_stability_ratio_8h":     strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadStabilityRatio8h, 'f', -1, 64),
+		"spread_stability_oi_rank_8h":   strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadStabilityOIRank8h),
+		"spread_volatility_max_cv":      strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadVolatilityMaxCV, 'f', -1, 64),
+		"spread_volatility_min_samples": strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadVolatilityMinSamples),
+		"funding_window_min":            strconv.Itoa(snapshot.Strategy.Discovery.Persistence.FundingWindowMin),
+		"loss_cooldown_hours":           strconv.FormatFloat(snapshot.Strategy.Entry.LossCooldownHours, 'f', -1, 64),
+		"re_enter_cooldown_hours":       strconv.FormatFloat(snapshot.Strategy.Entry.ReEnterCooldownHours, 'f', -1, 64),
+	}
+
+	if err := s.db.SetConfigFields(fields); err != nil {
+		s.log.Error("save config to redis: %v", err)
+		writeJSON(w, http.StatusInternalServerError, Response{Error: "failed to persist config"})
+		return
+	}
+
+	// Also persist to config.json so changes survive fresh installs.
+	if err := s.cfg.SaveJSON(); err != nil {
+		s.log.Warn("save config.json: %v (Redis saved OK)", err)
+	}
+
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: snapshot})
+}
+
+// handleGetRejections returns the in-memory list of recently rejected opportunities.
+func (s *Server) handleGetRejections(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.rejStore == nil {
+		writeJSON(w, http.StatusOK, Response{OK: true, Data: []struct{}{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: s.rejStore.GetAll()})
+}
+
+// exchangeInfo is the JSON representation of an enabled exchange.
+type exchangeInfo struct {
+	Name        string  `json:"name"`
+	Balance     float64 `json:"balance"`
+	SpotBalance float64 `json:"spot_balance"`
+	AccountType string  `json:"account_type"` // "unified" or "separate"
+}
+
+// unifiedExchanges are exchanges with unified account models where
+// spot and futures share the same balance pool.
+var unifiedExchanges = map[string]bool{
+	"okx":    true,
+	"bybit":  true,
+	"gateio": true,
+}
+
+// handleGetExchanges returns the list of enabled exchanges with cached balances.
+func (s *Server) handleGetExchanges(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	names := s.cfg.EnabledExchanges()
+	exchanges := make([]exchangeInfo, 0, len(names))
+	for _, name := range names {
+		bal, _ := s.db.GetBalance(name)
+		spotBal, _ := s.db.GetSpotBalance(name)
+		acctType := "separate"
+		if unifiedExchanges[name] {
+			acctType = "unified"
+		}
+		exchanges = append(exchanges, exchangeInfo{Name: name, Balance: bal, SpotBalance: spotBal, AccountType: acctType})
+	}
+
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: exchanges})
+}
+
+// ---------------------------------------------------------------------------
+// Transfers
+// ---------------------------------------------------------------------------
+
+type transferRequest struct {
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Coin   string `json:"coin"`
+	Chain  string `json:"chain"`
+	Amount string `json:"amount"`
+}
+
+// handleTransfer executes a withdrawal from one exchange to another.
+func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req transferRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "invalid request body"})
+		return
+	}
+
+	if req.From == "" || req.To == "" || req.Amount == "" || req.Chain == "" {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "from, to, chain, and amount are required"})
+		return
+	}
+	if req.Coin == "" {
+		req.Coin = "USDT"
+	}
+
+	// Look up destination address from config
+	destAddrs, ok := s.cfg.ExchangeAddresses[req.To]
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, Response{Error: fmt.Sprintf("no addresses configured for %s", req.To)})
+		return
+	}
+	addr, ok := destAddrs[req.Chain]
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, Response{Error: fmt.Sprintf("no %s address for %s", req.Chain, req.To)})
+		return
+	}
+
+	// Look up source exchange adapter
+	exc, ok := s.exchanges[req.From]
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, Response{Error: fmt.Sprintf("exchange %s not available", req.From)})
+		return
+	}
+
+	// Move funds to withdrawable account (futures→spot / unified→fund)
+	if err := exc.TransferToSpot(req.Coin, req.Amount); err != nil {
+		s.log.Warn("internal transfer %s: %v (may already be in spot)", req.From, err)
+	}
+
+	// Execute withdrawal
+	result, err := exc.Withdraw(exchange.WithdrawParams{
+		Coin:    req.Coin,
+		Chain:   req.Chain,
+		Address: addr,
+		Amount:  req.Amount,
+	})
+	if err != nil {
+		s.log.Error("transfer %s->%s failed: %v", req.From, req.To, err)
+		writeJSON(w, http.StatusInternalServerError, Response{Error: fmt.Sprintf("withdrawal failed: %v", err)})
+		return
+	}
+
+	// Save transfer record
+	record := &database.TransferRecord{
+		ID:        fmt.Sprintf("tx-%d", time.Now().UnixNano()),
+		From:      req.From,
+		To:        req.To,
+		Coin:      req.Coin,
+		Chain:     req.Chain,
+		Amount:    req.Amount,
+		Fee:       result.Fee,
+		TxID:      result.TxID,
+		Status:    result.Status,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := s.db.SaveTransfer(record); err != nil {
+		s.log.Error("save transfer record: %v", err)
+	}
+
+	s.log.Info("transfer %s %s %s from %s to %s: txID=%s", req.Amount, req.Coin, req.Chain, req.From, req.To, result.TxID)
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: record})
+}
+
+// handleGetTransfers returns transfer history.
+func (s *Server) handleGetTransfers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	limit := 50
+	if q := r.URL.Query().Get("limit"); q != "" {
+		if n, err := strconv.Atoi(q); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	transfers, err := s.db.GetTransfers(limit)
+	if err != nil {
+		s.log.Error("get transfers: %v", err)
+		writeJSON(w, http.StatusInternalServerError, Response{Error: "failed to fetch transfers"})
+		return
+	}
+
+	if transfers == nil {
+		writeJSON(w, http.StatusOK, Response{OK: true, Data: []interface{}{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: transfers})
+}
+
+// handleGetLogs returns recent log entries from the log file.
+func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	limit := 200
+	if q := r.URL.Query().Get("limit"); q != "" {
+		if n, err := strconv.Atoi(q); err == nil && n > 0 {
+			if n > 500 {
+				n = 500
+			}
+			limit = n
+		}
+	}
+
+	utils.FlushLog()
+	entries := utils.TailLogFile(limit)
+	if entries == nil {
+		writeJSON(w, http.StatusOK, Response{OK: true, Data: []interface{}{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: entries})
+}
+
+// handleGetAddresses returns configured deposit addresses for all exchanges.
+func (s *Server) handleGetAddresses(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: s.cfg.ExchangeAddresses})
+}
+
+// handleDiagnose collects error/warn logs + positions, sends to AI for analysis.
+func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.cfg.AIEndpoint == "" || s.cfg.AIAPIKey == "" {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "AI endpoint or API key not configured"})
+		return
+	}
+
+	// Collect context data.
+	utils.FlushLog()
+	allLogs := utils.TailLogFile(500)
+	var errorLogs []string
+	for _, entry := range allLogs {
+		if entry.Level == "ERROR" || entry.Level == "WARN" {
+			errorLogs = append(errorLogs, fmt.Sprintf("%s [%s] [%s] %s", entry.Timestamp, entry.Level, entry.Module, entry.Message))
+		}
+	}
+	if len(errorLogs) > 100 {
+		errorLogs = errorLogs[len(errorLogs)-100:]
+	}
+
+	positions, _ := s.db.GetActivePositions()
+	history, _ := s.db.GetHistory(10)
+
+	// Build exchange balances.
+	var balances []map[string]interface{}
+	for _, name := range s.cfg.EnabledExchanges() {
+		bal, _ := s.db.GetBalance(name)
+		spotBal, _ := s.db.GetSpotBalance(name)
+		balances = append(balances, map[string]interface{}{
+			"exchange":     name,
+			"balance":      bal,
+			"spot_balance": spotBal,
+		})
+	}
+
+	posJSON, _ := json.MarshalIndent(positions, "", "  ")
+	histJSON, _ := json.MarshalIndent(history, "", "  ")
+	balJSON, _ := json.MarshalIndent(balances, "", "  ")
+
+	prompt := fmt.Sprintf(`You are analyzing a funding rate arbitrage bot. Review the following data and identify any issues, anomalies, or concerns.
+
+## Recent Error/Warning Logs
+%s
+
+## Active Positions
+%s
+
+## Recent Trade History (last 10)
+%s
+
+## Exchange Balances
+%s
+
+請用繁體中文回覆。提供簡明的分析，重點關注：需要注意的錯誤、持倉健康狀況、任何失敗模式，以及建議的行動。`,
+		strings.Join(errorLogs, "\n"),
+		string(posJSON),
+		string(histJSON),
+		string(balJSON),
+	)
+
+	// Call AI API.
+	reqBody, _ := json.Marshal(map[string]interface{}{
+		"model":      s.cfg.AIModel,
+		"max_tokens": s.cfg.AIMaxTokens,
+		"messages":   []map[string]string{{"role": "user", "content": prompt}},
+	})
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	req, err := http.NewRequest("POST", s.cfg.AIEndpoint, strings.NewReader(string(reqBody)))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, Response{Error: fmt.Sprintf("build request: %v", err)})
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", s.cfg.AIAPIKey)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, Response{Error: fmt.Sprintf("AI request failed: %v", err)})
+		return
+	}
+	defer resp.Body.Close()
+
+	var aiResp struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		// OpenAI-style fallback
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&aiResp); err != nil {
+		writeJSON(w, http.StatusBadGateway, Response{Error: fmt.Sprintf("parse AI response: %v", err)})
+		return
+	}
+
+	// Extract text from content blocks, skipping thinking blocks.
+	var analysis string
+	for _, block := range aiResp.Content {
+		if block.Type == "text" && block.Text != "" {
+			analysis = block.Text
+			break
+		}
+	}
+	if analysis == "" {
+		for _, choice := range aiResp.Choices {
+			if choice.Message.Content != "" {
+				analysis = choice.Message.Content
+				break
+			}
+		}
+	}
+	if analysis == "" {
+		writeJSON(w, http.StatusBadGateway, Response{Error: "empty AI response"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: map[string]string{"analysis": analysis}})
+}

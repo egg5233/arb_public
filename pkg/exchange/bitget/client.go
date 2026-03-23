@@ -1,0 +1,218 @@
+package bitget
+
+import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"sort"
+	"strings"
+	"time"
+)
+
+const (
+	baseURL                = "https://api.bitget.com"
+	productTypeUSDTFutures = "USDT-FUTURES"
+	marginCoinUSDT         = "USDT"
+)
+
+// retryable API response codes
+var retryableCodes = map[string]bool{
+	"429":   true, // HTTP rate limit
+	"40900": true, // Bitget server-side throttling
+}
+
+// Client is a self-contained REST client for the Bitget v2 API.
+// It handles HMAC-SHA256 + base64 signing with passphrase support.
+type Client struct {
+	apiKey     string
+	secretKey  string
+	passphrase string
+	baseURL    string
+	httpClient *http.Client
+}
+
+// NewClient creates a new Bitget REST API client.
+func NewClient(apiKey, secretKey, passphrase string) *Client {
+	return &Client{
+		apiKey:     apiKey,
+		secretKey:  secretKey,
+		passphrase: passphrase,
+		baseURL:    baseURL,
+		httpClient: &http.Client{Timeout: 15 * time.Second},
+	}
+}
+
+// sign generates the HMAC-SHA256 signature for Bitget API authentication.
+// The message format is: timestamp + method + requestPath + body
+func (c *Client) sign(timestamp, method, requestPath, body string) string {
+	message := timestamp + method + requestPath + body
+	mac := hmac.New(sha256.New, []byte(c.secretKey))
+	mac.Write([]byte(message))
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// buildQueryString constructs a sorted query string from parameters.
+func buildQueryString(params map[string]string) string {
+	if len(params) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, url.QueryEscape(k)+"="+url.QueryEscape(params[k]))
+	}
+	return strings.Join(parts, "&")
+}
+
+// Get performs an authenticated GET request with retry logic.
+func (c *Client) Get(path string, params map[string]string) (string, error) {
+	return c.retryDo("GET", path, params, nil, 3)
+}
+
+// Post performs an authenticated POST request with retry logic.
+func (c *Client) Post(path string, params map[string]string) (string, error) {
+	return c.retryDo("POST", path, nil, params, 3)
+}
+
+// doRequest performs a single authenticated HTTP request.
+func (c *Client) doRequest(method, path string, queryParams, bodyParams map[string]string) (string, error) {
+	timestamp := fmt.Sprintf("%d", time.Now().UnixMilli())
+
+	var requestPath string
+	var bodyStr string
+	var reqBody io.Reader
+
+	if method == "GET" {
+		qs := buildQueryString(queryParams)
+		if qs != "" {
+			requestPath = path + "?" + qs
+		} else {
+			requestPath = path
+		}
+		bodyStr = ""
+	} else {
+		requestPath = path
+		if len(bodyParams) > 0 {
+			b, err := json.Marshal(bodyParams)
+			if err != nil {
+				return "", fmt.Errorf("marshal body: %w", err)
+			}
+			bodyStr = string(b)
+			reqBody = bytes.NewReader(b)
+		}
+	}
+
+	signature := c.sign(timestamp, method, requestPath, bodyStr)
+
+	fullURL := c.baseURL + requestPath
+	if method == "GET" {
+		// requestPath already includes query string
+		fullURL = c.baseURL + requestPath
+		reqBody = nil
+	}
+
+	req, err := http.NewRequest(method, fullURL, reqBody)
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("ACCESS-KEY", c.apiKey)
+	req.Header.Set("ACCESS-SIGN", signature)
+	req.Header.Set("ACCESS-TIMESTAMP", timestamp)
+	req.Header.Set("ACCESS-PASSPHRASE", c.passphrase)
+	req.Header.Set("locale", "en-US")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	return string(data), nil
+}
+
+// isRetryable checks whether an error or API response code is transient
+// and worth retrying (network errors, rate limits, server-side throttling).
+func isRetryable(err error, rawResp string) bool {
+	if err != nil {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "timeout") ||
+			strings.Contains(errMsg, "connection refused") ||
+			strings.Contains(errMsg, "EOF") ||
+			strings.Contains(errMsg, "connection reset") {
+			return true
+		}
+		return false
+	}
+
+	if rawResp != "" {
+		var base struct {
+			Code string `json:"code"`
+		}
+		if json.Unmarshal([]byte(rawResp), &base) == nil {
+			if retryableCodes[base.Code] {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// retryDo performs an HTTP request with exponential backoff retry on transient errors.
+// Backoff schedule: 1s, 2s, 4s (doubling each attempt).
+func (c *Client) retryDo(method, path string, queryParams, bodyParams map[string]string, maxRetries int) (string, error) {
+	var lastErr error
+	var lastRaw string
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		var raw string
+		var err error
+
+		if method == "GET" {
+			raw, err = c.doRequest("GET", path, queryParams, nil)
+		} else {
+			raw, err = c.doRequest("POST", path, nil, bodyParams)
+		}
+
+		if err == nil && !isRetryable(nil, raw) {
+			return raw, nil
+		}
+
+		shouldRetry := (err != nil && isRetryable(err, "")) || (err == nil && isRetryable(nil, raw))
+		if attempt < maxRetries && shouldRetry {
+			backoff := time.Duration(1<<uint(attempt)) * time.Second // 1s, 2s, 4s
+			time.Sleep(backoff)
+			lastErr = err
+			lastRaw = raw
+			continue
+		}
+
+		if err != nil {
+			return "", err
+		}
+		return raw, nil
+	}
+
+	if lastErr != nil {
+		return "", fmt.Errorf("%s %s: exhausted %d retries, last error: %w", method, path, maxRetries, lastErr)
+	}
+	return lastRaw, nil
+}
