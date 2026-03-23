@@ -695,6 +695,7 @@ func (a *Adapter) TransferToFutures(coin string, amount string) error {
 		"from":     "spot",
 		"to":       "futures",
 		"amount":   amount,
+		"settle":   "usdt",
 	}
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {

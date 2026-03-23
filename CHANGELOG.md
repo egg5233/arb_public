@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.5] - 2026-03-23
+
+### Fixed
+- **Gate.io spot→futures transfer**: Added missing `settle: "usdt"` field to `/wallet/transfers` request body. Gate.io API requires this for futures transfers — was failing with `INVALID_PARAM_VALUE: Invalid settle`.
+
 ## [0.13.4] - 2026-03-23
 
 ### Added
