@@ -70,3 +70,7 @@ Before starting any review, read these files for full context:
 - **`ARCHITECTURE.md`** — READ THIS FIRST. Contains full system design, data flow diagrams, Exchange interface spec (31 methods), config parameter table, Redis schema, exit strategy flow, and risk management details.
 - **`CHANGELOG.md`** — Recent version history with detailed change descriptions. Read to understand what changed recently.
 - **`CLAUDE.md`** — Build commands and project structure.
+
+## When you need to check history before 0.13.2
+
+Check CHANGELOG.md

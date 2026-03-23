@@ -129,7 +129,7 @@ T+?        EXIT (per exit mode, see §1.5)
 
 ### 1.4 Position Management
 
-- **Max concurrent positions**: configurable (default 1). Same-pair add-ons merge into existing position (weighted avg entry, summed size) rather than creating duplicates
+- **Max concurrent positions**: configurable (default 1). Duplicate symbol entries are blocked — only one active position per symbol regardless of exchange pair
 - **Leverage**: configurable, hard-capped at 5x
 - **Margin mode**: Cross, USDT-margined only
 - **Exchange diversity**: Soft preference — warn if >60% of positions on same exchange
@@ -164,8 +164,9 @@ After sizing: round to contract step size, enforce min size, enforce 10 USDT min
 **Position Consolidator**: Background goroutine (every 5min) reconciles local position records with actual exchange positions:
 - Missing leg detected → closes remaining leg and marks position closed
 - Size mismatch >1% → syncs local record to exchange reality
+- **Balance enforcer**: After sync, if long/short differ by >5%, trims excess side via confirmed reduce-only market order, then cancels and re-places stop losses
 - Orphan exchange positions (not tracked locally) → auto-closes via reduce-only market IOC
-- **Race protection**: Skips positions with active exit goroutines (`exitActive`) and symbols with active entry fill loops (`entryActive`) to prevent double-close or premature orphan cleanup
+- **Race protection**: Skips positions with active exit/entry goroutines (`exitActive`, `entryActive`, `busySymbols`) to prevent conflicts with in-progress trades
 
 ### 1.5 Exit Strategy
 

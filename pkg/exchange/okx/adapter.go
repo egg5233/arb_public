@@ -223,6 +223,8 @@ func (a *Adapter) GetOrderFilledQty(orderID, symbol string) (float64, error) {
 	var raw []struct {
 		FillSz    string `json:"fillSz"`
 		AccFillSz string `json:"accFillSz"`
+		AvgPx     string `json:"avgPx"`
+		State     string `json:"state"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return 0, fmt.Errorf("GetOrderFilledQty unmarshal: %w", err)
@@ -234,6 +236,27 @@ func (a *Adapter) GetOrderFilledQty(orderID, symbol string) (float64, error) {
 	// OKX returns fill size in contracts; convert to base units.
 	qty, _ := strconv.ParseFloat(raw[0].AccFillSz, 64)
 	qty *= a.getCtVal(symbol)
+
+	// Store REST result in orderStore so confirmFill can read avgPrice.
+	avgPx, _ := strconv.ParseFloat(raw[0].AvgPx, 64)
+	if qty > 0 && avgPx > 0 {
+		status := raw[0].State
+		if status == "filled" || status == "canceled" || status == "cancelled" {
+			// normalize to engine convention
+			if status == "canceled" {
+				status = "cancelled"
+			}
+		} else {
+			status = "partially_filled"
+		}
+		a.orderStore.Store(orderID, exchange.OrderUpdate{
+			OrderID:      orderID,
+			Status:       status,
+			FilledVolume: qty,
+			AvgPrice:     avgPx,
+		})
+	}
+
 	return qty, nil
 }
 

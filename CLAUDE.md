@@ -49,6 +49,10 @@ echo "prompt" | codex exec --skip-git-repo-check resume SESSION_ID 2>/dev/null
 
 Only start a new session if resume fails or if the user explicitly asks for a fresh session. After starting a new session, update the session ID above.
 
+## Debugging
+
+Load `/sdebug` skill when debugging, bug fixing, or troubleshooting issues. Follow the four-phase framework: Root Cause Investigation → Pattern Analysis → Hypothesis Testing → Implementation.
+
 ## When you need to research about exchange api document
 
 use playwright skills (headless=true) and check the link:
@@ -60,3 +64,7 @@ use playwright skills (headless=true) and check the link:
   Gate.io:https://www.gate.com/docs/developers/apiv4/en/
   Bybit:https://bybit-exchange.github.io/docs/v5/guide
   BingX:https://bingx-api.github.io/docs-v3/#/en/info
+
+## When you need to check history before 0.13.2
+
+Check CHANGELOG.md

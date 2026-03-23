@@ -115,6 +115,10 @@ func (e *Engine) consolidatePositions() {
 		if exiting {
 			continue
 		}
+		// Skip positions whose symbol is mid-entry or mid-exit on either exchange.
+		if busySymbols[pos.LongExchange+":"+pos.Symbol] || busySymbols[pos.ShortExchange+":"+pos.Symbol] {
+			continue
+		}
 		e.consolidatePosition(pos, siblingTotals)
 	}
 
@@ -258,6 +262,12 @@ func (e *Engine) consolidatePosition(pos *models.ArbitragePosition, siblingTotal
 			e.log.Info("consolidate: synced %s sizes: long=%.6f short=%.6f", pos.ID, newLong, newShort)
 			e.api.BroadcastPositionUpdate(pos)
 		}
+
+		// Balance enforcer: if long and short are imbalanced after sync,
+		// trim the excess side to restore delta neutrality.
+		if !e.cfg.DryRun {
+			e.enforceBalance(pos, newLong, newShort)
+		}
 	}
 }
 
@@ -294,4 +304,99 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 	}
 	e.api.BroadcastPositionUpdate(pos)
 	e.log.Info("consolidate: closed %s (%s)", pos.ID, reason)
+}
+
+// enforceBalance trims the excess side when long and short sizes are
+// imbalanced beyond 5%, restoring delta neutrality.
+// After trimming: confirms fill, updates local record, re-places stop losses.
+func (e *Engine) enforceBalance(pos *models.ArbitragePosition, longSize, shortSize float64) {
+	if longSize <= 0 || shortSize <= 0 {
+		return
+	}
+
+	diff := abs(longSize - shortSize)
+	minSide := min(longSize, shortSize)
+	if diff/minSide < 0.05 {
+		return // within 5% tolerance
+	}
+
+	var trimExch exchange.Exchange
+	var trimSide exchange.Side
+	var trimExchName string
+	var excess float64
+
+	if longSize > shortSize {
+		excess = longSize - shortSize
+		trimExchName = pos.LongExchange
+		trimSide = exchange.SideSell
+		exch, ok := e.exchanges[trimExchName]
+		if !ok {
+			return
+		}
+		trimExch = exch
+	} else {
+		excess = shortSize - longSize
+		trimExchName = pos.ShortExchange
+		trimSide = exchange.SideBuy
+		exch, ok := e.exchanges[trimExchName]
+		if !ok {
+			return
+		}
+		trimExch = exch
+	}
+
+	sizeStr := e.formatSize(trimExchName, pos.Symbol, excess)
+	e.log.Warn("consolidate: %s imbalanced long=%.6f short=%.6f, trimming %.6f on %s (%s)",
+		pos.ID, longSize, shortSize, excess, trimExchName, trimSide)
+
+	// Place reduce-only market order and confirm fill.
+	orderID, err := trimExch.PlaceOrder(exchange.PlaceOrderParams{
+		Symbol:     pos.Symbol,
+		Side:       trimSide,
+		OrderType:  "market",
+		Size:       sizeStr,
+		Force:      "ioc",
+		ReduceOnly: true,
+	})
+	if err != nil {
+		e.log.Error("consolidate: trim order failed for %s on %s: %v", pos.ID, trimExchName, err)
+		return
+	}
+	e.log.Info("consolidate: trim order %s placed on %s for %s", orderID, trimExchName, pos.ID)
+
+	// Confirm fill (reuse engine's confirmFill with timeout).
+	filled, _ := e.confirmFill(trimExch, orderID, pos.Symbol)
+	if filled <= 0 {
+		e.log.Error("consolidate: trim order %s on %s did not fill, skipping record update", orderID, trimExchName)
+		return
+	}
+	e.log.Info("consolidate: trim filled %.6f on %s for %s", filled, trimExchName, pos.ID)
+
+	// Cancel old stop losses before updating sizes.
+	e.cancelStopLosses(pos)
+
+	// Update local record with confirmed balanced sizes.
+	balanced := minSide
+	if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+		if fresh.Status != models.StatusActive {
+			return false
+		}
+		fresh.LongSize = balanced
+		fresh.ShortSize = balanced
+		fresh.UpdatedAt = time.Now().UTC()
+		return true
+	}); err != nil {
+		e.log.Error("consolidate: failed to update %s after trim: %v", pos.ID, err)
+		return
+	}
+	e.log.Info("consolidate: %s balanced to long=%.6f short=%.6f", pos.ID, balanced, balanced)
+
+	// Re-read position and place new stop losses with correct sizes.
+	updated, err := e.db.GetPosition(pos.ID)
+	if err != nil {
+		e.log.Error("consolidate: failed to re-read %s for SL placement: %v", pos.ID, err)
+		return
+	}
+	e.attachStopLosses(updated)
+	e.api.BroadcastPositionUpdate(updated)
 }

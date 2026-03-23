@@ -137,21 +137,16 @@ func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bo
 		e.capacityMu.Unlock()
 		return fmt.Errorf("failed to check active positions")
 	}
-	hasSibling := false
 	for _, pos := range active {
 		if pos.Symbol == symbol {
-			if pos.LongExchange == longExchange && pos.ShortExchange == shortExchange {
-				hasSibling = true // same pair — will merge during execution
-				continue
-			}
 			e.capacityMu.Unlock()
-			return fmt.Errorf("position for %s already open on different exchanges", symbol)
+			return fmt.Errorf("position for %s already open", symbol)
 		}
 	}
 
-	// 3. Check capacity (same-pair add-ons don't consume a new slot)
+	// 3. Check capacity
 	slots := e.cfg.MaxPositions - len(active)
-	if !hasSibling && slots <= 0 {
+	if slots <= 0 {
 		e.capacityMu.Unlock()
 		return fmt.Errorf("at max capacity (%d/%d)", len(active), e.cfg.MaxPositions)
 	}
@@ -939,23 +934,21 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 	e.log.Info("executeArbitrage: %d active positions, MaxPositions=%d", len(active), e.cfg.MaxPositions)
 	slots := e.cfg.MaxPositions - len(active)
 
-	// Build set of active (symbol, longExchange, shortExchange) pairs for merge detection.
-	type pairKey struct{ symbol, long, short string }
-	activePairs := make(map[pairKey]bool)
+	// Build set of active symbols to block duplicate entries.
+	activeSymbols := make(map[string]bool)
 	for _, p := range active {
 		if p.Status == models.StatusActive {
-			activePairs[pairKey{p.Symbol, p.LongExchange, p.ShortExchange}] = true
+			activeSymbols[p.Symbol] = true
 		}
 	}
 
-	if slots <= 0 && len(activePairs) == 0 {
+	if slots <= 0 {
 		e.capacityMu.Unlock()
 		e.log.Info("at max capacity (%d/%d), skipping", len(active), e.cfg.MaxPositions)
 		return
 	}
 
 	// Phase 1: Sequential pre-filter — approve up to `slots` candidates.
-	// Same-pair add-ons (will merge) don't consume a slot.
 	type candidate struct {
 		opp     models.Opportunity
 		size    float64
@@ -967,9 +960,11 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 	newSlotCandidates := 0
 
 	for _, opp := range opps {
-		isMerge := activePairs[pairKey{opp.Symbol, opp.LongExchange, opp.ShortExchange}]
-		if !isMerge && newSlotCandidates >= slots {
-			continue // skip new-pair candidates when at capacity, but keep scanning for merges
+		if activeSymbols[opp.Symbol] {
+			continue // skip — symbol already has an active position
+		}
+		if newSlotCandidates >= slots {
+			continue
 		}
 
 		lockResource := fmt.Sprintf("execute:%s", opp.Symbol)
@@ -983,7 +978,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 			continue
 		}
 
-		e.log.Info("executeArbitrage: risk.Approve %s (merge=%v)...", opp.Symbol, isMerge)
+		e.log.Info("executeArbitrage: risk.Approve %s...", opp.Symbol)
 		approval, err := e.risk.Approve(opp)
 		if err != nil {
 			e.log.Error("risk approval error for %s: %v", opp.Symbol, err)
@@ -1010,9 +1005,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 		}
 
 		candidates = append(candidates, candidate{opp, approval.Size, approval.Price, approval.GapBPS, lockResource})
-		if !isMerge {
-			newSlotCandidates++
-		}
+		newSlotCandidates++
 	}
 
 	// Release capacity lock — candidates hold per-symbol locks and will
@@ -1477,20 +1470,7 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 		finalShortEntry = shortBBO.Bid
 	}
 
-	// Check for an existing active position on the same symbol + exchange pair.
-	sibling := e.findSiblingPosition(opp.Symbol, opp.LongExchange, opp.ShortExchange, pos.ID)
-	if sibling != nil && sibling.Status == models.StatusActive {
-		e.log.Info("merging %s into existing position %s (add long=%.6f@%.6f short=%.6f@%.6f)",
-			posID, sibling.ID, minFill, finalLongEntry, minFill, finalShortEntry)
-		if e.mergeIntoPosition(sibling, pos, minFill, minFill, finalLongEntry, finalShortEntry, opp.Spread) {
-			e.removePendingPosition(pos)
-			return nil
-		}
-		// Merge skipped (sibling changed state) — fall through to activate as new position.
-		e.log.Warn("merge into %s skipped, activating %s as separate position", sibling.ID, posID)
-	}
-
-	// No sibling — activate as new position.
+	// Activate as new position.
 	pos.LongSize = minFill
 	pos.ShortSize = minFill
 	pos.LongEntry = finalLongEntry
@@ -1951,18 +1931,6 @@ fillLoop:
 		finalShortEntry = bbo.Bid
 	}
 
-	// Check for existing active position on the same symbol + exchange pair — merge if found.
-	sibling := e.findSiblingPosition(opp.Symbol, opp.LongExchange, opp.ShortExchange, pos.ID)
-	if sibling != nil && sibling.Status == models.StatusActive {
-		e.log.Info("merging %s into existing position %s (add long=%.6f@%.6f short=%.6f@%.6f)",
-			posID, sibling.ID, minFill, finalLongEntry, minFill, finalShortEntry)
-		if e.mergeIntoPosition(sibling, pos, minFill, minFill, finalLongEntry, finalShortEntry, opp.Spread) {
-			e.removePendingPosition(pos)
-			return nil
-		}
-		e.log.Warn("merge into %s skipped, activating %s as separate position", sibling.ID, posID)
-	}
-
 	// Activate position
 	pos.LongSize = minFill
 	pos.ShortSize = minFill
@@ -2013,8 +1981,14 @@ func (e *Engine) confirmFill(exch exchange.Exchange, orderID, symbol string) (fi
 			// Check if WS already has a terminal state.
 			if upd, ok := exch.GetOrderUpdate(orderID); ok {
 				if upd.Status == "filled" || upd.Status == "cancelled" {
+					e.log.Info("confirmFill: WS terminal %s on %s: status=%s filled=%.6f avg=%.8f",
+						orderID, exch.Name(), upd.Status, upd.FilledVolume, upd.AvgPrice)
 					return upd.FilledVolume, upd.AvgPrice
 				}
+				e.log.Warn("confirmFill: timeout %s on %s: WS status=%s filled=%.6f (non-terminal)",
+					orderID, exch.Name(), upd.Status, upd.FilledVolume)
+			} else {
+				e.log.Warn("confirmFill: timeout %s on %s: no WS update at all", orderID, exch.Name())
 			}
 			// Cancel any resting/partial order to prevent untracked fills.
 			if err := exch.CancelOrder(symbol, orderID); err != nil {
@@ -2022,11 +1996,20 @@ func (e *Engine) confirmFill(exch exchange.Exchange, orderID, symbol string) (fi
 			}
 			// Re-query after cancel to get the true terminal fill state.
 			time.Sleep(200 * time.Millisecond)
-			if filled, err := exch.GetOrderFilledQty(orderID, symbol); err == nil && filled > 0 {
+			restFilled, restErr := exch.GetOrderFilledQty(orderID, symbol)
+			if restErr != nil {
+				e.log.Warn("confirmFill: REST query %s on %s failed: %v", orderID, exch.Name(), restErr)
+				return 0, 0
+			}
+			e.log.Info("confirmFill: REST query %s on %s: filled=%.6f", orderID, exch.Name(), restFilled)
+			if restFilled > 0 {
 				if upd, ok := exch.GetOrderUpdate(orderID); ok && upd.AvgPrice > 0 {
-					return filled, upd.AvgPrice
+					e.log.Info("confirmFill: REST+WS %s on %s: filled=%.6f avg=%.8f",
+						orderID, exch.Name(), restFilled, upd.AvgPrice)
+					return restFilled, upd.AvgPrice
 				}
-				return filled, 0
+				e.log.Warn("confirmFill: REST filled but no avg price for %s on %s", orderID, exch.Name())
+				return restFilled, 0
 			}
 			return 0, 0
 		}

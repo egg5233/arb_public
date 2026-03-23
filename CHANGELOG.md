@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.3] - 2026-03-23
+
+### Changed
+- **Duplicate coin entry blocked**: Engine now rejects opening a position on any symbol that already has an active position, regardless of exchange pair. Previously, same-pair add-ons were merged into existing positions — this caused issues with OKX delayed WS fill reports creating phantom positions and imbalances.
+
+### Added
+- **Balance enforcer in consolidator**: When consolidator detects >5% size imbalance between long and short legs after sync, it now trims the excess side via confirmed reduce-only market order. After trim: cancels old stop losses, updates local record, re-places SLs with correct sizes, broadcasts to dashboard.
+- **confirmFill timeout logging**: Detailed logs when confirmFill times out — shows WS status, REST query result, and cancel attempt. Helps diagnose OKX WS delayed fill reports.
+- **OKX REST avgPrice in GetOrderFilledQty**: REST fallback now parses `avgPx` and `state` from OKX order query and stores in orderStore, so confirmFill gets correct price even when WS is delayed.
+
+### Fixed
+- **Consolidator race protection**: `consolidatePosition` now checks `busySymbols` (entry + exit active) before processing. Previously only orphan closer checked this — size sync and balance enforcement could race with active trades.
+
 ## [0.13.2] - 2026-03-23
 
 ### Fixed
