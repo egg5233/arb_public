@@ -66,6 +66,28 @@ function App() {
     } catch { /* ignore */ }
   }, [api]);
 
+  const dismissUpdate = useCallback(() => {
+    if (updateInfo) {
+      localStorage.setItem(UPDATE_DISMISS_KEY, JSON.stringify({ version: updateInfo.latestVersion, time: Date.now() }));
+    }
+    setUpdateInfo(null);
+  }, [updateInfo]);
+
+  const handleUpdate = useCallback(async () => {
+    setUpdating(true);
+    setUpdateOutput('');
+    try {
+      const data = await api.performUpdate();
+      setUpdateOutput(data.output);
+      // Server will restart — wait and reload.
+      setTimeout(() => window.location.reload(), 5000);
+    } catch (err) {
+      setUpdateOutput(t('update.failed') + ': ' + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setUpdating(false);
+    }
+  }, [api, t]);
+
   // Seed WS state from REST on initial load, and refresh exchanges periodically.
   useEffect(() => {
     if (!api.token) return;
@@ -152,28 +174,6 @@ function App() {
         );
     }
   };
-
-  const dismissUpdate = useCallback(() => {
-    if (updateInfo) {
-      localStorage.setItem(UPDATE_DISMISS_KEY, JSON.stringify({ version: updateInfo.latestVersion, time: Date.now() }));
-    }
-    setUpdateInfo(null);
-  }, [updateInfo]);
-
-  const handleUpdate = useCallback(async () => {
-    setUpdating(true);
-    setUpdateOutput('');
-    try {
-      const data = await api.performUpdate();
-      setUpdateOutput(data.output);
-      // Server will restart — wait and reload.
-      setTimeout(() => window.location.reload(), 5000);
-    } catch (err: unknown) {
-      setUpdateOutput(t('update.failed') + ': ' + (err instanceof Error ? err.message : String(err)));
-    } finally {
-      setUpdating(false);
-    }
-  }, [api, t]);
 
   return (
     <LocaleContext.Provider value={{ locale, setLocale, t }}>

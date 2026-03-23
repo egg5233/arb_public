@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **Gate.io spot→futures transfer**: Added missing `settle: "usdt"` field to `/wallet/transfers` request body. Gate.io API requires this for futures transfers — was failing with `INVALID_PARAM_VALUE: Invalid settle`.
+- **Dashboard white page after login**: Fixed React Rules of Hooks violation — `useCallback` hooks for update banner were placed after conditional early return, causing React to crash with "Rendered fewer hooks than expected". Moved all hooks before the early return.
 
 ## [0.13.4] - 2026-03-23
 
