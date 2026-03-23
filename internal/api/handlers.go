@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -1013,4 +1015,136 @@ func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: map[string]string{"analysis": analysis}})
+}
+
+// handleCheckUpdate compares local VERSION with remote origin/main:VERSION.
+func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	currentVersion := strings.TrimSpace(readFileString("VERSION"))
+	if currentVersion == "" {
+		currentVersion = "unknown"
+	}
+
+	// git fetch origin main
+	cmd := exec.Command("git", "fetch", "origin", "main", "--quiet")
+	cmd.Dir = workingDir()
+	if err := cmd.Run(); err != nil {
+		writeJSON(w, http.StatusOK, Response{OK: true, Data: map[string]interface{}{
+			"currentVersion": currentVersion,
+			"latestVersion":  currentVersion,
+			"hasUpdate":      false,
+			"error":          fmt.Sprintf("git fetch failed: %v", err),
+		}})
+		return
+	}
+
+	// Read remote VERSION
+	latestVersion := currentVersion
+	cmd = exec.Command("git", "show", "origin/main:VERSION")
+	cmd.Dir = workingDir()
+	if out, err := cmd.Output(); err == nil {
+		latestVersion = strings.TrimSpace(string(out))
+	}
+
+	// Read remote CHANGELOG.md (first 3000 chars)
+	changelog := ""
+	cmd = exec.Command("git", "show", "origin/main:CHANGELOG.md")
+	cmd.Dir = workingDir()
+	if out, err := cmd.Output(); err == nil {
+		cl := string(out)
+		if len(cl) > 3000 {
+			cl = cl[:3000]
+		}
+		changelog = cl
+	}
+
+	hasUpdate := latestVersion != currentVersion
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: map[string]interface{}{
+		"currentVersion": currentVersion,
+		"latestVersion":  latestVersion,
+		"hasUpdate":      hasUpdate,
+		"changelog":      changelog,
+	}})
+}
+
+// handleUpdate performs git pull + make build + service restart.
+func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	dir := workingDir()
+	var steps []string
+
+	// Step 1: git fetch + reset
+	steps = append(steps, "> git fetch origin main")
+	cmd := exec.Command("git", "fetch", "origin", "main", "--quiet")
+	cmd.Dir = dir
+	if err := cmd.Run(); err != nil {
+		steps = append(steps, fmt.Sprintf("ERROR: %v", err))
+		writeJSON(w, http.StatusInternalServerError, Response{OK: false, Error: strings.Join(steps, "\n")})
+		return
+	}
+	steps = append(steps, "OK")
+
+	steps = append(steps, "> git reset --hard origin/main")
+	cmd = exec.Command("git", "reset", "--hard", "origin/main")
+	cmd.Dir = dir
+	if out, err := cmd.Output(); err != nil {
+		steps = append(steps, fmt.Sprintf("ERROR: %v", err))
+		writeJSON(w, http.StatusInternalServerError, Response{OK: false, Error: strings.Join(steps, "\n")})
+		return
+	} else {
+		steps = append(steps, strings.TrimSpace(string(out)))
+	}
+
+	// Step 2: make build
+	steps = append(steps, "> make build")
+	cmd = exec.Command("make", "build")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "PATH=/usr/local/go/bin:"+os.Getenv("PATH"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		steps = append(steps, string(out))
+		steps = append(steps, fmt.Sprintf("ERROR: %v", err))
+		writeJSON(w, http.StatusInternalServerError, Response{OK: false, Error: strings.Join(steps, "\n")})
+		return
+	}
+	steps = append(steps, "OK")
+
+	// Read new version
+	newVersion := strings.TrimSpace(readFileString("VERSION"))
+	steps = append(steps, fmt.Sprintf("\n更新完成: v%s", newVersion))
+	steps = append(steps, "2 秒後自動重啟...")
+
+	s.log.Info("update complete: v%s, restarting in 2s...", newVersion)
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: map[string]string{"output": strings.Join(steps, "\n")}})
+
+	// Exit after 2s — systemd (Restart=on-failure) will respawn with the new binary.
+	go func() {
+		time.Sleep(2 * time.Second)
+		os.Exit(1)
+	}()
+}
+
+// workingDir returns the current working directory.
+func workingDir() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	return dir
+}
+
+// readFileString reads a file and returns its content as string.
+func readFileString(name string) string {
+	data, err := os.ReadFile(name)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }

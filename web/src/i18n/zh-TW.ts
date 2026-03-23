@@ -288,6 +288,19 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.desc.aiModel': 'AI 診斷使用的模型名稱',
   'cfg.desc.aiMaxTokens': 'AI 回應最大 Token 數',
   'cfg.desc.aiApiKey': 'AI 服務的 API Key',
+
+  // Update
+  'update.available': 'v{version} 可用 — 點此更新',
+  'update.dismiss': '關閉',
+  'update.updating': '更新中...',
+  'update.title': '系統更新',
+  'update.changelog': '更新日誌',
+  'update.confirm': '立即更新',
+  'update.cancel': '取消',
+  'update.success': '更新完成，正在重啟...',
+  'update.failed': '更新失敗',
+  'update.checking': '正在檢查更新...',
+  'update.upToDate': '已是最新版本',
 };
 
 export default zhTW;

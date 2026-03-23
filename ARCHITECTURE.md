@@ -632,6 +632,8 @@ arb:reEnterCooldown:{symbol}        STRING  Re-entry cooldown flag (auto-expires
 | POST | `/api/transfer` | Execute cross-exchange withdrawal |
 | GET | `/api/transfers` | Transfer history |
 | GET | `/api/addresses` | Deposit addresses |
+| GET | `/api/check-update` | Compare local vs remote VERSION |
+| POST | `/api/update` | Git pull + make build + restart |
 
 **WebSocket Messages** (`/ws`):
 - `position_update` — single position change

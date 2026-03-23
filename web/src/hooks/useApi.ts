@@ -158,6 +158,14 @@ export function useApi() {
     return request<{ analysis: string }>('/api/diagnose', { method: 'POST' });
   }, []);
 
+  const checkUpdate = useCallback(() => {
+    return request<{ currentVersion: string; latestVersion: string; hasUpdate: boolean; changelog: string }>('/api/check-update');
+  }, []);
+
+  const performUpdate = useCallback(() => {
+    return request<{ output: string }>('/api/update', { method: 'POST' });
+  }, []);
+
   const logout = useCallback(() => {
     clearToken();
     _setToken(null);
@@ -182,5 +190,7 @@ export function useApi() {
     getLogs,
     getRejections,
     diagnose,
+    checkUpdate,
+    performUpdate,
   };
 }

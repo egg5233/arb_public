@@ -286,6 +286,19 @@ const en = {
   'cfg.desc.aiModel': 'Model name for AI diagnosis',
   'cfg.desc.aiMaxTokens': 'Max tokens for AI response',
   'cfg.desc.aiApiKey': 'API key for AI service',
+
+  // Update
+  'update.available': 'v{version} available — click to update',
+  'update.dismiss': 'Dismiss',
+  'update.updating': 'Updating...',
+  'update.title': 'System Update',
+  'update.changelog': 'Changelog',
+  'update.confirm': 'Update Now',
+  'update.cancel': 'Cancel',
+  'update.success': 'Update complete, restarting...',
+  'update.failed': 'Update failed',
+  'update.checking': 'Checking for updates...',
+  'update.upToDate': 'Already up to date',
 } as const;
 
 export type TranslationKey = keyof typeof en;

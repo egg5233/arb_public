@@ -86,6 +86,10 @@ func (s *Server) Start() {
 	// AI Diagnose
 	mux.HandleFunc("/api/diagnose", s.cors(s.authMiddleware(s.handleDiagnose)))
 
+	// System update
+	mux.HandleFunc("/api/check-update", s.cors(s.authMiddleware(s.handleCheckUpdate)))
+	mux.HandleFunc("/api/update", s.cors(s.authMiddleware(s.handleUpdate)))
+
 	// WebSocket
 	mux.HandleFunc("/ws", s.hub.HandleWS)
 

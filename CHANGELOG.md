@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.4] - 2026-03-23
+
+### Added
+- **Dashboard auto-update system**: Check for new versions from git remote and update from the dashboard.
+  - `GET /api/check-update` — compares local `VERSION` vs `origin/main:VERSION`, returns changelog
+  - `POST /api/update` — performs `git fetch` + `git reset --hard` + `make build`, then exits for systemd respawn
+  - Blue notification banner when update available, dismissible for 24h per version (localStorage)
+  - Update modal with changelog preview and progress output
+  - Auto-checks on login and every 30 minutes
+
 ## [0.13.3] - 2026-03-23
 
 ### Changed
