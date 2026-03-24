@@ -2,7 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.14.1] - 2026-03-24
+## [0.14.2] - 2026-03-24
+
+### Added
+- **Rotation PnL reconciliation**: `rotateLeg()` now triggers async `reconcileRotationPnL()` to query the old exchange's `GetClosePnL()` and store authoritative PnL in `RotationPnL`. Previously rotation PnL was always 0, causing final reconciled PnL to miss the rotated leg's contribution entirely.
+  - Narrow time window (±5min around rotation) to avoid picking up stale records
+  - Idempotent (set, not +=) to prevent double-counting on retry
+  - If position already closed when result arrives, recomputes `RealizedPnL`, updates stats and history
 
 ### Fixed
 - **Bybit PnL reconciliation double-counting funding**: Bybit's `closedPnl` already includes funding fees, but the adapter was adding `totalFunding` on top via `GetFundingFees()`. This inflated reconciled PnL by the Bybit-side funding amount. Fix: `NetPnL = closedPnl` (no longer adds funding). Funding query kept for `FundingCollected` reconciliation.

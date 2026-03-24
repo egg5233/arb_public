@@ -239,6 +239,7 @@ Rotation check flow:
    - **Min notional**: Skip if position notional < $10
    - **Min fill**: Skip if open fill < 50% of target size
 4. After rotation completes, `NextFunding` is updated from the new exchange to prevent stale timestamps.
+5. **Rotation PnL reconciliation**: After close, `reconcileRotationPnL()` asynchronously queries old exchange's `GetClosePnL()` (3 retries, narrow ±5min time window around rotation) and stores the authoritative PnL in `RotationPnL`. If position is already closed when the result arrives, recomputes `RealizedPnL`, updates stats and history.
 
 | Caller | Trigger | Action |
 |--------|---------|--------|

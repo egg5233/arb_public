@@ -1598,6 +1598,95 @@ updatePosition:
 	e.api.BroadcastPositionUpdate(pos)
 	e.log.Info("rotation complete for %s: %s leg %s → %s (size=%.6f entry=%.6f spread=%.1f bps/h)",
 		pos.ID, legSide, oldExchName, newExchName, openFilled, openAvg, opp.Spread)
+
+	// Reconcile rotation PnL from exchange data asynchronously.
+	rotationTime := time.Now().UTC()
+	go e.reconcileRotationPnL(pos.ID, oldExch, oldExchName, pos.Symbol, legSide, rotationTime)
+}
+
+// reconcileRotationPnL queries the old exchange's GetClosePnL to get the
+// authoritative PnL from the rotated-away leg and stores it in RotationPnL.
+// Uses a narrow time window around the rotation to avoid picking up stale records.
+// If the position is already closed, recomputes RealizedPnL and updates history.
+func (e *Engine) reconcileRotationPnL(posID string, oldExch exchange.Exchange, oldExchName, symbol, legSide string, rotationTime time.Time) {
+	// Query window: 2 minutes before rotation to capture the close record.
+	since := rotationTime.Add(-2 * time.Minute)
+
+	// Retry up to 3 times with increasing delays — exchange may not finalize immediately.
+	delays := []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second}
+	for attempt, delay := range delays {
+		time.Sleep(delay)
+
+		records, err := oldExch.GetClosePnL(symbol, since)
+		if err != nil {
+			e.log.Warn("rotation PnL reconcile %s [attempt %d]: %s GetClosePnL failed: %v",
+				posID, attempt+1, oldExchName, err)
+			continue
+		}
+
+		// Filter records to only those closed near the rotation time (±5 min).
+		var filtered []exchange.ClosePnL
+		for _, r := range records {
+			if r.Side == legSide && abs(r.CloseTime.Sub(rotationTime).Seconds()) < 300 {
+				filtered = append(filtered, r)
+			}
+		}
+		if len(filtered) == 0 {
+			e.log.Warn("rotation PnL reconcile %s [attempt %d]: no %s close record near rotation time on %s (total records=%d)",
+				posID, attempt+1, legSide, oldExchName, len(records))
+			continue
+		}
+
+		// Sum filtered records (handles partial fills that produce multiple records).
+		var rotPnL float64
+		for _, r := range filtered {
+			rotPnL += r.NetPnL
+		}
+
+		e.log.Info("rotation PnL reconcile %s [attempt %d]: %s on %s netPnL=%.4f (records=%d)",
+			posID, attempt+1, legSide, oldExchName, rotPnL, len(filtered))
+
+		if err := e.db.UpdatePositionFields(posID, func(fresh *models.ArbitragePosition) bool {
+			fresh.RotationPnL = rotPnL // set, not +=, to be idempotent
+			fresh.UpdatedAt = time.Now().UTC()
+			return true
+		}); err != nil {
+			e.log.Error("rotation PnL reconcile %s: failed to update: %v", posID, err)
+			return
+		}
+		e.log.Info("rotation PnL reconcile %s: RotationPnL set to %.4f", posID, rotPnL)
+
+		// If position is already closed, recompute RealizedPnL with the new RotationPnL.
+		pos, err := e.db.GetPosition(posID)
+		if err != nil {
+			return
+		}
+		if pos.Status == models.StatusClosed {
+			oldPnL := pos.RealizedPnL
+			newPnL := oldPnL + rotPnL
+			e.log.Info("rotation PnL reconcile %s: position already closed, correcting PnL %.4f → %.4f",
+				posID, oldPnL, newPnL)
+			if err := e.db.UpdatePositionFields(posID, func(fresh *models.ArbitragePosition) bool {
+				fresh.RealizedPnL += rotPnL
+				return true
+			}); err != nil {
+				e.log.Error("rotation PnL reconcile %s: failed to correct closed PnL: %v", posID, err)
+				return
+			}
+			// Update stats and history.
+			if err := e.db.UpdateStats(rotPnL, false); err != nil {
+				e.log.Error("rotation PnL reconcile %s: failed to update stats: %v", posID, err)
+			}
+			updated, err := e.db.GetPosition(posID)
+			if err == nil && updated != nil {
+				if err := e.db.UpdateHistoryEntry(updated); err != nil {
+					e.log.Error("rotation PnL reconcile %s: failed to update history: %v", posID, err)
+				}
+			}
+		}
+		return
+	}
+	e.log.Error("rotation PnL reconcile %s: all attempts failed for %s on %s", posID, legSide, oldExchName)
 }
 
 // updateRotationStopLoss cancels the old SL on the rotated-away exchange and
