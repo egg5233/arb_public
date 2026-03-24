@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"arb/pkg/exchange"
@@ -127,7 +128,7 @@ func (b *Adapter) handlePrivateMessage(msg []byte) {
 		b.orderStore.Store(oid, exchange.OrderUpdate{
 			OrderID:      oid,
 			ClientOID:    o.ClientOrderID,
-			Status:       o.OrderStatus,
+			Status:       strings.ToLower(o.OrderStatus),
 			FilledVolume: filledVol,
 			AvgPrice:     avgPrice,
 		})

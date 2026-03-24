@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.6] - 2026-03-24
+
+### Fixed
+- **Binance WS order status case mismatch**: Binance sends uppercase status (`FILLED`, `CANCELED`) but `confirmFill` checks lowercase — every Binance fill timed out, attempted unnecessary cancel + REST fallback (+300ms latency). Normalized to lowercase in `ws_private.go` orderStore. Could have caused imbalance if REST also failed.
+- **Bitget WS order status normalization**: Same class of exposure — raw status stored without normalization. Added `strings.ToLower()` for consistency with other adapters (Bybit, BingX, OKX, Gate.io already normalize).
+
 ## [0.13.5] - 2026-03-23
 
 ### Fixed

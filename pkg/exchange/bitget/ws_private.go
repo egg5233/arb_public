@@ -191,7 +191,7 @@ func (ws *WSPrivateClient) handlePrivateMessage(msg []byte) {
 		info := orderInfo{
 			OrderID:      orderID,
 			ClientOID:    clientOid,
-			Status:       status,
+			Status:       strings.ToLower(status),
 			FilledVolume: filled,
 			AvgPrice:     avgPrice,
 		}
