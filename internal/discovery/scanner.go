@@ -787,6 +787,26 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 		verified = backtested
 	}
 
+	// 8. Filter delisted coins (all scan types — block from appearing anywhere).
+	{
+		var notDelisted []models.Opportunity
+		for _, opp := range verified {
+			if s.IsDelisted(opp.Symbol) {
+				s.log.Warn("filtering %s (%s/%s): coin delisting on Binance (date: %s)",
+					opp.Symbol, opp.LongExchange, opp.ShortExchange, s.GetDelistDate(opp.Symbol))
+				if s.rejStore != nil {
+					s.rejStore.AddOpp(opp, "scanner", "coin delisting on Binance")
+				}
+				continue
+			}
+			notDelisted = append(notDelisted, opp)
+		}
+		if len(notDelisted) < len(verified) {
+			s.log.Info("Delist filter: %d/%d passed", len(notDelisted), len(verified))
+		}
+		verified = notDelisted
+	}
+
 	for i, opp := range verified {
 		s.log.Info("  [%d] %s (%s) | Long: %s (%.4f bps/h) | Short: %s (%.4f bps/h) | Spread: %.4f bps/h | Interval: %.0fh | CostRatio: %.4f | OIRank: %d | Score: %.4f | NextFunding: %s",
 			i+1, opp.Symbol, opp.Source, opp.LongExchange, opp.LongRate, opp.ShortExchange, opp.ShortRate,

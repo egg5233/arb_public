@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.1] - 2026-03-24
+
+### Added
+- **Binance delist detection & auto-protection**: Background goroutine polls Binance CMS API (`catalogId=161`) every 6h for delisting announcements.
+  - Parses coin names from spot delist titles ("Will Delist X, Y on DATE") and futures delist titles ("XUSD Perpetual Contracts")
+  - Maintains Redis blacklist (`arb:delist:{SYMBOL}`) with TTL until delist date + 7 days
+  - Scanner filter rejects all opportunities with blacklisted symbols (all scan types)
+  - Engine auto-exits active positions with Binance legs via emergency market close
+  - Dashboard alert broadcast on delist-triggered emergency close
+  - Exit goroutine preemption before emergency close (reuses L4/L5 safety pattern)
+
 ## [0.15.0] - 2026-03-24
 
 ### Added

@@ -183,6 +183,7 @@ func main() {
 
 	// Start all components in order
 	scanner.Start()
+	scanner.StartDelistMonitor()
 	log.Info("Discovery scanner started")
 
 	riskMon.Start()

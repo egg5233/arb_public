@@ -581,6 +581,9 @@ func (e *Engine) run() {
 			e.api.SetOpportunities(result.Opps)
 			e.api.BroadcastOpportunities(result.Opps)
 
+			// Check for delisted coins in active positions.
+			e.checkDelistPositions()
+
 			switch result.Type {
 			case discovery.RebalanceScan:
 				e.rebalanceFunds()
@@ -689,6 +692,44 @@ func (e *Engine) cancelExitGoroutine(posID string) {
 		e.log.Info("cancelling exit goroutine for %s (preempted by L4/L5)", posID)
 		cancel()
 		time.Sleep(500 * time.Millisecond) // grace period for cleanup
+	}
+}
+
+// checkDelistPositions checks if any active positions hold coins being delisted
+// on Binance. If so, preempts any exit goroutine and triggers emergency close.
+func (e *Engine) checkDelistPositions() {
+	positions, err := e.db.GetActivePositions()
+	if err != nil {
+		return
+	}
+	for _, pos := range positions {
+		if !e.discovery.IsDelisted(pos.Symbol) {
+			continue
+		}
+		// Only auto-exit if Binance is one of the legs.
+		if pos.LongExchange != "binance" && pos.ShortExchange != "binance" {
+			e.log.Warn("DELIST WARNING: %s delisting but no Binance leg (%s/%s), skipping auto-exit",
+				pos.Symbol, pos.LongExchange, pos.ShortExchange)
+			continue
+		}
+		// Skip if already closing.
+		if pos.Status == models.StatusClosing || pos.Status == models.StatusClosed {
+			continue
+		}
+		e.log.Warn("DELIST ALERT: %s is being delisted on Binance, emergency closing %s (%s/%s)",
+			pos.Symbol, pos.ID, pos.LongExchange, pos.ShortExchange)
+
+		// Preempt any running exit goroutine.
+		e.cancelExitGoroutine(pos.ID)
+
+		// Broadcast alert to dashboard.
+		e.api.BroadcastAlert(map[string]string{
+			"type":    "delist",
+			"symbol":  pos.Symbol,
+			"message": fmt.Sprintf("Binance delisting %s — emergency closing %s", pos.Symbol, pos.ID),
+		})
+
+		go e.closePositionEmergency(pos)
 	}
 }
 
