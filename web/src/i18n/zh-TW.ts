@@ -278,6 +278,10 @@ const zhTW: Record<TranslationKey, string> = {
   'xfer.fee': '手續費',
   'xfer.statusCol': '狀態',
   'xfer.txId': '交易ID',
+  'xfer.addresses': '充值地址',
+  'xfer.exchange': '交易所',
+  'xfer.saveAddresses': '儲存地址',
+  'xfer.addrSaved': '地址已儲存',
 
   // AI Diagnose
   'ai.diagnose': 'AI 診斷',

@@ -146,6 +146,13 @@ export function useApi() {
     return rawRequest<ApiResponse<Record<string, Record<string, string>>>>('/api/addresses');
   }, []);
 
+  const updateAddresses = useCallback((data: Record<string, Record<string, string>>) => {
+    return request<Record<string, Record<string, string>>>('/api/addresses', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }, []);
+
   const getLogs = useCallback((limit = 200) => {
     return request<LogEntry[]>(`/api/logs?limit=${limit}`);
   }, []);
@@ -187,6 +194,7 @@ export function useApi() {
     transfer,
     getTransfers,
     getAddresses,
+    updateAddresses,
     getLogs,
     getRejections,
     diagnose,

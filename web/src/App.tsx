@@ -153,6 +153,7 @@ function App() {
             transfer={api.transfer}
             getTransfers={api.getTransfers}
             getAddresses={api.getAddresses}
+            updateAddresses={api.updateAddresses}
           />
         );
       case 'logs':

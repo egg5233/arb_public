@@ -276,6 +276,10 @@ const en = {
   'xfer.fee': 'Fee',
   'xfer.statusCol': 'Status',
   'xfer.txId': 'TX ID',
+  'xfer.addresses': 'Deposit Addresses',
+  'xfer.exchange': 'Exchange',
+  'xfer.saveAddresses': 'Save Addresses',
+  'xfer.addrSaved': 'Addresses saved',
 
   // AI Diagnose
   'ai.diagnose': 'AI Diagnose',

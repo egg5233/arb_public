@@ -6,12 +6,13 @@ interface TransfersProps {
   transfer: (data: { from: string; to: string; coin: string; chain: string; amount: string }) => Promise<unknown>;
   getTransfers: (limit?: number) => Promise<unknown>;
   getAddresses: () => Promise<unknown>;
+  updateAddresses: (data: Record<string, Record<string, string>>) => Promise<unknown>;
 }
 
-const EXCHANGES = ['binance', 'bitget', 'bybit', 'gateio', 'okx'];
-const CHAINS = ['BEP20', 'APT'];
+const EXCHANGES = ['binance', 'bitget', 'bybit', 'gateio', 'okx', 'bingx'];
+const CHAINS = ['APT', 'BEP20'];
 
-const Transfers: FC<TransfersProps> = ({ transfer, getTransfers, getAddresses }) => {
+const Transfers: FC<TransfersProps> = ({ transfer, getTransfers, getAddresses, updateAddresses }) => {
   const { t } = useLocale();
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
@@ -22,6 +23,9 @@ const Transfers: FC<TransfersProps> = ({ transfer, getTransfers, getAddresses })
   const [success, setSuccess] = useState('');
   const [history, setHistory] = useState<TransferRecord[]>([]);
   const [addresses, setAddresses] = useState<Record<string, Record<string, string>>>({});
+  const [editAddresses, setEditAddresses] = useState<Record<string, Record<string, string>>>({});
+  const [addrSaving, setAddrSaving] = useState(false);
+  const [addrMsg, setAddrMsg] = useState('');
 
   useEffect(() => {
     loadData();
@@ -36,7 +40,22 @@ const Transfers: FC<TransfersProps> = ({ transfer, getTransfers, getAddresses })
       const tData = transfersRes as { ok: boolean; data: TransferRecord[] };
       const aData = addrsRes as { ok: boolean; data: Record<string, Record<string, string>> };
       if (tData?.data) setHistory(tData.data);
-      if (aData?.data) setAddresses(aData.data);
+      if (aData?.data) {
+        setAddresses(aData.data);
+        // Deep clone for editing
+        const clone: Record<string, Record<string, string>> = {};
+        for (const [exch, chains] of Object.entries(aData.data)) {
+          clone[exch] = { ...chains };
+        }
+        // Ensure all exchanges have entries for all chains
+        for (const exch of EXCHANGES) {
+          if (!clone[exch]) clone[exch] = {};
+          for (const c of CHAINS) {
+            if (!clone[exch][c]) clone[exch][c] = '';
+          }
+        }
+        setEditAddresses(clone);
+      }
     } catch {
       // ignore
     }
@@ -165,6 +184,72 @@ const Transfers: FC<TransfersProps> = ({ transfer, getTransfers, getAddresses })
             {success}
           </div>
         )}
+      </div>
+
+      {/* Deposit Addresses */}
+      <div className="bg-gray-900 rounded-lg border border-gray-800 p-6 mb-6">
+        <h3 className="text-sm font-semibold text-gray-400 uppercase mb-4">{t('xfer.addresses')}</h3>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-800 text-gray-400 text-xs uppercase">
+                <th className="text-left px-3 py-2">{t('xfer.exchange')}</th>
+                {CHAINS.map((c) => (
+                  <th key={c} className="text-left px-3 py-2">{c}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {EXCHANGES.map((exch) => (
+                <tr key={exch} className="border-b border-gray-800/50">
+                  <td className="px-3 py-2 text-gray-100 font-medium">{exch}</td>
+                  {CHAINS.map((c) => (
+                    <td key={c} className="px-3 py-1">
+                      <input
+                        type="text"
+                        value={editAddresses[exch]?.[c] || ''}
+                        onChange={(e) => {
+                          setEditAddresses((prev) => ({
+                            ...prev,
+                            [exch]: { ...prev[exch], [c]: e.target.value },
+                          }));
+                        }}
+                        placeholder={`${exch} ${c} address`}
+                        className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-100 font-mono placeholder-gray-600"
+                      />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="mt-4 flex items-center gap-3">
+          <button
+            onClick={async () => {
+              setAddrSaving(true);
+              setAddrMsg('');
+              try {
+                await updateAddresses(editAddresses);
+                setAddrMsg(t('xfer.addrSaved'));
+                loadData();
+              } catch (err) {
+                setAddrMsg(String(err));
+              } finally {
+                setAddrSaving(false);
+              }
+            }}
+            disabled={addrSaving}
+            className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 text-white px-4 py-2 rounded text-sm font-medium transition-colors"
+          >
+            {addrSaving ? '...' : t('xfer.saveAddresses')}
+          </button>
+          {addrMsg && (
+            <span className={`text-sm ${addrMsg.includes('Error') ? 'text-red-400' : 'text-green-400'}`}>
+              {addrMsg}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Transfer History */}

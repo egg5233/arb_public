@@ -892,10 +892,51 @@ func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: entries})
 }
 
+// handleAddresses routes GET and POST to the appropriate handler.
+func (s *Server) handleAddresses(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleGetAddresses(w, r)
+	case http.MethodPost, http.MethodPut:
+		s.handlePostAddresses(w, r)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 // handleGetAddresses returns configured deposit addresses for all exchanges.
 func (s *Server) handleGetAddresses(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: s.cfg.ExchangeAddresses})
+}
+
+// handlePostAddresses updates deposit addresses for exchanges.
+// Expects: { "binance": { "APT": "0x...", "BEP20": "0x..." }, ... }
+func (s *Server) handlePostAddresses(w http.ResponseWriter, r *http.Request) {
+	var updates map[string]map[string]string
+	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "invalid JSON"})
+		return
+	}
+
+	if s.cfg.ExchangeAddresses == nil {
+		s.cfg.ExchangeAddresses = make(map[string]map[string]string)
+	}
+
+	for exch, chains := range updates {
+		if s.cfg.ExchangeAddresses[exch] == nil {
+			s.cfg.ExchangeAddresses[exch] = make(map[string]string)
+		}
+		for chain, addr := range chains {
+			if addr == "" {
+				delete(s.cfg.ExchangeAddresses[exch], chain)
+			} else {
+				s.cfg.ExchangeAddresses[exch][chain] = addr
+			}
+		}
+	}
+
+	if err := s.cfg.SaveJSON(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, Response{Error: "failed to save: " + err.Error()})
 		return
 	}
 

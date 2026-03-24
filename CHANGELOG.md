@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.3] - 2026-03-24
+
+### Added
+- **Editable deposit addresses in dashboard**: Transfers page now includes a "Deposit Addresses" section where users can view and edit APT/BEP20 addresses for all 6 exchanges. Saved to config.json via `POST /api/addresses`.
+
 ## [0.15.2] - 2026-03-24
 
 ### Added

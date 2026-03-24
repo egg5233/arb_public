@@ -75,7 +75,7 @@ func (s *Server) Start() {
 	// Transfer routes
 	mux.HandleFunc("/api/transfer", s.cors(s.authMiddleware(s.handleTransfer)))
 	mux.HandleFunc("/api/transfers", s.cors(s.authMiddleware(s.handleGetTransfers)))
-	mux.HandleFunc("/api/addresses", s.cors(s.authMiddleware(s.handleGetAddresses)))
+	mux.HandleFunc("/api/addresses", s.cors(s.authMiddleware(s.handleAddresses)))
 
 	// Logs
 	mux.HandleFunc("/api/logs", s.cors(s.authMiddleware(s.handleGetLogs)))
