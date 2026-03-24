@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import type { FC } from 'react';
 import type { Position } from '../types.ts';
 import { useLocale } from '../i18n/index.ts';
+import { ExchangeLink } from '../utils/tradingUrl.tsx';
 
 interface HistoryProps {
   getHistory: (limit: number) => Promise<Position[]>;
@@ -73,8 +74,8 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
                 <td className="py-2 text-gray-400 text-xs">{new Date(tr.created_at).toLocaleString()}</td>
                 <td className="py-2 text-gray-400 text-xs">{new Date(tr.updated_at).toLocaleString()}</td>
                 <td className="py-2 font-mono">{tr.symbol}</td>
-                <td className="py-2 text-green-400 text-xs">{tr.long_exchange}</td>
-                <td className="py-2 text-red-400 text-xs">{tr.short_exchange}</td>
+                <td className="py-2 text-green-400 text-xs"><ExchangeLink exchange={tr.long_exchange} symbol={tr.symbol} /></td>
+                <td className="py-2 text-red-400 text-xs"><ExchangeLink exchange={tr.short_exchange} symbol={tr.symbol} /></td>
                 <td className="py-2 text-right font-mono text-xs text-gray-300">
                   {tr.long_entry > 0 ? tr.long_entry.toPrecision(6) : '-'}
                   {tr.long_exit > 0 ? ` → ${tr.long_exit.toPrecision(6)}` : ''}

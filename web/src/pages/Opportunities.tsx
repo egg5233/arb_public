@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, type FC } from 'react';
 import type { Opportunity } from '../types.ts';
 import { useLocale } from '../i18n/index.ts';
+import { ExchangeLink } from '../utils/tradingUrl.tsx';
 
 interface OpportunitiesProps {
   opportunities: Opportunity[];
@@ -96,8 +97,8 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, onOpen }) => {
               <tr key={`${opp.symbol}-${opp.long_exchange}-${opp.short_exchange}`} className={`text-gray-100 ${scoreColor(opp.score)}`}>
                 <td className="py-2 font-mono text-gray-500">{i + 1}</td>
                 <td className="py-2 font-mono">{opp.symbol}</td>
-                <td className="py-2 text-green-400">{opp.long_exchange}</td>
-                <td className="py-2 text-red-400">{opp.short_exchange}</td>
+                <td className="py-2 text-green-400"><ExchangeLink exchange={opp.long_exchange} symbol={opp.symbol} /></td>
+                <td className="py-2 text-red-400"><ExchangeLink exchange={opp.short_exchange} symbol={opp.symbol} /></td>
                 <td className="py-2 text-right font-mono text-gray-400">{opp.long_rate.toFixed(2)}</td>
                 <td className="py-2 text-right font-mono text-gray-400">{opp.short_rate.toFixed(2)}</td>
                 <td className="py-2 text-right font-mono font-semibold">{opp.spread.toFixed(1)} bps/h</td>

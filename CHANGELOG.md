@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.3] - 2026-03-24
+
+### Changed
+- **Clickable exchange links on all pages**: Exchange names in Opportunities and Trade History pages are now clickable links that open the trading page (same as Positions page). Extracted `tradingUrl` and `ExchangeLink` to shared utility `web/src/utils/tradingUrl.tsx`.
+
 ## [0.14.2] - 2026-03-24
 
 ### Added

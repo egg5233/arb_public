@@ -1,6 +1,7 @@
 import { useState, type FC } from 'react';
 import type { Position } from '../types.ts';
 import { useLocale } from '../i18n/index.ts';
+import { tradingUrl } from '../utils/tradingUrl.tsx';
 
 
 interface PositionsProps {
@@ -32,28 +33,6 @@ function formatPrice(price: number): string {
   if (price >= 100) return price.toFixed(2);
   if (price >= 1) return price.toFixed(4);
   return price.toFixed(6);
-}
-
-function tradingUrl(exchange: string, symbol: string): string {
-  // symbol is always in unified format e.g. BTCUSDT
-  const base = symbol.replace(/USDT$/, '');
-  const lc = base.toLowerCase();
-  switch (exchange) {
-    case 'binance':
-      return `https://www.binance.com/futures/${symbol}`;
-    case 'bybit':
-      return `https://www.bybit.com/trade/usdt/${symbol}`;
-    case 'gateio':
-      return `https://www.gate.io/futures/usdt/${base}_USDT`;
-    case 'bitget':
-      return `https://www.bitget.com/futures/usdt/${symbol}`;
-    case 'okx':
-      return `https://www.okx.com/trade-swap/${lc}-usdt-swap`;
-    case 'bingx':
-      return `https://bingx.com/perpetual/${base}-USDT`;
-    default:
-      return '#';
-  }
 }
 
 const Positions: FC<PositionsProps> = ({ positions, onClose }) => {
