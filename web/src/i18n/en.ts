@@ -175,6 +175,8 @@ const en = {
   'cfg.field.stabilityOIRank8h': 'Stability OI Rank 8h',
   'cfg.field.lossCooldownHours': 'Loss Cooldown',
   'cfg.field.reEnterCooldownHours': 'Re-Enter Cooldown',
+  'cfg.field.backtestDays': 'Backtest Days',
+  'cfg.field.backtestMinProfit': 'Backtest Min Profit',
   'cfg.field.dryRun': 'Dry Run',
 
   // Config field descriptions (tooltips)
@@ -201,6 +203,8 @@ const en = {
   'cfg.desc.stabilityOIRank8h': 'Max OI rank for 8h symbols to pass stability filter. 0 = disabled',
   'cfg.desc.lossCooldownHours': 'After closing a position at a loss, block re-entry on the same symbol for this many hours. Prevents repeated losses on the same symbol. 0 = disabled',
   'cfg.desc.reEnterCooldownHours': 'After closing any position (win or loss), block re-entry on the same symbol for this many hours. 0 = disabled',
+  'cfg.desc.backtestDays': 'Days of historical funding data to check before entry. Rejects coins with unprofitable funding spread history. 0 = disabled',
+  'cfg.desc.backtestMinProfit': 'Minimum cumulative net profit from historical funding to pass the backtest filter',
   'cfg.desc.rebalanceScanMinute': 'Minute mark within each hour that triggers fund rebalancing across exchanges',
   'cfg.desc.exitScanMinute': 'Minute mark that triggers exit condition checks on active positions',
   'cfg.desc.entryScanMinute': 'Minute mark that triggers trade execution for qualified opportunities',

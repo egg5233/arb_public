@@ -245,6 +245,8 @@ type configEntryResponse struct {
 	EntryTimeoutSec      int     `json:"entry_timeout_sec"`
 	LossCooldownHours    float64 `json:"loss_cooldown_hours"`
 	ReEnterCooldownHours float64 `json:"re_enter_cooldown_hours"`
+	BacktestDays         int     `json:"backtest_days"`
+	BacktestMinProfit    float64 `json:"backtest_min_profit"`
 }
 
 type configExitResponse struct {
@@ -311,8 +313,10 @@ func (s *Server) buildConfigResponse() configResponse {
 				SlippageLimitBPS:     s.cfg.SlippageBPS,
 				MinChunkUSDT:        s.cfg.MinChunkUSDT,
 				EntryTimeoutSec:     s.cfg.EntryTimeoutSec,
-				LossCooldownHours:   s.cfg.LossCooldownHours,
+				LossCooldownHours:    s.cfg.LossCooldownHours,
 				ReEnterCooldownHours: s.cfg.ReEnterCooldownHours,
+				BacktestDays:         s.cfg.BacktestDays,
+				BacktestMinProfit:    s.cfg.BacktestMinProfit,
 			},
 			Exit: configExitResponse{
 				DepthTimeoutSec:         s.cfg.ExitDepthTimeoutSec,
@@ -414,6 +418,8 @@ type entryUpdate struct {
 	EntryTimeoutSec      *int     `json:"entry_timeout_sec"`
 	LossCooldownHours    *float64 `json:"loss_cooldown_hours"`
 	ReEnterCooldownHours *float64 `json:"re_enter_cooldown_hours"`
+	BacktestDays         *int     `json:"backtest_days"`
+	BacktestMinProfit    *float64 `json:"backtest_min_profit"`
 }
 
 type exitUpdate struct {
@@ -555,6 +561,12 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 			if e.ReEnterCooldownHours != nil && *e.ReEnterCooldownHours >= 0 {
 				s.cfg.ReEnterCooldownHours = *e.ReEnterCooldownHours
 			}
+			if e.BacktestDays != nil && *e.BacktestDays >= 0 {
+				s.cfg.BacktestDays = *e.BacktestDays
+			}
+			if e.BacktestMinProfit != nil {
+				s.cfg.BacktestMinProfit = *e.BacktestMinProfit
+			}
 		}
 		if x := st.Exit; x != nil {
 			if x.DepthTimeoutSec != nil && *x.DepthTimeoutSec > 0 {
@@ -666,6 +678,8 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"funding_window_min":            strconv.Itoa(snapshot.Strategy.Discovery.Persistence.FundingWindowMin),
 		"loss_cooldown_hours":           strconv.FormatFloat(snapshot.Strategy.Entry.LossCooldownHours, 'f', -1, 64),
 		"re_enter_cooldown_hours":       strconv.FormatFloat(snapshot.Strategy.Entry.ReEnterCooldownHours, 'f', -1, 64),
+		"backtest_days":                 strconv.Itoa(snapshot.Strategy.Entry.BacktestDays),
+		"backtest_min_profit":           strconv.FormatFloat(snapshot.Strategy.Entry.BacktestMinProfit, 'f', -1, 64),
 	}
 
 	if err := s.db.SetConfigFields(fields); err != nil {

@@ -77,6 +77,8 @@ const SECTIONS: SectionDef[] = [
       { path: ['strategy', 'entry', 'order_advance_min'], labelKey: 'cfg.field.orderAdvance', unit: 'min' },
       { path: ['strategy', 'entry', 'loss_cooldown_hours'], labelKey: 'cfg.field.lossCooldownHours', descKey: 'cfg.desc.lossCooldownHours', unit: 'h' },
       { path: ['strategy', 'entry', 're_enter_cooldown_hours'], labelKey: 'cfg.field.reEnterCooldownHours', descKey: 'cfg.desc.reEnterCooldownHours', unit: 'h' },
+      { path: ['strategy', 'entry', 'backtest_days'], labelKey: 'cfg.field.backtestDays', descKey: 'cfg.desc.backtestDays', unit: 'd' },
+      { path: ['strategy', 'entry', 'backtest_min_profit'], labelKey: 'cfg.field.backtestMinProfit', descKey: 'cfg.desc.backtestMinProfit' },
     ],
   },
   {

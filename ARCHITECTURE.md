@@ -43,6 +43,7 @@ Funding intervals are **per-symbol per-exchange**, NOT static:
 7. **Spread volatility filter** (on entry scan only): Computes coefficient of variation (population stddev / mean) of spread values across scans within the tier-appropriate lookback. Rejects if CV > `SpreadVolatilityMaxCV` (default 0.5). Requires `SpreadVolatilityMinSamples` (default 3) data points. Catches erratic rate spikes.
 8. **Symbol cooldown filter** (on entry scan only): Rejects if the symbol is in any cooldown. Two types: **Loss cooldown** (`LossCooldownHours`, default 4.0) — set after closing at a loss. **Re-enter cooldown** (`ReEnterCooldownHours`, default 0, disabled) — set after any close. Both persisted to Redis with TTL (`arb:lossCooldown:{symbol}`, `arb:reEnterCooldown:{symbol}`).
 9. **Funding window filter** (on entry scan only): Drop opportunities with `NextFunding > FundingWindowMin` (default 30min) away
+10. **Historical backtest filter** (on entry scan only): Fetches X days (default 3, `BacktestDays`) of historical funding settlement data from Loris API. Validates each leg independently against its own settlement schedule, sums cash flows, and rejects if `netProfit = shortSumY - longSumY <= BacktestMinProfit`. Results cached in Redis with 6h TTL.
 
 **Profitability Filter**:
 ```

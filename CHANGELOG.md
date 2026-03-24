@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.0] - 2026-03-24
+
+### Added
+- **Historical funding backtest filter**: Before opening a position, checks if the coin's funding spread has been historically profitable over the past X days using Loris historical API.
+  - Fetches settlement data from `loris.tools/api/funding/historical`
+  - Validates each leg independently using per-leg funding intervals
+  - Rounds timestamps to nearest hour for jitter tolerance, deduplicates
+  - Coverage check: skips filter if <50% of expected settlements found
+  - Profitability: `netProfit = shortSumY - longSumY > BacktestMinProfit`
+  - Redis cache with 6h TTL (stores raw sums, re-evaluates pass/fail on read)
+  - Config: `BacktestDays` (default 3, 0=disabled), `BacktestMinProfit` (default 0)
+  - Dashboard config support in entry section
+
 ## [0.14.3] - 2026-03-24
 
 ### Changed

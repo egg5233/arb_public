@@ -57,3 +57,17 @@ func (c *Client) JSONGet(key string) ([]byte, error) {
 	}
 	return []byte(result), nil
 }
+
+// Get retrieves a simple string value from Redis.
+func (c *Client) Get(key string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return c.rdb.Get(ctx, key).Result()
+}
+
+// SetWithTTL stores a string value in Redis with the given TTL.
+func (c *Client) SetWithTTL(key, value string, ttl time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return c.rdb.Set(ctx, key, value, ttl).Err()
+}

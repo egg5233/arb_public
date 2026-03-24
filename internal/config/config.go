@@ -78,6 +78,8 @@ type Config struct {
 	FundingWindowMin           int     // max minutes before funding to allow entry (default 30)
 	LossCooldownHours          float64 // hours to blacklist symbol after loss close (default 4.0)
 	ReEnterCooldownHours       float64 // hours to block re-entry on same symbol after any close (default 0, disabled)
+	BacktestDays               int     // days of historical funding to check (default 3, 0 = disabled)
+	BacktestMinProfit          float64 // minimum net profit to pass backtest filter (default 0)
 
 	// Scan schedule
 	ScanMinutes      []int // minutes within each hour when scans fire (default [5,15,25,35,45,55])
@@ -210,6 +212,8 @@ type jsonEntry struct {
 	EntryTimeoutSec      *int     `json:"entry_timeout_sec"`
 	LossCooldownHours    *float64 `json:"loss_cooldown_hours"`
 	ReEnterCooldownHours *float64 `json:"re_enter_cooldown_hours"`
+	BacktestDays         *int     `json:"backtest_days"`
+	BacktestMinProfit    *float64 `json:"backtest_min_profit"`
 }
 
 type jsonExit struct {
@@ -272,6 +276,7 @@ func Load() *Config {
 		SpreadVolatilityMinSamples: 3,
 		FundingWindowMin:           30,
 		LossCooldownHours:          4.0,
+		BacktestDays:               3,
 		ScanMinutes:             []int{5, 15, 25, 35, 45, 55},
 		EntryScanMinute:         35,
 		ExitScanMinute:          25,
@@ -459,6 +464,12 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 			}
 			if e.ReEnterCooldownHours != nil {
 				c.ReEnterCooldownHours = *e.ReEnterCooldownHours
+			}
+			if e.BacktestDays != nil {
+				c.BacktestDays = *e.BacktestDays
+			}
+			if e.BacktestMinProfit != nil {
+				c.BacktestMinProfit = *e.BacktestMinProfit
 			}
 		}
 
@@ -680,6 +691,8 @@ func (c *Config) SaveJSON() error {
 	entry["entry_timeout_sec"] = c.EntryTimeoutSec
 	entry["loss_cooldown_hours"] = c.LossCooldownHours
 	entry["re_enter_cooldown_hours"] = c.ReEnterCooldownHours
+	entry["backtest_days"] = c.BacktestDays
+	entry["backtest_min_profit"] = c.BacktestMinProfit
 
 	exit := getMap(strategy, "exit")
 	exit["depth_timeout_sec"] = c.ExitDepthTimeoutSec

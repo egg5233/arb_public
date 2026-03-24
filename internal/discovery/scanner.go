@@ -68,6 +68,9 @@ type Scanner struct {
 	scanHistory   map[string][]scanRecord // oppKey → scan records (time + spread)
 	scanHistoryMu sync.Mutex
 
+	lastLorisIntervals map[string]map[string]float64 // exchange → symbol → interval hours
+	intervalsMu        sync.RWMutex
+
 	oppChan  chan ScanResult
 	stopCh   chan struct{}
 	wg       sync.WaitGroup
@@ -630,6 +633,13 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 	if loris != nil {
 		s.log.Info("Polled Loris: %d symbols", len(loris.Symbols))
 		lorisOpps = s.RankOpportunities(loris)
+
+		// Cache funding intervals for backtest settlement validation.
+		if loris.FundingIntervals != nil {
+			s.intervalsMu.Lock()
+			s.lastLorisIntervals = loris.FundingIntervals
+			s.intervalsMu.Unlock()
+		}
 	}
 
 	// 2. Poll CoinGlass from Redis
@@ -757,6 +767,24 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 		}
 		s.log.Info("Funding filter: %d/%d have imminent funding", len(imminent), len(verified))
 		verified = imminent
+	}
+
+	// 7. On entry scan, apply historical backtest filter.
+	if scanType == EntryScan && s.cfg.BacktestDays > 0 {
+		var backtested []models.Opportunity
+		for _, opp := range verified {
+			if pass, reason := s.backtestFundingHistory(opp); pass {
+				backtested = append(backtested, opp)
+			} else {
+				s.log.Info("filtering %s (%s/%s): %s",
+					opp.Symbol, opp.LongExchange, opp.ShortExchange, reason)
+				if s.rejStore != nil {
+					s.rejStore.AddOpp(opp, "scanner", reason)
+				}
+			}
+		}
+		s.log.Info("Backtest filter: %d/%d passed", len(backtested), len(verified))
+		verified = backtested
 	}
 
 	for i, opp := range verified {

@@ -177,6 +177,8 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.field.stabilityOIRank8h': '穩定性OI排名 8h',
   'cfg.field.lossCooldownHours': '虧損冷卻',
   'cfg.field.reEnterCooldownHours': '重入冷卻',
+  'cfg.field.backtestDays': '回測天數',
+  'cfg.field.backtestMinProfit': '回測最低利潤',
   'cfg.field.dryRun': '模擬模式',
 
   // Config field descriptions (tooltips)
@@ -203,6 +205,8 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.desc.stabilityOIRank8h': '8小時幣種通過穩定性過濾的最大OI排名。0 = 停用',
   'cfg.desc.lossCooldownHours': '虧損平倉後，封鎖該幣種重新進場的時數。防止在同一幣種上重複虧損。0 = 停用',
   'cfg.desc.reEnterCooldownHours': '任何平倉（無論盈虧）後，封鎖該幣種重新進場的時數。0 = 停用',
+  'cfg.desc.backtestDays': '進場前檢查的歷史資金費率天數。拒絕歷史資金費率差不利的幣種。0 = 停用',
+  'cfg.desc.backtestMinProfit': '歷史資金費率淨利潤最低門檻，低於此值不通過回測篩選',
   'cfg.desc.rebalanceScanMinute': '每小時中觸發跨交易所資金再平衡的分鐘標記',
   'cfg.desc.exitScanMinute': '觸發活躍持倉退出條件檢查的分鐘標記',
   'cfg.desc.entryScanMinute': '觸發合格機會交易執行的分鐘標記',
