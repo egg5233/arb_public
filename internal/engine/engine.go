@@ -47,6 +47,17 @@ type Engine struct {
 
 	// Rejection tracking for dashboard display.
 	rejStore *models.RejectionStore
+
+	// SL fill detection: reverse index from (exchange:orderID) → (posID, leg).
+	slIndexMu sync.RWMutex
+	slIndex   map[string]slEntry // "exchange:orderID" → posID + leg
+	slFillCh  chan slFillEvent   // buffered channel for non-blocking WS callbacks
+}
+
+// slEntry maps a stop-loss order to its position and leg.
+type slEntry struct {
+	PosID string
+	Leg   string // "long" or "short"
 }
 
 // NewEngine creates a new Engine with all required dependencies.
@@ -74,6 +85,8 @@ func NewEngine(
 		exitCancels:   make(map[string]context.CancelFunc),
 		exitActive:    make(map[string]bool),
 		entryActive:   make(map[string]string),
+		slIndex:       make(map[string]slEntry),
+		slFillCh:      make(chan slFillEvent, 64),
 	}
 	return e
 }
@@ -267,6 +280,11 @@ func (e *Engine) Start() {
 			}
 		}
 	}
+
+	// Set up SL fill detection callbacks on all exchanges.
+	e.setupSLCallbacks()
+	e.rebuildSLIndex()
+	go e.consumeSLFills()
 
 	go e.run()
 	go e.forwardAlerts()
@@ -731,6 +749,123 @@ func (e *Engine) checkDelistPositions() {
 
 		go e.closePositionEmergency(pos)
 	}
+}
+
+// registerSLOrders adds stop-loss order IDs to the SL index for instant fill detection.
+func (e *Engine) registerSLOrders(pos *models.ArbitragePosition) {
+	e.slIndexMu.Lock()
+	defer e.slIndexMu.Unlock()
+	if pos.LongSLOrderID != "" {
+		key := pos.LongExchange + ":" + pos.LongSLOrderID
+		e.slIndex[key] = slEntry{PosID: pos.ID, Leg: "long"}
+	}
+	if pos.ShortSLOrderID != "" {
+		key := pos.ShortExchange + ":" + pos.ShortSLOrderID
+		e.slIndex[key] = slEntry{PosID: pos.ID, Leg: "short"}
+	}
+}
+
+// unregisterSLOrders removes stop-loss order IDs from the SL index.
+func (e *Engine) unregisterSLOrders(pos *models.ArbitragePosition) {
+	e.slIndexMu.Lock()
+	defer e.slIndexMu.Unlock()
+	if pos.LongSLOrderID != "" {
+		delete(e.slIndex, pos.LongExchange+":"+pos.LongSLOrderID)
+	}
+	if pos.ShortSLOrderID != "" {
+		delete(e.slIndex, pos.ShortExchange+":"+pos.ShortSLOrderID)
+	}
+}
+
+// handleSLFill processes an SL fill event from the slFillCh channel.
+// Runs in its own goroutine — does not block the WS handler.
+func (e *Engine) handleSLFill(exchName string, upd exchange.OrderUpdate) {
+	key := exchName + ":" + upd.OrderID
+	e.slIndexMu.RLock()
+	entry, ok := e.slIndex[key]
+	e.slIndexMu.RUnlock()
+	if !ok {
+		return // not a known SL order
+	}
+
+	e.log.Warn("SL TRIGGERED: order %s on %s filled (pos=%s leg=%s size=%.6f)",
+		upd.OrderID, exchName, entry.PosID, entry.Leg, upd.FilledVolume)
+
+	// Load fresh position.
+	pos, err := e.db.GetPosition(entry.PosID)
+	if err != nil || pos == nil {
+		e.log.Error("SL fill: failed to load position %s: %v", entry.PosID, err)
+		return
+	}
+	if pos.Status == models.StatusClosed || pos.Status == models.StatusClosing {
+		return // already closing
+	}
+
+	// Remove BOTH SL keys for this position to prevent duplicate triggers.
+	e.unregisterSLOrders(pos)
+
+	// Preempt any running exit goroutine.
+	e.cancelExitGoroutine(pos.ID)
+
+	// Broadcast alert to dashboard.
+	e.api.BroadcastAlert(map[string]string{
+		"type":    "sl_triggered",
+		"symbol":  pos.Symbol,
+		"message": fmt.Sprintf("Stop-loss triggered on %s (%s leg) — emergency closing %s", exchName, entry.Leg, pos.ID),
+	})
+
+	// Emergency close the remaining leg.
+	go e.closePositionEmergency(pos)
+}
+
+// slFillEvent is an order fill event from a WS callback, queued for processing.
+type slFillEvent struct {
+	Exchange string
+	Update   exchange.OrderUpdate
+}
+
+// consumeSLFills processes SL fill events from the channel.
+func (e *Engine) consumeSLFills() {
+	for {
+		select {
+		case ev := <-e.slFillCh:
+			e.handleSLFill(ev.Exchange, ev.Update)
+		case <-e.stopCh:
+			return
+		}
+	}
+}
+
+// setupSLCallbacks registers non-blocking SL fill callbacks on all exchange adapters.
+// Sends events to slFillCh which is consumed by consumeSLFills goroutine.
+func (e *Engine) setupSLCallbacks() {
+	for name, exch := range e.exchanges {
+		exchName := name // capture for closure
+		exch.SetOrderCallback(func(upd exchange.OrderUpdate) {
+			// Non-blocking send — drop if channel full (consumeSLFills will catch up).
+			select {
+			case e.slFillCh <- slFillEvent{Exchange: exchName, Update: upd}:
+			default:
+				e.log.Warn("SL fill channel full, dropping event for %s on %s", upd.OrderID, exchName)
+			}
+		})
+	}
+}
+
+// rebuildSLIndex loads all active positions and registers their SL orders.
+func (e *Engine) rebuildSLIndex() {
+	positions, err := e.db.GetActivePositions()
+	if err != nil {
+		e.log.Error("rebuildSLIndex: %v", err)
+		return
+	}
+	for _, pos := range positions {
+		e.registerSLOrders(pos)
+	}
+	e.slIndexMu.RLock()
+	count := len(e.slIndex)
+	e.slIndexMu.RUnlock()
+	e.log.Info("SL index rebuilt: %d entries from %d positions", count, len(positions))
 }
 
 func (e *Engine) handleReduce(action risk.HealthAction) {
@@ -2146,11 +2281,17 @@ func (e *Engine) attachStopLosses(pos *models.ArbitragePosition) {
 		pos.LongSLOrderID = longSLID
 		pos.ShortSLOrderID = shortSLID
 	}
+
+	// Register in SL index for instant fill detection.
+	e.registerSLOrders(pos)
 }
 
 // cancelStopLosses cancels any active stop-loss orders on both legs.
 // Logs errors but does not block exit.
 func (e *Engine) cancelStopLosses(pos *models.ArbitragePosition) {
+	// Unregister from SL index first to prevent stale triggers.
+	e.unregisterSLOrders(pos)
+
 	if pos.LongSLOrderID != "" {
 		if exch, ok := e.exchanges[pos.LongExchange]; ok {
 			if err := exch.CancelStopLoss(pos.Symbol, pos.LongSLOrderID); err != nil {

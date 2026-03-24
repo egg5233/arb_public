@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"arb/pkg/exchange"
 	"sync"
 	"time"
 
@@ -51,16 +53,18 @@ type WSPrivateClient struct {
 	passphrase string
 	stop       chan struct{}
 	store      *orderStore
+	onFill     *func(exchange.OrderUpdate)
 }
 
 // NewWSPrivateClient creates a new private WebSocket client.
-func NewWSPrivateClient(apiKey, secretKey, passphrase string) *WSPrivateClient {
+func NewWSPrivateClient(apiKey, secretKey, passphrase string, onFill *func(exchange.OrderUpdate)) *WSPrivateClient {
 	return &WSPrivateClient{
 		apiKey:     apiKey,
 		secretKey:  secretKey,
 		passphrase: passphrase,
 		stop:       make(chan struct{}),
 		store:      &orderStore{},
+		onFill:     onFill,
 	}
 }
 
@@ -199,6 +203,15 @@ func (ws *WSPrivateClient) handlePrivateMessage(msg []byte) {
 
 		if filled > 0 {
 			wsPrivLog.Info("order update: %s status=%s filled=%.6f avg=%.8f", orderID, status, filled, avgPrice)
+		}
+		if info.Status == "filled" && info.FilledVolume > 0 && ws.onFill != nil && *ws.onFill != nil {
+			(*ws.onFill)(exchange.OrderUpdate{
+				OrderID:      info.OrderID,
+				ClientOID:    info.ClientOID,
+				Status:       info.Status,
+				FilledVolume: info.FilledVolume,
+				AvgPrice:     info.AvgPrice,
+			})
 		}
 	}
 }

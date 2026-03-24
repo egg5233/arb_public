@@ -63,6 +63,7 @@ type Exchange interface {
 	// WebSocket: Private
 	StartPrivateStream()
 	GetOrderUpdate(orderID string) (OrderUpdate, bool)
+	SetOrderCallback(fn func(OrderUpdate))
 
 	// Stop-Loss (conditional orders)
 	PlaceStopLoss(params StopLossParams) (orderID string, err error)

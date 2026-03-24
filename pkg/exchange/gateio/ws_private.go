@@ -25,6 +25,7 @@ type PrivateWS struct {
 	apiKey       string
 	secretKey    string
 	store        *sync.Map // orderID -> exchange.OrderUpdate
+	onFill       *func(exchange.OrderUpdate)
 	contractMult map[string]float64 // internalSymbol -> quanto multiplier
 	conn         *websocket.Conn
 	mu           sync.Mutex
@@ -32,11 +33,12 @@ type PrivateWS struct {
 }
 
 // NewPrivateWS creates a new private WebSocket manager.
-func NewPrivateWS(apiKey, secretKey string, store *sync.Map, contractMult map[string]float64) *PrivateWS {
+func NewPrivateWS(apiKey, secretKey string, store *sync.Map, contractMult map[string]float64, onFill *func(exchange.OrderUpdate)) *PrivateWS {
 	return &PrivateWS{
 		apiKey:       apiKey,
 		secretKey:    secretKey,
 		store:        store,
+		onFill:       onFill,
 		contractMult: contractMult,
 		done:         make(chan struct{}),
 	}
@@ -228,13 +230,17 @@ func (ws *PrivateWS) handleMessage(data []byte) {
 		wsPrivLog.Info("order update: %s status=%s filled=%.6f avg=%.8f finishAs=%s",
 			orderID, status, filledVol, avgPrice, o.FinishAs)
 
-		ws.store.Store(orderID, exchange.OrderUpdate{
+		upd := exchange.OrderUpdate{
 			OrderID:      orderID,
 			ClientOID:    clientOID,
 			Status:       status,
 			FilledVolume: filledVol,
 			AvgPrice:     avgPrice,
-		})
+		}
+		ws.store.Store(orderID, upd)
+		if upd.Status == "filled" && upd.FilledVolume > 0 && ws.onFill != nil && *ws.onFill != nil {
+			(*ws.onFill)(upd)
+		}
 	}
 }
 

@@ -22,9 +22,14 @@ type Adapter struct {
 	cfg        exchange.ExchangeConfig
 	priceStore sync.Map // symbol -> exchange.BBO
 	depthStore sync.Map // symbol -> *exchange.Orderbook
-	orderStore sync.Map // orderID -> exchange.OrderUpdate
-	publicWS   *PublicWS
-	privateWS  *PrivateWS
+	orderStore    sync.Map // orderID -> exchange.OrderUpdate
+	orderCallback func(exchange.OrderUpdate)
+	publicWS      *PublicWS
+	privateWS     *PrivateWS
+}
+
+func (a *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
+	a.orderCallback = fn
 }
 
 // NewAdapter creates a new BingX exchange adapter.
@@ -744,7 +749,7 @@ func (a *Adapter) GetDepth(symbol string) (*exchange.Orderbook, bool) {
 
 // StartPrivateStream starts the private WebSocket for order updates.
 func (a *Adapter) StartPrivateStream() {
-	a.privateWS = NewPrivateWS(a.client, &a.orderStore)
+	a.privateWS = NewPrivateWS(a.client, &a.orderStore, &a.orderCallback)
 	a.privateWS.Connect()
 }
 

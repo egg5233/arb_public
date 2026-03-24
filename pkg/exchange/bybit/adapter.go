@@ -21,7 +21,8 @@ type Adapter struct {
 	cfg        exchange.ExchangeConfig
 	priceStore sync.Map // symbol -> exchange.BBO
 	depthStore sync.Map // symbol -> *exchange.Orderbook
-	orderStore sync.Map // orderID -> exchange.OrderUpdate
+	orderStore    sync.Map // orderID -> exchange.OrderUpdate
+	orderCallback func(exchange.OrderUpdate)
 	publicWS   *PublicWS
 	privateWS  *PrivateWS
 }
@@ -40,6 +41,10 @@ func (a *Adapter) Client() *Client { return a.client }
 // Name returns the exchange name.
 func (a *Adapter) Name() string {
 	return "bybit"
+}
+
+func (a *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
+	a.orderCallback = fn
 }
 
 // ---------- Side helpers ----------
@@ -768,7 +773,7 @@ func (a *Adapter) GetDepth(symbol string) (*exchange.Orderbook, bool) {
 
 // StartPrivateStream starts the private WebSocket for order updates.
 func (a *Adapter) StartPrivateStream() {
-	a.privateWS = NewPrivateWS(a.cfg.ApiKey, a.cfg.SecretKey, &a.orderStore)
+	a.privateWS = NewPrivateWS(a.cfg.ApiKey, a.cfg.SecretKey, &a.orderStore, &a.orderCallback)
 	a.privateWS.Connect()
 }
 

@@ -77,6 +77,9 @@ func main() {
 	// Start WebSocket streams
 	for name, exc := range exchanges {
 		exc.StartPriceStream(nil) // will subscribe dynamically
+		// Note: SL callbacks are registered later by engine.Start() via SetOrderCallback.
+		// The callback field is set before any fills can arrive because StartPrivateStream
+		// takes time to connect + authenticate. Engine.Start() runs before first fills.
 		exc.StartPrivateStream()
 		log.Info("Started WebSocket streams for %s", name)
 	}

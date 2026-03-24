@@ -50,6 +50,7 @@ func (s stubExchange) GetUserTrades(string, time.Time, int) ([]exchange.Trade, e
 }
 func (s stubExchange) PlaceStopLoss(exchange.StopLossParams) (string, error) { return "", nil }
 func (s stubExchange) CancelStopLoss(string, string) error                   { return nil }
+func (s stubExchange) SetOrderCallback(func(exchange.OrderUpdate))           {}
 func (s stubExchange) GetFundingFees(string, time.Time) ([]exchange.FundingPayment, error) {
 	return nil, nil
 }

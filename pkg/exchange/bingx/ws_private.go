@@ -25,15 +25,17 @@ type PrivateWS struct {
 	conn       *websocket.Conn
 	connMu     sync.Mutex
 	orderStore *sync.Map
+	onFill     *func(exchange.OrderUpdate)
 	listenKey  string
 	done       chan struct{}
 }
 
 // NewPrivateWS creates a new private WebSocket handler.
-func NewPrivateWS(client *Client, orderStore *sync.Map) *PrivateWS {
+func NewPrivateWS(client *Client, orderStore *sync.Map, onFill *func(exchange.OrderUpdate)) *PrivateWS {
 	return &PrivateWS{
 		client:     client,
 		orderStore: orderStore,
+		onFill:     onFill,
 		done:       make(chan struct{}),
 	}
 }
@@ -250,6 +252,9 @@ func (ws *PrivateWS) handleMessage(msg []byte) {
 	ws.orderStore.Store(o.OrderID, update)
 	log.Info("order update: %s %s status=%s filled=%.6f avg=%.8f",
 		o.Symbol, o.OrderID, update.Status, filledQty, avgPrice)
+	if update.Status == "filled" && update.FilledVolume > 0 && ws.onFill != nil && *ws.onFill != nil {
+		(*ws.onFill)(update)
+	}
 }
 
 // normalizeBingXWSStatus converts BingX WS order status to lowercase standard.

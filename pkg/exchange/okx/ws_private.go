@@ -190,5 +190,8 @@ func (a *Adapter) handleOrderMessage(msg []byte) {
 		if o.ClOrdID != "" {
 			a.orderStore.Store(o.ClOrdID, update)
 		}
+		if update.Status == "filled" && update.FilledVolume > 0 && a.orderCallback != nil {
+			a.orderCallback(update)
+		}
 	}
 }

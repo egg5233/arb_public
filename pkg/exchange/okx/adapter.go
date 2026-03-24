@@ -47,7 +47,12 @@ type Adapter struct {
 	// Private stream
 	privConn   *websocket.Conn
 	privMu     sync.Mutex
-	orderStore sync.Map // orderID -> exchange.OrderUpdate
+	orderStore    sync.Map // orderID -> exchange.OrderUpdate
+	orderCallback func(exchange.OrderUpdate)
+}
+
+func (a *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
+	a.orderCallback = fn
 }
 
 // NewAdapter creates an OKX Adapter from ExchangeConfig.

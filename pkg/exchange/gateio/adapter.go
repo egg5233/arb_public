@@ -32,7 +32,12 @@ type Adapter struct {
 
 	// Private stream
 	privateWS  *PrivateWS
-	orderStore sync.Map // orderID (string) -> exchange.OrderUpdate
+	orderStore    sync.Map // orderID (string) -> exchange.OrderUpdate
+	orderCallback func(exchange.OrderUpdate)
+}
+
+func (a *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
+	a.orderCallback = fn
 }
 
 // NewAdapter creates a Gate.io Adapter from ExchangeConfig.
@@ -840,7 +845,7 @@ func (a *Adapter) GetDepth(symbol string) (*exchange.Orderbook, bool) {
 // ---------------------------------------------------------------------------
 
 func (a *Adapter) StartPrivateStream() {
-	a.privateWS = NewPrivateWS(a.apiKey, a.secretKey, &a.orderStore, a.contractMult)
+	a.privateWS = NewPrivateWS(a.apiKey, a.secretKey, &a.orderStore, a.contractMult, &a.orderCallback)
 	go a.privateWS.Connect()
 }
 

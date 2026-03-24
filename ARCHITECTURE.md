@@ -154,6 +154,7 @@ After sizing: round to contract step size, enforce min size, enforce 10 USDT min
 - **Exit**: `cancelStopLosses()` cancels both SLs before closing position
 - **Rotation**: `updateRotationStopLoss()` cancels old leg's SL, places new SL at new entry price
 - SL failures are logged but never block entry/exit/rotation
+- **Instant SL fill detection**: Engine maintains in-memory reverse index (`exchange:orderID → posID+leg`). All exchange WS adapters send filled orders to a buffered channel via `SetOrderCallback`. Engine goroutine `consumeSLFills` checks each fill against the SL index — on match, preempts any exit goroutine, sends dashboard alert, and triggers emergency close of the remaining leg. Eliminates the 5-minute consolidator delay for SL-triggered closes.
 
 | Exchange | Place endpoint | Cancel endpoint |
 |----------|---------------|-----------------|

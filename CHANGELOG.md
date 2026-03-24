@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.2] - 2026-03-24
+
+### Added
+- **Instant stop-loss fill detection**: When an SL order fills on any exchange, the engine immediately closes the remaining leg via emergency market close — eliminating the 5-minute consolidator delay.
+  - Added `SetOrderCallback` to Exchange interface — all 6 adapters emit filled orders via WS
+  - Engine maintains in-memory SL index (`exchange:orderID → posID+leg`), rebuilt on startup
+  - Non-blocking buffered channel decouples WS handler from engine work
+  - Preempts any running exit goroutine, removes both SL keys, sends dashboard alert
+  - `registerSLOrders()` called after SL placement, `unregisterSLOrders()` called on cancel
+
 ## [0.15.1] - 2026-03-24
 
 ### Added

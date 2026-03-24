@@ -14,12 +14,13 @@ import (
 
 // Adapter implements exchange.Exchange for Bitget.
 type Adapter struct {
-	client     *Client
-	ws         *WSClient
-	wsPriv     *WSPrivateClient
-	apiKey     string
-	secretKey  string
-	passphrase string
+	client        *Client
+	ws            *WSClient
+	wsPriv        *WSPrivateClient
+	apiKey        string
+	secretKey     string
+	passphrase    string
+	orderCallback func(exchange.OrderUpdate)
 }
 
 // NewAdapter creates a Bitget adapter from the unified config.
@@ -34,6 +35,10 @@ func NewAdapter(cfg exchange.ExchangeConfig) *Adapter {
 }
 
 func (a *Adapter) Name() string { return "bitget" }
+
+func (a *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
+	a.orderCallback = fn
+}
 
 // ==================== Orders ====================
 
@@ -830,7 +835,7 @@ func (a *Adapter) GetDepth(symbol string) (*exchange.Orderbook, bool) {
 // ==================== WebSocket: Private ====================
 
 func (a *Adapter) StartPrivateStream() {
-	a.wsPriv = NewWSPrivateClient(a.apiKey, a.secretKey, a.passphrase)
+	a.wsPriv = NewWSPrivateClient(a.apiKey, a.secretKey, a.passphrase, &a.orderCallback)
 	a.wsPriv.Start()
 }
 

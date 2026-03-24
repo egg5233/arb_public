@@ -36,7 +36,12 @@ type Adapter struct {
 	// Private stream
 	listenKey  string
 	privConn   *websocket.Conn
-	orderStore sync.Map // orderID (string) -> exchange.OrderUpdate
+	orderStore    sync.Map // orderID (string) -> exchange.OrderUpdate
+	orderCallback func(exchange.OrderUpdate)
+}
+
+func (b *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
+	b.orderCallback = fn
 }
 
 // NewAdapter creates a Binance Adapter from ExchangeConfig.

@@ -125,13 +125,17 @@ func (b *Adapter) handlePrivateMessage(msg []byte) {
 		wsPrivLog.Info("order update: %s %s %s status=%s filled=%.6f avg=%.8f",
 			o.Symbol, o.Side, oid, o.OrderStatus, filledVol, avgPrice)
 
-		b.orderStore.Store(oid, exchange.OrderUpdate{
+		upd := exchange.OrderUpdate{
 			OrderID:      oid,
 			ClientOID:    o.ClientOrderID,
 			Status:       strings.ToLower(o.OrderStatus),
 			FilledVolume: filledVol,
 			AvgPrice:     avgPrice,
-		})
+		}
+		b.orderStore.Store(oid, upd)
+		if upd.Status == "filled" && upd.FilledVolume > 0 && b.orderCallback != nil {
+			b.orderCallback(upd)
+		}
 	}
 }
 
