@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.0] - 2026-03-24
+
+### Added
+- **Exit price recording**: Positions now store `long_exit` and `short_exit` close prices alongside entry prices.
+  - Depth-fill exit: VWAP close price from multi-chunk fills
+  - Smart/emergency close: price from confirmFill avgPrice or BBO fallback
+  - L4 reducePosition: captures avg price from reduce orders before full-close delegation
+  - Reconciliation: overwrites exit prices only when exchange reports non-zero ExitPrice (Binance has none)
+  - Dashboard History page shows "entry → exit" price columns for both legs
+
 ## [0.13.6] - 2026-03-24
 
 ### Fixed

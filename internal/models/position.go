@@ -14,6 +14,8 @@ type ArbitragePosition struct {
 	ShortSize        float64   `json:"short_size"`
 	LongEntry        float64   `json:"long_entry"`
 	ShortEntry       float64   `json:"short_entry"`
+	LongExit         float64   `json:"long_exit"`
+	ShortExit        float64   `json:"short_exit"`
 	Status           string    `json:"status"` // pending, partial, active, exiting, closing, closed
 	EntrySpread      float64   `json:"entry_spread"`
 	FundingCollected float64   `json:"funding_collected"`

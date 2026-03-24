@@ -95,6 +95,8 @@ const en = {
   'hist.symbol': 'Symbol',
   'hist.long': 'Long',
   'hist.short': 'Short',
+  'hist.longPrice': 'Long Price',
+  'hist.shortPrice': 'Short Price',
   'hist.spread': 'Spread',
   'hist.fundingCollected': 'Funding Collected',
   'hist.rotPnl': 'Rot. PnL',

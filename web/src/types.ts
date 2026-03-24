@@ -23,6 +23,8 @@ export interface Position {
   short_size: number;
   long_entry: number;
   short_entry: number;
+  long_exit: number;
+  short_exit: number;
   status: string;
   entry_spread: number;       // bps per hour
   current_spread?: number;    // live bps per hour

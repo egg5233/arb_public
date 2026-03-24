@@ -57,6 +57,8 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
               <th className="pb-2">{t('hist.symbol')}</th>
               <th className="pb-2">{t('hist.long')}</th>
               <th className="pb-2">{t('hist.short')}</th>
+              <th className="pb-2 text-right">{t('hist.longPrice')}</th>
+              <th className="pb-2 text-right">{t('hist.shortPrice')}</th>
               <th className="pb-2 text-right">{t('hist.spread')}</th>
               <th className="pb-2 text-right">{t('hist.fundingCollected')}</th>
               <th className="pb-2 text-right">{t('hist.rotPnl')}</th>
@@ -73,6 +75,14 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
                 <td className="py-2 font-mono">{tr.symbol}</td>
                 <td className="py-2 text-green-400 text-xs">{tr.long_exchange}</td>
                 <td className="py-2 text-red-400 text-xs">{tr.short_exchange}</td>
+                <td className="py-2 text-right font-mono text-xs text-gray-300">
+                  {tr.long_entry > 0 ? tr.long_entry.toPrecision(6) : '-'}
+                  {tr.long_exit > 0 ? ` → ${tr.long_exit.toPrecision(6)}` : ''}
+                </td>
+                <td className="py-2 text-right font-mono text-xs text-gray-300">
+                  {tr.short_entry > 0 ? tr.short_entry.toPrecision(6) : '-'}
+                  {tr.short_exit > 0 ? ` → ${tr.short_exit.toPrecision(6)}` : ''}
+                </td>
                 <td className="py-2 text-right font-mono">{tr.entry_spread.toFixed(1)} bps/h</td>
                 <td className={`py-2 text-right font-mono ${tr.funding_collected > 0 ? 'text-green-400' : tr.funding_collected < 0 ? 'text-red-400' : 'text-gray-400'}`}>${tr.funding_collected.toFixed(2)}</td>
                 <td className={`py-2 text-right font-mono ${(tr.rotation_pnl ?? 0) >= 0 ? 'text-gray-400' : 'text-red-400'}`}>
@@ -89,7 +99,7 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
             ))}
             {trades.length === 0 && (
               <tr>
-                <td colSpan={11} className="py-4 text-center text-gray-500">{t('hist.noHistory')}</td>
+                <td colSpan={13} className="py-4 text-center text-gray-500">{t('hist.noHistory')}</td>
               </tr>
             )}
           </tbody>

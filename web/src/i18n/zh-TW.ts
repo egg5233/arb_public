@@ -97,6 +97,8 @@ const zhTW: Record<TranslationKey, string> = {
   'hist.symbol': '交易對',
   'hist.long': '多方',
   'hist.short': '空方',
+  'hist.longPrice': '多方價格',
+  'hist.shortPrice': '空方價格',
   'hist.spread': '利差',
   'hist.fundingCollected': '已收資金費',
   'hist.rotPnl': '輪換損益',

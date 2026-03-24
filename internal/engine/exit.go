@@ -361,6 +361,8 @@ exitLoop:
 
 	if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
 		fresh.RealizedPnL = realizedPnL
+		fresh.LongExit = longClosePrice
+		fresh.ShortExit = shortClosePrice
 		fresh.Status = models.StatusClosed
 		fresh.UpdatedAt = time.Now().UTC()
 		fresh.LongSize = 0
@@ -372,6 +374,8 @@ exitLoop:
 
 	// Re-read for broadcast.
 	pos.RealizedPnL = realizedPnL
+	pos.LongExit = longClosePrice
+	pos.ShortExit = shortClosePrice
 	pos.Status = models.StatusClosed
 	pos.LongSize = 0
 	pos.ShortSize = 0
@@ -501,7 +505,13 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 	needsPnLUpdate := math.Abs(diff) >= 0.01
 	needsFundingUpdate := math.Abs(reconciledFunding-pos.FundingCollected) >= 0.01
 
-	if !needsPnLUpdate && !needsFundingUpdate {
+	// Overwrite exit prices only if exchange returned a non-zero value.
+	reconciledLongExit := longAgg.ExitPrice
+	reconciledShortExit := shortAgg.ExitPrice
+	needsExitUpdate := (reconciledLongExit > 0 && reconciledLongExit != pos.LongExit) ||
+		(reconciledShortExit > 0 && reconciledShortExit != pos.ShortExit)
+
+	if !needsPnLUpdate && !needsFundingUpdate && !needsExitUpdate {
 		return true
 	}
 
@@ -511,6 +521,12 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 		}
 		if needsFundingUpdate {
 			fresh.FundingCollected = reconciledFunding
+		}
+		if reconciledLongExit > 0 {
+			fresh.LongExit = reconciledLongExit
+		}
+		if reconciledShortExit > 0 {
+			fresh.ShortExit = reconciledShortExit
 		}
 		return true
 	}); err != nil {
@@ -731,6 +747,7 @@ func (e *Engine) reducePosition(pos *models.ArbitragePosition, fraction float64)
 		pos.ID, fraction*100, reduceLong, reduceShort)
 
 	// Reduce long leg (sell to close partial).
+	var longReducePrice, shortReducePrice float64
 	if reduceLong > 0 {
 		oid, err := longExch.PlaceOrder(exchange.PlaceOrderParams{
 			Symbol:     pos.Symbol,
@@ -744,6 +761,9 @@ func (e *Engine) reducePosition(pos *models.ArbitragePosition, fraction float64)
 			e.log.Error("reduce long leg failed: %v", err)
 		} else {
 			filled, _ := e.waitForFill(longExch, oid, pos.Symbol, deadline)
+			if upd, ok := longExch.GetOrderUpdate(oid); ok && upd.AvgPrice > 0 {
+				longReducePrice = upd.AvgPrice
+			}
 			pos.LongSize -= filled
 			if pos.LongSize < 0 {
 				pos.LongSize = 0
@@ -765,6 +785,9 @@ func (e *Engine) reducePosition(pos *models.ArbitragePosition, fraction float64)
 			e.log.Error("reduce short leg failed: %v", err)
 		} else {
 			filled, _ := e.waitForFill(shortExch, oid, pos.Symbol, deadline)
+			if upd, ok := shortExch.GetOrderUpdate(oid); ok && upd.AvgPrice > 0 {
+				shortReducePrice = upd.AvgPrice
+			}
 			pos.ShortSize -= filled
 			if pos.ShortSize < 0 {
 				pos.ShortSize = 0
@@ -791,6 +814,13 @@ func (e *Engine) reducePosition(pos *models.ArbitragePosition, fraction float64)
 	// If both legs are fully reduced, close the position.
 	if pos.LongSize <= 0 && pos.ShortSize <= 0 {
 		e.log.Info("position %s fully reduced, closing", pos.ID)
+		// Store exit prices before delegating to closePositionEmergency.
+		if longReducePrice > 0 {
+			pos.LongExit = longReducePrice
+		}
+		if shortReducePrice > 0 {
+			pos.ShortExit = shortReducePrice
+		}
 		return e.closePositionEmergency(pos)
 	}
 
@@ -883,6 +913,13 @@ func (e *Engine) closePositionWithMode(pos *models.ArbitragePosition, emergency 
 	}
 
 	pos.RealizedPnL = realizedPnL
+	// Store exit prices — preserve pre-set values (e.g. from reducePosition).
+	if longClosePrice > 0 {
+		pos.LongExit = longClosePrice
+	}
+	if shortClosePrice > 0 {
+		pos.ShortExit = shortClosePrice
+	}
 	pos.Status = models.StatusClosed
 	pos.UpdatedAt = time.Now().UTC()
 
