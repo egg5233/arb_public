@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.1] - 2026-03-24
+
+### Fixed
+- **Bybit PnL reconciliation double-counting funding**: Bybit's `closedPnl` already includes funding fees, but the adapter was adding `totalFunding` on top via `GetFundingFees()`. This inflated reconciled PnL by the Bybit-side funding amount. Fix: `NetPnL = closedPnl` (no longer adds funding). Funding query kept for `FundingCollected` reconciliation.
+- **BingX PnL reconciliation missing funding**: BingX's `netProfit` excludes funding, but the adapter was using it as-is for `NetPnL`. This deflated reconciled PnL by the BingX-side funding amount. Fix: `NetPnL = netProfit + totalFunding`.
+
 ## [0.14.0] - 2026-03-24
 
 ### Added

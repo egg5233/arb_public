@@ -889,7 +889,7 @@ func (a *Adapter) GetFundingFees(symbol string, since time.Time) ([]exchange.Fun
 }
 
 // GetClosePnL returns exchange-reported position-level PnL for recently closed positions.
-// Bybit's closedPnl excludes funding, so we add funding from GetFundingFees internally.
+// Bybit's closedPnl already includes funding fees.
 func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.ClosePnL, error) {
 	params := map[string]string{
 		"category":  "linear",
@@ -920,7 +920,8 @@ func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 		return nil, fmt.Errorf("GetClosePnL unmarshal: %w", err)
 	}
 
-	// Query funding fees to supplement closedPnl (which excludes funding).
+	// Query funding fees separately — closedPnl already includes funding,
+	// but we still need the Funding field for FundingCollected reconciliation.
 	var totalFunding float64
 	fundingFees, fErr := a.GetFundingFees(symbol, since)
 	if fErr != nil {
@@ -953,13 +954,13 @@ func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 		// pricePnL = cumExitValue - cumEntryValue (raw price movement)
 		pricePnL := cumExit - cumEntry
 
-		// Funding is symbol-wide (not per-record). Each record carries the full
-		// total; the aggregator takes funding only from the first matched record.
+		// closedPnl already includes funding, so NetPnL = closedPnl as-is.
+		// Funding is queried separately for FundingCollected reconciliation.
 		out = append(out, exchange.ClosePnL{
 			PricePnL:   pricePnL,
 			Fees:       openFee + closeFee,
 			Funding:    totalFunding,
-			NetPnL:     closedPnl + totalFunding,
+			NetPnL:     closedPnl,
 			EntryPrice: entryPrice,
 			ExitPrice:  exitPrice,
 			CloseSize:  closeSize,
