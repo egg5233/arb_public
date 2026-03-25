@@ -34,6 +34,9 @@ type Adapter struct {
 	privateWS  *PrivateWS
 	orderStore    sync.Map // orderID (string) -> exchange.OrderUpdate
 	orderCallback func(exchange.OrderUpdate)
+
+	// Unified account detection
+	isUnified bool
 }
 
 func (a *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
@@ -66,6 +69,25 @@ func NewAdapter(cfg exchange.ExchangeConfig) *Adapter {
 }
 
 func (a *Adapter) Name() string { return "gateio" }
+
+// IsUnified returns whether this account is in unified mode.
+func (a *Adapter) IsUnified() bool { return a.isUnified }
+
+// DetectUnifiedMode checks Gate.io account mode and sets isUnified flag.
+// Falls back to classic mode if the endpoint fails (e.g. no unified permission).
+func (a *Adapter) DetectUnifiedMode() {
+	data, err := a.client.Get("/unified/unified_mode", nil)
+	if err != nil {
+		// Endpoint failed — likely no unified permission, use classic mode.
+		return
+	}
+	var resp struct {
+		Mode string `json:"mode"`
+	}
+	if json.Unmarshal(data, &resp) == nil && resp.Mode != "" && resp.Mode != "classic" {
+		a.isUnified = true
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Symbol mapping: internal "BTCUSDT" -> Gate.io "BTC_USDT"
@@ -563,6 +585,61 @@ func (a *Adapter) GetFundingInterval(symbol string) (time.Duration, error) {
 // ---------------------------------------------------------------------------
 
 func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
+	if a.isUnified {
+		return a.getUnifiedBalance()
+	}
+	return a.getClassicFuturesBalance()
+}
+
+// getUnifiedBalance reads balance from /unified/accounts for unified account mode.
+func (a *Adapter) getUnifiedBalance() (*exchange.Balance, error) {
+	data, err := a.client.Get("/unified/accounts", nil)
+	if err != nil {
+		return nil, fmt.Errorf("getUnifiedBalance: %w", err)
+	}
+
+	var resp struct {
+		TotalAvailableMargin     string            `json:"total_available_margin"`
+		UnifiedAccountTotalEquity string           `json:"unified_account_total_equity"`
+		TotalMaintenanceMargin   string            `json:"total_maintenance_margin"`
+		Balances                 map[string]struct {
+			Available string `json:"available"`
+			Equity    string `json:"equity"`
+			Freeze    string `json:"freeze"`
+		} `json:"balances"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("getUnifiedBalance unmarshal: %w", err)
+	}
+
+	equity, _ := strconv.ParseFloat(resp.UnifiedAccountTotalEquity, 64)
+	availableMargin, _ := strconv.ParseFloat(resp.TotalAvailableMargin, 64)
+	maintenanceMargin, _ := strconv.ParseFloat(resp.TotalMaintenanceMargin, 64)
+
+	// Fallback to USDT-specific balance if top-level is empty.
+	if equity <= 0 {
+		if usdtBal, ok := resp.Balances["USDT"]; ok {
+			equity, _ = strconv.ParseFloat(usdtBal.Equity, 64)
+			availableMargin, _ = strconv.ParseFloat(usdtBal.Available, 64)
+		}
+	}
+
+	var marginRatio float64
+	if equity > 0 && maintenanceMargin > 0 {
+		marginRatio = maintenanceMargin / equity
+	}
+
+	return &exchange.Balance{
+		Total:       equity,
+		Available:   availableMargin,
+		Frozen:      equity - availableMargin,
+		Currency:    "USDT",
+		MarginRatio: marginRatio,
+	}, nil
+}
+
+// getClassicFuturesBalance reads balance from /futures/usdt/accounts for classic mode.
+func (a *Adapter) getClassicFuturesBalance() (*exchange.Balance, error) {
 	data, err := a.client.Get("/futures/usdt/accounts", nil)
 	if err != nil {
 		return nil, fmt.Errorf("GetFuturesBalance: %w", err)
@@ -709,7 +786,11 @@ func (a *Adapter) GetOrderbook(symbol string, depth int) (*exchange.Orderbook, e
 func (a *Adapter) TransferToSpot(coin string, amount string) error { return nil }
 
 // TransferToFutures moves funds from spot to futures account.
+// No-op for unified accounts (all funds are shared).
 func (a *Adapter) TransferToFutures(coin string, amount string) error {
+	if a.isUnified {
+		return nil
+	}
 	body := map[string]string{
 		"currency": coin,
 		"from":     "spot",

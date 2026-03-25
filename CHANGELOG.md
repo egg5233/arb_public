@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.1] - 2026-03-25
+
+### Added
+- **Gate.io unified account support**: Detect unified mode on startup via `GET /unified/unified_mode`, branch `GetFuturesBalance` to use `/unified/accounts` for unified mode, no-op `TransferToFutures` for unified, fall back to classic if detection fails
+
+### Fixed
+- **Dashboard double-counting Gate.io balance**: Separated display concerns (always show as unified in dashboard) from rebalancing concerns (runtime `IsUnified()` detection for surplus calculation)
+- **Rebalancing surplus double-count for unified exchanges**: OKX, Bybit, and Gate.io unified now use only futures balance instead of futures+spot for surplus calculation
+
 ## [0.16.0] - 2026-03-25
 
 ### Added

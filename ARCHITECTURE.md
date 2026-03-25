@@ -509,6 +509,8 @@ Each adapter: `adapter.go` (interface impl), `client.go` (REST), `ws.go` (public
 
 **Gate.io quanto multiplier**: Gate.io uses contract-based sizing. The adapter converts between base units and contracts using `quanto_multiplier` in PlaceOrder (divide), GetPosition/GetOrderFilledQty (multiply), and WS order updates (multiply). All other code works in base asset units.
 
+**Gate.io unified account**: On startup, the adapter detects unified account mode via `GET /unified/unified_mode`. In unified mode, `GetFuturesBalance` reads from `/unified/accounts` instead of `/futures/usdt/accounts`, and `TransferToFutures` is a no-op (funds are shared). Falls back to classic mode if detection fails.
+
 ### 2.4 Risk Management
 
 #### Pre-Trade: 11-Point Risk Approval

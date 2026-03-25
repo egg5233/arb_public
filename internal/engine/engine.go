@@ -393,9 +393,17 @@ func (e *Engine) rebalanceFunds() {
 	// Phase 2: Cross-exchange transfers for remaining deficits.
 	// Calculate surplus per exchange.
 	surplus := map[string]float64{}
-	for name := range e.exchanges {
+	for name, exch := range e.exchanges {
 		bal := balances[name]
 		total := bal.futures + bal.spot
+		// Unified accounts (OKX, Bybit, Gate.io unified): spot and futures share
+		// the same collateral pool, so don't double-count.
+		type unifiedChecker interface{ IsUnified() bool }
+		if name == "okx" || name == "bybit" {
+			total = bal.futures // already unified
+		} else if uc, ok := exch.(unifiedChecker); ok && uc.IsUnified() {
+			total = bal.futures // Gate.io unified
+		}
 		surplus[name] = total - needs[name]
 	}
 

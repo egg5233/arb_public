@@ -719,10 +719,26 @@ type exchangeInfo struct {
 
 // unifiedExchanges are exchanges with unified account models where
 // spot and futures share the same balance pool.
+// Gate.io is conditionally unified based on runtime detection.
 var unifiedExchanges = map[string]bool{
-	"okx":    true,
-	"bybit":  true,
-	"gateio": true,
+	"okx":   true,
+	"bybit": true,
+}
+
+// isUnifiedExchange checks if an exchange uses a unified account model.
+// Gate.io is always displayed as unified in the dashboard because its
+// balance refresh saves a single equity value regardless of account mode.
+func (s *Server) isUnifiedExchange(name string) bool {
+	if unifiedExchanges[name] {
+		return true
+	}
+	// Gate.io: always show as unified display. In classic mode, the balance
+	// refresh already overrides with spot equity. In unified mode, GetFuturesBalance
+	// returns unified equity. Either way, it's a single number.
+	if name == "gateio" {
+		return true
+	}
+	return false
 }
 
 // handleGetExchanges returns the list of enabled exchanges with cached balances.
@@ -738,7 +754,7 @@ func (s *Server) handleGetExchanges(w http.ResponseWriter, r *http.Request) {
 		bal, _ := s.db.GetBalance(name)
 		spotBal, _ := s.db.GetSpotBalance(name)
 		acctType := "separate"
-		if unifiedExchanges[name] {
+		if s.isUnifiedExchange(name) {
 			acctType = "unified"
 		}
 		exchanges = append(exchanges, exchangeInfo{Name: name, Balance: bal, SpotBalance: spotBal, AccountType: acctType})
