@@ -5,11 +5,21 @@ All notable changes to this project will be documented in this file.
 ## [0.16.5] - 2026-03-25
 
 ### Added
-- **Entry fee tracking in PnL**: Query actual trading fees from exchange API after opening position, include in real-time PnL calculation instead of waiting for reconcile
+- **Dashboard overhaul — tab-based config**: Config page restructured into 8 tabs (Exchanges / Fund Management / Schedule / Discovery / Persistence Filter / Entry / Exit & Rotation / Risk Control)
+- **Exchange settings UI**: Configure API Key, Secret Key, Passphrase, enable/disable toggle per exchange — all from the dashboard
+- **Exchange settings backend API**: GET returns key preview (first 6 chars), POST supports update/clear credentials, persisted via SaveJSON
+- **Mobile responsive sidebar**: Sidebar hidden on mobile, replaced with drawer + hamburger menu; tables with overflow-x-auto
+- **Risk control visualization**: Margin L3/L4/L5 thresholds rendered as range sliders with gradient bar
+- **Max funding interval filter**: New `max_interval_hours` config to skip pairs with long funding intervals (e.g. 4h/8h)
+- **Dark mode exchange links**: All exchange trading URLs default to dark theme
+- **Entry fee tracking in PnL**: Query actual trading fees from exchange API after opening, include in real-time PnL instead of waiting for reconcile
 - **Entry Fees column in Positions dashboard page**
 
 ### Changed
 - **Removed deposit address fields from Config exchanges tab**: Address management consolidated in Transfers page
+
+### Removed
+- Removed deprecated `exit_mode` and `order_advance_min` ghost fields from Config UI
 
 ## [0.16.4] - 2026-03-25
 
