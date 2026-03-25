@@ -307,12 +307,13 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
         }
         submitData = { ...submitData, exchanges };
       }
-      await updateConfig(submitData);
+      const updated = await updateConfig(submitData);
+      setConfig(updated);
       setMessage(t('cfg.saved'));
       setDirty(false);
       setExchangeOverrides({});
-    } catch {
-      setMessage(t('cfg.failed'));
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : t('cfg.failed'));
     } finally {
       setSaving(false);
       setTimeout(() => setMessage(''), 3000);
@@ -360,6 +361,7 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
               <ToggleSwitch
                 on={enabled}
                 onChange={(v) => {
+                  setDirty(true);
                   const exchanges = ((config.exchanges || {}) as Record<string, unknown>);
                   const exData = ((exchanges[ex.id] as Record<string, unknown>) || {});
                   const updated = { ...exchanges, [ex.id]: { ...exData, enabled: v } };

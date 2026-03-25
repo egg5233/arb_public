@@ -38,7 +38,8 @@ async function rawRequest<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error('Unauthorized');
   }
   if (!res.ok) {
-    throw new Error(`HTTP ${res.status}`);
+    const body = await res.json().catch(() => null) as { error?: string } | null;
+    throw new Error(body?.error || `HTTP ${res.status}`);
   }
   return res.json() as Promise<T>;
 }

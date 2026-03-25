@@ -67,6 +67,13 @@ const Transfers: FC<TransfersProps> = ({ transfer, getTransfers, getAddresses, u
     return addresses[to]?.[c];
   });
 
+  // Auto-select first available chain when current selection is not available
+  useEffect(() => {
+    if (availableChains.length > 0 && !availableChains.includes(chain)) {
+      setChain(availableChains[0]);
+    }
+  }, [to, availableChains.join(',')]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');

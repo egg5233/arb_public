@@ -296,9 +296,9 @@ func apiKeyPreview(key string) string {
 func boolPtr(b bool) *bool { return &b }
 
 // buildExchangeResponse builds the exchange config info for a single exchange.
-func buildExchangeInfo(apiKey, secretKey, passphrase string, hasPassphraseField bool, address map[string]string) configExchangeResponse {
+func buildExchangeInfo(apiKey, secretKey, passphrase string, hasPassphraseField bool, address map[string]string, enabled bool) configExchangeResponse {
 	resp := configExchangeResponse{
-		Enabled:       apiKey != "",
+		Enabled:       enabled,
 		HasAPIKey:     apiKey != "",
 		APIKeyPreview: apiKeyPreview(apiKey),
 		HasSecretKey:  secretKey != "",
@@ -398,12 +398,12 @@ func (s *Server) buildExchangesResponse() map[string]configExchangeResponse {
 		return nil
 	}
 	return map[string]configExchangeResponse{
-		"binance": buildExchangeInfo(s.cfg.BinanceAPIKey, s.cfg.BinanceSecretKey, "", false, getAddr("binance")),
-		"bybit":   buildExchangeInfo(s.cfg.BybitAPIKey, s.cfg.BybitSecretKey, "", false, getAddr("bybit")),
-		"gateio":  buildExchangeInfo(s.cfg.GateioAPIKey, s.cfg.GateioSecretKey, "", false, getAddr("gateio")),
-		"bitget":  buildExchangeInfo(s.cfg.BitgetAPIKey, s.cfg.BitgetSecretKey, s.cfg.BitgetPassphrase, true, getAddr("bitget")),
-		"okx":     buildExchangeInfo(s.cfg.OKXAPIKey, s.cfg.OKXSecretKey, s.cfg.OKXPassphrase, true, getAddr("okx")),
-		"bingx":   buildExchangeInfo(s.cfg.BingXAPIKey, s.cfg.BingXSecretKey, "", false, getAddr("bingx")),
+		"binance": buildExchangeInfo(s.cfg.BinanceAPIKey, s.cfg.BinanceSecretKey, "", false, getAddr("binance"), s.cfg.IsExchangeEnabled("binance")),
+		"bybit":   buildExchangeInfo(s.cfg.BybitAPIKey, s.cfg.BybitSecretKey, "", false, getAddr("bybit"), s.cfg.IsExchangeEnabled("bybit")),
+		"gateio":  buildExchangeInfo(s.cfg.GateioAPIKey, s.cfg.GateioSecretKey, "", false, getAddr("gateio"), s.cfg.IsExchangeEnabled("gateio")),
+		"bitget":  buildExchangeInfo(s.cfg.BitgetAPIKey, s.cfg.BitgetSecretKey, s.cfg.BitgetPassphrase, true, getAddr("bitget"), s.cfg.IsExchangeEnabled("bitget")),
+		"okx":     buildExchangeInfo(s.cfg.OKXAPIKey, s.cfg.OKXSecretKey, s.cfg.OKXPassphrase, true, getAddr("okx"), s.cfg.IsExchangeEnabled("okx")),
+		"bingx":   buildExchangeInfo(s.cfg.BingXAPIKey, s.cfg.BingXSecretKey, "", false, getAddr("bingx"), s.cfg.IsExchangeEnabled("bingx")),
 	}
 }
 
@@ -424,6 +424,7 @@ type configUpdate struct {
 }
 
 type exchangeUpdate struct {
+	Enabled    *bool             `json:"enabled"`
 	APIKey     *string           `json:"api_key"`
 	SecretKey  *string           `json:"secret_key"`
 	Passphrase *string           `json:"passphrase"`
@@ -707,6 +708,23 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		for name, eu := range upd.Exchanges {
 			if eu == nil {
 				continue
+			}
+			if eu.Enabled != nil {
+				v := *eu.Enabled
+				switch name {
+				case "binance":
+					s.cfg.BinanceEnabled = &v
+				case "bybit":
+					s.cfg.BybitEnabled = &v
+				case "gateio":
+					s.cfg.GateioEnabled = &v
+				case "bitget":
+					s.cfg.BitgetEnabled = &v
+				case "okx":
+					s.cfg.OKXEnabled = &v
+				case "bingx":
+					s.cfg.BingXEnabled = &v
+				}
 			}
 			switch name {
 			case "binance":

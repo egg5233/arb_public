@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.6] - 2026-03-25
+
+### Fixed
+- **Config save 400 error**: Changed `exchangeUpdate.Enabled` from `*string` to `*bool` — frontend sends boolean, was causing JSON decode failure
+- **Config fields cleared after save**: Update frontend config state with backend response after successful save
+- **Exchange toggle not triggering dirty flag**: Toggling enable/disable now shows "unsaved changes" indicator
+- **WebSocket null positions white screen**: Guard against `null` from `GetActivePositions()` causing `null.map()` crash
+- **Transfer error messages unclear**: `rawRequest` now parses response body to show actual backend error
+- **Transfer chain selection mismatch**: Auto-switch chain when destination exchange only has APT address but default was BEP20
+
+### Added
+- **Exchange enable/disable persistence**: Added `Enabled *bool` field to Config struct, config.json, and API handler for independent exchange on/off control
+- **`IsExchangeEnabled()` method**: Checks both API key presence and enabled flag, replacing key-only check
+
+### Changed
+- **Build order reminder in CLAUDE.md**: Emphasize frontend must build before Go binary (go:embed)
+
 ## [0.16.5] - 2026-03-25
 
 ### Added

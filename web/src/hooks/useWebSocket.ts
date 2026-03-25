@@ -53,12 +53,13 @@ export function useWebSocket(enabled: boolean) {
           const msg = JSON.parse(trimmed) as WsMessage;
           switch (msg.type) {
             case 'positions':
-              setPositions(msg.data as Position[]);
+              setPositions((msg.data as Position[]) || []);
               break;
             case 'position_update':
               // Single position update — merge into the list.
               setPositions((prev) => {
                 const updated = msg.data as Position;
+                if (!updated || !updated.id) return prev;
                 const idx = prev.findIndex((p) => p.id === updated.id);
                 if (idx >= 0) {
                   const next = [...prev];
@@ -69,7 +70,7 @@ export function useWebSocket(enabled: boolean) {
               });
               break;
             case 'opportunities':
-              setOpportunities(msg.data as Opportunity[]);
+              setOpportunities((msg.data as Opportunity[]) || []);
               break;
             case 'stats':
               setStats(msg.data as Stats);

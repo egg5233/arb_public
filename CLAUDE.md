@@ -21,6 +21,9 @@ Funding rate arbitrage bot — monitors funding rate differentials across **Bina
 
 ## Build & Run
 
+**CRITICAL BUILD ORDER**: Frontend uses `go:embed` — MUST build frontend BEFORE Go binary.
+Always: `npm run build` (web/) → then `go build`. If reversed, the binary serves stale JS.
+
 ```bash
 # Full build (frontend + Go binary)
 make build

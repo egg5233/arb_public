@@ -95,18 +95,24 @@ type Config struct {
 	// Exchange API keys
 	BinanceAPIKey    string
 	BinanceSecretKey string
+	BinanceEnabled   *bool // nil = auto (enabled if apiKey set)
 	BybitAPIKey      string
 	BybitSecretKey   string
+	BybitEnabled     *bool
 	GateioAPIKey     string
 	GateioSecretKey  string
+	GateioEnabled    *bool
 	BitgetAPIKey     string
 	BitgetSecretKey  string
 	BitgetPassphrase string
+	BitgetEnabled    *bool
 	OKXAPIKey        string
 	OKXSecretKey     string
 	OKXPassphrase    string
+	OKXEnabled       *bool
 	BingXAPIKey      string
 	BingXSecretKey   string
+	BingXEnabled     *bool
 
 	// Redis
 	RedisAddr string
@@ -141,6 +147,7 @@ type jsonConfig struct {
 }
 
 type jsonExchange struct {
+	Enabled    *bool             `json:"enabled,omitempty"`
 	APIKey     string            `json:"api_key"`
 	SecretKey  string            `json:"secret_key"`
 	Passphrase string            `json:"passphrase,omitempty"`
@@ -541,28 +548,34 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 	if ex, ok := jc.Exchanges["binance"]; ok {
 		c.BinanceAPIKey = ex.APIKey
 		c.BinanceSecretKey = ex.SecretKey
+		c.BinanceEnabled = ex.Enabled
 	}
 	if ex, ok := jc.Exchanges["bybit"]; ok {
 		c.BybitAPIKey = ex.APIKey
 		c.BybitSecretKey = ex.SecretKey
+		c.BybitEnabled = ex.Enabled
 	}
 	if ex, ok := jc.Exchanges["gateio"]; ok {
 		c.GateioAPIKey = ex.APIKey
 		c.GateioSecretKey = ex.SecretKey
+		c.GateioEnabled = ex.Enabled
 	}
 	if ex, ok := jc.Exchanges["bitget"]; ok {
 		c.BitgetAPIKey = ex.APIKey
 		c.BitgetSecretKey = ex.SecretKey
 		c.BitgetPassphrase = ex.Passphrase
+		c.BitgetEnabled = ex.Enabled
 	}
 	if ex, ok := jc.Exchanges["okx"]; ok {
 		c.OKXAPIKey = ex.APIKey
 		c.OKXSecretKey = ex.SecretKey
 		c.OKXPassphrase = ex.Passphrase
+		c.OKXEnabled = ex.Enabled
 	}
 	if ex, ok := jc.Exchanges["bingx"]; ok {
 		c.BingXAPIKey = ex.APIKey
 		c.BingXSecretKey = ex.SecretKey
+		c.BingXEnabled = ex.Enabled
 	}
 
 	// Parse deposit addresses
@@ -743,13 +756,17 @@ func (c *Config) SaveJSON() error {
 		passphrase string
 		hasPass    bool
 	}
-	exchDefs := []exchDef{
-		{"binance", c.BinanceAPIKey, c.BinanceSecretKey, "", false},
-		{"bybit", c.BybitAPIKey, c.BybitSecretKey, "", false},
-		{"gateio", c.GateioAPIKey, c.GateioSecretKey, "", false},
-		{"bitget", c.BitgetAPIKey, c.BitgetSecretKey, c.BitgetPassphrase, true},
-		{"okx", c.OKXAPIKey, c.OKXSecretKey, c.OKXPassphrase, true},
-		{"bingx", c.BingXAPIKey, c.BingXSecretKey, "", false},
+	type exchDef2 struct {
+		exchDef
+		enabled *bool
+	}
+	exchDefs := []exchDef2{
+		{exchDef{"binance", c.BinanceAPIKey, c.BinanceSecretKey, "", false}, c.BinanceEnabled},
+		{exchDef{"bybit", c.BybitAPIKey, c.BybitSecretKey, "", false}, c.BybitEnabled},
+		{exchDef{"gateio", c.GateioAPIKey, c.GateioSecretKey, "", false}, c.GateioEnabled},
+		{exchDef{"bitget", c.BitgetAPIKey, c.BitgetSecretKey, c.BitgetPassphrase, true}, c.BitgetEnabled},
+		{exchDef{"okx", c.OKXAPIKey, c.OKXSecretKey, c.OKXPassphrase, true}, c.OKXEnabled},
+		{exchDef{"bingx", c.BingXAPIKey, c.BingXSecretKey, "", false}, c.BingXEnabled},
 	}
 	for _, ed := range exchDefs {
 		exMap := getMap(exchanges, ed.name)
@@ -757,6 +774,9 @@ func (c *Config) SaveJSON() error {
 		exMap["secret_key"] = ed.secretKey
 		if ed.hasPass {
 			exMap["passphrase"] = ed.passphrase
+		}
+		if ed.enabled != nil {
+			exMap["enabled"] = *ed.enabled
 		}
 		if addrs, ok := c.ExchangeAddresses[ed.name]; ok && len(addrs) > 0 {
 			exMap["address"] = addrs
@@ -908,26 +928,43 @@ func (c *Config) loadEnvOverrides() {
 	}
 }
 
-// EnabledExchanges returns a list of exchange names that have API keys configured.
+// IsExchangeEnabled returns true if the exchange has an API key and is not
+// explicitly disabled. A nil Enabled pointer means "auto" (enabled if key set).
+func (c *Config) IsExchangeEnabled(name string) bool {
+	var key string
+	var flag *bool
+	switch name {
+	case "binance":
+		key, flag = c.BinanceAPIKey, c.BinanceEnabled
+	case "bybit":
+		key, flag = c.BybitAPIKey, c.BybitEnabled
+	case "gateio":
+		key, flag = c.GateioAPIKey, c.GateioEnabled
+	case "bitget":
+		key, flag = c.BitgetAPIKey, c.BitgetEnabled
+	case "okx":
+		key, flag = c.OKXAPIKey, c.OKXEnabled
+	case "bingx":
+		key, flag = c.BingXAPIKey, c.BingXEnabled
+	default:
+		return false
+	}
+	if key == "" {
+		return false // no API key — can't enable
+	}
+	if flag != nil {
+		return *flag
+	}
+	return true // auto: enabled when key exists
+}
+
+// EnabledExchanges returns a list of exchange names that are enabled.
 func (c *Config) EnabledExchanges() []string {
 	var enabled []string
-	if c.BinanceAPIKey != "" {
-		enabled = append(enabled, "binance")
-	}
-	if c.BybitAPIKey != "" {
-		enabled = append(enabled, "bybit")
-	}
-	if c.GateioAPIKey != "" {
-		enabled = append(enabled, "gateio")
-	}
-	if c.BitgetAPIKey != "" {
-		enabled = append(enabled, "bitget")
-	}
-	if c.OKXAPIKey != "" {
-		enabled = append(enabled, "okx")
-	}
-	if c.BingXAPIKey != "" {
-		enabled = append(enabled, "bingx")
+	for _, name := range []string{"binance", "bybit", "gateio", "bitget", "okx", "bingx"} {
+		if c.IsExchangeEnabled(name) {
+			enabled = append(enabled, name)
+		}
 	}
 	return enabled
 }
