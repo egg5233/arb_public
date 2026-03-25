@@ -3,15 +3,15 @@ export function tradingUrl(exchange: string, symbol: string): string {
   const lc = base.toLowerCase();
   switch (exchange) {
     case 'binance':
-      return `https://www.binance.com/futures/${symbol}`;
+      return `https://www.binance.com/futures/${symbol}?theme=dark`;
     case 'bybit':
-      return `https://www.bybit.com/trade/usdt/${symbol}`;
+      return `https://www.bybit.com/trade/usdt/${symbol}?theme=dark`;
     case 'gateio':
-      return `https://www.gate.io/futures/usdt/${base}_USDT`;
+      return `https://www.gate.io/futures/usdt/${base}_USDT?theme=dark_mode`;
     case 'bitget':
-      return `https://www.bitget.com/futures/usdt/${symbol}`;
+      return `https://www.bitget.com/futures/usdt/${symbol}?theme=dark`;
     case 'okx':
-      return `https://www.okx.com/trade-swap/${lc}-usdt-swap`;
+      return `https://www.okx.com/trade-swap/${lc}-usdt-swap?theme=dark`;
     case 'bingx':
       return `https://bingx.com/perpetual/${base}-USDT`;
     default:

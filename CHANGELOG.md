@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.0] - 2026-03-25
+
+### Added
+- **Dashboard 全面重構**：設定頁改為 8 個 Tab 分頁（交易所/資金管理/排程/選幣策略/持久性篩選/進場設定/出場輪替/風控）
+- **交易所設定 UI**：可在網頁上設定 API Key、Secret Key、Passphrase、BEP20 錢包地址，支援啟用/停用 toggle
+- **交易所設定 API**：後端新增 exchanges 讀寫端點，GET 回傳 key preview，POST 支援更新/清空
+- **手機響應式**：Sidebar 改為 mobile drawer + hamburger menu，表格加 overflow-x-auto
+- **風控視覺化**：Margin L3/L4/L5 改為 slider + 漸層視覺條
+- **最大結算週期篩選**：新增 `max_interval_hours` 設定，過濾 funding interval 過長的幣種
+- **交易所深色模式連結**：所有交易所連結預設開啟深色主題
+
+### Removed
+- 移除已棄用的 `exit_mode` 和 `order_advance_min` 幽靈欄位
+
 ## [0.16.1] - 2026-03-25
 
 ### Added

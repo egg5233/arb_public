@@ -6,6 +6,8 @@ interface SidebarProps {
   onNavigate: (page: string) => void;
   connected: boolean;
   onLogout: () => void;
+  mobileOpen?: boolean;
+  onMobileClose?: () => void;
 }
 
 const navItems: { id: string; labelKey: TranslationKey; icon: string }[] = [
@@ -20,16 +22,23 @@ const navItems: { id: string; labelKey: TranslationKey; icon: string }[] = [
   { id: 'config', labelKey: 'nav.config', icon: '\u2699' },
 ];
 
+export { navItems };
+
 const LOCALES: { value: Locale; label: string }[] = [
   { value: 'zh-TW', label: '繁中' },
   { value: 'en', label: 'EN' },
 ];
 
-const Sidebar: FC<SidebarProps> = ({ page, onNavigate, connected, onLogout }) => {
+const Sidebar: FC<SidebarProps> = ({ page, onNavigate, connected, onLogout, mobileOpen, onMobileClose }) => {
   const { locale, setLocale, t } = useLocale();
 
-  return (
-    <div className="w-56 bg-gray-900 border-r border-gray-800 flex flex-col h-screen sticky top-0">
+  const handleNavigate = (p: string) => {
+    onNavigate(p);
+    onMobileClose?.();
+  };
+
+  const sidebarContent = (
+    <div className="w-56 bg-gray-900 border-r border-gray-800 flex flex-col h-screen">
       <div className="p-4 border-b border-gray-800">
         <h1 className="text-lg font-bold text-gray-100">{t('sidebar.title')}</h1>
         <div className="flex items-center gap-2 mt-2 text-sm text-gray-400">
@@ -45,7 +54,7 @@ const Sidebar: FC<SidebarProps> = ({ page, onNavigate, connected, onLogout }) =>
         {navItems.map((item) => (
           <button
             key={item.id}
-            onClick={() => onNavigate(item.id)}
+            onClick={() => handleNavigate(item.id)}
             className={`w-full text-left px-3 py-2 rounded-md mb-1 flex items-center gap-2 text-sm transition-colors ${
               page === item.id
                 ? 'bg-blue-500/20 text-blue-400'
@@ -81,6 +90,30 @@ const Sidebar: FC<SidebarProps> = ({ page, onNavigate, connected, onLogout }) =>
         </button>
       </div>
     </div>
+  );
+
+  return (
+    <>
+      {/* Desktop sidebar — always visible */}
+      <div className="hidden md:block sticky top-0 h-screen">
+        {sidebarContent}
+      </div>
+
+      {/* Mobile overlay drawer */}
+      {mobileOpen && (
+        <div className="fixed inset-0 z-50 md:hidden">
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/60"
+            onClick={onMobileClose}
+          />
+          {/* Drawer */}
+          <div className="absolute inset-y-0 left-0 animate-slide-in-left">
+            {sidebarContent}
+          </div>
+        </div>
+      )}
+    </>
   );
 };
 

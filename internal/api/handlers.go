@@ -183,11 +183,21 @@ func (s *Server) handleGetStats(w http.ResponseWriter, r *http.Request) {
 // ---------- Nested config API response structs ----------
 
 type configResponse struct {
-	DryRun   bool                   `json:"dry_run"`
-	Strategy configStrategyResponse `json:"strategy"`
-	Fund     configFundResponse     `json:"fund"`
-	Risk     configRiskResponse     `json:"risk"`
-	AI       configAIResponse       `json:"ai"`
+	DryRun    bool                                `json:"dry_run"`
+	Strategy  configStrategyResponse              `json:"strategy"`
+	Fund      configFundResponse                  `json:"fund"`
+	Risk      configRiskResponse                  `json:"risk"`
+	AI        configAIResponse                    `json:"ai"`
+	Exchanges map[string]configExchangeResponse   `json:"exchanges"`
+}
+
+type configExchangeResponse struct {
+	Enabled       bool              `json:"enabled"`
+	HasAPIKey     bool              `json:"has_api_key"`
+	APIKeyPreview string            `json:"api_key_preview"`
+	HasSecretKey  bool              `json:"has_secret_key"`
+	HasPassphrase *bool             `json:"has_passphrase,omitempty"`
+	Address       map[string]string `json:"address"`
 }
 
 type configAIResponse struct {
@@ -216,6 +226,7 @@ type configDiscoveryResponse struct {
 	MaxPriceGapBPS          float64                   `json:"max_price_gap_bps"`
 	PriceGapFreeBPS         float64                   `json:"price_gap_free_bps"`
 	MaxGapRecoveryIntervals float64                   `json:"max_gap_recovery_intervals"`
+	MaxIntervalHours        float64                   `json:"max_interval_hours"`
 	Persistence             configPersistenceResponse `json:"persistence"`
 }
 
@@ -273,6 +284,35 @@ type configRiskResponse struct {
 	RiskMonitorIntervalSec int     `json:"risk_monitor_interval_sec"`
 }
 
+// apiKeyPreview returns the first 6 characters of a key followed by "...", or empty if blank.
+func apiKeyPreview(key string) string {
+	if len(key) <= 6 {
+		return key
+	}
+	return key[:6] + "..."
+}
+
+// boolPtr returns a pointer to a bool value.
+func boolPtr(b bool) *bool { return &b }
+
+// buildExchangeResponse builds the exchange config info for a single exchange.
+func buildExchangeInfo(apiKey, secretKey, passphrase string, hasPassphraseField bool, address map[string]string) configExchangeResponse {
+	resp := configExchangeResponse{
+		Enabled:       apiKey != "",
+		HasAPIKey:     apiKey != "",
+		APIKeyPreview: apiKeyPreview(apiKey),
+		HasSecretKey:  secretKey != "",
+		Address:       address,
+	}
+	if hasPassphraseField {
+		resp.HasPassphrase = boolPtr(passphrase != "")
+	}
+	if resp.Address == nil {
+		resp.Address = make(map[string]string)
+	}
+	return resp
+}
+
 func (s *Server) buildConfigResponse() configResponse {
 	return configResponse{
 		DryRun: s.cfg.DryRun,
@@ -289,6 +329,7 @@ func (s *Server) buildConfigResponse() configResponse {
 				MaxPriceGapBPS:          s.cfg.MaxPriceGapBPS,
 				PriceGapFreeBPS:         s.cfg.PriceGapFreeBPS,
 				MaxGapRecoveryIntervals: s.cfg.MaxGapRecoveryIntervals,
+				MaxIntervalHours:        s.cfg.MaxIntervalHours,
 				Persistence: configPersistenceResponse{
 					LookbackMin1h: int(s.cfg.PersistLookback1h.Minutes()),
 					MinCount1h:    s.cfg.PersistMinCount1h,
@@ -345,6 +386,24 @@ func (s *Server) buildConfigResponse() configResponse {
 			MaxTokens: s.cfg.AIMaxTokens,
 			HasKey:    s.cfg.AIAPIKey != "",
 		},
+		Exchanges: s.buildExchangesResponse(),
+	}
+}
+
+func (s *Server) buildExchangesResponse() map[string]configExchangeResponse {
+	getAddr := func(name string) map[string]string {
+		if a, ok := s.cfg.ExchangeAddresses[name]; ok {
+			return a
+		}
+		return nil
+	}
+	return map[string]configExchangeResponse{
+		"binance": buildExchangeInfo(s.cfg.BinanceAPIKey, s.cfg.BinanceSecretKey, "", false, getAddr("binance")),
+		"bybit":   buildExchangeInfo(s.cfg.BybitAPIKey, s.cfg.BybitSecretKey, "", false, getAddr("bybit")),
+		"gateio":  buildExchangeInfo(s.cfg.GateioAPIKey, s.cfg.GateioSecretKey, "", false, getAddr("gateio")),
+		"bitget":  buildExchangeInfo(s.cfg.BitgetAPIKey, s.cfg.BitgetSecretKey, s.cfg.BitgetPassphrase, true, getAddr("bitget")),
+		"okx":     buildExchangeInfo(s.cfg.OKXAPIKey, s.cfg.OKXSecretKey, s.cfg.OKXPassphrase, true, getAddr("okx")),
+		"bingx":   buildExchangeInfo(s.cfg.BingXAPIKey, s.cfg.BingXSecretKey, "", false, getAddr("bingx")),
 	}
 }
 
@@ -356,11 +415,19 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 // ---------- Nested config update structs (pointer fields to detect presence) ----------
 
 type configUpdate struct {
-	DryRun   *bool           `json:"dry_run"`
-	Strategy *strategyUpdate `json:"strategy"`
-	Fund     *fundUpdate     `json:"fund"`
-	Risk     *riskUpdate     `json:"risk"`
-	AI       *aiUpdate       `json:"ai"`
+	DryRun    *bool                        `json:"dry_run"`
+	Strategy  *strategyUpdate              `json:"strategy"`
+	Fund      *fundUpdate                  `json:"fund"`
+	Risk      *riskUpdate                  `json:"risk"`
+	AI        *aiUpdate                    `json:"ai"`
+	Exchanges map[string]*exchangeUpdate   `json:"exchanges"`
+}
+
+type exchangeUpdate struct {
+	APIKey     *string           `json:"api_key"`
+	SecretKey  *string           `json:"secret_key"`
+	Passphrase *string           `json:"passphrase"`
+	Address    map[string]string `json:"address"`
 }
 
 type aiUpdate struct {
@@ -389,6 +456,7 @@ type discoveryUpdate struct {
 	MaxPriceGapBPS          *float64           `json:"max_price_gap_bps"`
 	PriceGapFreeBPS         *float64           `json:"price_gap_free_bps"`
 	MaxGapRecoveryIntervals *float64           `json:"max_gap_recovery_intervals"`
+	MaxIntervalHours        *float64           `json:"max_interval_hours"`
 	Persistence             *persistenceUpdate `json:"persistence"`
 }
 
@@ -496,6 +564,9 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 			}
 			if d.MaxGapRecoveryIntervals != nil && *d.MaxGapRecoveryIntervals >= 0 {
 				s.cfg.MaxGapRecoveryIntervals = *d.MaxGapRecoveryIntervals
+			}
+			if d.MaxIntervalHours != nil && *d.MaxIntervalHours >= 0 {
+				s.cfg.MaxIntervalHours = *d.MaxIntervalHours
 			}
 			if p := d.Persistence; p != nil {
 				if p.LookbackMin1h != nil && *p.LookbackMin1h > 0 {
@@ -631,6 +702,81 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Exchanges
+	if upd.Exchanges != nil {
+		for name, eu := range upd.Exchanges {
+			if eu == nil {
+				continue
+			}
+			switch name {
+			case "binance":
+				if eu.APIKey != nil {
+					s.cfg.BinanceAPIKey = *eu.APIKey
+				}
+				if eu.SecretKey != nil {
+					s.cfg.BinanceSecretKey = *eu.SecretKey
+				}
+			case "bybit":
+				if eu.APIKey != nil {
+					s.cfg.BybitAPIKey = *eu.APIKey
+				}
+				if eu.SecretKey != nil {
+					s.cfg.BybitSecretKey = *eu.SecretKey
+				}
+			case "gateio":
+				if eu.APIKey != nil {
+					s.cfg.GateioAPIKey = *eu.APIKey
+				}
+				if eu.SecretKey != nil {
+					s.cfg.GateioSecretKey = *eu.SecretKey
+				}
+			case "bitget":
+				if eu.APIKey != nil {
+					s.cfg.BitgetAPIKey = *eu.APIKey
+				}
+				if eu.SecretKey != nil {
+					s.cfg.BitgetSecretKey = *eu.SecretKey
+				}
+				if eu.Passphrase != nil {
+					s.cfg.BitgetPassphrase = *eu.Passphrase
+				}
+			case "okx":
+				if eu.APIKey != nil {
+					s.cfg.OKXAPIKey = *eu.APIKey
+				}
+				if eu.SecretKey != nil {
+					s.cfg.OKXSecretKey = *eu.SecretKey
+				}
+				if eu.Passphrase != nil {
+					s.cfg.OKXPassphrase = *eu.Passphrase
+				}
+			case "bingx":
+				if eu.APIKey != nil {
+					s.cfg.BingXAPIKey = *eu.APIKey
+				}
+				if eu.SecretKey != nil {
+					s.cfg.BingXSecretKey = *eu.SecretKey
+				}
+			}
+			// Update addresses
+			if eu.Address != nil {
+				if s.cfg.ExchangeAddresses == nil {
+					s.cfg.ExchangeAddresses = make(map[string]map[string]string)
+				}
+				if s.cfg.ExchangeAddresses[name] == nil {
+					s.cfg.ExchangeAddresses[name] = make(map[string]string)
+				}
+				for chain, addr := range eu.Address {
+					if addr == "" {
+						delete(s.cfg.ExchangeAddresses[name], chain)
+					} else {
+						s.cfg.ExchangeAddresses[name][chain] = addr
+					}
+				}
+			}
+		}
+	}
+
 	// Persist config fields to Redis HASH (arb:config) using flat keys.
 	snapshot := s.buildConfigResponse()
 
@@ -652,6 +798,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"price_gap_free_bps":            strconv.FormatFloat(snapshot.Strategy.Discovery.PriceGapFreeBPS, 'f', -1, 64),
 		"max_price_gap_bps":             strconv.FormatFloat(snapshot.Strategy.Discovery.MaxPriceGapBPS, 'f', -1, 64),
 		"max_gap_recovery_intervals":    strconv.FormatFloat(snapshot.Strategy.Discovery.MaxGapRecoveryIntervals, 'f', -1, 64),
+		"max_interval_hours":            strconv.FormatFloat(snapshot.Strategy.Discovery.MaxIntervalHours, 'f', -1, 64),
 		"margin_l3_threshold":           strconv.FormatFloat(snapshot.Risk.MarginL3Threshold, 'f', -1, 64),
 		"margin_l4_threshold":           strconv.FormatFloat(snapshot.Risk.MarginL4Threshold, 'f', -1, 64),
 		"margin_l5_threshold":           strconv.FormatFloat(snapshot.Risk.MarginL5Threshold, 'f', -1, 64),

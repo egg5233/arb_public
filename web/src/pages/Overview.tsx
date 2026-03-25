@@ -115,7 +115,7 @@ const Overview: FC<OverviewProps> = ({ positions, stats, exchanges, onDiagnose }
         </div>
       )}
 
-      <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+      <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 overflow-x-auto">
         <h3 className="text-sm font-semibold text-gray-400 mb-3">{t('overview.activePositionsSection')}</h3>
         {positions.length === 0 ? (
           <p className="text-gray-500 text-sm">{t('overview.noPositions')}</p>

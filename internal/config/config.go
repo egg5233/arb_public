@@ -35,6 +35,7 @@ type Config struct {
 	PriceGapFreeBPS     float64       // below this gap, no check (default 40)
 	MaxPriceGapBPS      float64       // hard reject above this gap (default 250)
 	MaxGapRecoveryIntervals float64   // max funding intervals to recover gap (default 1.0)
+	MaxIntervalHours    float64       // max funding interval hours to accept (0=disabled, e.g. 1=only 1h)
 	DryRun              bool          // if true, skip trade execution (log only)
 
 	// Depth-driven entry execution
@@ -183,6 +184,7 @@ type jsonDiscovery struct {
 	MaxPriceGapBPS      *float64         `json:"max_price_gap_bps"`
 	PriceGapFreeBPS     *float64         `json:"price_gap_free_bps"`
 	MaxGapRecoveryIntervals *float64     `json:"max_gap_recovery_intervals"`
+	MaxIntervalHours    *float64         `json:"max_interval_hours"`
 	Persistence         *jsonPersistence `json:"persistence"`
 }
 
@@ -398,6 +400,9 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 			}
 			if d.MaxGapRecoveryIntervals != nil {
 				c.MaxGapRecoveryIntervals = *d.MaxGapRecoveryIntervals
+			}
+			if d.MaxIntervalHours != nil {
+				c.MaxIntervalHours = *d.MaxIntervalHours
 			}
 			if p := d.Persistence; p != nil {
 				if p.LookbackMin1h != nil {
@@ -667,6 +672,9 @@ func (c *Config) SaveJSON() error {
 	disc["max_price_gap_bps"] = c.MaxPriceGapBPS
 	disc["price_gap_free_bps"] = c.PriceGapFreeBPS
 	disc["max_gap_recovery_intervals"] = c.MaxGapRecoveryIntervals
+	if c.MaxIntervalHours > 0 {
+		disc["max_interval_hours"] = c.MaxIntervalHours
+	}
 
 	persist := getMap(disc, "persistence")
 	persist["lookback_min_1h"] = int(c.PersistLookback1h.Minutes())
@@ -725,6 +733,35 @@ func (c *Config) SaveJSON() error {
 		ai["model"] = c.AIModel
 	}
 	ai["max_tokens"] = c.AIMaxTokens
+
+	// Exchanges — build the full exchanges map from current runtime config
+	exchanges := getMap(raw, "exchanges")
+	type exchDef struct {
+		name       string
+		apiKey     string
+		secretKey  string
+		passphrase string
+		hasPass    bool
+	}
+	exchDefs := []exchDef{
+		{"binance", c.BinanceAPIKey, c.BinanceSecretKey, "", false},
+		{"bybit", c.BybitAPIKey, c.BybitSecretKey, "", false},
+		{"gateio", c.GateioAPIKey, c.GateioSecretKey, "", false},
+		{"bitget", c.BitgetAPIKey, c.BitgetSecretKey, c.BitgetPassphrase, true},
+		{"okx", c.OKXAPIKey, c.OKXSecretKey, c.OKXPassphrase, true},
+		{"bingx", c.BingXAPIKey, c.BingXSecretKey, "", false},
+	}
+	for _, ed := range exchDefs {
+		exMap := getMap(exchanges, ed.name)
+		exMap["api_key"] = ed.apiKey
+		exMap["secret_key"] = ed.secretKey
+		if ed.hasPass {
+			exMap["passphrase"] = ed.passphrase
+		}
+		if addrs, ok := c.ExchangeAddresses[ed.name]; ok && len(addrs) > 0 {
+			exMap["address"] = addrs
+		}
+	}
 
 	out, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {

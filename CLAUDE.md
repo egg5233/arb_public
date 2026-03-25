@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## CRITICAL: No README
+- **NEVER** create, modify, or write README.md in this project
+- This rule applies to all workflows including commit, push, and doc updates
+
 ## Project
 
 Funding rate arbitrage bot — monitors funding rate differentials across **Binance, Bybit, Gate.io, Bitget, OKX, BingX** and executes delta-neutral positions (long low-rate exchange, short high-rate exchange).

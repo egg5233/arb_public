@@ -748,6 +748,24 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 		verified = notCooling
 	}
 
+	// 5f. On entry scan, filter by max funding interval hours.
+	if scanType == EntryScan && s.cfg.MaxIntervalHours > 0 {
+		var intervalOK []models.Opportunity
+		for _, opp := range verified {
+			if opp.IntervalHours > 0 && opp.IntervalHours > s.cfg.MaxIntervalHours {
+				reason := fmt.Sprintf("interval %.0fh exceeds max %.0fh", opp.IntervalHours, s.cfg.MaxIntervalHours)
+				s.log.Info("filtering %s (%s/%s): %s", opp.Symbol, opp.LongExchange, opp.ShortExchange, reason)
+				if s.rejStore != nil {
+					s.rejStore.AddOpp(opp, "scanner", reason)
+				}
+				continue
+			}
+			intervalOK = append(intervalOK, opp)
+		}
+		s.log.Info("Interval filter: %d/%d passed (max %.0fh)", len(intervalOK), len(verified), s.cfg.MaxIntervalHours)
+		verified = intervalOK
+	}
+
 	// 6. On entry scan, filter to only opportunities with imminent funding.
 	if scanType == EntryScan {
 		maxFundingWindow := time.Duration(s.cfg.FundingWindowMin) * time.Minute

@@ -7,117 +7,37 @@ interface ConfigProps {
   updateConfig: (data: Record<string, unknown>) => Promise<Record<string, unknown>>;
 }
 
-interface FieldDef {
-  path: string[];  // nested path e.g. ["strategy", "entry", "slippage_limit_bps"]
-  labelKey: TranslationKey;
-  descKey?: TranslationKey;
-  unit?: string;
-}
+// ---------------------------------------------------------------------------
+// Tab definitions
+// ---------------------------------------------------------------------------
+type TabId = 'exchanges' | 'fund' | 'schedule' | 'discovery' | 'persist' | 'entry' | 'exit' | 'risk';
 
-interface SectionDef {
-  titleKey: TranslationKey;
-  descKey: TranslationKey;
-  fields: FieldDef[];
-}
-
-const SECTIONS: SectionDef[] = [
-  {
-    titleKey: 'cfg.fundMgmt',
-    descKey: 'cfg.fundMgmtDesc',
-    fields: [
-      { path: ['fund', 'max_positions'], labelKey: 'cfg.field.maxPositions', descKey: 'cfg.desc.maxPositions' },
-      { path: ['fund', 'leverage'], labelKey: 'cfg.field.leverage', descKey: 'cfg.desc.leverage', unit: 'x' },
-      { path: ['fund', 'capital_per_leg'], labelKey: 'cfg.field.capitalPerLeg', descKey: 'cfg.desc.capitalPerLeg', unit: 'USDT' },
-    ],
-  },
-  {
-    titleKey: 'cfg.schedule',
-    descKey: 'cfg.scheduleDesc',
-    fields: [
-      { path: ['strategy', 'rebalance_scan_minute'], labelKey: 'cfg.field.rebalanceScanMinute', descKey: 'cfg.desc.rebalanceScanMinute' },
-      { path: ['strategy', 'exit_scan_minute'], labelKey: 'cfg.field.exitScanMinute', descKey: 'cfg.desc.exitScanMinute' },
-      { path: ['strategy', 'entry_scan_minute'], labelKey: 'cfg.field.entryScanMinute', descKey: 'cfg.desc.entryScanMinute' },
-      { path: ['strategy', 'rotate_scan_minute'], labelKey: 'cfg.field.rotateScanMinute', descKey: 'cfg.desc.rotateScanMinute' },
-    ],
-  },
-  {
-    titleKey: 'cfg.discovery',
-    descKey: 'cfg.discoveryDesc',
-    fields: [
-      { path: ['strategy', 'top_opportunities'], labelKey: 'cfg.field.topOpportunities', descKey: 'cfg.desc.topOpportunities' },
-      { path: ['strategy', 'discovery', 'min_hold_time_hours'], labelKey: 'cfg.field.minHoldTime', descKey: 'cfg.desc.minHoldTime', unit: 'hours' },
-      { path: ['strategy', 'discovery', 'max_cost_ratio'], labelKey: 'cfg.field.maxCostRatio', descKey: 'cfg.desc.maxCostRatio' },
-      { path: ['strategy', 'discovery', 'price_gap_free_bps'], labelKey: 'cfg.field.freeGap', descKey: 'cfg.desc.freeGap', unit: 'bps' },
-      { path: ['strategy', 'discovery', 'max_price_gap_bps'], labelKey: 'cfg.field.maxGap', descKey: 'cfg.desc.maxGap', unit: 'bps' },
-      { path: ['strategy', 'discovery', 'max_gap_recovery_intervals'], labelKey: 'cfg.field.recoveryIntervals', descKey: 'cfg.desc.recoveryIntervals' },
-      { path: ['strategy', 'discovery', 'persistence', 'funding_window_min'], labelKey: 'cfg.field.fundingWindowMin', descKey: 'cfg.desc.fundingWindowMin', unit: 'min' },
-      { path: ['strategy', 'discovery', 'persistence', 'lookback_min_1h'], labelKey: 'cfg.field.lookbackMin1h', descKey: 'cfg.desc.lookbackMin1h', unit: 'min' },
-      { path: ['strategy', 'discovery', 'persistence', 'lookback_min_4h'], labelKey: 'cfg.field.lookbackMin4h', descKey: 'cfg.desc.lookbackMin4h', unit: 'min' },
-      { path: ['strategy', 'discovery', 'persistence', 'lookback_min_8h'], labelKey: 'cfg.field.lookbackMin8h', descKey: 'cfg.desc.lookbackMin8h', unit: 'min' },
-      { path: ['strategy', 'discovery', 'persistence', 'min_count_1h'], labelKey: 'cfg.field.minCount1h', descKey: 'cfg.desc.minCount1h' },
-      { path: ['strategy', 'discovery', 'persistence', 'min_count_4h'], labelKey: 'cfg.field.minCount4h', descKey: 'cfg.desc.minCount4h' },
-      { path: ['strategy', 'discovery', 'persistence', 'min_count_8h'], labelKey: 'cfg.field.minCount8h', descKey: 'cfg.desc.minCount8h' },
-      { path: ['strategy', 'discovery', 'persistence', 'spread_stability_ratio_1h'], labelKey: 'cfg.field.stabilityRatio1h', descKey: 'cfg.desc.stabilityRatio1h' },
-      { path: ['strategy', 'discovery', 'persistence', 'spread_stability_ratio_4h'], labelKey: 'cfg.field.stabilityRatio4h', descKey: 'cfg.desc.stabilityRatio4h' },
-      { path: ['strategy', 'discovery', 'persistence', 'spread_stability_ratio_8h'], labelKey: 'cfg.field.stabilityRatio8h', descKey: 'cfg.desc.stabilityRatio8h' },
-      { path: ['strategy', 'discovery', 'persistence', 'spread_stability_oi_rank_1h'], labelKey: 'cfg.field.stabilityOIRank1h', descKey: 'cfg.desc.stabilityOIRank1h' },
-      { path: ['strategy', 'discovery', 'persistence', 'spread_stability_oi_rank_4h'], labelKey: 'cfg.field.stabilityOIRank4h', descKey: 'cfg.desc.stabilityOIRank4h' },
-      { path: ['strategy', 'discovery', 'persistence', 'spread_stability_oi_rank_8h'], labelKey: 'cfg.field.stabilityOIRank8h', descKey: 'cfg.desc.stabilityOIRank8h' },
-      { path: ['strategy', 'discovery', 'persistence', 'spread_volatility_max_cv'], labelKey: 'cfg.field.spreadVolatilityMaxCV', descKey: 'cfg.desc.spreadVolatilityMaxCV' },
-      { path: ['strategy', 'discovery', 'persistence', 'spread_volatility_min_samples'], labelKey: 'cfg.field.spreadVolatilityMinSamples', descKey: 'cfg.desc.spreadVolatilityMinSamples' },
-    ],
-  },
-  {
-    titleKey: 'cfg.entryExec',
-    descKey: 'cfg.entryExecDesc',
-    fields: [
-      { path: ['strategy', 'entry', 'entry_timeout_sec'], labelKey: 'cfg.field.entryTimeout', descKey: 'cfg.desc.entryTimeout', unit: 'sec' },
-      { path: ['strategy', 'entry', 'min_chunk_usdt'], labelKey: 'cfg.field.minChunkSize', descKey: 'cfg.desc.minChunkSize', unit: 'USDT' },
-      { path: ['strategy', 'entry', 'slippage_limit_bps'], labelKey: 'cfg.field.slippageLimit', descKey: 'cfg.desc.slippageLimit', unit: 'bps' },
-      { path: ['strategy', 'entry', 'order_advance_min'], labelKey: 'cfg.field.orderAdvance', unit: 'min' },
-      { path: ['strategy', 'entry', 'loss_cooldown_hours'], labelKey: 'cfg.field.lossCooldownHours', descKey: 'cfg.desc.lossCooldownHours', unit: 'h' },
-      { path: ['strategy', 'entry', 're_enter_cooldown_hours'], labelKey: 'cfg.field.reEnterCooldownHours', descKey: 'cfg.desc.reEnterCooldownHours', unit: 'h' },
-      { path: ['strategy', 'entry', 'backtest_days'], labelKey: 'cfg.field.backtestDays', descKey: 'cfg.desc.backtestDays', unit: 'd' },
-      { path: ['strategy', 'entry', 'backtest_min_profit'], labelKey: 'cfg.field.backtestMinProfit', descKey: 'cfg.desc.backtestMinProfit' },
-    ],
-  },
-  {
-    titleKey: 'cfg.exit',
-    descKey: 'cfg.exitDesc',
-    fields: [
-      { path: ['strategy', 'exit', 'exit_mode'], labelKey: 'cfg.field.exitMode' },
-      { path: ['strategy', 'exit', 'depth_timeout_sec'], labelKey: 'cfg.field.depthExitTimeout', descKey: 'cfg.desc.depthExitTimeout', unit: 'sec' },
-      { path: ['strategy', 'exit', 'spread_reversal_tolerance'], labelKey: 'cfg.field.spreadReversalTolerance', descKey: 'cfg.desc.spreadReversalTolerance' },
-    ],
-  },
-  {
-    titleKey: 'cfg.rotation',
-    descKey: 'cfg.rotationDesc',
-    fields: [
-      { path: ['strategy', 'rotation', 'threshold_bps'], labelKey: 'cfg.field.threshold', descKey: 'cfg.desc.rotationThreshold', unit: 'bps' },
-      { path: ['strategy', 'rotation', 'cooldown_min'], labelKey: 'cfg.field.cooldown', descKey: 'cfg.desc.rotationCooldown', unit: 'min' },
-    ],
-  },
-  {
-    titleKey: 'cfg.marginHealth',
-    descKey: 'cfg.marginHealthDesc',
-    fields: [
-      { path: ['risk', 'margin_l3_threshold'], labelKey: 'cfg.field.l3TransferTrigger', descKey: 'cfg.desc.l3TransferTrigger' },
-      { path: ['risk', 'margin_l4_threshold'], labelKey: 'cfg.field.l4ReduceTrigger', descKey: 'cfg.desc.l4ReduceTrigger' },
-      { path: ['risk', 'margin_l5_threshold'], labelKey: 'cfg.field.l5EmergencyClose', descKey: 'cfg.desc.l5EmergencyClose' },
-      { path: ['risk', 'l4_reduce_fraction'], labelKey: 'cfg.field.l4ReduceFraction', descKey: 'cfg.desc.l4ReduceFraction' },
-    ],
-  },
-  {
-    titleKey: 'cfg.system',
-    descKey: 'cfg.systemDesc',
-    fields: [
-      { path: ['dry_run'], labelKey: 'cfg.field.dryRun', descKey: 'cfg.desc.dryRun' },
-    ],
-  },
+const TABS: { id: TabId; labelKey: TranslationKey }[] = [
+  { id: 'exchanges', labelKey: 'cfg.tab.exchanges' },
+  { id: 'fund', labelKey: 'cfg.tab.fund' },
+  { id: 'schedule', labelKey: 'cfg.tab.schedule' },
+  { id: 'discovery', labelKey: 'cfg.tab.discovery' },
+  { id: 'persist', labelKey: 'cfg.tab.persistence' },
+  { id: 'entry', labelKey: 'cfg.tab.entry' },
+  { id: 'exit', labelKey: 'cfg.tab.exitRotation' },
+  { id: 'risk', labelKey: 'cfg.tab.risk' },
 ];
 
-// Get a nested value by path
+// Exchange metadata
+const EXCHANGE_LIST = [
+  { id: 'binance', name: 'Binance', hasPassphrase: false },
+  { id: 'bybit', name: 'Bybit', hasPassphrase: false },
+  { id: 'gateio', name: 'Gate.io', hasPassphrase: false },
+  { id: 'bitget', name: 'Bitget', hasPassphrase: true },
+  { id: 'okx', name: 'OKX', hasPassphrase: true },
+  { id: 'bingx', name: 'BingX', hasPassphrase: false },
+];
+
+const LEVERAGE_OPTIONS = [1, 2, 3, 5, 10, 20];
+
+// ---------------------------------------------------------------------------
+// Utility: nested path get/set
+// ---------------------------------------------------------------------------
 function getByPath(obj: Record<string, unknown>, path: string[]): unknown {
   let cur: unknown = obj;
   for (const key of path) {
@@ -127,7 +47,6 @@ function getByPath(obj: Record<string, unknown>, path: string[]): unknown {
   return cur;
 }
 
-// Set a nested value by path (immutable)
 function setByPath(obj: Record<string, unknown>, path: string[], value: unknown): Record<string, unknown> {
   if (path.length === 0) return obj;
   const [head, ...rest] = path;
@@ -138,7 +57,9 @@ function setByPath(obj: Record<string, unknown>, path: string[], value: unknown)
   };
 }
 
-// Tooltip component with styled popover
+// ---------------------------------------------------------------------------
+// Tooltip component
+// ---------------------------------------------------------------------------
 const Tooltip: FC<{ text: string }> = ({ text }) => {
   const [show, setShow] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -175,12 +96,155 @@ const Tooltip: FC<{ text: string }> = ({ text }) => {
   );
 };
 
+// ---------------------------------------------------------------------------
+// Toggle Switch component
+// ---------------------------------------------------------------------------
+const ToggleSwitch: FC<{ on: boolean; onChange: (v: boolean) => void; disabled?: boolean }> = ({ on, onChange, disabled }) => (
+  <button
+    type="button"
+    disabled={disabled}
+    onClick={() => onChange(!on)}
+    className={`relative inline-flex h-6 w-11 shrink-0 rounded-full transition-colors duration-200 focus:outline-none ${on ? 'bg-blue-600' : 'bg-gray-600'} ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+  >
+    <span className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform duration-200 translate-y-0.5 ${on ? 'translate-x-[22px]' : 'translate-x-0.5'}`} />
+  </button>
+);
+
+// ---------------------------------------------------------------------------
+// Password Input with eye toggle
+// ---------------------------------------------------------------------------
+const PasswordInput: FC<{
+  value: string;
+  preview?: string;
+  hasValue?: boolean;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}> = ({ value, preview, hasValue, onChange, placeholder }) => {
+  const [visible, setVisible] = useState(false);
+  const displayPlaceholder = hasValue ? (preview ? `${preview}` : 'Set') : (placeholder || '');
+
+  return (
+    <div className="relative">
+      <input
+        type={visible ? 'text' : 'password'}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={displayPlaceholder}
+        className="w-full bg-gray-800 border border-gray-700 rounded-lg py-1.5 px-3 pr-9 text-sm font-mono text-gray-100 focus:outline-none focus:border-blue-500"
+      />
+      <button
+        type="button"
+        onClick={() => setVisible(!visible)}
+        className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+      >
+        {visible ? (
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.878 9.878L3 3m6.878 6.878L21 21" />
+          </svg>
+        ) : (
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+          </svg>
+        )}
+      </button>
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Range Slider component
+// ---------------------------------------------------------------------------
+const RangeSlider: FC<{
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  onChange: (v: number) => void;
+  colorClass?: string;
+  unit?: string;
+  displayMultiplier?: number;
+}> = ({ value, min, max, step = 0.01, onChange, colorClass = 'text-blue-400', unit = '%', displayMultiplier = 100 }) => (
+  <div>
+    <input
+      type="range"
+      min={min}
+      max={max}
+      step={step}
+      value={value}
+      onChange={(e) => onChange(parseFloat(e.target.value))}
+      className="w-full accent-blue-500"
+      style={{ WebkitAppearance: 'none', appearance: 'none', background: 'transparent' }}
+    />
+    <div className={`text-right text-sm font-mono mt-1 ${colorClass}`}>
+      {(value * displayMultiplier).toFixed(0)}{unit}
+    </div>
+  </div>
+);
+
+// ---------------------------------------------------------------------------
+// Accordion component
+// ---------------------------------------------------------------------------
+const Accordion: FC<{ title: string; defaultOpen?: boolean; children: React.ReactNode }> = ({ title, defaultOpen = false, children }) => {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+      <button
+        type="button"
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-800/50 transition"
+        onClick={() => setOpen(!open)}
+      >
+        <span className="text-sm font-semibold">{title}</span>
+        <svg className={`w-4 h-4 text-gray-500 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      <div className={`overflow-hidden transition-all duration-300 ${open ? 'max-h-[600px] pb-4 px-4' : 'max-h-0'}`}>
+        {children}
+      </div>
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// NumberField - a card with label, tooltip, and number input
+// ---------------------------------------------------------------------------
+const NumberField: FC<{
+  label: string;
+  desc?: string;
+  value: unknown;
+  unit?: string;
+  onChange: (v: string) => void;
+}> = ({ label, desc, value, unit, onChange }) => (
+  <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+    <div className="flex items-center gap-2 mb-2">
+      <label className="text-sm font-medium">{label}</label>
+      {unit && <span className="text-xs text-gray-500">({unit})</span>}
+      {desc && <Tooltip text={desc} />}
+    </div>
+    <input
+      type="text"
+      value={String(value ?? '')}
+      onChange={(e) => onChange(e.target.value)}
+      className="w-full bg-gray-800 border border-gray-700 rounded-lg py-1.5 px-3 text-sm font-mono text-gray-100 focus:outline-none focus:border-blue-500"
+    />
+  </div>
+);
+
+// ---------------------------------------------------------------------------
+// Main Config Component
+// ---------------------------------------------------------------------------
 const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
   const { t } = useLocale();
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<TabId>('exchanges');
+  const tabBarRef = useRef<HTMLDivElement>(null);
+
+  // Exchange overrides: only fields the user actually typed
+  const [exchangeOverrides, setExchangeOverrides] = useState<Record<string, Record<string, string>>>({});
 
   useEffect(() => {
     getConfig()
@@ -191,6 +255,7 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
       .catch(() => setLoading(false));
   }, [getConfig]);
 
+  // Generic change handler for config paths
   const handleChange = (path: string[], value: string) => {
     setConfig((prev) => {
       const original = getByPath(prev, path);
@@ -205,13 +270,40 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
     });
   };
 
+  const handleBoolChange = (path: string[], value: boolean) => {
+    setConfig((prev) => setByPath(prev, path, value));
+  };
+
+  const handleNumberChange = (path: string[], value: number) => {
+    setConfig((prev) => setByPath(prev, path, value));
+  };
+
+  // Exchange field change - track overrides
+  const handleExchangeField = (exId: string, field: string, value: string) => {
+    setExchangeOverrides((prev) => ({
+      ...prev,
+      [exId]: { ...(prev[exId] || {}), [field]: value },
+    }));
+  };
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setMessage('');
     try {
-      await updateConfig(config);
+      // Merge exchange overrides into config for submission
+      let submitData = { ...config };
+      if (Object.keys(exchangeOverrides).length > 0) {
+        const exchanges = ((submitData.exchanges as Record<string, unknown>) || {});
+        for (const [exId, fields] of Object.entries(exchangeOverrides)) {
+          const exData = ((exchanges[exId] as Record<string, unknown>) || {});
+          exchanges[exId] = { ...exData, ...fields };
+        }
+        submitData = { ...submitData, exchanges };
+      }
+      await updateConfig(submitData);
       setMessage(t('cfg.saved'));
+      setExchangeOverrides({});
     } catch {
       setMessage(t('cfg.failed'));
     } finally {
@@ -229,81 +321,611 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
     );
   }
 
-  const renderField = (field: FieldDef) => {
-    const val = getByPath(config, field.path);
-    if (val === undefined) return null;
-    const isBoolean = typeof val === 'boolean';
-    const isExitMode = field.path[field.path.length - 1] === 'exit_mode';
+  // Helper to get exchange info from config
+  const getExchangeInfo = (exId: string) => {
+    const exchanges = (config.exchanges || {}) as Record<string, Record<string, unknown>>;
+    return exchanges[exId] || {};
+  };
+
+  // =========================================================================
+  // Tab: Exchanges
+  // =========================================================================
+  const renderExchangesTab = () => (
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      {EXCHANGE_LIST.map((ex) => {
+        const info = getExchangeInfo(ex.id);
+        const enabled = Boolean(info.enabled);
+        const hasApiKey = Boolean(info.has_api_key);
+        const hasSecretKey = Boolean(info.has_secret_key);
+        const hasPassphrase = info.has_passphrase === true;
+        const apiKeyPreview = (info.api_key_preview as string) || '';
+        const address = (info.address as Record<string, string>) || {};
+        const overrides = exchangeOverrides[ex.id] || {};
+
+        return (
+          <div
+            key={ex.id}
+            className={`bg-gray-900 rounded-xl p-4 border border-gray-800 transition ${!enabled ? 'opacity-45' : ''}`}
+          >
+            {/* Header with toggle */}
+            <div className="flex items-center justify-between mb-3">
+              <span className="font-semibold text-sm">{ex.name}</span>
+              <ToggleSwitch
+                on={enabled}
+                onChange={(v) => {
+                  const exchanges = ((config.exchanges || {}) as Record<string, unknown>);
+                  const exData = ((exchanges[ex.id] as Record<string, unknown>) || {});
+                  const updated = { ...exchanges, [ex.id]: { ...exData, enabled: v } };
+                  setConfig((prev) => ({ ...prev, exchanges: updated }));
+                }}
+              />
+            </div>
+
+            {/* Body */}
+            <div className={!enabled ? 'pointer-events-none' : ''}>
+              {/* API Key */}
+              <div className="mb-3">
+                <label className="text-xs text-gray-400 block mb-1">
+                  API Key
+                  {hasApiKey && <span className="text-green-400 text-xs ml-2">&#x2713;</span>}
+                </label>
+                <PasswordInput
+                  value={overrides.api_key || ''}
+                  preview={apiKeyPreview}
+                  hasValue={hasApiKey}
+                  onChange={(v) => handleExchangeField(ex.id, 'api_key', v)}
+                  placeholder={t('cfg.exchange.notConfigured')}
+                />
+              </div>
+
+              {/* Secret Key */}
+              <div className="mb-3">
+                <label className="text-xs text-gray-400 block mb-1">
+                  Secret Key
+                  {hasSecretKey && <span className="text-green-400 text-xs ml-2">&#x2713;</span>}
+                </label>
+                <PasswordInput
+                  value={overrides.secret_key || ''}
+                  hasValue={hasSecretKey}
+                  onChange={(v) => handleExchangeField(ex.id, 'secret_key', v)}
+                  placeholder={t('cfg.exchange.notConfigured')}
+                />
+              </div>
+
+              {/* Passphrase (only bitget, okx) */}
+              {ex.hasPassphrase && (
+                <div className="mb-3">
+                  <label className="text-xs text-gray-400 block mb-1">
+                    Passphrase
+                    {hasPassphrase && <span className="text-green-400 text-xs ml-2">&#x2713;</span>}
+                  </label>
+                  <PasswordInput
+                    value={overrides.passphrase || ''}
+                    hasValue={hasPassphrase}
+                    onChange={(v) => handleExchangeField(ex.id, 'passphrase', v)}
+                    placeholder={t('cfg.exchange.notConfigured')}
+                  />
+                </div>
+              )}
+
+              {/* BEP20 Address */}
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">{t('cfg.exchange.address')}</label>
+                <input
+                  type="text"
+                  value={overrides.bep20_address ?? (address.bep20 || '')}
+                  onChange={(e) => handleExchangeField(ex.id, 'bep20_address', e.target.value)}
+                  placeholder="0x..."
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg py-1.5 px-3 text-sm font-mono text-gray-100 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  // =========================================================================
+  // Tab: Fund Management
+  // =========================================================================
+  const renderFundTab = () => {
+    const dryRun = getByPath(config, ['dry_run']) as boolean | undefined;
 
     return (
-      <div key={field.path.join('.')} className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
-        <label className="text-sm text-gray-400 sm:w-48 shrink-0 flex items-center">
-          {t(field.labelKey)}
-          {field.unit && <span className="text-gray-600 ml-1">({field.unit})</span>}
-          {field.descKey && <Tooltip text={t(field.descKey)} />}
-        </label>
-        {isBoolean ? (
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <NumberField
+          label={t('cfg.field.maxPositions')}
+          desc={t('cfg.desc.maxPositions')}
+          value={getByPath(config, ['fund', 'max_positions'])}
+          onChange={(v) => handleChange(['fund', 'max_positions'], v)}
+        />
+        {/* Leverage dropdown */}
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.field.leverage')}</label>
+            <Tooltip text={t('cfg.desc.leverage')} />
+          </div>
           <select
-            value={String(val)}
-            onChange={(e) => handleChange(field.path, e.target.value)}
-            className="w-full sm:w-48 bg-gray-800 border border-gray-700 rounded-md px-3 py-1.5 text-gray-100 text-sm focus:outline-none focus:border-blue-500"
+            value={String(getByPath(config, ['fund', 'leverage']) ?? 3)}
+            onChange={(e) => handleChange(['fund', 'leverage'], e.target.value)}
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg py-2 px-3 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
           >
-            <option value="true">true</option>
-            <option value="false">false</option>
+            {LEVERAGE_OPTIONS.map((lev) => (
+              <option key={lev} value={lev}>{lev}x</option>
+            ))}
           </select>
-        ) : isExitMode ? (
-          <select
-            value={String(val)}
-            onChange={(e) => handleChange(field.path, e.target.value)}
-            className="w-full sm:w-48 bg-gray-800 border border-gray-700 rounded-md px-3 py-1.5 text-gray-100 text-sm focus:outline-none focus:border-blue-500"
-          >
-            <option value="wait">wait</option>
-            <option value="spread_reversal">spread_reversal</option>
-          </select>
-        ) : (
-          <input
-            type="text"
-            value={String(val ?? '')}
-            onChange={(e) => handleChange(field.path, e.target.value)}
-            className="w-full sm:w-48 bg-gray-800 border border-gray-700 rounded-md px-3 py-1.5 text-gray-100 text-sm font-mono focus:outline-none focus:border-blue-500"
-          />
-        )}
+        </div>
+
+        <NumberField
+          label={t('cfg.field.capitalPerLeg')}
+          desc={t('cfg.desc.capitalPerLeg')}
+          value={getByPath(config, ['fund', 'capital_per_leg'])}
+          unit="USDT"
+          onChange={(v) => handleChange(['fund', 'capital_per_leg'], v)}
+        />
+
+        {/* Dry Run toggle */}
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.field.dryRun')}</label>
+            <Tooltip text={t('cfg.desc.dryRun')} />
+          </div>
+          <div className="flex items-center gap-3">
+            <ToggleSwitch
+              on={dryRun === true}
+              onChange={(v) => handleBoolChange(['dry_run'], v)}
+            />
+            <span className={`text-sm font-semibold ${dryRun ? 'text-green-400' : 'text-red-400'}`}>
+              {dryRun ? t('cfg.field.dryRunOn') : t('cfg.field.dryRunOff')}
+            </span>
+          </div>
+        </div>
       </div>
     );
   };
 
-  return (
-    <div className="space-y-6">
-      <h2 className="text-xl font-bold text-gray-100">{t('cfg.title')}</h2>
-      <form onSubmit={handleSubmit} className="space-y-6 max-w-2xl">
-        {SECTIONS.map((section) => {
-          const hasFields = section.fields.some((f) => getByPath(config, f.path) !== undefined);
-          if (!hasFields) return null;
-          return (
-            <div key={section.titleKey} className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-              <h3 className="text-sm font-semibold text-gray-200 mb-0.5">{t(section.titleKey)}</h3>
-              <p className="text-xs text-gray-500 mb-3">{t(section.descKey)}</p>
-              <div className="space-y-2.5">
-                {section.fields.map(renderField)}
-              </div>
+  // =========================================================================
+  // Tab: Schedule
+  // =========================================================================
+  const renderScheduleTab = () => (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <NumberField
+        label={t('cfg.field.rebalanceScanMinute')}
+        desc={t('cfg.desc.rebalanceScanMinute')}
+        value={getByPath(config, ['strategy', 'rebalance_scan_minute'])}
+        onChange={(v) => handleChange(['strategy', 'rebalance_scan_minute'], v)}
+      />
+      <NumberField
+        label={t('cfg.field.exitScanMinute')}
+        desc={t('cfg.desc.exitScanMinute')}
+        value={getByPath(config, ['strategy', 'exit_scan_minute'])}
+        onChange={(v) => handleChange(['strategy', 'exit_scan_minute'], v)}
+      />
+      <NumberField
+        label={t('cfg.field.entryScanMinute')}
+        desc={t('cfg.desc.entryScanMinute')}
+        value={getByPath(config, ['strategy', 'entry_scan_minute'])}
+        onChange={(v) => handleChange(['strategy', 'entry_scan_minute'], v)}
+      />
+      <NumberField
+        label={t('cfg.field.rotateScanMinute')}
+        desc={t('cfg.desc.rotateScanMinute')}
+        value={getByPath(config, ['strategy', 'rotate_scan_minute'])}
+        onChange={(v) => handleChange(['strategy', 'rotate_scan_minute'], v)}
+      />
+    </div>
+  );
+
+  // =========================================================================
+  // Tab: Discovery (without persistence fields)
+  // =========================================================================
+  const renderDiscoveryTab = () => (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <NumberField
+        label={t('cfg.field.topOpportunities')}
+        desc={t('cfg.desc.topOpportunities')}
+        value={getByPath(config, ['strategy', 'top_opportunities'])}
+        onChange={(v) => handleChange(['strategy', 'top_opportunities'], v)}
+      />
+      <NumberField
+        label={t('cfg.field.minHoldTime')}
+        desc={t('cfg.desc.minHoldTime')}
+        value={getByPath(config, ['strategy', 'discovery', 'min_hold_time_hours'])}
+        unit="hours"
+        onChange={(v) => handleChange(['strategy', 'discovery', 'min_hold_time_hours'], v)}
+      />
+      <NumberField
+        label={t('cfg.field.maxCostRatio')}
+        desc={t('cfg.desc.maxCostRatio')}
+        value={getByPath(config, ['strategy', 'discovery', 'max_cost_ratio'])}
+        onChange={(v) => handleChange(['strategy', 'discovery', 'max_cost_ratio'], v)}
+      />
+      <NumberField
+        label={t('cfg.field.freeGap')}
+        desc={t('cfg.desc.freeGap')}
+        value={getByPath(config, ['strategy', 'discovery', 'price_gap_free_bps'])}
+        unit="bps"
+        onChange={(v) => handleChange(['strategy', 'discovery', 'price_gap_free_bps'], v)}
+      />
+      <NumberField
+        label={t('cfg.field.maxGap')}
+        desc={t('cfg.desc.maxGap')}
+        value={getByPath(config, ['strategy', 'discovery', 'max_price_gap_bps'])}
+        unit="bps"
+        onChange={(v) => handleChange(['strategy', 'discovery', 'max_price_gap_bps'], v)}
+      />
+      <NumberField
+        label={t('cfg.field.recoveryIntervals')}
+        desc={t('cfg.desc.recoveryIntervals')}
+        value={getByPath(config, ['strategy', 'discovery', 'max_gap_recovery_intervals'])}
+        onChange={(v) => handleChange(['strategy', 'discovery', 'max_gap_recovery_intervals'], v)}
+      />
+      <NumberField
+        label={t('cfg.field.maxIntervalHours')}
+        desc={t('cfg.desc.maxIntervalHours')}
+        value={getByPath(config, ['strategy', 'discovery', 'max_interval_hours'])}
+        unit="h"
+        onChange={(v) => handleChange(['strategy', 'discovery', 'max_interval_hours'], v)}
+      />
+      <NumberField
+        label={t('cfg.field.fundingWindowMin')}
+        desc={t('cfg.desc.fundingWindowMin')}
+        value={getByPath(config, ['strategy', 'discovery', 'persistence', 'funding_window_min'])}
+        unit="min"
+        onChange={(v) => handleChange(['strategy', 'discovery', 'persistence', 'funding_window_min'], v)}
+      />
+    </div>
+  );
+
+  // =========================================================================
+  // Tab: Persistence (accordion)
+  // =========================================================================
+  const renderPersistenceField = (labelKey: TranslationKey, descKey: TranslationKey | undefined, path: string[], unit?: string) => {
+    const val = getByPath(config, path);
+    if (val === undefined) return null;
+    return (
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-gray-400 flex items-center">
+          {t(labelKey)}
+          {descKey && <Tooltip text={t(descKey)} />}
+        </span>
+        <div className="flex items-center gap-1">
+          <input
+            type="text"
+            value={String(val ?? '')}
+            onChange={(e) => handleChange(path, e.target.value)}
+            className="w-16 text-center bg-gray-800 border border-gray-700 rounded py-1 text-xs font-mono text-gray-100 focus:outline-none focus:border-blue-500"
+          />
+          {unit && <span className="text-xs text-gray-500">{unit}</span>}
+        </div>
+      </div>
+    );
+  };
+
+  const renderPersistTab = () => (
+    <div className="space-y-3">
+      {/* 1h */}
+      <Accordion title={t('cfg.persist.1h')} defaultOpen={true}>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {renderPersistenceField('cfg.field.lookbackMin1h', 'cfg.desc.lookbackMin1h', ['strategy', 'discovery', 'persistence', 'lookback_min_1h'], 'min')}
+          {renderPersistenceField('cfg.field.minCount1h', 'cfg.desc.minCount1h', ['strategy', 'discovery', 'persistence', 'min_count_1h'])}
+          {renderPersistenceField('cfg.field.stabilityRatio1h', 'cfg.desc.stabilityRatio1h', ['strategy', 'discovery', 'persistence', 'spread_stability_ratio_1h'])}
+          {renderPersistenceField('cfg.field.stabilityOIRank1h', 'cfg.desc.stabilityOIRank1h', ['strategy', 'discovery', 'persistence', 'spread_stability_oi_rank_1h'])}
+        </div>
+      </Accordion>
+
+      {/* 4h */}
+      <Accordion title={t('cfg.persist.4h')}>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {renderPersistenceField('cfg.field.lookbackMin4h', 'cfg.desc.lookbackMin4h', ['strategy', 'discovery', 'persistence', 'lookback_min_4h'], 'min')}
+          {renderPersistenceField('cfg.field.minCount4h', 'cfg.desc.minCount4h', ['strategy', 'discovery', 'persistence', 'min_count_4h'])}
+          {renderPersistenceField('cfg.field.stabilityRatio4h', 'cfg.desc.stabilityRatio4h', ['strategy', 'discovery', 'persistence', 'spread_stability_ratio_4h'])}
+          {renderPersistenceField('cfg.field.stabilityOIRank4h', 'cfg.desc.stabilityOIRank4h', ['strategy', 'discovery', 'persistence', 'spread_stability_oi_rank_4h'])}
+        </div>
+      </Accordion>
+
+      {/* 8h */}
+      <Accordion title={t('cfg.persist.8h')}>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {renderPersistenceField('cfg.field.lookbackMin8h', 'cfg.desc.lookbackMin8h', ['strategy', 'discovery', 'persistence', 'lookback_min_8h'], 'min')}
+          {renderPersistenceField('cfg.field.minCount8h', 'cfg.desc.minCount8h', ['strategy', 'discovery', 'persistence', 'min_count_8h'])}
+          {renderPersistenceField('cfg.field.stabilityRatio8h', 'cfg.desc.stabilityRatio8h', ['strategy', 'discovery', 'persistence', 'spread_stability_ratio_8h'])}
+          {renderPersistenceField('cfg.field.stabilityOIRank8h', 'cfg.desc.stabilityOIRank8h', ['strategy', 'discovery', 'persistence', 'spread_stability_oi_rank_8h'])}
+        </div>
+      </Accordion>
+
+      {/* Volatility */}
+      <Accordion title={t('cfg.persist.volatility')}>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {renderPersistenceField('cfg.field.spreadVolatilityMaxCV', 'cfg.desc.spreadVolatilityMaxCV', ['strategy', 'discovery', 'persistence', 'spread_volatility_max_cv'])}
+          {renderPersistenceField('cfg.field.spreadVolatilityMinSamples', 'cfg.desc.spreadVolatilityMinSamples', ['strategy', 'discovery', 'persistence', 'spread_volatility_min_samples'])}
+        </div>
+      </Accordion>
+    </div>
+  );
+
+  // =========================================================================
+  // Tab: Entry (without order_advance_min)
+  // =========================================================================
+  const renderEntryTab = () => (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <NumberField
+        label={t('cfg.field.entryTimeout')}
+        desc={t('cfg.desc.entryTimeout')}
+        value={getByPath(config, ['strategy', 'entry', 'entry_timeout_sec'])}
+        unit="sec"
+        onChange={(v) => handleChange(['strategy', 'entry', 'entry_timeout_sec'], v)}
+      />
+      <NumberField
+        label={t('cfg.field.minChunkSize')}
+        desc={t('cfg.desc.minChunkSize')}
+        value={getByPath(config, ['strategy', 'entry', 'min_chunk_usdt'])}
+        unit="USDT"
+        onChange={(v) => handleChange(['strategy', 'entry', 'min_chunk_usdt'], v)}
+      />
+      <NumberField
+        label={t('cfg.field.slippageLimit')}
+        desc={t('cfg.desc.slippageLimit')}
+        value={getByPath(config, ['strategy', 'entry', 'slippage_limit_bps'])}
+        unit="bps"
+        onChange={(v) => handleChange(['strategy', 'entry', 'slippage_limit_bps'], v)}
+      />
+      <NumberField
+        label={t('cfg.field.lossCooldownHours')}
+        desc={t('cfg.desc.lossCooldownHours')}
+        value={getByPath(config, ['strategy', 'entry', 'loss_cooldown_hours'])}
+        unit="h"
+        onChange={(v) => handleChange(['strategy', 'entry', 'loss_cooldown_hours'], v)}
+      />
+      <NumberField
+        label={t('cfg.field.reEnterCooldownHours')}
+        desc={t('cfg.desc.reEnterCooldownHours')}
+        value={getByPath(config, ['strategy', 'entry', 're_enter_cooldown_hours'])}
+        unit="h"
+        onChange={(v) => handleChange(['strategy', 'entry', 're_enter_cooldown_hours'], v)}
+      />
+      <NumberField
+        label={t('cfg.field.backtestDays')}
+        desc={t('cfg.desc.backtestDays')}
+        value={getByPath(config, ['strategy', 'entry', 'backtest_days'])}
+        unit="d"
+        onChange={(v) => handleChange(['strategy', 'entry', 'backtest_days'], v)}
+      />
+      <NumberField
+        label={t('cfg.field.backtestMinProfit')}
+        desc={t('cfg.desc.backtestMinProfit')}
+        value={getByPath(config, ['strategy', 'entry', 'backtest_min_profit'])}
+        onChange={(v) => handleChange(['strategy', 'entry', 'backtest_min_profit'], v)}
+      />
+    </div>
+  );
+
+  // =========================================================================
+  // Tab: Exit & Rotation (without exit_mode)
+  // =========================================================================
+  const renderExitTab = () => (
+    <div className="space-y-4">
+      <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">{t('cfg.exit')}</h3>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <NumberField
+          label={t('cfg.field.depthExitTimeout')}
+          desc={t('cfg.desc.depthExitTimeout')}
+          value={getByPath(config, ['strategy', 'exit', 'depth_timeout_sec'])}
+          unit="sec"
+          onChange={(v) => handleChange(['strategy', 'exit', 'depth_timeout_sec'], v)}
+        />
+        <NumberField
+          label={t('cfg.field.spreadReversalTolerance')}
+          desc={t('cfg.desc.spreadReversalTolerance')}
+          value={getByPath(config, ['strategy', 'exit', 'spread_reversal_tolerance'])}
+          onChange={(v) => handleChange(['strategy', 'exit', 'spread_reversal_tolerance'], v)}
+        />
+      </div>
+
+      <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider pt-2">{t('cfg.rotation')}</h3>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <NumberField
+          label={t('cfg.field.threshold')}
+          desc={t('cfg.desc.rotationThreshold')}
+          value={getByPath(config, ['strategy', 'rotation', 'threshold_bps'])}
+          unit="bps"
+          onChange={(v) => handleChange(['strategy', 'rotation', 'threshold_bps'], v)}
+        />
+        <NumberField
+          label={t('cfg.field.cooldown')}
+          desc={t('cfg.desc.rotationCooldown')}
+          value={getByPath(config, ['strategy', 'rotation', 'cooldown_min'])}
+          unit="min"
+          onChange={(v) => handleChange(['strategy', 'rotation', 'cooldown_min'], v)}
+        />
+      </div>
+    </div>
+  );
+
+  // =========================================================================
+  // Tab: Risk
+  // =========================================================================
+  const renderRiskTab = () => {
+    const l3 = (getByPath(config, ['risk', 'margin_l3_threshold']) as number) ?? 0;
+    const l4 = (getByPath(config, ['risk', 'margin_l4_threshold']) as number) ?? 0;
+    const l5 = (getByPath(config, ['risk', 'margin_l5_threshold']) as number) ?? 0;
+    const l4r = (getByPath(config, ['risk', 'l4_reduce_fraction']) as number) ?? 0;
+
+    return (
+      <div className="space-y-4">
+        {/* Visual margin bar */}
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <h3 className="text-sm font-semibold mb-4">{t('cfg.risk.overview')}</h3>
+          <div className="relative h-10 rounded-full overflow-hidden mb-2" style={{ background: 'linear-gradient(to right, #22c55e 0%, #eab308 50%, #ef4444 100%)' }}>
+            {/* L3 marker */}
+            <div className="absolute top-0 h-full flex flex-col items-center" style={{ left: `${l3 * 100}%` }}>
+              <div className="w-0.5 h-full bg-white" />
+              <span className="absolute -top-5 text-xs font-bold text-yellow-400 whitespace-nowrap">L3</span>
             </div>
-          );
-        })}
-        <div className="flex items-center gap-4">
+            {/* L4 marker */}
+            <div className="absolute top-0 h-full flex flex-col items-center" style={{ left: `${l4 * 100}%` }}>
+              <div className="w-0.5 h-full bg-white" />
+              <span className="absolute -top-5 text-xs font-bold text-orange-400 whitespace-nowrap">L4</span>
+            </div>
+            {/* L5 marker */}
+            <div className="absolute top-0 h-full flex flex-col items-center" style={{ left: `${l5 * 100}%` }}>
+              <div className="w-0.5 h-full bg-white" />
+              <span className="absolute -top-5 text-xs font-bold text-red-400 whitespace-nowrap">L5</span>
+            </div>
+          </div>
+          <div className="flex justify-between text-xs text-gray-500 px-1">
+            <span>0%</span><span>50%</span><span>100%</span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {/* L3 */}
+          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+            <div className="flex items-center gap-2 mb-2">
+              <label className="text-sm font-medium">{t('cfg.field.l3TransferTrigger')}</label>
+              <Tooltip text={t('cfg.desc.l3TransferTrigger')} />
+            </div>
+            <RangeSlider
+              value={l3}
+              min={0}
+              max={1}
+              step={0.01}
+              onChange={(v) => handleNumberChange(['risk', 'margin_l3_threshold'], v)}
+              colorClass="text-yellow-400"
+            />
+          </div>
+
+          {/* L4 */}
+          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+            <div className="flex items-center gap-2 mb-2">
+              <label className="text-sm font-medium">{t('cfg.field.l4ReduceTrigger')}</label>
+              <Tooltip text={t('cfg.desc.l4ReduceTrigger')} />
+            </div>
+            <RangeSlider
+              value={l4}
+              min={0}
+              max={1}
+              step={0.01}
+              onChange={(v) => handleNumberChange(['risk', 'margin_l4_threshold'], v)}
+              colorClass="text-orange-400"
+            />
+          </div>
+
+          {/* L5 */}
+          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+            <div className="flex items-center gap-2 mb-2">
+              <label className="text-sm font-medium">{t('cfg.field.l5EmergencyClose')}</label>
+              <Tooltip text={t('cfg.desc.l5EmergencyClose')} />
+            </div>
+            <RangeSlider
+              value={l5}
+              min={0}
+              max={1}
+              step={0.01}
+              onChange={(v) => handleNumberChange(['risk', 'margin_l5_threshold'], v)}
+              colorClass="text-red-400"
+            />
+          </div>
+
+          {/* L4 reduce fraction */}
+          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+            <div className="flex items-center gap-2 mb-2">
+              <label className="text-sm font-medium">{t('cfg.field.l4ReduceFraction')}</label>
+              <Tooltip text={t('cfg.desc.l4ReduceFraction')} />
+            </div>
+            <RangeSlider
+              value={l4r}
+              min={0}
+              max={1}
+              step={0.01}
+              onChange={(v) => handleNumberChange(['risk', 'l4_reduce_fraction'], v)}
+              colorClass="text-blue-400"
+            />
+          </div>
+
+          {/* Risk monitor interval */}
+          <NumberField
+            label={t('cfg.field.riskMonitorInterval')}
+            desc={t('cfg.desc.riskMonitorInterval')}
+            value={getByPath(config, ['risk', 'risk_monitor_interval_sec'])}
+            unit="sec"
+            onChange={(v) => handleChange(['risk', 'risk_monitor_interval_sec'], v)}
+          />
+        </div>
+      </div>
+    );
+  };
+
+  // =========================================================================
+  // Render active tab content
+  // =========================================================================
+  const renderTabContent = () => {
+    switch (activeTab) {
+      case 'exchanges': return renderExchangesTab();
+      case 'fund': return renderFundTab();
+      case 'schedule': return renderScheduleTab();
+      case 'discovery': return renderDiscoveryTab();
+      case 'persist': return renderPersistTab();
+      case 'entry': return renderEntryTab();
+      case 'exit': return renderExitTab();
+      case 'risk': return renderRiskTab();
+      default: return null;
+    }
+  };
+
+  return (
+    <div className="pb-20">
+      {/* Title */}
+      <h2 className="text-xl font-bold text-gray-100 mb-4">{t('cfg.title')}</h2>
+
+      {/* Tab bar */}
+      <div
+        ref={tabBarRef}
+        className="flex gap-1 overflow-x-auto pb-3 mb-4 scrollbar-none"
+        style={{ scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' }}
+      >
+        {TABS.map((tab) => (
           <button
-            type="submit"
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveTab(tab.id)}
+            className={`whitespace-nowrap px-3 py-1.5 rounded-full text-sm font-medium transition shrink-0 ${
+              activeTab === tab.id
+                ? 'bg-blue-600 text-white'
+                : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800'
+            }`}
+          >
+            {t(tab.labelKey)}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab content */}
+      <form onSubmit={handleSubmit}>
+        {renderTabContent()}
+      </form>
+
+      {/* Sticky bottom save bar */}
+      <div className="fixed bottom-0 left-0 right-0 bg-gray-900/95 backdrop-blur border-t border-gray-800 z-50">
+        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+          <span className="text-xs text-gray-500">
+            {message ? (
+              <span className={message === t('cfg.saved') ? 'text-green-400' : 'text-red-400'}>{message}</span>
+            ) : (
+              t('cfg.unsavedChanges')
+            )}
+          </span>
+          <button
+            type="button"
+            onClick={handleSubmit as unknown as () => void}
             disabled={saving}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-medium transition-colors disabled:opacity-50"
+            className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white font-semibold rounded-xl text-sm transition disabled:opacity-50"
           >
             {saving ? t('cfg.saving') : t('cfg.save')}
           </button>
-          {message && (
-            <span className={`text-sm ${message === t('cfg.saved') ? 'text-green-400' : 'text-red-400'}`}>
-              {message}
-            </span>
-          )}
         </div>
-      </form>
+      </div>
     </div>
   );
 };

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useApi } from './hooks/useApi.ts';
 import { useWebSocket } from './hooks/useWebSocket.ts';
-import Sidebar from './components/Sidebar.tsx';
+import Sidebar, { navItems } from './components/Sidebar.tsx';
 import Login from './pages/Login.tsx';
 import Overview from './pages/Overview.tsx';
 import Opportunities from './pages/Opportunities.tsx';
@@ -24,6 +24,7 @@ function App() {
   const [page, setPage] = useState<Page>('overview');
   const [exchanges, setExchanges] = useState<ExchangeInfo[]>([]);
   const [locale, setLocaleState] = useState<Locale>(getStoredLocale);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const ws = useWebSocket(!!api.token);
 
   // Update state
@@ -119,6 +120,10 @@ function App() {
     );
   }
 
+  // Get current page label for mobile header
+  const currentNavItem = navItems.find((item) => item.id === page);
+  const pageTitle = currentNavItem ? t(currentNavItem.labelKey) : '';
+
   const renderPage = () => {
     switch (page) {
       case 'overview':
@@ -181,14 +186,31 @@ function App() {
 
   return (
     <LocaleContext.Provider value={{ locale, setLocale, t }}>
-      <div className="flex min-h-screen bg-gray-950 text-gray-100">
+      <div className="flex flex-col md:flex-row min-h-screen bg-gray-950 text-gray-100">
         <Sidebar
           page={page}
           onNavigate={(p) => setPage(p as Page)}
           connected={ws.connected}
           onLogout={handleLogout}
+          mobileOpen={sidebarOpen}
+          onMobileClose={() => setSidebarOpen(false)}
         />
+
         <div className="flex-1 flex flex-col overflow-auto">
+          {/* Mobile header bar */}
+          <div className="flex md:hidden items-center gap-3 px-4 py-3 bg-gray-900 border-b border-gray-800 sticky top-0 z-40">
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="text-gray-300 hover:text-gray-100 p-1"
+              aria-label="Open menu"
+            >
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>
+            <h1 className="text-base font-semibold text-gray-100">{pageTitle}</h1>
+          </div>
+
           {/* Update banner */}
           {updateInfo && (
             <div className="bg-blue-600 text-white px-4 py-2 flex items-center justify-between text-sm">
@@ -206,7 +228,7 @@ function App() {
               </button>
             </div>
           )}
-          <main className="flex-1 p-6">
+          <main className="flex-1 p-3 md:p-6">
             {renderPage()}
           </main>
         </div>
