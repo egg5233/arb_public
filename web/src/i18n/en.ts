@@ -124,6 +124,8 @@ const en = {
   'cfg.exchange.secretKey': 'Secret Key',
   'cfg.exchange.passphrase': 'Passphrase',
   'cfg.exchange.address': 'Deposit Address (BEP20)',
+  'cfg.exchange.addressBEP20': 'BEP20 Address',
+  'cfg.exchange.addressAPT': 'APT Address',
   'cfg.exchange.enabled': 'Enabled',
   'cfg.exchange.disabled': 'Disabled',
   'cfg.exchange.configured': 'Configured',

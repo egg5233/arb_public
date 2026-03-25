@@ -240,6 +240,7 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(true);
+  const [dirty, setDirty] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>('exchanges');
   const tabBarRef = useRef<HTMLDivElement>(null);
 
@@ -257,6 +258,7 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
 
   // Generic change handler for config paths
   const handleChange = (path: string[], value: string) => {
+    setDirty(true);
     setConfig((prev) => {
       const original = getByPath(prev, path);
       let parsed: unknown = value;
@@ -271,15 +273,18 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
   };
 
   const handleBoolChange = (path: string[], value: boolean) => {
+    setDirty(true);
     setConfig((prev) => setByPath(prev, path, value));
   };
 
   const handleNumberChange = (path: string[], value: number) => {
+    setDirty(true);
     setConfig((prev) => setByPath(prev, path, value));
   };
 
   // Exchange field change - track overrides
   const handleExchangeField = (exId: string, field: string, value: string) => {
+    setDirty(true);
     setExchangeOverrides((prev) => ({
       ...prev,
       [exId]: { ...(prev[exId] || {}), [field]: value },
@@ -297,12 +302,27 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
         const exchanges = ((submitData.exchanges as Record<string, unknown>) || {});
         for (const [exId, fields] of Object.entries(exchangeOverrides)) {
           const exData = ((exchanges[exId] as Record<string, unknown>) || {});
-          exchanges[exId] = { ...exData, ...fields };
+          const merged = { ...exData, ...fields } as Record<string, unknown>;
+          // Transform bep20_address/apt_address into nested address map
+          const addr = { ...((merged.address as Record<string, string>) || {}) };
+          if ('bep20_address' in merged) {
+            addr['BEP20'] = merged.bep20_address as string;
+            delete merged.bep20_address;
+          }
+          if ('apt_address' in merged) {
+            addr['APT'] = merged.apt_address as string;
+            delete merged.apt_address;
+          }
+          if (Object.keys(addr).length > 0) {
+            merged.address = addr;
+          }
+          exchanges[exId] = merged;
         }
         submitData = { ...submitData, exchanges };
       }
       await updateConfig(submitData);
       setMessage(t('cfg.saved'));
+      setDirty(false);
       setExchangeOverrides({});
     } catch {
       setMessage(t('cfg.failed'));
@@ -408,13 +428,23 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
                 </div>
               )}
 
-              {/* BEP20 Address */}
+              {/* Deposit Addresses */}
               <div>
-                <label className="text-xs text-gray-400 block mb-1">{t('cfg.exchange.address')}</label>
+                <label className="text-xs text-gray-400 block mb-1">{t('cfg.exchange.addressBEP20')}</label>
                 <input
                   type="text"
-                  value={overrides.bep20_address ?? (address.bep20 || '')}
+                  value={overrides.bep20_address ?? (address.BEP20 || address.bep20 || address.bsc || '')}
                   onChange={(e) => handleExchangeField(ex.id, 'bep20_address', e.target.value)}
+                  placeholder="0x..."
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg py-1.5 px-3 text-sm font-mono text-gray-100 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">{t('cfg.exchange.addressAPT')}</label>
+                <input
+                  type="text"
+                  value={overrides.apt_address ?? (address.APT || '')}
+                  onChange={(e) => handleExchangeField(ex.id, 'apt_address', e.target.value)}
                   placeholder="0x..."
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg py-1.5 px-3 text-sm font-mono text-gray-100 focus:outline-none focus:border-blue-500"
                 />
@@ -912,9 +942,9 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
           <span className="text-xs text-gray-500">
             {message ? (
               <span className={message === t('cfg.saved') ? 'text-green-400' : 'text-red-400'}>{message}</span>
-            ) : (
-              t('cfg.unsavedChanges')
-            )}
+            ) : dirty ? (
+              <span className="text-yellow-400">{t('cfg.unsavedChanges')}</span>
+            ) : null}
           </span>
           <button
             type="button"

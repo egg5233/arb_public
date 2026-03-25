@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.3] - 2026-03-25
+
+### Fixed
+- **Config page: fixed "Unsaved changes" always showing** — Added dirty-state tracking; bottom bar now only shows "Unsaved changes" when user has actually modified a field, clears on save
+
+### Changed
+- **Config page: BEP20 + APT address fields** — Exchange section now shows both BEP20 and APT deposit address inputs (previously only BEP20); on save, transforms flat overrides into nested address map format for the backend
+
 ## [0.17.0] - 2026-03-25
 
 ### Added

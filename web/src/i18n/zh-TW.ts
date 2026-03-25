@@ -126,6 +126,8 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.exchange.secretKey': '私鑰',
   'cfg.exchange.passphrase': '口令',
   'cfg.exchange.address': '充值地址 (BEP20)',
+  'cfg.exchange.addressBEP20': 'BEP20 地址',
+  'cfg.exchange.addressAPT': 'APT 地址',
   'cfg.exchange.enabled': '已啟用',
   'cfg.exchange.disabled': '已停用',
   'cfg.exchange.configured': '已設定',
