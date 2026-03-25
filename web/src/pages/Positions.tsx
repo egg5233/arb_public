@@ -73,6 +73,7 @@ const Positions: FC<PositionsProps> = ({ positions, onClose }) => {
               <th className="pb-2 text-right">{t('pos.entry')}</th>
               <th className="pb-2 text-right">{t('pos.current')}</th>
               <th className="pb-2 text-right">{t('pos.fundingCollected')}</th>
+              <th className="pb-2 text-right">{t('pos.entryFees')}</th>
               <th className="pb-2 text-right">{t('pos.rotPnl')}</th>
               <th className="pb-2 text-right">{t('pos.nextFund')}</th>
               <th className="pb-2 text-right">{t('pos.age')}</th>
@@ -106,6 +107,9 @@ const Positions: FC<PositionsProps> = ({ positions, onClose }) => {
                   {p.current_spread != null ? `${p.current_spread.toFixed(1)} bps/h` : '-'}
                 </td>
                 <td className={`py-2 text-right font-mono ${p.funding_collected > 0 ? 'text-green-400' : p.funding_collected < 0 ? 'text-red-400' : 'text-gray-400'}`}>${p.funding_collected.toFixed(2)}</td>
+                <td className="py-2 text-right font-mono text-red-400">
+                  {(p.entry_fees ?? 0) > 0 ? `-$${(p.entry_fees ?? 0).toFixed(2)}` : '-'}
+                </td>
                 <td className={`py-2 text-right font-mono ${(p.rotation_pnl ?? 0) >= 0 ? 'text-gray-400' : 'text-red-400'}`}>
                   {(p.rotation_pnl ?? 0) !== 0 ? `$${(p.rotation_pnl ?? 0).toFixed(2)}` : '-'}
                 </td>
@@ -135,7 +139,7 @@ const Positions: FC<PositionsProps> = ({ positions, onClose }) => {
             ))}
             {positions.length === 0 && (
               <tr>
-                <td colSpan={11} className="py-4 text-center text-gray-500">{t('pos.noPositions')}</td>
+                <td colSpan={12} className="py-4 text-center text-gray-500">{t('pos.noPositions')}</td>
               </tr>
             )}
           </tbody>

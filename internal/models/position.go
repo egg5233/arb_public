@@ -32,6 +32,7 @@ type ArbitragePosition struct {
 	LastRotatedAt    time.Time `json:"last_rotated_at,omitempty"`   // when last rotation happened
 	RotationCount    int       `json:"rotation_count,omitempty"`    // total rotations for this position
 	ReversalCount    int       `json:"reversal_count,omitempty"`    // spread reversal occurrences (for tolerance)
+	EntryFees        float64   `json:"entry_fees,omitempty"`        // total entry trading fees (both legs)
 }
 
 // PositionStatus constants.

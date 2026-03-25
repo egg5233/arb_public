@@ -346,7 +346,7 @@ exitLoop:
 	// Calculate PnL and finalize.
 	longPnL := (longClosePrice - pos.LongEntry) * totalLong
 	shortPnL := (pos.ShortEntry - shortClosePrice) * totalShort
-	realizedPnL := longPnL + shortPnL + pos.FundingCollected
+	realizedPnL := longPnL + shortPnL + pos.FundingCollected - pos.EntryFees
 
 	// Sanity check: PnL should not exceed position notional value.
 	// If it does, the close price is likely wrong — fall back to 0 PnL.
@@ -354,7 +354,7 @@ exitLoop:
 	if notional > 0 && math.Abs(realizedPnL) > notional*2 {
 		e.log.Error("depth-exit %s: PnL %.4f exceeds 2x notional %.4f — close prices suspect (longClose=%.8f shortClose=%.8f), zeroing PnL",
 			pos.ID, realizedPnL, notional, longClosePrice, shortClosePrice)
-		realizedPnL = pos.FundingCollected // keep only funding as PnL
+		realizedPnL = pos.FundingCollected - pos.EntryFees // keep only funding minus entry fees as PnL
 		longPnL = 0
 		shortPnL = 0
 	}
@@ -389,8 +389,8 @@ exitLoop:
 	}
 	e.api.BroadcastPositionUpdate(pos)
 
-	e.log.Info("position %s depth-exit closed: pnl=%.4f (long=%.4f short=%.4f funding=%.4f)",
-		pos.ID, realizedPnL, longPnL, shortPnL, pos.FundingCollected)
+	e.log.Info("position %s depth-exit closed: pnl=%.4f (long=%.4f short=%.4f funding=%.4f entryFees=%.4f)",
+		pos.ID, realizedPnL, longPnL, shortPnL, pos.FundingCollected, pos.EntryFees)
 
 	// Set symbol cooldown on loss close.
 	if realizedPnL < 0 && e.cfg.LossCooldownHours > 0 {
@@ -900,14 +900,14 @@ func (e *Engine) closePositionWithMode(pos *models.ArbitragePosition, emergency 
 	// Short PnL = (entry - close) * size
 	longPnL := (longClosePrice - pos.LongEntry) * longSize
 	shortPnL := (pos.ShortEntry - shortClosePrice) * shortSize
-	realizedPnL := longPnL + shortPnL + pos.FundingCollected
+	realizedPnL := longPnL + shortPnL + pos.FundingCollected - pos.EntryFees
 
 	// Sanity check: PnL should not exceed position notional value.
 	notional := math.Max(pos.LongEntry*longSize, pos.ShortEntry*shortSize)
 	if notional > 0 && math.Abs(realizedPnL) > notional*2 {
 		e.log.Error("closePosition %s: PnL %.4f exceeds 2x notional %.4f — close prices suspect (longClose=%.8f shortClose=%.8f), zeroing PnL",
 			pos.ID, realizedPnL, notional, longClosePrice, shortClosePrice)
-		realizedPnL = pos.FundingCollected
+		realizedPnL = pos.FundingCollected - pos.EntryFees
 		longPnL = 0
 		shortPnL = 0
 	}
@@ -942,8 +942,8 @@ func (e *Engine) closePositionWithMode(pos *models.ArbitragePosition, emergency 
 	if emergency {
 		mode = "emergency"
 	}
-	e.log.Info("position %s closed (%s): pnl=%.4f (long=%.4f short=%.4f funding=%.4f)",
-		pos.ID, mode, realizedPnL, longPnL, shortPnL, pos.FundingCollected)
+	e.log.Info("position %s closed (%s): pnl=%.4f (long=%.4f short=%.4f funding=%.4f entryFees=%.4f)",
+		pos.ID, mode, realizedPnL, longPnL, shortPnL, pos.FundingCollected, pos.EntryFees)
 
 	// Set symbol cooldown on loss close.
 	if realizedPnL < 0 && e.cfg.LossCooldownHours > 0 {

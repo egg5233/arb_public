@@ -78,6 +78,7 @@ const en = {
   'pos.entry': 'Entry',
   'pos.current': 'Current',
   'pos.fundingCollected': 'Funding Collected',
+  'pos.entryFees': 'Entry Fees',
   'pos.rotPnl': 'Rot. PnL',
   'pos.nextFund': 'Next Fund',
   'pos.age': 'Age',

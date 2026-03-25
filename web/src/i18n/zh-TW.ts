@@ -80,6 +80,7 @@ const zhTW: Record<TranslationKey, string> = {
   'pos.entry': '進場',
   'pos.current': '當前',
   'pos.fundingCollected': '已收資金費',
+  'pos.entryFees': '開倉手續費',
   'pos.rotPnl': '輪換損益',
   'pos.nextFund': '下次結算',
   'pos.age': '持倉時間',

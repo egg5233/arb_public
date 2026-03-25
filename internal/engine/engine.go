@@ -1384,6 +1384,7 @@ func (e *Engine) MergeExistingDuplicates() {
 				fresh.ShortSize = totalShort
 				fresh.FundingCollected += p.FundingCollected
 				fresh.RotationPnL += p.RotationPnL
+				fresh.EntryFees += p.EntryFees
 				if totalLong > 0 {
 					fresh.EntrySpread = (oldLong*fresh.EntrySpread + p.LongSize*p.EntrySpread) / totalLong
 				}
@@ -1671,6 +1672,11 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 		posID, minFill, pos.LongSize, pos.LongEntry, opp.LongExchange,
 		pos.ShortSize, pos.ShortEntry, opp.ShortExchange,
 		pos.NextFunding.Format("15:04:05 UTC"))
+
+	// Query entry fees asynchronously.
+	posCopy := *pos
+	go e.queryEntryFees(&posCopy)
+
 	return nil
 }
 
@@ -2142,6 +2148,10 @@ fillLoop:
 	// Attach protective stop-loss orders on both legs.
 	e.attachStopLosses(pos)
 
+	// Query entry fees asynchronously.
+	posCopy := *pos
+	go e.queryEntryFees(&posCopy)
+
 	return nil
 }
 
@@ -2220,6 +2230,54 @@ func (e *Engine) closeLeg(exch exchange.Exchange, symbol string, side exchange.S
 		return
 	}
 	e.log.Info("closeLeg %s %s %s order=%s", exch.Name(), symbol, side, oid)
+}
+
+// queryEntryFees queries both exchanges for trades since position creation and
+// sums the fees. Runs asynchronously after entry activation. Updates pos.EntryFees
+// in Redis if fees > 0.
+func (e *Engine) queryEntryFees(pos *models.ArbitragePosition) {
+	// Small delay to let exchanges finalize trade records.
+	time.Sleep(2 * time.Second)
+
+	since := pos.CreatedAt.Add(-1 * time.Minute)
+	var totalFees float64
+
+	longExch, lok := e.exchanges[pos.LongExchange]
+	shortExch, sok := e.exchanges[pos.ShortExchange]
+
+	if lok {
+		trades, err := longExch.GetUserTrades(pos.Symbol, since, 50)
+		if err != nil {
+			e.log.Warn("queryEntryFees %s: %s GetUserTrades failed: %v", pos.ID, pos.LongExchange, err)
+		} else {
+			for _, t := range trades {
+				totalFees += t.Fee
+			}
+		}
+	}
+	if sok {
+		trades, err := shortExch.GetUserTrades(pos.Symbol, since, 50)
+		if err != nil {
+			e.log.Warn("queryEntryFees %s: %s GetUserTrades failed: %v", pos.ID, pos.ShortExchange, err)
+		} else {
+			for _, t := range trades {
+				totalFees += t.Fee
+			}
+		}
+	}
+
+	if totalFees <= 0 {
+		return
+	}
+
+	if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+		fresh.EntryFees = totalFees
+		return true
+	}); err != nil {
+		e.log.Error("queryEntryFees %s: failed to update: %v", pos.ID, err)
+		return
+	}
+	e.log.Info("queryEntryFees %s: entry fees=%.4f (both legs)", pos.ID, totalFees)
 }
 
 // attachStopLosses places protective stop-loss orders on both legs of a position.

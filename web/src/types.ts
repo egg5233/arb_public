@@ -40,6 +40,7 @@ export interface Position {
   rotation_count?: number;
   long_sl_order_id?: string;
   short_sl_order_id?: string;
+  entry_fees?: number;
 }
 
 export interface Stats {
