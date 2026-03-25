@@ -608,7 +608,9 @@ func (e *Engine) run() {
 			e.api.BroadcastOpportunities(result.Opps)
 
 			// Check for delisted coins in active positions.
-			e.checkDelistPositions()
+			if e.cfg.DelistFilterEnabled {
+				e.checkDelistPositions()
+			}
 
 			switch result.Type {
 			case discovery.RebalanceScan:

@@ -81,6 +81,7 @@ type Config struct {
 	ReEnterCooldownHours       float64 // hours to block re-entry on same symbol after any close (default 0, disabled)
 	BacktestDays               int     // days of historical funding to check (default 3, 0 = disabled)
 	BacktestMinProfit          float64 // minimum net profit to pass backtest filter (default 0)
+	DelistFilterEnabled        bool    // enable Binance delist monitoring & filtering (default true)
 
 	// Scan schedule
 	ScanMinutes      []int // minutes within each hour when scans fire (default [5,15,25,35,45,55])
@@ -192,6 +193,7 @@ type jsonDiscovery struct {
 	PriceGapFreeBPS     *float64         `json:"price_gap_free_bps"`
 	MaxGapRecoveryIntervals *float64     `json:"max_gap_recovery_intervals"`
 	MaxIntervalHours    *float64         `json:"max_interval_hours"`
+	DelistFilter        *bool            `json:"delist_filter"`
 	Persistence         *jsonPersistence `json:"persistence"`
 }
 
@@ -286,6 +288,7 @@ func Load() *Config {
 		FundingWindowMin:           30,
 		LossCooldownHours:          4.0,
 		BacktestDays:               3,
+		DelistFilterEnabled:        true,
 		ScanMinutes:             []int{5, 15, 25, 35, 45, 55},
 		EntryScanMinute:         35,
 		ExitScanMinute:          25,
@@ -410,6 +413,9 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 			}
 			if d.MaxIntervalHours != nil {
 				c.MaxIntervalHours = *d.MaxIntervalHours
+			}
+			if d.DelistFilter != nil {
+				c.DelistFilterEnabled = *d.DelistFilter
 			}
 			if p := d.Persistence; p != nil {
 				if p.LookbackMin1h != nil {
@@ -688,6 +694,7 @@ func (c *Config) SaveJSON() error {
 	if c.MaxIntervalHours > 0 {
 		disc["max_interval_hours"] = c.MaxIntervalHours
 	}
+	disc["delist_filter"] = c.DelistFilterEnabled
 
 	persist := getMap(disc, "persistence")
 	persist["lookback_min_1h"] = int(c.PersistLookback1h.Minutes())

@@ -24,3 +24,5 @@ codex-live/*
 codex-live
 sum_series_y.py
 test.json
+failAPI.json
+gatetest

@@ -224,7 +224,12 @@ func main() {
 
 	// Start all components in order
 	scanner.Start()
-	scanner.StartDelistMonitor()
+	if cfg.DelistFilterEnabled {
+		scanner.StartDelistMonitor()
+		log.Info("Binance delist monitor enabled")
+	} else {
+		log.Info("Binance delist monitor disabled by config")
+	}
 	log.Info("Discovery scanner started")
 
 	riskMon.Start()

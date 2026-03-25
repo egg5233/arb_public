@@ -227,6 +227,7 @@ type configDiscoveryResponse struct {
 	PriceGapFreeBPS         float64                   `json:"price_gap_free_bps"`
 	MaxGapRecoveryIntervals float64                   `json:"max_gap_recovery_intervals"`
 	MaxIntervalHours        float64                   `json:"max_interval_hours"`
+	DelistFilter            bool                      `json:"delist_filter"`
 	Persistence             configPersistenceResponse `json:"persistence"`
 }
 
@@ -330,6 +331,7 @@ func (s *Server) buildConfigResponse() configResponse {
 				PriceGapFreeBPS:         s.cfg.PriceGapFreeBPS,
 				MaxGapRecoveryIntervals: s.cfg.MaxGapRecoveryIntervals,
 				MaxIntervalHours:        s.cfg.MaxIntervalHours,
+				DelistFilter:            s.cfg.DelistFilterEnabled,
 				Persistence: configPersistenceResponse{
 					LookbackMin1h: int(s.cfg.PersistLookback1h.Minutes()),
 					MinCount1h:    s.cfg.PersistMinCount1h,
@@ -458,6 +460,7 @@ type discoveryUpdate struct {
 	PriceGapFreeBPS         *float64           `json:"price_gap_free_bps"`
 	MaxGapRecoveryIntervals *float64           `json:"max_gap_recovery_intervals"`
 	MaxIntervalHours        *float64           `json:"max_interval_hours"`
+	DelistFilter            *bool              `json:"delist_filter"`
 	Persistence             *persistenceUpdate `json:"persistence"`
 }
 
@@ -568,6 +571,9 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 			}
 			if d.MaxIntervalHours != nil && *d.MaxIntervalHours >= 0 {
 				s.cfg.MaxIntervalHours = *d.MaxIntervalHours
+			}
+			if d.DelistFilter != nil {
+				s.cfg.DelistFilterEnabled = *d.DelistFilter
 			}
 			if p := d.Persistence; p != nil {
 				if p.LookbackMin1h != nil && *p.LookbackMin1h > 0 {
@@ -817,6 +823,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"max_price_gap_bps":             strconv.FormatFloat(snapshot.Strategy.Discovery.MaxPriceGapBPS, 'f', -1, 64),
 		"max_gap_recovery_intervals":    strconv.FormatFloat(snapshot.Strategy.Discovery.MaxGapRecoveryIntervals, 'f', -1, 64),
 		"max_interval_hours":            strconv.FormatFloat(snapshot.Strategy.Discovery.MaxIntervalHours, 'f', -1, 64),
+		"delist_filter":                 strconv.FormatBool(snapshot.Strategy.Discovery.DelistFilter),
 		"margin_l3_threshold":           strconv.FormatFloat(snapshot.Risk.MarginL3Threshold, 'f', -1, 64),
 		"margin_l4_threshold":           strconv.FormatFloat(snapshot.Risk.MarginL4Threshold, 'f', -1, 64),
 		"margin_l5_threshold":           strconv.FormatFloat(snapshot.Risk.MarginL5Threshold, 'f', -1, 64),

@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.7] - 2026-03-25
+
+### Added
+- **Configurable Binance delist filter**: New `strategy.discovery.delist_filter` toggle in config.json (default `true` — existing behavior unchanged). When disabled: delist monitor goroutine won't start, scanner won't filter delisting coins, engine won't auto-close positions for delisting coins
+- **Dashboard delist filter toggle**: Enable/disable switch in Config page Discovery section with i18n support (English + Chinese)
+
 ## [0.16.6] - 2026-03-25
 
 ### Fixed

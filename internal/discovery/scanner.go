@@ -811,7 +811,7 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 	}
 
 	// 8. Filter delisted coins (all scan types — block from appearing anywhere).
-	{
+	if s.cfg.DelistFilterEnabled {
 		var notDelisted []models.Opportunity
 		for _, opp := range verified {
 			if s.IsDelisted(opp.Symbol) {

@@ -573,6 +573,21 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
         unit="min"
         onChange={(v) => handleChange(['strategy', 'discovery', 'persistence', 'funding_window_min'], v)}
       />
+      <div>
+        <div className="flex items-center gap-2 mb-2">
+          <label className="text-sm font-medium">{t('cfg.field.delistFilter')}</label>
+          <Tooltip text={t('cfg.desc.delistFilter')} />
+        </div>
+        <div className="flex items-center gap-3">
+          <ToggleSwitch
+            on={getByPath(config, ['strategy', 'discovery', 'delist_filter']) === true}
+            onChange={(v) => handleBoolChange(['strategy', 'discovery', 'delist_filter'], v)}
+          />
+          <span className={`text-sm font-semibold ${getByPath(config, ['strategy', 'discovery', 'delist_filter']) ? 'text-green-400' : 'text-red-400'}`}>
+            {getByPath(config, ['strategy', 'discovery', 'delist_filter']) ? 'ON' : 'OFF'}
+          </span>
+        </div>
+      </div>
     </div>
   );
 
