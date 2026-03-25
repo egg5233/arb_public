@@ -26,6 +26,7 @@ type Server struct {
 	openPosition  func(symbol, longExchange, shortExchange string, force bool) error // registered by engine
 	logSub        chan utils.LogEntry
 	rejStore      *models.RejectionStore
+	permissions   map[string]exchange.PermissionResult
 }
 
 // NewServer creates a new Dashboard server.
@@ -85,6 +86,9 @@ func (s *Server) Start() {
 
 	// AI Diagnose
 	mux.HandleFunc("/api/diagnose", s.cors(s.authMiddleware(s.handleDiagnose)))
+
+	// Permissions
+	mux.HandleFunc("/api/permissions", s.cors(s.authMiddleware(s.handleGetPermissions)))
 
 	// System update
 	mux.HandleFunc("/api/check-update", s.cors(s.authMiddleware(s.handleCheckUpdate)))
@@ -216,4 +220,9 @@ func (s *Server) SetOpenHandler(fn func(symbol, longExchange, shortExchange stri
 // SetOpportunities updates the cached opportunities slice for the GET endpoint.
 func (s *Server) SetOpportunities(opps []models.Opportunity) {
 	s.opps = opps
+}
+
+// SetPermissions stores the startup permission check results.
+func (s *Server) SetPermissions(perms map[string]exchange.PermissionResult) {
+	s.permissions = perms
 }

@@ -34,6 +34,16 @@ type Client struct {
 	http      *http.Client
 }
 
+// WithBaseURL returns a copy of the client using a different base URL.
+func (c *Client) WithBaseURL(url string) *Client {
+	return &Client{
+		baseURL:   url,
+		apiKey:    c.apiKey,
+		secretKey: c.secretKey,
+		http:      c.http,
+	}
+}
+
 // NewClient creates a new Binance futures API client.
 func NewClient(apiKey, secretKey string) *Client {
 	return &Client{

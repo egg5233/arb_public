@@ -40,6 +40,21 @@ func (a *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
 	a.orderCallback = fn
 }
 
+func (a *Adapter) CheckPermissions() exchange.PermissionResult {
+	r := exchange.PermissionResult{
+		Read: exchange.PermUnknown, FuturesTrade: exchange.PermUnknown,
+		Withdraw: exchange.PermUnknown, Transfer: exchange.PermUnknown,
+		Method: "unsupported",
+	}
+	// Basic auth check: if we can read the account, keys are valid.
+	if _, err := a.client.Get("/futures/usdt/accounts", nil); err != nil {
+		r.Error = "auth failed: " + err.Error()
+	} else {
+		r.Read = exchange.PermGranted
+	}
+	return r
+}
+
 // NewAdapter creates a Gate.io Adapter from ExchangeConfig.
 func NewAdapter(cfg exchange.ExchangeConfig) *Adapter {
 	return &Adapter{

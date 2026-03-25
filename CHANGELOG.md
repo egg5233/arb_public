@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.0] - 2026-03-25
+
+### Added
+- **API key permission check on startup**: Checks Read, Futures Trade, Withdraw, and Transfer permissions for all 6 exchanges on startup. Results displayed in dashboard Overview page.
+  - Binance/Bybit/BingX: direct API endpoints for authoritative results
+  - Bitget/OKX: inferred via test calls with error code detection
+  - Gate.io: marked unsupported (inference unreliable)
+  - Tri-state results: granted/denied/unknown — no false confidence
+  - `GET /api/permissions` endpoint (no keys or secrets exposed)
+  - Startup warns on denied Withdraw/Transfer, logs CRITICAL for denied Read/Trade
+
 ## [0.15.4] - 2026-03-25
 
 ### Fixed

@@ -169,3 +169,28 @@ type ExchangeConfig struct {
 	SecretKey  string
 	Passphrase string // Required for Bitget, OKX
 }
+
+// PermStatus represents the tri-state result of a permission check.
+type PermStatus string
+
+const (
+	PermGranted PermStatus = "granted"
+	PermDenied  PermStatus = "denied"
+	PermUnknown PermStatus = "unknown"
+)
+
+// PermissionResult holds API key permission check results for an exchange.
+type PermissionResult struct {
+	Read         PermStatus `json:"read"`
+	FuturesTrade PermStatus `json:"futures_trade"`
+	Withdraw     PermStatus `json:"withdraw"`
+	Transfer     PermStatus `json:"transfer"`
+	Method       string     `json:"method"` // "direct", "inferred", "unsupported"
+	Error        string     `json:"error,omitempty"`
+}
+
+// PermissionChecker is an optional interface for exchanges that support
+// API key permission introspection. Use type assertion to check.
+type PermissionChecker interface {
+	CheckPermissions() PermissionResult
+}

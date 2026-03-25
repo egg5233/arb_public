@@ -40,6 +40,35 @@ func (a *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
 	a.orderCallback = fn
 }
 
+func (a *Adapter) CheckPermissions() exchange.PermissionResult {
+	r := exchange.PermissionResult{Method: "inferred"}
+	// Bitget client returns raw JSON string without checking code.
+	// Must parse response body for code "40009" (permission denied).
+	checkBitget := func(resp string, err error) exchange.PermStatus {
+		if err != nil {
+			return exchange.PermUnknown
+		}
+		var body struct{ Code string `json:"code"` }
+		if json.Unmarshal([]byte(resp), &body) == nil && body.Code == "40009" {
+			return exchange.PermDenied
+		}
+		return exchange.PermGranted
+	}
+	resp, err := a.client.Get("/api/v2/spot/account/assets", map[string]string{})
+	r.Read = checkBitget(resp, err)
+	resp, err = a.client.Get("/api/v2/mix/order/orders-pending", map[string]string{"productType": "USDT-FUTURES"})
+	r.FuturesTrade = checkBitget(resp, err)
+	resp, err = a.client.Post("/api/v2/spot/wallet/withdrawal", map[string]string{
+		"coin": "USDT", "address": "test", "chain": "BSC", "size": "0", "transferType": "on_chain",
+	})
+	r.Withdraw = checkBitget(resp, err)
+	resp, err = a.client.Post("/api/v2/spot/wallet/transfer", map[string]string{
+		"fromType": "usdt_futures", "toType": "spot", "amount": "0", "coin": "USDT",
+	})
+	r.Transfer = checkBitget(resp, err)
+	return r
+}
+
 // ==================== Orders ====================
 
 func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {

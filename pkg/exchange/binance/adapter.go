@@ -44,6 +44,38 @@ func (b *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
 	b.orderCallback = fn
 }
 
+func (b *Adapter) CheckPermissions() exchange.PermissionResult {
+	// Must use api.binance.com (spot), not fapi.binance.com (futures).
+	spotClient := b.client.WithBaseURL("https://api.binance.com")
+	params := map[string]string{}
+	data, err := spotClient.Get("/sapi/v1/account/apiRestrictions", params)
+	if err != nil {
+		return exchange.PermissionResult{Method: "direct", Error: err.Error(),
+			Read: exchange.PermUnknown, FuturesTrade: exchange.PermUnknown,
+			Withdraw: exchange.PermUnknown, Transfer: exchange.PermUnknown}
+	}
+	var resp struct {
+		EnableReading          bool `json:"enableReading"`
+		EnableFutures          bool `json:"enableFutures"`
+		EnableWithdrawals      bool `json:"enableWithdrawals"`
+		EnableInternalTransfer bool `json:"enableInternalTransfer"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return exchange.PermissionResult{Method: "direct", Error: err.Error(),
+			Read: exchange.PermUnknown, FuturesTrade: exchange.PermUnknown,
+			Withdraw: exchange.PermUnknown, Transfer: exchange.PermUnknown}
+	}
+	toBool := func(v bool) exchange.PermStatus {
+		if v { return exchange.PermGranted }
+		return exchange.PermDenied
+	}
+	return exchange.PermissionResult{
+		Read: toBool(resp.EnableReading), FuturesTrade: toBool(resp.EnableFutures),
+		Withdraw: toBool(resp.EnableWithdrawals), Transfer: toBool(resp.EnableInternalTransfer),
+		Method: "direct",
+	}
+}
+
 // NewAdapter creates a Binance Adapter from ExchangeConfig.
 func NewAdapter(cfg exchange.ExchangeConfig) *Adapter {
 	return &Adapter{

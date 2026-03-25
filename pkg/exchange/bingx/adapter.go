@@ -32,6 +32,45 @@ func (a *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
 	a.orderCallback = fn
 }
 
+func (a *Adapter) CheckPermissions() exchange.PermissionResult {
+	// Use DoRequestRaw — this endpoint doesn't follow the standard {code,data} wrapper.
+	data, err := a.client.DoRequestRaw("GET", "/openApi/v1/account/apiRestrictions", map[string]string{})
+	if err != nil {
+		return exchange.PermissionResult{Method: "direct", Error: err.Error(),
+			Read: exchange.PermUnknown, FuturesTrade: exchange.PermUnknown,
+			Withdraw: exchange.PermUnknown, Transfer: exchange.PermUnknown}
+	}
+	// Check for error envelope first ({"code":N,...})
+	var errCheck struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if json.Unmarshal(data, &errCheck) == nil && errCheck.Code != 0 {
+		return exchange.PermissionResult{Method: "direct", Error: errCheck.Msg,
+			Read: exchange.PermUnknown, FuturesTrade: exchange.PermUnknown,
+			Withdraw: exchange.PermUnknown, Transfer: exchange.PermUnknown}
+	}
+	var resp struct {
+		EnableReading            bool `json:"enableReading"`
+		EnableFutures            bool `json:"enableFutures"`
+		PermitsUniversalTransfer bool `json:"permitsUniversalTransfer"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return exchange.PermissionResult{Method: "direct", Error: err.Error(),
+			Read: exchange.PermUnknown, FuturesTrade: exchange.PermUnknown,
+			Withdraw: exchange.PermUnknown, Transfer: exchange.PermUnknown}
+	}
+	toBool := func(v bool) exchange.PermStatus {
+		if v { return exchange.PermGranted }
+		return exchange.PermDenied
+	}
+	return exchange.PermissionResult{
+		Read: toBool(resp.EnableReading), FuturesTrade: toBool(resp.EnableFutures),
+		Withdraw: exchange.PermUnknown, Transfer: toBool(resp.PermitsUniversalTransfer),
+		Method: "direct",
+	}
+}
+
 // NewAdapter creates a new BingX exchange adapter.
 func NewAdapter(cfg exchange.ExchangeConfig) *Adapter {
 	return &Adapter{

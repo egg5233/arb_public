@@ -55,6 +55,45 @@ func (a *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
 	a.orderCallback = fn
 }
 
+func (a *Adapter) CheckPermissions() exchange.PermissionResult {
+	r := exchange.PermissionResult{Method: "inferred"}
+	checkOKX := func(data []byte, err error) exchange.PermStatus {
+		if err != nil {
+			s := err.Error()
+			if strings.Contains(s, "50111") { return exchange.PermDenied }
+			if strings.Contains(s, "403") { return exchange.PermUnknown }
+			return exchange.PermUnknown
+		}
+		return exchange.PermGranted
+	}
+	// Read
+	d, err := a.client.Get("/api/v5/account/balance", nil)
+	r.Read = checkOKX(d, err)
+	if r.Read == exchange.PermUnknown && err != nil && strings.Contains(err.Error(), "403") {
+		r.Error = "IP restricted or access denied"
+		r.FuturesTrade = exchange.PermUnknown
+		r.Withdraw = exchange.PermUnknown
+		r.Transfer = exchange.PermUnknown
+		return r
+	}
+	// Futures Trade
+	d, err = a.client.Get("/api/v5/trade/orders-pending", map[string]string{"instType": "SWAP"})
+	r.FuturesTrade = checkOKX(d, err)
+	// Withdraw
+	_, err = a.client.Post("/api/v5/asset/withdrawal", map[string]string{
+		"ccy": "USDT", "amt": "0", "dest": "4", "toAddr": "test", "fee": "0", "chain": "USDT-TRC20",
+	})
+	r.Withdraw = checkOKX(nil, err)
+	if err == nil { r.Withdraw = exchange.PermGranted }
+	// Transfer
+	_, err = a.client.Post("/api/v5/asset/transfer", map[string]string{
+		"ccy": "USDT", "amt": "0", "from": "6", "to": "18", "type": "0",
+	})
+	r.Transfer = checkOKX(nil, err)
+	if err == nil { r.Transfer = exchange.PermGranted }
+	return r
+}
+
 // NewAdapter creates an OKX Adapter from ExchangeConfig.
 func NewAdapter(cfg exchange.ExchangeConfig) *Adapter {
 	return &Adapter{

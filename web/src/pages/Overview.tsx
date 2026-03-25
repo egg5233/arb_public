@@ -3,11 +3,14 @@ import type { Position, Stats, ExchangeInfo } from '../types.ts';
 import StatusBadge from '../components/StatusBadge.tsx';
 import { useLocale } from '../i18n/index.ts';
 
+type PermResult = { read: string; futures_trade: string; withdraw: string; transfer: string; method: string; error?: string };
+
 interface OverviewProps {
   positions: Position[];
   stats: Stats | null;
   exchanges: ExchangeInfo[];
   onDiagnose?: () => Promise<{ analysis: string }>;
+  permissions?: Record<string, PermResult>;
 }
 
 function formatFundingCountdown(next: string | undefined): string {
@@ -22,7 +25,13 @@ function formatFundingCountdown(next: string | undefined): string {
   return `${hours}h ${mins % 60}m`;
 }
 
-const Overview: FC<OverviewProps> = ({ positions, stats, exchanges, onDiagnose }) => {
+function permIcon(s: string) {
+  if (s === 'granted') return '✅';
+  if (s === 'denied') return '❌';
+  return '❓';
+}
+
+const Overview: FC<OverviewProps> = ({ positions, stats, exchanges, onDiagnose, permissions }) => {
   const { t } = useLocale();
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagnosis, setDiagnosis] = useState<string | null>(null);
@@ -111,6 +120,39 @@ const Overview: FC<OverviewProps> = ({ positions, stats, exchanges, onDiagnose }
                 )}
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* API Permissions */}
+      {permissions && Object.keys(permissions).length > 0 && (
+        <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+          <h3 className="text-sm font-semibold text-gray-400 mb-3">{t('overview.permissions')}</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-gray-400 text-left border-b border-gray-800 text-xs">
+                  <th className="pb-2">{t('overview.exchange')}</th>
+                  <th className="pb-2 text-center">{t('overview.permRead')}</th>
+                  <th className="pb-2 text-center">{t('overview.permTrade')}</th>
+                  <th className="pb-2 text-center">{t('overview.permWithdraw')}</th>
+                  <th className="pb-2 text-center">{t('overview.permTransfer')}</th>
+                  <th className="pb-2 text-center">{t('overview.permMethod')}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-800">
+                {Object.entries(permissions).map(([name, p]) => (
+                  <tr key={name}>
+                    <td className="py-1.5 capitalize">{name}</td>
+                    <td className="py-1.5 text-center">{permIcon(p.read)}</td>
+                    <td className="py-1.5 text-center">{permIcon(p.futures_trade)}</td>
+                    <td className="py-1.5 text-center">{permIcon(p.withdraw)}</td>
+                    <td className="py-1.5 text-center">{permIcon(p.transfer)}</td>
+                    <td className="py-1.5 text-center text-xs text-gray-500">{p.method}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}

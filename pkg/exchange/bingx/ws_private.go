@@ -86,8 +86,8 @@ func (ws *PrivateWS) connectLoop() {
 func (ws *PrivateWS) createListenKey() (string, error) {
 	// Listen key endpoint returns {"listenKey":"..."} at top level,
 	// not wrapped in the standard {"code":0,"data":...} format.
-	// Use doRequestRaw to get the full body.
-	body, err := ws.client.doRequestRaw("POST", "/openApi/user/auth/userDataStream", map[string]string{})
+	// Use DoRequestRaw to get the full body.
+	body, err := ws.client.DoRequestRaw("POST", "/openApi/user/auth/userDataStream", map[string]string{})
 	if err != nil {
 		return "", err
 	}
@@ -108,7 +108,7 @@ func (ws *PrivateWS) extendListenKey() error {
 	params := map[string]string{
 		"listenKey": ws.listenKey,
 	}
-	_, err := ws.client.doRequestRaw("PUT", "/openApi/user/auth/userDataStream", params)
+	_, err := ws.client.DoRequestRaw("PUT", "/openApi/user/auth/userDataStream", params)
 	return err
 }
 
@@ -119,7 +119,7 @@ func (ws *PrivateWS) deleteListenKey() {
 	params := map[string]string{
 		"listenKey": ws.listenKey,
 	}
-	ws.client.doRequestRaw("DELETE", "/openApi/user/auth/userDataStream", params)
+	ws.client.DoRequestRaw("DELETE", "/openApi/user/auth/userDataStream", params)
 }
 
 func (ws *PrivateWS) extendListenKeyLoop(done chan struct{}) {

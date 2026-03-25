@@ -1072,6 +1072,15 @@ func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: map[string]string{"analysis": analysis}})
 }
 
+// handleGetPermissions returns the startup API key permission check results.
+func (s *Server) handleGetPermissions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: s.permissions})
+}
+
 // handleCheckUpdate compares local VERSION with remote origin/main:VERSION.
 func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

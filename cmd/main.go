@@ -62,6 +62,30 @@ func main() {
 	}
 	log.Info("Active exchanges: %d", len(exchanges))
 
+	// Check API key permissions
+	permResults := make(map[string]exchange.PermissionResult)
+	for name, exc := range exchanges {
+		if checker, ok := exc.(exchange.PermissionChecker); ok {
+			perm := checker.CheckPermissions()
+			permResults[name] = perm
+			log.Info("Permissions %s [%s]: read=%s trade=%s withdraw=%s transfer=%s",
+				name, perm.Method, perm.Read, perm.FuturesTrade, perm.Withdraw, perm.Transfer)
+			if perm.Error != "" {
+				log.Warn("Permissions %s: %s", name, perm.Error)
+			}
+			if perm.Read == exchange.PermDenied || perm.FuturesTrade == exchange.PermDenied {
+				log.Error("CRITICAL: %s missing required permission (read=%s trade=%s) — bot cannot trade on this exchange",
+					name, perm.Read, perm.FuturesTrade)
+			}
+			if perm.Withdraw == exchange.PermDenied {
+				log.Warn("%s: no withdraw permission — cross-exchange transfers disabled", name)
+			}
+			if perm.Transfer == exchange.PermDenied {
+				log.Warn("%s: no transfer permission — spot↔futures rebalancing disabled", name)
+			}
+		}
+	}
+
 	// Load contract info for all exchanges
 	allContracts := make(map[string]map[string]exchange.ContractInfo)
 	for name, exc := range exchanges {
@@ -99,6 +123,7 @@ func main() {
 	riskMon := risk.NewMonitor(exchanges, db, cfg)
 	healthMon := risk.NewHealthMonitor(exchanges, db, cfg)
 	apiSrv := api.NewServer(db, cfg, exchanges)
+	apiSrv.SetPermissions(permResults)
 	eng := engine.NewEngine(exchanges, scanner, riskMgr, riskMon, healthMon, db, apiSrv, cfg)
 	eng.SetContracts(allContracts)
 

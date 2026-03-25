@@ -46,6 +46,13 @@ const zhTW: Record<TranslationKey, string> = {
   'overview.nextFund': '下次結算',
   'overview.recentAlerts': '最近警報',
   'overview.noAlerts': '無警報',
+  'overview.permissions': 'API 權限',
+  'overview.exchange': '交易所',
+  'overview.permRead': '讀取',
+  'overview.permTrade': '交易',
+  'overview.permWithdraw': '提幣',
+  'overview.permTransfer': '劃轉',
+  'overview.permMethod': '檢測方式',
 
   // Opportunities
   'opp.title': '機會',

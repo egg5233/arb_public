@@ -101,9 +101,9 @@ func (c *Client) Delete(path string, params map[string]string) (json.RawMessage,
 	return c.retryDo("DELETE", path, params, 3)
 }
 
-// doRequestRaw performs an authenticated HTTP request and returns the raw response body.
+// DoRequestRaw performs an authenticated HTTP request and returns the raw response body.
 // Use for endpoints that don't follow the standard {"code":0,"data":...} wrapper.
-func (c *Client) doRequestRaw(method, path string, params map[string]string) ([]byte, error) {
+func (c *Client) DoRequestRaw(method, path string, params map[string]string) ([]byte, error) {
 	if params == nil {
 		params = make(map[string]string)
 	}

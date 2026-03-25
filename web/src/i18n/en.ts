@@ -44,6 +44,13 @@ const en = {
   'overview.nextFund': 'Next Fund',
   'overview.recentAlerts': 'Recent Alerts',
   'overview.noAlerts': 'No alerts',
+  'overview.permissions': 'API Permissions',
+  'overview.exchange': 'Exchange',
+  'overview.permRead': 'Read',
+  'overview.permTrade': 'Trade',
+  'overview.permWithdraw': 'Withdraw',
+  'overview.permTransfer': 'Transfer',
+  'overview.permMethod': 'Method',
 
   // Opportunities
   'opp.title': 'Opportunities',

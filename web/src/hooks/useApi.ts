@@ -165,6 +165,10 @@ export function useApi() {
     return request<{ analysis: string }>('/api/diagnose', { method: 'POST' });
   }, []);
 
+  const getPermissions = useCallback(() => {
+    return request<Record<string, { read: string; futures_trade: string; withdraw: string; transfer: string; method: string; error?: string }>>('/api/permissions');
+  }, []);
+
   const checkUpdate = useCallback(() => {
     return request<{ currentVersion: string; latestVersion: string; hasUpdate: boolean; changelog: string }>('/api/check-update');
   }, []);
@@ -198,6 +202,7 @@ export function useApi() {
     getLogs,
     getRejections,
     diagnose,
+    getPermissions,
     checkUpdate,
     performUpdate,
   };

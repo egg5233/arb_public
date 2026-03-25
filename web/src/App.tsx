@@ -25,6 +25,9 @@ function App() {
   const [locale, setLocaleState] = useState<Locale>(getStoredLocale);
   const ws = useWebSocket(!!api.token);
 
+  // Permissions state
+  const [permissions, setPermissions] = useState<Record<string, unknown>>({});
+
   // Update state
   const [updateInfo, setUpdateInfo] = useState<{ latestVersion: string; changelog: string } | null>(null);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
@@ -98,6 +101,7 @@ function App() {
       api.getExchanges().then(setExchanges).catch(() => {});
     };
     loadExchanges();
+    api.getPermissions().then(setPermissions).catch(() => {});
     const interval = setInterval(loadExchanges, 60000);
 
     // Check for updates on login and every 30 minutes.
@@ -127,6 +131,7 @@ function App() {
             stats={ws.stats}
             exchanges={exchanges}
             onDiagnose={api.diagnose}
+            permissions={permissions as Record<string, { read: string; futures_trade: string; withdraw: string; transfer: string; method: string }>}
           />
         );
       case 'opportunities':

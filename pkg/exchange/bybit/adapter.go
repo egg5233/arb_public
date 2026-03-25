@@ -47,6 +47,47 @@ func (a *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
 	a.orderCallback = fn
 }
 
+func (a *Adapter) CheckPermissions() exchange.PermissionResult {
+	data, err := a.client.Get("/v5/user/query-api", nil)
+	if err != nil {
+		return exchange.PermissionResult{Method: "direct", Error: err.Error(),
+			Read: exchange.PermUnknown, FuturesTrade: exchange.PermUnknown,
+			Withdraw: exchange.PermUnknown, Transfer: exchange.PermUnknown}
+	}
+	var resp struct {
+		ReadOnly    int                      `json:"readOnly"`
+		Permissions map[string][]string      `json:"permissions"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return exchange.PermissionResult{Method: "direct", Error: err.Error(),
+			Read: exchange.PermUnknown, FuturesTrade: exchange.PermUnknown,
+			Withdraw: exchange.PermUnknown, Transfer: exchange.PermUnknown}
+	}
+	read := exchange.PermGranted // if API responds, read is granted
+	trade := exchange.PermDenied
+	withdraw := exchange.PermDenied
+	transfer := exchange.PermDenied
+	// readOnly=1 means key can only read — no trade/wallet permissions regardless of what's listed
+	if resp.ReadOnly == 1 {
+		return exchange.PermissionResult{
+			Read: read, FuturesTrade: exchange.PermDenied,
+			Withdraw: exchange.PermDenied, Transfer: exchange.PermDenied,
+			Method: "direct",
+		}
+	}
+	if len(resp.Permissions["ContractTrade"]) > 0 {
+		trade = exchange.PermGranted
+	}
+	for _, v := range resp.Permissions["Wallet"] {
+		if v == "Withdraw" { withdraw = exchange.PermGranted }
+		if v == "AccountTransfer" { transfer = exchange.PermGranted }
+	}
+	return exchange.PermissionResult{
+		Read: read, FuturesTrade: trade, Withdraw: withdraw, Transfer: transfer,
+		Method: "direct",
+	}
+}
+
 // ---------- Side helpers ----------
 
 func toBybitSide(side exchange.Side) string {

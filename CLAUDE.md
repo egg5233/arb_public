@@ -40,7 +40,7 @@ Read ARCHITECTURE.md for system design, module structure, and strategy details.
 
 When using the `/skill-codex:codex` skill, always resume the persistent Codex session by ID instead of starting a new one. After each run , extract the session ID from the most recent file in `~/.codex/sessions/` and store it below.
 
-**Current session ID:** `019d1d76-d24d-7073-8571-06c987a6cb71`
+**Current session ID:** `019d22d0-2ac3-78b0-9407-2546159f3195`
 
 Only start a new session if resume fails or if the user explicitly asks for a fresh session. After starting a new session, update the session ID above.
 
