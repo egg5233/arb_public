@@ -16,6 +16,7 @@ const navItems: { id: string; labelKey: TranslationKey; icon: string }[] = [
   { id: 'transfers', labelKey: 'nav.transfers', icon: '\u21C4' },
   { id: 'rejections', labelKey: 'nav.rejections', icon: '\u2717' },
   { id: 'logs', labelKey: 'nav.logs', icon: '\u2630' },
+  { id: 'permissions', labelKey: 'nav.permissions', icon: '\u26BF' },
   { id: 'config', labelKey: 'nav.config', icon: '\u2699' },
 ];
 

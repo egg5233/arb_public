@@ -11,10 +11,11 @@ import Config from './pages/Config.tsx';
 import Transfers from './pages/Transfers.tsx';
 import Logs from './pages/Logs.tsx';
 import Rejections from './pages/Rejections.tsx';
+import Permissions from './pages/Permissions.tsx';
 import { LocaleContext, getStoredLocale, storeLocale, t as translate, type Locale } from './i18n/index.ts';
 import type { ExchangeInfo } from './types.ts';
 
-type Page = 'overview' | 'opportunities' | 'positions' | 'history' | 'config' | 'transfers' | 'logs' | 'rejections';
+type Page = 'overview' | 'opportunities' | 'positions' | 'history' | 'config' | 'transfers' | 'logs' | 'rejections' | 'permissions';
 
 const UPDATE_DISMISS_KEY = 'arb_update_dismissed';
 
@@ -24,9 +25,6 @@ function App() {
   const [exchanges, setExchanges] = useState<ExchangeInfo[]>([]);
   const [locale, setLocaleState] = useState<Locale>(getStoredLocale);
   const ws = useWebSocket(!!api.token);
-
-  // Permissions state
-  const [permissions, setPermissions] = useState<Record<string, unknown>>({});
 
   // Update state
   const [updateInfo, setUpdateInfo] = useState<{ latestVersion: string; changelog: string } | null>(null);
@@ -101,7 +99,6 @@ function App() {
       api.getExchanges().then(setExchanges).catch(() => {});
     };
     loadExchanges();
-    api.getPermissions().then(setPermissions).catch(() => {});
     const interval = setInterval(loadExchanges, 60000);
 
     // Check for updates on login and every 30 minutes.
@@ -131,7 +128,6 @@ function App() {
             stats={ws.stats}
             exchanges={exchanges}
             onDiagnose={api.diagnose}
-            permissions={permissions as Record<string, { read: string; futures_trade: string; withdraw: string; transfer: string; method: string }>}
           />
         );
       case 'opportunities':
@@ -170,6 +166,8 @@ function App() {
             setLogs={ws.setLogs}
           />
         );
+      case 'permissions':
+        return <Permissions getPermissions={api.getPermissions} />;
       case 'rejections':
         return (
           <Rejections

@@ -7,6 +7,7 @@ const en = {
   'nav.transfers': 'Transfers',
   'nav.logs': 'Logs',
   'nav.rejections': 'Rejected',
+  'nav.permissions': 'Permissions',
   'nav.config': 'Config',
   'sidebar.title': 'Funding Arb',
   'sidebar.connected': 'Connected',
@@ -44,13 +45,6 @@ const en = {
   'overview.nextFund': 'Next Fund',
   'overview.recentAlerts': 'Recent Alerts',
   'overview.noAlerts': 'No alerts',
-  'overview.permissions': 'API Permissions',
-  'overview.exchange': 'Exchange',
-  'overview.permRead': 'Read',
-  'overview.permTrade': 'Trade',
-  'overview.permWithdraw': 'Withdraw',
-  'overview.permTransfer': 'Transfer',
-  'overview.permMethod': 'Method',
 
   // Opportunities
   'opp.title': 'Opportunities',
@@ -317,6 +311,22 @@ const en = {
   'update.failed': 'Update failed',
   'update.checking': 'Checking for updates...',
   'update.upToDate': 'Already up to date',
+
+  // Permissions
+  'perm.title': 'API Permissions',
+  'perm.description': 'API key permissions checked on startup. Results are cached and do not update until restart.',
+  'perm.loading': 'Loading...',
+  'perm.noData': 'No permission data available',
+  'perm.exchange': 'Exchange',
+  'perm.read': 'Read',
+  'perm.trade': 'Futures Trade',
+  'perm.withdraw': 'Withdraw',
+  'perm.transfer': 'Transfer',
+  'perm.method': 'Method',
+  'perm.note': 'Note',
+  'perm.legendGranted': 'Granted — permission confirmed',
+  'perm.legendDenied': 'Denied — permission not available',
+  'perm.legendUnknown': 'Unknown — cannot verify (check exchange UI)',
 } as const;
 
 export type TranslationKey = keyof typeof en;

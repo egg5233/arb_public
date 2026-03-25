@@ -9,6 +9,7 @@ const zhTW: Record<TranslationKey, string> = {
   'nav.transfers': '轉帳',
   'nav.logs': '日誌',
   'nav.rejections': '被拒絕',
+  'nav.permissions': '權限',
   'nav.config': '設定',
   'sidebar.title': '資金費率套利',
   'sidebar.connected': '已連線',
@@ -46,13 +47,6 @@ const zhTW: Record<TranslationKey, string> = {
   'overview.nextFund': '下次結算',
   'overview.recentAlerts': '最近警報',
   'overview.noAlerts': '無警報',
-  'overview.permissions': 'API 權限',
-  'overview.exchange': '交易所',
-  'overview.permRead': '讀取',
-  'overview.permTrade': '交易',
-  'overview.permWithdraw': '提幣',
-  'overview.permTransfer': '劃轉',
-  'overview.permMethod': '檢測方式',
 
   // Opportunities
   'opp.title': '機會',
@@ -319,6 +313,22 @@ const zhTW: Record<TranslationKey, string> = {
   'update.failed': '更新失敗',
   'update.checking': '正在檢查更新...',
   'update.upToDate': '已是最新版本',
+
+  // Permissions
+  'perm.title': 'API 權限',
+  'perm.description': '啟動時檢查的 API 金鑰權限。結果已快取，重啟後才會更新。',
+  'perm.loading': '載入中...',
+  'perm.noData': '無權限資料',
+  'perm.exchange': '交易所',
+  'perm.read': '讀取',
+  'perm.trade': '合約交易',
+  'perm.withdraw': '提幣',
+  'perm.transfer': '劃轉',
+  'perm.method': '檢測方式',
+  'perm.note': '備註',
+  'perm.legendGranted': '已授權 — 權限確認',
+  'perm.legendDenied': '已拒絕 — 權限不可用',
+  'perm.legendUnknown': '未知 — 無法驗證（請檢查交易所介面）',
 };
 
 export default zhTW;
