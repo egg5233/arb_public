@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.0] - 2026-03-25
+
+### Fixed
+- **OKX contract size conversion**: `PlaceOrder` and `PlaceStopLoss` only converted base→contract when `ctVal > 1`, missing 181 contracts with ctVal < 1 (BTC, ETH, etc.) — changed to `ctVal != 1`
+- **OKX LoadAllContracts StepSize/MinSize units**: Were stored in contract units instead of base asset units — now multiplied by ctVal for engine compatibility
+- **OKX SizeDecimals**: Recalculated from base-unit step size instead of contract-unit lotSz
+
 ## [0.16.9] - 2026-03-25
 
 ### Fixed

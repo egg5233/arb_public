@@ -139,7 +139,7 @@ func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 	// OKX sz is in contracts. Engine sends base units, so divide by ctVal.
 	sz := req.Size
 	ctVal := a.getCtVal(req.Symbol)
-	if ctVal > 1 {
+	if ctVal != 1 {
 		sizeF, err := strconv.ParseFloat(req.Size, 64)
 		if err == nil {
 			contracts := math.Round(sizeF / ctVal)
@@ -490,10 +490,14 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 		}
 
 		symbol := fromOKXInstID(inst.InstID)
-		minSize, _ := strconv.ParseFloat(inst.MinSz, 64)
-		stepSize, _ := strconv.ParseFloat(inst.LotSz, 64)
+		lotSz, _ := strconv.ParseFloat(inst.MinSz, 64)
+		stepLot, _ := strconv.ParseFloat(inst.LotSz, 64)
 		priceStep, _ := strconv.ParseFloat(inst.TickSz, 64)
 		ctVal, _ := strconv.ParseFloat(inst.CtVal, 64)
+
+		// Convert contract units to base asset units for engine compatibility.
+		minSize := lotSz * ctVal
+		stepSize := stepLot * ctVal
 
 		// Cache contract value for sizing calculations
 		a.ctValCache.Store(inst.InstID, ctVal)
@@ -503,7 +507,7 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 			MinSize:       minSize,
 			StepSize:      stepSize,
 			MaxSize:       0, // OKX does not expose maxSz in instruments
-			SizeDecimals:  countDecimals(inst.LotSz),
+			SizeDecimals:  countDecimalsFloat(stepSize),
 			PriceStep:     priceStep,
 			PriceDecimals: countDecimals(inst.TickSz),
 		}
@@ -863,6 +867,11 @@ func countDecimals(s string) int {
 	return len(d)
 }
 
+func countDecimalsFloat(v float64) int {
+	s := strconv.FormatFloat(v, 'f', -1, 64)
+	return countDecimals(s)
+}
+
 // GetUserTrades returns filled trades for a symbol since startTime.
 // OKX endpoint: GET /api/v5/trade/fills-history
 func (a *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) ([]exchange.Trade, error) {
@@ -1041,7 +1050,7 @@ func (a *Adapter) PlaceStopLoss(params exchange.StopLossParams) (string, error) 
 	// Convert base units to contracts.
 	sz := params.Size
 	ctVal := a.getCtVal(params.Symbol)
-	if ctVal > 1 {
+	if ctVal != 1 {
 		sizeF, err := strconv.ParseFloat(params.Size, 64)
 		if err == nil {
 			contracts := math.Round(sizeF / ctVal)
