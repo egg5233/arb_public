@@ -2,10 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.16.8] - 2026-03-25
+## [0.16.9] - 2026-03-25
 
 ### Fixed
 - **Bitget GetUserTrades fee parsing**: API response uses `feeDetail[0].totalFee` and `baseVolume`, not `fee` and `size` — entry fees were being missed for Bitget legs
+- **Bitget GetUserTrades JSON wrapper**: Added missing `data` envelope — `fillList` is at `data.fillList`, not root level
+- **OKX GetClosePnL field mapping**: Removed non-existent fields (`realizedPnl`, `fee`, `fundingFee`, `direction`), mapped correct fields (`pnl`, `posSide`)
+- **OKX GetClosePnL `begin` parameter**: Removed unsupported `begin` param (OKX silently ignores it — positions-history only supports `after`/`before` for ID pagination)
+- **OKX GetClosePnL `posSide="net"` handling**: One-way mode returns "net" instead of "long"/"short" — now infers direction from `openMaxPos` sign with price fallback
 - **Gate.io dark mode link**: Changed URL parameter from `theme=dark_mode` to `theme=dark`
 
 ## [0.16.7] - 2026-03-25

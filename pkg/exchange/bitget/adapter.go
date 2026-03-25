@@ -913,26 +913,29 @@ func (b *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 	}
 
 	var resp struct {
-		FillList []struct {
-			TradeID    string `json:"tradeId"`
-			OrderID    string `json:"orderId"`
-			Symbol     string `json:"symbol"`
-			Side       string `json:"side"` // buy or sell
-			Price      string `json:"price"`
-			BaseVolume string `json:"baseVolume"`
-			FeeDetail  []struct {
-				FeeCoin  string `json:"feeCoin"`
-				TotalFee string `json:"totalFee"`
-			} `json:"feeDetail"`
-			CTime string `json:"cTime"` // ms timestamp
-		} `json:"fillList"`
+		Code string `json:"code"`
+		Data struct {
+			FillList []struct {
+				TradeID    string `json:"tradeId"`
+				OrderID    string `json:"orderId"`
+				Symbol     string `json:"symbol"`
+				Side       string `json:"side"` // buy or sell
+				Price      string `json:"price"`
+				BaseVolume string `json:"baseVolume"`
+				FeeDetail  []struct {
+					FeeCoin  string `json:"feeCoin"`
+					TotalFee string `json:"totalFee"`
+				} `json:"feeDetail"`
+				CTime string `json:"cTime"` // ms timestamp
+			} `json:"fillList"`
+		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(body), &resp); err != nil {
 		return nil, fmt.Errorf("GetUserTrades unmarshal: %w", err)
 	}
 
-	trades := make([]exchange.Trade, 0, len(resp.FillList))
-	for _, t := range resp.FillList {
+	trades := make([]exchange.Trade, 0, len(resp.Data.FillList))
+	for _, t := range resp.Data.FillList {
 		price, _ := strconv.ParseFloat(t.Price, 64)
 		qty, _ := strconv.ParseFloat(t.BaseVolume, 64)
 		var fee float64

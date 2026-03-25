@@ -967,7 +967,6 @@ func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 	params := map[string]string{
 		"instType": "SWAP",
 		"instId":   instID,
-		"before":   strconv.FormatInt(since.UnixMilli(), 10),
 		"limit":    "20",
 	}
 	body, err := a.client.Get("/api/v5/account/positions-history", params)
@@ -978,14 +977,12 @@ func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 	// OKX client already unwraps the { data: [...] } envelope,
 	// so body is the raw data array.
 	var records []struct {
-		RealizedPnl   string `json:"realizedPnl"`
 		Pnl           string `json:"pnl"`
-		Fee           string `json:"fee"`
-		FundingFee    string `json:"fundingFee"`
 		OpenAvgPx     string `json:"openAvgPx"`
 		CloseAvgPx    string `json:"closeAvgPx"`
 		CloseTotalPos string `json:"closeTotalPos"`
-		Direction     string `json:"direction"`
+		PosSide       string `json:"posSide"` // "long", "short", or "net" (one-way mode)
+		OpenMaxPos    string `json:"openMaxPos"`
 		UTime         string `json:"uTime"`
 	}
 	if err := json.Unmarshal(body, &records); err != nil {
@@ -994,24 +991,43 @@ func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 
 	out := make([]exchange.ClosePnL, 0, len(records))
 	for _, r := range records {
-		pricePnL, _ := strconv.ParseFloat(r.Pnl, 64)
-		fee, _ := strconv.ParseFloat(r.Fee, 64)
-		funding, _ := strconv.ParseFloat(r.FundingFee, 64)
-		netPnL, _ := strconv.ParseFloat(r.RealizedPnl, 64)
+		netPnL, _ := strconv.ParseFloat(r.Pnl, 64)
 		entryPrice, _ := strconv.ParseFloat(r.OpenAvgPx, 64)
 		exitPrice, _ := strconv.ParseFloat(r.CloseAvgPx, 64)
 		closeSize, _ := strconv.ParseFloat(r.CloseTotalPos, 64)
 		ms, _ := strconv.ParseInt(r.UTime, 10, 64)
 
+		// OKX positions-history only returns total pnl (inclusive of fees/funding).
+		// Fee and funding breakdowns are not available from this endpoint.
+
+		// Infer side: posSide is "net" in one-way mode, need to determine direction.
+		side := r.PosSide
+		if side == "net" {
+			// In one-way mode, infer from openMaxPos sign or entry/exit prices.
+			maxPos, _ := strconv.ParseFloat(r.OpenMaxPos, 64)
+			if maxPos > 0 {
+				side = "long"
+			} else if maxPos < 0 {
+				side = "short"
+			} else if entryPrice > 0 && exitPrice > 0 {
+				// Fallback: if bought lower and sold higher, was long
+				if exitPrice > entryPrice {
+					side = "long"
+				} else {
+					side = "short"
+				}
+			}
+		}
+
 		out = append(out, exchange.ClosePnL{
-			PricePnL:   pricePnL,
-			Fees:       fee,
-			Funding:    funding,
+			PricePnL:   netPnL, // best approximation; no separate breakdown available
+			Fees:       0,
+			Funding:    0,
 			NetPnL:     netPnL,
 			EntryPrice: entryPrice,
 			ExitPrice:  exitPrice,
 			CloseSize:  closeSize,
-			Side:       r.Direction, // already "long" or "short"
+			Side:       side,
 			CloseTime:  time.UnixMilli(ms),
 		})
 	}
