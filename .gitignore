@@ -17,3 +17,10 @@ go.sum
 transfertest
 transfer
 .claude/skills
+tmux-setup.sh
+tail
+config.toml
+codex-live/*
+codex-live
+sum_series_y.py
+test.json

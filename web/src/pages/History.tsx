@@ -61,6 +61,7 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
               <th className="pb-2 text-right">{t('hist.longPrice')}</th>
               <th className="pb-2 text-right">{t('hist.shortPrice')}</th>
               <th className="pb-2 text-right">{t('hist.spread')}</th>
+              <th className="pb-2 text-right">{t('hist.exitSpread')}</th>
               <th className="pb-2 text-right">{t('hist.fundingCollected')}</th>
               <th className="pb-2 text-right">{t('hist.rotPnl')}</th>
               <th className="pb-2 text-right">{t('hist.pnl')}</th>
@@ -85,6 +86,9 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
                   {tr.short_exit > 0 ? ` → ${tr.short_exit.toPrecision(6)}` : ''}
                 </td>
                 <td className="py-2 text-right font-mono">{tr.entry_spread.toFixed(1)} bps/h</td>
+                <td className={`py-2 text-right font-mono ${(tr.current_spread ?? 0) < 0 ? 'text-red-400' : 'text-gray-400'}`}>
+                  {tr.current_spread != null ? `${tr.current_spread.toFixed(1)} bps/h` : '-'}
+                </td>
                 <td className={`py-2 text-right font-mono ${tr.funding_collected > 0 ? 'text-green-400' : tr.funding_collected < 0 ? 'text-red-400' : 'text-gray-400'}`}>${tr.funding_collected.toFixed(2)}</td>
                 <td className={`py-2 text-right font-mono ${(tr.rotation_pnl ?? 0) >= 0 ? 'text-gray-400' : 'text-red-400'}`}>
                   {(tr.rotation_pnl ?? 0) !== 0 ? `$${(tr.rotation_pnl ?? 0).toFixed(2)}` : '-'}
@@ -100,7 +104,7 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
             ))}
             {trades.length === 0 && (
               <tr>
-                <td colSpan={13} className="py-4 text-center text-gray-500">{t('hist.noHistory')}</td>
+                <td colSpan={14} className="py-4 text-center text-gray-500">{t('hist.noHistory')}</td>
               </tr>
             )}
           </tbody>

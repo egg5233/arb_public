@@ -1625,13 +1625,20 @@ func (e *Engine) reconcileRotationPnL(posID string, oldExch exchange.Exchange, o
 		}
 
 		// Filter records to only those closed near the rotation time (±5 min).
+		// Binance returns Side="" (income API has no side info) — accept if only 1 record.
 		var filtered []exchange.ClosePnL
 		for _, r := range records {
-			if r.Side == legSide && abs(r.CloseTime.Sub(rotationTime).Seconds()) < 300 {
+			sideMatch := r.Side == legSide || r.Side == ""
+			timeMatch := abs(r.CloseTime.Sub(rotationTime).Seconds()) < 300
+			if sideMatch && timeMatch {
 				filtered = append(filtered, r)
 			}
 		}
 		if len(filtered) == 0 {
+			for i, r := range records {
+				e.log.Warn("rotation PnL reconcile %s [attempt %d]: rejected record %d: side=%q closeTime=%s netPnL=%.4f",
+					posID, attempt+1, i, r.Side, r.CloseTime.Format("15:04:05"), r.NetPnL)
+			}
 			e.log.Warn("rotation PnL reconcile %s [attempt %d]: no %s close record near rotation time on %s (total records=%d)",
 				posID, attempt+1, legSide, oldExchName, len(records))
 			continue

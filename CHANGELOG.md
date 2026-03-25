@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.4] - 2026-03-25
+
+### Fixed
+- **Binance rotation PnL: empty Side filter**: Binance `GetClosePnL` returns `Side=""` (income API has no position side info), causing `reconcileRotationPnL` to reject the record. Now accepts empty side, matching the existing `aggregateClosePnLBySide` fallback. Added diagnostic logging (side, closeTime, netPnL) for rejected records.
+
+### Added
+- **Exit spread column in History**: Shows `current_spread` (the spread at exit time) alongside entry spread. Entry spread column renamed from "Spread" to "Entry Spread". Red highlight when exit spread is negative (reversed).
+
 ## [0.15.3] - 2026-03-24
 
 ### Added
