@@ -7,7 +7,7 @@ export function tradingUrl(exchange: string, symbol: string): string {
     case 'bybit':
       return `https://www.bybit.com/trade/usdt/${symbol}?theme=dark`;
     case 'gateio':
-      return `https://www.gate.io/futures/usdt/${base}_USDT?theme=dark_mode`;
+      return `https://www.gate.io/futures/usdt/${base}_USDT?theme=dark`;
     case 'bitget':
       return `https://www.bitget.com/futures/usdt/${symbol}?theme=dark`;
     case 'okx':

@@ -914,15 +914,17 @@ func (b *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 
 	var resp struct {
 		FillList []struct {
-			TradeID  string `json:"tradeId"`
-			OrderID  string `json:"orderId"`
-			Symbol   string `json:"symbol"`
-			Side     string `json:"side"` // buy or sell
-			Price    string `json:"price"`
-			Size     string `json:"size"`
-			Fee      string `json:"fee"`
-			FeeAsset string `json:"feeDetail,omitempty"`
-			CTime    string `json:"cTime"` // ms timestamp
+			TradeID    string `json:"tradeId"`
+			OrderID    string `json:"orderId"`
+			Symbol     string `json:"symbol"`
+			Side       string `json:"side"` // buy or sell
+			Price      string `json:"price"`
+			BaseVolume string `json:"baseVolume"`
+			FeeDetail  []struct {
+				FeeCoin  string `json:"feeCoin"`
+				TotalFee string `json:"totalFee"`
+			} `json:"feeDetail"`
+			CTime string `json:"cTime"` // ms timestamp
 		} `json:"fillList"`
 	}
 	if err := json.Unmarshal([]byte(body), &resp); err != nil {
@@ -932,8 +934,15 @@ func (b *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 	trades := make([]exchange.Trade, 0, len(resp.FillList))
 	for _, t := range resp.FillList {
 		price, _ := strconv.ParseFloat(t.Price, 64)
-		qty, _ := strconv.ParseFloat(t.Size, 64)
-		fee, _ := strconv.ParseFloat(t.Fee, 64)
+		qty, _ := strconv.ParseFloat(t.BaseVolume, 64)
+		var fee float64
+		feeCoin := "USDT"
+		if len(t.FeeDetail) > 0 {
+			fee, _ = strconv.ParseFloat(t.FeeDetail[0].TotalFee, 64)
+			if t.FeeDetail[0].FeeCoin != "" {
+				feeCoin = t.FeeDetail[0].FeeCoin
+			}
+		}
 		if fee < 0 {
 			fee = -fee
 		}
@@ -946,7 +955,7 @@ func (b *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 			Price:    price,
 			Quantity: qty,
 			Fee:      fee,
-			FeeCoin:  "USDT",
+			FeeCoin:  feeCoin,
 			Time:     time.UnixMilli(ms),
 		})
 	}

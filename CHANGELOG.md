@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.8] - 2026-03-25
+
+### Fixed
+- **Bitget GetUserTrades fee parsing**: API response uses `feeDetail[0].totalFee` and `baseVolume`, not `fee` and `size` — entry fees were being missed for Bitget legs
+- **Gate.io dark mode link**: Changed URL parameter from `theme=dark_mode` to `theme=dark`
+
 ## [0.16.7] - 2026-03-25
 
 ### Added
