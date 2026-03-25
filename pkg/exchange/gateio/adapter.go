@@ -586,12 +586,20 @@ func (a *Adapter) GetFundingInterval(symbol string) (time.Duration, error) {
 
 func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 	if a.isUnified {
-		return a.getUnifiedBalance()
+		bal, err := a.getUnifiedBalance()
+		if err != nil {
+			// Fallback to classic if unified endpoint fails (e.g. missing permission).
+			return a.getClassicFuturesBalance()
+		}
+		return bal, nil
 	}
 	return a.getClassicFuturesBalance()
 }
 
 // getUnifiedBalance reads balance from /unified/accounts for unified account mode.
+// Margin ratio calculation depends on account mode:
+//   - single_currency: use per-currency (USDT) fields: mm / margin_balance
+//   - multi_currency/portfolio: use top-level: total_maintenance_margin / unified_account_total_equity
 func (a *Adapter) getUnifiedBalance() (*exchange.Balance, error) {
 	data, err := a.client.Get("/unified/accounts", nil)
 	if err != nil {
@@ -599,13 +607,18 @@ func (a *Adapter) getUnifiedBalance() (*exchange.Balance, error) {
 	}
 
 	var resp struct {
-		TotalAvailableMargin     string            `json:"total_available_margin"`
-		UnifiedAccountTotalEquity string           `json:"unified_account_total_equity"`
-		TotalMaintenanceMargin   string            `json:"total_maintenance_margin"`
-		Balances                 map[string]struct {
-			Available string `json:"available"`
-			Equity    string `json:"equity"`
-			Freeze    string `json:"freeze"`
+		Mode                      string `json:"mode"`
+		TotalAvailableMargin      string `json:"total_available_margin"`
+		UnifiedAccountTotalEquity string `json:"unified_account_total_equity"`
+		TotalMaintenanceMargin    string `json:"total_maintenance_margin"`
+		Balances                  map[string]struct {
+			Available      string `json:"available"`
+			Equity         string `json:"equity"`
+			Freeze         string `json:"freeze"`
+			MM             string `json:"mm"`              // maintenance margin (per-currency)
+			IM             string `json:"im"`              // initial margin (per-currency)
+			MarginBalance  string `json:"margin_balance"`  // margin balance (per-currency)
+			AvailableMargin string `json:"available_margin"` // available margin (per-currency)
 		} `json:"balances"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
@@ -614,19 +627,41 @@ func (a *Adapter) getUnifiedBalance() (*exchange.Balance, error) {
 
 	equity, _ := strconv.ParseFloat(resp.UnifiedAccountTotalEquity, 64)
 	availableMargin, _ := strconv.ParseFloat(resp.TotalAvailableMargin, 64)
-	maintenanceMargin, _ := strconv.ParseFloat(resp.TotalMaintenanceMargin, 64)
-
-	// Fallback to USDT-specific balance if top-level is empty.
-	if equity <= 0 {
-		if usdtBal, ok := resp.Balances["USDT"]; ok {
-			equity, _ = strconv.ParseFloat(usdtBal.Equity, 64)
-			availableMargin, _ = strconv.ParseFloat(usdtBal.Available, 64)
-		}
-	}
+	topLevelMM, _ := strconv.ParseFloat(resp.TotalMaintenanceMargin, 64)
 
 	var marginRatio float64
-	if equity > 0 && maintenanceMargin > 0 {
-		marginRatio = maintenanceMargin / equity
+
+	if resp.Mode == "single_currency" {
+		// single_currency: top-level margin fields are 0, use per-currency USDT fields.
+		if usdtBal, ok := resp.Balances["USDT"]; ok {
+			if equity <= 0 {
+				equity, _ = strconv.ParseFloat(usdtBal.Equity, 64)
+			}
+			if availableMargin <= 0 {
+				availableMargin, _ = strconv.ParseFloat(usdtBal.AvailableMargin, 64)
+				if availableMargin <= 0 {
+					availableMargin, _ = strconv.ParseFloat(usdtBal.Available, 64)
+				}
+			}
+			mm, _ := strconv.ParseFloat(usdtBal.MM, 64)
+			mb, _ := strconv.ParseFloat(usdtBal.MarginBalance, 64)
+			if mb > 0 && mm > 0 {
+				marginRatio = mm / mb // maintenance margin / margin balance
+			}
+		}
+	} else {
+		// multi_currency / portfolio: use top-level fields.
+		if usdtBal, ok := resp.Balances["USDT"]; ok {
+			if equity <= 0 {
+				equity, _ = strconv.ParseFloat(usdtBal.Equity, 64)
+			}
+			if availableMargin <= 0 {
+				availableMargin, _ = strconv.ParseFloat(usdtBal.Available, 64)
+			}
+		}
+		if equity > 0 && topLevelMM > 0 {
+			marginRatio = topLevelMM / equity
+		}
 	}
 
 	return &exchange.Balance{

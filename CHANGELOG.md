@@ -16,6 +16,20 @@ All notable changes to this project will be documented in this file.
 ### Removed
 - 移除已棄用的 `exit_mode` 和 `order_advance_min` 幽靈欄位
 
+## [0.16.2] - 2026-03-25
+
+### Fixed
+- **Gate.io unified balance — proper margin ratio by account mode**:
+  - `single_currency` mode: uses per-currency USDT fields (`mm` / `margin_balance`) for margin ratio
+  - `multi_currency`/`portfolio` mode: uses top-level fields (`total_maintenance_margin` / `unified_account_total_equity`)
+  - Previously top-level fields were all 0 for `single_currency` mode, causing MarginRatio=0
+  - The health monitor fallback formula (`1 - available/total`) then computed 1.0 when available=0, falsely triggering L5 emergency close
+- **Health monitor fallback safety**: Added `bal.Available > 0` guard to the fallback margin ratio calculation in `health.go`; when Available=0, skips fallback (marginRatio stays 0 = safe) instead of computing 1.0
+
+### Added
+- **Gate.io permission tip in dashboard**: Added yellow tip box in Permissions page explaining Gate.io users need "保證金交易（新版統一帳戶）" (Unified Account) permission for accurate balance display
+- **Gate.io gatetest tool**: New `cmd/gatetest/` for testing Gate.io unified endpoints
+
 ## [0.16.1] - 2026-03-25
 
 ### Added

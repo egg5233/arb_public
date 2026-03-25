@@ -93,6 +93,11 @@ const Permissions: FC<PermissionsProps> = ({ getPermissions }) => {
           <p>❌ {t('perm.legendDenied')}</p>
           <p>❓ {t('perm.legendUnknown')}</p>
         </div>
+
+        <div className="mt-4 p-3 bg-yellow-900/20 border border-yellow-800/50 rounded text-xs text-yellow-300 space-y-1">
+          <p className="font-semibold">{t('perm.tipTitle')}</p>
+          <p>{t('perm.tipGateio')}</p>
+        </div>
       </div>
     </div>
   );

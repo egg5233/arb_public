@@ -873,16 +873,22 @@ var unifiedExchanges = map[string]bool{
 }
 
 // isUnifiedExchange checks if an exchange uses a unified account model.
-// Gate.io is always displayed as unified in the dashboard because its
-// balance refresh saves a single equity value regardless of account mode.
+// For Gate.io, checks runtime detection via the adapter. If detection
+// failed (no unified API permission), falls back to true because the
+// balance refresh overrides with spot equity — showing both would double-count.
 func (s *Server) isUnifiedExchange(name string) bool {
 	if unifiedExchanges[name] {
 		return true
 	}
-	// Gate.io: always show as unified display. In classic mode, the balance
-	// refresh already overrides with spot equity. In unified mode, GetFuturesBalance
-	// returns unified equity. Either way, it's a single number.
 	if name == "gateio" {
+		if exch, ok := s.exchanges[name]; ok {
+			type unifiedChecker interface{ IsUnified() bool }
+			if uc, ok := exch.(unifiedChecker); ok {
+				return uc.IsUnified()
+			}
+		}
+		// Detection unavailable — balance refresh overrides with spot,
+		// so display as unified to avoid showing the same number twice.
 		return true
 	}
 	return false

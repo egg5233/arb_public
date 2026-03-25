@@ -363,6 +363,8 @@ const zhTW: Record<TranslationKey, string> = {
   'perm.legendGranted': '已授權 — 權限確認',
   'perm.legendDenied': '已拒絕 — 權限不可用',
   'perm.legendUnknown': '未知 — 無法驗證（請檢查交易所介面）',
+  'perm.tipTitle': 'Gate.io 使用者：',
+  'perm.tipGateio': '請在 API 金鑰設定中啟用「保證金交易（新版統一帳戶）」權限，以正確顯示帳戶餘額。未啟用時，儀表板將使用估算餘額。',
 };
 
 export default zhTW;

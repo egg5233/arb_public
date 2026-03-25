@@ -361,6 +361,8 @@ const en = {
   'perm.legendGranted': 'Granted — permission confirmed',
   'perm.legendDenied': 'Denied — permission not available',
   'perm.legendUnknown': 'Unknown — cannot verify (check exchange UI)',
+  'perm.tipTitle': 'Gate.io Users:',
+  'perm.tipGateio': 'Enable "保證金交易（新版統一帳戶）" (Margin Trading - Unified Account) permission on your API key for accurate balance display. Without this, the dashboard will use an estimated balance.',
 } as const;
 
 export type TranslationKey = keyof typeof en;

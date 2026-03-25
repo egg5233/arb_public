@@ -212,8 +212,11 @@ func (h *HealthMonitor) computeLevel(bal *exchange.Balance, pnl float64, posCoun
 
 	marginRatio := bal.MarginRatio
 
-	// Use hybrid fallback if margin ratio unavailable
-	if marginRatio <= 0 && bal.Total > 0 {
+	// Use hybrid fallback if margin ratio unavailable.
+	// Skip fallback if Available is 0 — unified accounts (e.g. Gate.io) may
+	// report Available=0 when all equity is allocated as position margin,
+	// which does NOT mean 100% margin utilization.
+	if marginRatio <= 0 && bal.Total > 0 && bal.Available > 0 {
 		marginRatio = 1.0 - (bal.Available / bal.Total)
 	}
 
