@@ -179,6 +179,9 @@ const Overview: FC<OverviewProps> = ({ positions, stats, exchanges, onDiagnose }
         </div>
       )}
 
+      <p className="text-xs text-gray-600 text-center mt-2">
+        Funding rate data provided by <a href="https://loris.tools" target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-gray-400 underline">Loris Tools</a>
+      </p>
     </div>
   );
 };

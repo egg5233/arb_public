@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.4] - 2026-03-25
+
+### Changed
+- **Backtest rate limit mitigation**: Entry scan backtest filter is now cache-only (no inline API calls). Background prefetch worker fetches uncached symbols after non-entry scans with random 3-30s delays between requests. Global 429 backoff (60s cooldown). Cache TTL increased from 6h to 24h. Single-worker mutex prevents overlapping prefetch runs.
+
+### Added
+- **Loris Tools credit**: Added "Funding rate data provided by Loris Tools" link to dashboard Overview page.
+
 ## [0.16.3] - 2026-03-25
 
 ### Fixed

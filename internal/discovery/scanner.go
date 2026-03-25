@@ -71,6 +71,11 @@ type Scanner struct {
 	lastLorisIntervals map[string]map[string]float64 // exchange → symbol → interval hours
 	intervalsMu        sync.RWMutex
 
+	// Backtest prefetch rate limiting.
+	prefetchMu       sync.Mutex
+	lorisBackoffMu   sync.RWMutex
+	lorisBackoffUntil time.Time
+
 	oppChan  chan ScanResult
 	stopCh   chan struct{}
 	wg       sync.WaitGroup
@@ -834,6 +839,11 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 	s.mu.Lock()
 	s.opportunities = verified
 	s.mu.Unlock()
+
+	// Pre-fetch backtest data for non-entry scans to warm cache.
+	if scanType != EntryScan && s.cfg.BacktestDays > 0 && len(verified) > 0 {
+		go s.prefetchBacktestData(verified)
+	}
 
 	// Non-blocking send to channel so the engine can consume at its pace.
 	select {

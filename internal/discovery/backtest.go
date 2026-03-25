@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"strings"
@@ -57,7 +58,21 @@ func (s *Scanner) backtestFundingHistory(opp models.Opportunity) (bool, string) 
 		}
 	}
 
-	// Call Loris historical API.
+	// Cache miss — fail open. Background prefetch will populate for next scan.
+	s.log.Info("backtest %s (%s/%s): cache miss, skipping (will prefetch)", opp.Symbol, opp.LongExchange, opp.ShortExchange)
+	return true, ""
+}
+
+// fetchAndCacheBacktest calls the Loris historical API for a single opportunity
+// and stores the result in Redis. Returns true if successful, false on error/429.
+func (s *Scanner) fetchAndCacheBacktest(opp models.Opportunity) bool {
+	days := s.cfg.BacktestDays
+	if days <= 0 {
+		return true
+	}
+
+	cacheKey := fmt.Sprintf("arb:backtest:%s:%s:%s:%d", opp.Symbol, opp.LongExchange, opp.ShortExchange, days)
+
 	base := strings.TrimSuffix(opp.Symbol, "USDT")
 	now := time.Now().UTC()
 	start := now.Add(-time.Duration(days) * 24 * time.Hour)
@@ -71,60 +86,52 @@ func (s *Scanner) backtestFundingHistory(opp models.Opportunity) (bool, string) 
 	reqURL := lorisHistoricalURL + "?" + params.Encode()
 	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
 	if err != nil {
-		s.log.Warn("backtest %s: failed to create request: %v", opp.Symbol, err)
-		return true, "" // fail open
+		return false
 	}
 	req.Header.Set("User-Agent", "arb-bot/1.0")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		s.log.Warn("backtest %s: API request failed: %v", opp.Symbol, err)
-		return true, "" // fail open
+		s.log.Warn("backtest prefetch %s: request failed: %v", opp.Symbol, err)
+		return false
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == 429 {
+		s.log.Warn("backtest prefetch %s: 429 rate limited", opp.Symbol)
+		return false
+	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		s.log.Warn("backtest %s: API returned %d: %s", opp.Symbol, resp.StatusCode, string(body))
-		return true, "" // fail open
+		s.log.Warn("backtest prefetch %s: API returned %d: %s", opp.Symbol, resp.StatusCode, string(body))
+		return false
 	}
 
 	var historical lorisHistoricalResponse
 	if err := json.NewDecoder(resp.Body).Decode(&historical); err != nil {
-		s.log.Warn("backtest %s: failed to decode response: %v", opp.Symbol, err)
-		return true, "" // fail open
+		return false
 	}
 
 	longSeries := historical.Series[opp.LongExchange]
 	shortSeries := historical.Series[opp.ShortExchange]
 
 	if len(longSeries) == 0 || len(shortSeries) == 0 {
-		s.log.Warn("backtest %s: empty series (long=%d short=%d)", opp.Symbol, len(longSeries), len(shortSeries))
-		return true, "" // fail open — no data
+		return true // no data, but not an error
 	}
 
-	// Get per-leg intervals for settlement time validation.
+	// Filter and sum.
 	longInterval := s.getLegInterval(opp.LongExchange, opp.Symbol)
 	shortInterval := s.getLegInterval(opp.ShortExchange, opp.Symbol)
-
-	// Filter valid settlement times independently per leg.
 	longFiltered := filterValidSettlements(longSeries, longInterval)
 	shortFiltered := filterValidSettlements(shortSeries, shortInterval)
 
-	// Coverage check: if <50% of expected settlements, skip filter.
 	expectedLong := float64(days) * 24.0 / longInterval
 	expectedShort := float64(days) * 24.0 / shortInterval
-	if float64(len(longFiltered)) < expectedLong*0.5 {
-		s.log.Warn("backtest %s: low long coverage %d/%.0f, skipping", opp.Symbol, len(longFiltered), expectedLong)
-		return true, ""
-	}
-	if float64(len(shortFiltered)) < expectedShort*0.5 {
-		s.log.Warn("backtest %s: low short coverage %d/%.0f, skipping", opp.Symbol, len(shortFiltered), expectedShort)
-		return true, ""
+	if float64(len(longFiltered)) < expectedLong*0.5 || float64(len(shortFiltered)) < expectedShort*0.5 {
+		return true // low coverage, skip
 	}
 
-	// Sum independently — do NOT normalize by count.
 	var longSumY, shortSumY float64
 	for _, p := range longFiltered {
 		longSumY += p.Y
@@ -134,28 +141,89 @@ func (s *Scanner) backtestFundingHistory(opp models.Opportunity) (bool, string) 
 	}
 
 	netProfit := shortSumY - longSumY
-	pass := netProfit > s.cfg.BacktestMinProfit
-
-	reason := ""
-	if !pass {
-		reason = fmt.Sprintf("backtest unprofitable (%dd): longSum=%.2f shortSum=%.2f net=%.2f (need >%.2f)",
-			days, longSumY, shortSumY, netProfit, s.cfg.BacktestMinProfit)
-	}
-
-	// Cache raw sums in Redis with 6h TTL (pass/fail re-evaluated on read).
-	result := backtestResult{
-		LongSum:   longSumY,
-		ShortSum:  shortSumY,
-		NetProfit: netProfit,
-	}
+	result := backtestResult{LongSum: longSumY, ShortSum: shortSumY, NetProfit: netProfit}
 	if data, err := json.Marshal(result); err == nil {
-		s.db.SetWithTTL(cacheKey, string(data), 6*time.Hour)
+		s.db.SetWithTTL(cacheKey, string(data), 24*time.Hour)
 	}
 
-	s.log.Info("backtest %s (%s/%s %dd): longSum=%.2f shortSum=%.2f net=%.2f pass=%v",
-		opp.Symbol, opp.LongExchange, opp.ShortExchange, days, longSumY, shortSumY, netProfit, pass)
+	s.log.Info("backtest prefetch %s (%s/%s %dd): longSum=%.2f shortSum=%.2f net=%.2f",
+		opp.Symbol, opp.LongExchange, opp.ShortExchange, days, longSumY, shortSumY, netProfit)
+	return true
+}
 
-	return pass, reason
+// prefetchBacktestData pre-warms the backtest cache for verified opportunities.
+// Runs with rate-limiting delays to avoid 429s from Loris API.
+// Only one prefetch can run at a time (prefetchMu).
+func (s *Scanner) prefetchBacktestData(opps []models.Opportunity) {
+	if !s.prefetchMu.TryLock() {
+		return // another prefetch is already running
+	}
+	defer s.prefetchMu.Unlock()
+
+	days := s.cfg.BacktestDays
+	if days <= 0 {
+		return
+	}
+
+	// Check global backoff.
+	s.lorisBackoffMu.RLock()
+	backoff := s.lorisBackoffUntil
+	s.lorisBackoffMu.RUnlock()
+	if time.Now().Before(backoff) {
+		s.log.Info("backtest prefetch: skipping, rate limit backoff until %s", backoff.Format("15:04:05"))
+		return
+	}
+
+	// Deduplicate by cache key.
+	type oppKey struct{ symbol, long, short string }
+	seen := make(map[oppKey]bool)
+	var toFetch []models.Opportunity
+	for _, opp := range opps {
+		k := oppKey{opp.Symbol, opp.LongExchange, opp.ShortExchange}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		cacheKey := fmt.Sprintf("arb:backtest:%s:%s:%s:%d", opp.Symbol, opp.LongExchange, opp.ShortExchange, days)
+		if cached, err := s.db.Get(cacheKey); err == nil && cached != "" {
+			continue // already cached
+		}
+		toFetch = append(toFetch, opp)
+	}
+
+	if len(toFetch) == 0 {
+		return
+	}
+
+	s.log.Info("backtest prefetch: %d to fetch, %d already cached", len(toFetch), len(seen)-len(toFetch))
+
+	fetched := 0
+	for _, opp := range toFetch {
+		// Random delay 3-30s between requests.
+		delay := time.Duration(3+rand.Intn(28)) * time.Second
+		time.Sleep(delay)
+
+		// Re-check backoff (might have been set by another path).
+		s.lorisBackoffMu.RLock()
+		backoff = s.lorisBackoffUntil
+		s.lorisBackoffMu.RUnlock()
+		if time.Now().Before(backoff) {
+			s.log.Warn("backtest prefetch: hit backoff, stopping after %d/%d", fetched, len(toFetch))
+			return
+		}
+
+		if !s.fetchAndCacheBacktest(opp) {
+			// On failure (likely 429), set global backoff.
+			s.lorisBackoffMu.Lock()
+			s.lorisBackoffUntil = time.Now().Add(60 * time.Second)
+			s.lorisBackoffMu.Unlock()
+			s.log.Warn("backtest prefetch: 429/error, backing off 60s after %d/%d", fetched, len(toFetch))
+			return
+		}
+		fetched++
+	}
+
+	s.log.Info("backtest prefetch: completed %d/%d", fetched, len(toFetch))
 }
 
 // getLegInterval returns the funding interval in hours for a specific exchange+symbol.
