@@ -1,24 +1,85 @@
-## Open Issues (2026-03-23)
+ use playwright skills (headless=true) and check the link:                                                                                                                            
+    Binance Futures:https://developers.binance.com/docs/derivatives/usds-margined-futures
+    Binance Spot/Wallet:https://developers.binance.com/docs/wallet
+    Bitget Contract:https://www.bitget.com/api-doc/contract/intro
+    Bitget Spot/Wallet:https://www.bitget.com/api-doc/spot/intro
+    Okx:https://www.okx.com/docs-v5/en/                                                                                                                                                
+    Gate.io:https://www.gate.com/docs/developers/apiv4/en/                                                                                                                             
+    Bybit:https://bybit-exchange.github.io/docs/v5/guide                                                                                                                               
+    BingX:https://bingx-api.github.io/docs-v3/#/en/info . 
+Document it into CODEX_EXCHANGEAPI_{EXCHANGE_NAME}.md . Keep in mind that the format should be readable and usable for further AI modl to    
+complete any exchange-api related task. 
 
-### Merge-time exchange-size sanity check
-- **Problem**: When a new fill is about to merge into an existing active position, the exchange may already have residual/orphan exposure from an earlier failed trim or late fill. If we merge anyway, we lose the boundary between the old position and the new add-on while exchange state is already dirty.
-- **Why this matters**: `consolidate.go` only validates aggregate totals when multiple local positions share the same exchange leg. Once merged, attribution is lost and the engine can carry a contaminated position forward.
-- **Implement in caller, not `mergeIntoPosition`**: Keep `mergeIntoPosition` as a DB mutation helper. Perform live exchange reads before calling it.
-- **Proposed flow**:
-- Read actual long/short exchange sizes with `getExchangePositionSize(...)` immediately before merge.
-- Compute expected aggregate sizes:
-  `expectedLong = sibling.LongSize + minFill`
-  `expectedShort = sibling.ShortSize + minFill`
-- Compare expected vs actual using tolerance `max(stepSize, expected*1%)`.
-- Only call `mergeIntoPosition(...)` if both legs match within tolerance.
-- If mismatch remains, block the merge, log the aggregate mismatch, and quarantine/unwind the new add-on instead of absorbing it into the sibling.
-- **Where to wire it**:
-- `internal/engine/engine.go` in `executeTradeV2WithPos(...)` right before the existing `mergeIntoPosition(...)` call.
-- `internal/engine/engine.go` in the older `executeTrade(...)` path before its merge call as well.
-- **Suggested helper**:
-- Add `verifyMergeAggregate(existing, symbol, longExch, shortExch, addLong, addShort) error` in `internal/engine/engine.go`.
-- **Mismatch behavior**:
-- Mark the pending add-on as `exiting`.
-- Close only the new balanced fill (`minFill` on both legs).
-- Leave the older sibling position untouched.
-- Let the consolidator continue recovering any pre-existing residual exposure.
+example:
+```
+## REST API Endpoints
+
+### Perpetual Swap — Market Data
+
+#### Get Contract List (USDT-M Perp Futures Symbols)
+- **Endpoint**: `GET /openApi/swap/v2/quote/contracts`
+- **Rate Limit**: 500/10s (IP)
+- **Auth**: No signature required
+- **Parameters**:
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| symbol | string | No | Trading pair, e.g. BTC-USDT |
+| timestamp | int64 | No | Request timestamp (ms) |
+| recvWindow | int64 | No | Request valid window (ms) |
+
+- **Response Fields**:
+
+| Field | Type | Description |
+|---|---|---|
+| contractId | string | Contract ID |
+| symbol | string | Trading pair (e.g. BTC-USDT) |
+| quantityPrecision | int64 | Quantity decimal places |
+| pricePrecision | int64 | Price decimal places |
+| makerFeeRate | float64 | Maker fee rate |
+| takerFeeRate | float64 | Taker fee rate |
+| tradeMinQuantity | float64 | Min trade quantity (COIN) |
+| tradeMinUSDT | float64 | Min trade quantity (USDT) |
+| maxLongLeverage | int64 | Max long leverage |
+| maxShortLeverage | int64 | Max short leverage |
+| currency | string | Settlement currency (e.g. USDT) |
+| asset | string | Trading asset (e.g. BTC) |
+| status | int64 | 1=online, 25=no-open, 5=pre-online, 0=offline |
+| apiStateOpen | string | Can API open positions ("true"/"false") |
+| apiStateClose | string | Can API close positions ("true"/"false") |
+| launchTime | long | Listing time (ms) |
+| maintainTime | long | No-open start time (ms) |
+| offTime | long | Offline time (ms) |
+
+- **Response Example**:
+```json
+{
+  "code": 0,
+  "msg": "",
+  "data": [
+    {
+      "contractId": "100",
+      "symbol": "BTC-USDT",
+      "size": "0",
+      "quantityPrecision": 4,
+      "pricePrecision": 1,
+      "feeRate": 0.0005,
+      "makerFeeRate": 0.0002,
+      "takerFeeRate": 0.0005,
+      "tradeMinLimit": 0,
+      "tradeMinQuantity": 0.0001,
+      "tradeMinUSDT": 2,
+      "maxLongLeverage": 125,
+      "maxShortLeverage": 125,
+      "currency": "USDT",
+      "asset": "BTC",
+      "status": 1,
+      "apiStateOpen": "true",
+      "apiStateClose": "true",
+      "launchTime": 1586275200000,
+      "maintainTime": 0,
+      "offTime": 0
+    }
+  ]
+}
+```

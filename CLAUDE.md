@@ -2,9 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## CRITICAL: No README
-- **NEVER** create, modify, or write README.md in this project
-- This rule applies to all workflows including commit, push, and doc updates
+## CRITICAL: Delegation mode
+- You are the coordinator/team lead. For any task involving 2+ files or non-trivial logic, break it into subtasks and delegate to teammates. Wait for teammates to complete before proceeding.
+- For trivial changes (single-line fixes, config edits, typos), you may implement directly.
+- Use only Sonnet4.6 or Opus4.6 when creating teams.
 
 ## Project
 
@@ -40,33 +41,33 @@ go run ./cmd/livetest/ --exchange bitget --skip-orders
 ```
 
 ## Project Structure
+Before making structural changes or adding new modules, read ARCHITECTURE.md in the repo root for system design, module boundaries, and strategy details.
 
-Read ARCHITECTURE.md for system design, module structure, and strategy details.
+## Skill instruction for agent team
+
+### Debugging
+    Let agent team load `/sdebug` skill when debugging, bug fixing, or troubleshooting issues. Follow the four-phase framework: Root Cause Investigation → Pattern Analysis → Hypothesis Testing → Implementation.
+
+### When code change involves any exchange api
+    Let agent team load `/local-api-docs` skill
+
 
 ## Codex Integration
 
-When using the `/skill-codex:codex` skill, always resume the persistent Codex session by ID instead of starting a new one. After each run , extract the session ID from the most recent file in `~/.codex/sessions/` and store it below.
+### Prerequisites
+- Codex CLI (`npm install -g @openai/codex`)
+- Before using any codex command, verify with `which codex`. 
+  If not installed, skip codex tasks and work manually.
 
-**Current session ID:** `019d22e3-2ad1-7a92-9ff7-f119dfab5334`
+### Session Management
+Two skill types: **codex** and **codex-chat**.
+Always attempt to resume the persistent session before starting a new one.
+- Read the session ID from `.codex-session` (gitignored, local to each user)
+- If the file is missing or resume fails, start a new session and 
+  write the new session ID back to `.codex-session`
+- Only start a fresh session if resume fails or the user explicitly asks
 
-Only start a new session if resume fails or if the user explicitly asks for a fresh session. After starting a new session, update the session ID above.
-
-## Debugging
-
-Load `/sdebug` skill when debugging, bug fixing, or troubleshooting issues. Follow the four-phase framework: Root Cause Investigation → Pattern Analysis → Hypothesis Testing → Implementation.
-
-## When you need to research about exchange api document
-
-use playwright skills (headless=true) and check the link:
-  Binance Futures:https://developers.binance.com/docs/derivatives/usds-margined-futures
-  Binance Spot/Wallet:https://developers.binance.com/docs/wallet
-  Bitget Contract:https://www.bitget.com/api-doc/contract/intro
-  Bitget Spot/Wallet:https://www.bitget.com/api-doc/spot/intro
-  Okx:https://www.okx.com/docs-v5/en/
-  Gate.io:https://www.gate.com/docs/developers/apiv4/en/
-  Bybit:https://bybit-exchange.github.io/docs/v5/guide
-  BingX:https://bingx-api.github.io/docs-v3/#/en/info
-
-## When you need to check history before 0.13.2
-
-Check CHANGELOG.md
+### Routing
+- `/codex` → invoke the **codex** skill only
+- `/codex-chat` → invoke the **codex-chat** skill only
+- Never cross-invoke between the two
