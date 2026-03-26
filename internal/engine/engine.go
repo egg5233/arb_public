@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"regexp"
 	"strconv"
 	"sync"
 	"time"
@@ -12,9 +13,9 @@ import (
 	"arb/internal/config"
 	"arb/internal/database"
 	"arb/internal/discovery"
-	"arb/pkg/exchange"
 	"arb/internal/models"
 	"arb/internal/risk"
+	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
 
@@ -47,6 +48,9 @@ type Engine struct {
 
 	// Mutex to serialize PnL reconciliation (reconcilePnL + reconcileRotationPnL).
 	pnlReconcileMu sync.Mutex
+
+	// Mutex to prevent concurrent pre-trade rebalance attempts for the same exchange.
+	preRebalanceMu sync.Mutex
 
 	// Rejection tracking for dashboard display.
 	rejStore *models.RejectionStore
@@ -298,6 +302,233 @@ func (e *Engine) Start() {
 	e.log.Info("engine started")
 }
 
+type rebalanceBalance struct {
+	futures     float64
+	spot        float64
+	marginRatio float64
+}
+
+type rebalanceDeficit struct {
+	exchange string
+	amount   float64
+}
+
+func (e *Engine) snapshotRebalanceBalances(scope string) map[string]rebalanceBalance {
+	balances := make(map[string]rebalanceBalance, len(e.exchanges))
+	for name, exch := range e.exchanges {
+		var bal rebalanceBalance
+		if futBal, err := exch.GetFuturesBalance(); err == nil {
+			bal.futures = futBal.Available
+			bal.marginRatio = futBal.MarginRatio
+		} else {
+			e.log.Warn("%s: failed to get futures balance on %s: %v", scope, name, err)
+		}
+		if spotBal, err := exch.GetSpotBalance(); err == nil {
+			bal.spot = spotBal.Available
+		} else {
+			e.log.Warn("%s: failed to get spot balance on %s: %v", scope, name, err)
+		}
+		balances[name] = bal
+		e.log.Info("%s: %s futures=%.2f spot=%.2f marginRatio=%.4f", scope, name, bal.futures, bal.spot, bal.marginRatio)
+	}
+	return balances
+}
+
+func (e *Engine) effectiveTransferCollateral(name string, bal rebalanceBalance) float64 {
+	total := bal.futures + bal.spot
+
+	type unifiedChecker interface{ IsUnified() bool }
+	if name == "okx" || name == "bybit" {
+		return bal.futures
+	}
+	if exch, ok := e.exchanges[name]; ok {
+		if uc, ok := exch.(unifiedChecker); ok && uc.IsUnified() {
+			return bal.futures
+		}
+	}
+	return total
+}
+
+func (e *Engine) calculateTransferSurplus(balances map[string]rebalanceBalance, reserves map[string]float64) map[string]float64 {
+	surplus := make(map[string]float64, len(e.exchanges))
+	for name := range e.exchanges {
+		surplus[name] = e.effectiveTransferCollateral(name, balances[name]) - reserves[name]
+	}
+	return surplus
+}
+
+func (e *Engine) transferSpotToFutures(scope, exchangeName string, needed float64, balances map[string]rebalanceBalance) (float64, bool) {
+	bal := balances[exchangeName]
+	if bal.futures >= needed {
+		return 0, false
+	}
+
+	shortfall := needed - bal.futures
+	if bal.spot <= 0 {
+		return shortfall, false
+	}
+
+	transferAmt := math.Min(shortfall, bal.spot)
+	if transferAmt <= 0 {
+		return shortfall, false
+	}
+
+	amtStr := fmt.Sprintf("%.4f", transferAmt)
+	e.log.Info("%s: %s spot→futures %s USDT (same-exchange, instant)", scope, exchangeName, amtStr)
+
+	if e.cfg.DryRun {
+		e.log.Info("[DRY RUN] would transfer %s USDT spot→futures on %s", amtStr, exchangeName)
+		return shortfall, false
+	}
+	if err := e.exchanges[exchangeName].TransferToFutures("USDT", amtStr); err != nil {
+		e.log.Error("%s: %s spot→futures failed: %v", scope, exchangeName, err)
+		return shortfall, false
+	}
+
+	bal.futures += transferAmt
+	bal.spot -= transferAmt
+	balances[exchangeName] = bal
+	return needed - bal.futures, true
+}
+
+func (e *Engine) findBestTransferDonor(scope, recipient string, amount float64, surplus map[string]float64, balances map[string]rebalanceBalance) (string, float64) {
+	var bestDonor string
+	var bestSurplus float64
+
+	for name, s := range surplus {
+		if name == recipient || s <= amount {
+			continue
+		}
+		if balances[name].marginRatio >= e.cfg.MarginL3Threshold {
+			e.log.Info("%s: skipping donor %s (marginRatio=%.4f >= L3=%.4f)",
+				scope, name, balances[name].marginRatio, e.cfg.MarginL3Threshold)
+			continue
+		}
+		if s > bestSurplus {
+			bestDonor = name
+			bestSurplus = s
+		}
+	}
+
+	return bestDonor, bestSurplus
+}
+
+func (e *Engine) preferredTransferRoute(scope, recipient string) (string, string, bool) {
+	recipientAddrs := e.cfg.ExchangeAddresses[recipient]
+	if len(recipientAddrs) == 0 {
+		e.log.Warn("%s: no deposit addresses for %s", scope, recipient)
+		return "", "", false
+	}
+
+	for _, chain := range []string{"APT", "BEP20"} {
+		if addr, ok := recipientAddrs[chain]; ok && addr != "" {
+			return chain, addr, true
+		}
+	}
+
+	e.log.Warn("%s: no shared APT/BEP20 route for %s", scope, recipient)
+	return "", "", false
+}
+
+func (e *Engine) waitForSpotDeposit(scope, recipient string, startBal, expectedIncrease float64) bool {
+	recipientExch := e.exchanges[recipient]
+	pollDeadline := time.Now().Add(3 * time.Minute)
+
+	for time.Now().Before(pollDeadline) {
+		time.Sleep(5 * time.Second)
+		spotBal, err := recipientExch.GetSpotBalance()
+		if err != nil {
+			continue
+		}
+		if spotBal.Available >= startBal+expectedIncrease {
+			e.log.Info("%s: deposit confirmed on %s (spot=%.2f)", scope, recipient, spotBal.Available)
+			return true
+		}
+	}
+
+	return false
+}
+
+func (e *Engine) transferAcrossExchanges(scope, donor, recipient string, amount, donorReserve float64, balances map[string]rebalanceBalance) bool {
+	chain, destAddr, ok := e.preferredTransferRoute(scope, recipient)
+	if !ok {
+		return false
+	}
+
+	e.log.Info("%s: cross-exchange %s→%s %.2f USDT via %s", scope, donor, recipient, amount, chain)
+
+	if e.cfg.DryRun {
+		e.log.Info("[DRY RUN] would transfer %.2f USDT from %s to %s via %s", amount, donor, recipient, chain)
+		return false
+	}
+
+	donorBal := balances[donor]
+	if donorBal.spot < amount {
+		moveAmt := amount - donorBal.spot
+		maxMove := donorBal.futures - donorReserve
+		if moveAmt > maxMove && maxMove > 0 {
+			moveAmt = maxMove
+		}
+		if moveAmt <= 0 {
+			e.log.Warn("%s: %s has no excess futures to move to spot", scope, donor)
+			return false
+		}
+
+		moveStr := fmt.Sprintf("%.4f", moveAmt)
+		e.log.Info("%s: %s futures→spot %s USDT", scope, donor, moveStr)
+		if err := e.exchanges[donor].TransferToSpot("USDT", moveStr); err != nil {
+			e.log.Error("%s: %s futures→spot failed: %v", scope, donor, err)
+			return false
+		}
+		e.recordTransfer(donor, donor+" spot", "USDT", "internal", moveStr, "0", "", "completed", scope+"-prep")
+	}
+
+	donorSpotBal, err := e.exchanges[donor].GetSpotBalance()
+	if err != nil {
+		e.log.Error("%s: %s get spot balance failed: %v", scope, donor, err)
+		return false
+	}
+
+	withdrawAmt := amount
+	if donorSpotBal.Available < withdrawAmt {
+		withdrawAmt = donorSpotBal.Available
+	}
+	if withdrawAmt < 10 {
+		e.log.Warn("%s: %s spot balance too low to withdraw (%.2f)", scope, donor, donorSpotBal.Available)
+		return false
+	}
+
+	amtStr := fmt.Sprintf("%.4f", withdrawAmt)
+	result, err := e.exchanges[donor].Withdraw(exchange.WithdrawParams{
+		Coin:    "USDT",
+		Chain:   chain,
+		Address: destAddr,
+		Amount:  amtStr,
+	})
+	if err != nil {
+		e.log.Error("%s: withdraw from %s failed: %v", scope, donor, err)
+		return false
+	}
+
+	e.log.Info("%s: withdraw from %s txid=%s (%.2f USDT), waiting for deposit on %s...",
+		scope, donor, result.TxID, withdrawAmt, recipient)
+	e.recordTransfer(donor, recipient, "USDT", chain, amtStr, result.Fee, result.TxID, "completed", scope)
+
+	if !e.waitForSpotDeposit(scope, recipient, balances[recipient].spot, withdrawAmt*0.9) {
+		e.log.Warn("%s: deposit on %s not confirmed within 3min, skipping spot→futures", scope, recipient)
+		return false
+	}
+
+	if err := e.exchanges[recipient].TransferToFutures("USDT", amtStr); err != nil {
+		e.log.Error("%s: %s spot→futures failed: %v", scope, recipient, err)
+		return false
+	}
+
+	e.log.Info("%s: %s spot→futures %s USDT complete", scope, recipient, amtStr)
+	e.recordTransfer(recipient+" spot", recipient, "USDT", "internal", amtStr, "0", "", "completed", scope+"-recv")
+	return true
+}
+
 // rebalanceFunds analyzes upcoming opportunities and ensures each exchange
 // has enough margin. Performs same-exchange spot→futures transfers first,
 // then cross-exchange withdrawals for remaining deficits.
@@ -314,7 +545,7 @@ func (e *Engine) rebalanceFunds() {
 	// triggering unnecessary cross-exchange transfers.
 	margin := e.cfg.CapitalPerLeg
 	if margin <= 0 {
-		margin = 50 // fallback
+		margin = 50
 	}
 	maxTotal := float64(e.cfg.MaxPositions) * margin
 	needs := map[string]float64{}
@@ -330,61 +561,12 @@ func (e *Engine) rebalanceFunds() {
 
 	e.log.Info("rebalance: analyzing %d opportunities, needs: %v", len(opps), needs)
 
-	// Query all exchange balances (futures + spot).
-	type balInfo struct {
-		futures     float64
-		spot        float64
-		marginRatio float64
-	}
-	balances := map[string]balInfo{}
-	for name, exch := range e.exchanges {
-		var bi balInfo
-		if futBal, err := exch.GetFuturesBalance(); err == nil {
-			bi.futures = futBal.Available
-			bi.marginRatio = futBal.MarginRatio
-		}
-		if spotBal, err := exch.GetSpotBalance(); err == nil {
-			bi.spot = spotBal.Available
-		}
-		balances[name] = bi
-		e.log.Info("rebalance: %s futures=%.2f spot=%.2f marginRatio=%.4f", name, bi.futures, bi.spot, bi.marginRatio)
-	}
-
-	// Phase 1: Same-exchange spot→futures transfers (instant).
-	type deficit struct {
-		exchange string
-		amount   float64
-	}
-	var crossDeficits []deficit
-
+	balances := e.snapshotRebalanceBalances("rebalance")
+	var crossDeficits []rebalanceDeficit
 	for name, need := range needs {
-		bal := balances[name]
-		if bal.futures >= need {
-			continue
-		}
-		shortfall := need - bal.futures
-		if bal.spot > 0 {
-			transferAmt := shortfall
-			if transferAmt > bal.spot {
-				transferAmt = bal.spot
-			}
-			amtStr := fmt.Sprintf("%.4f", transferAmt)
-			e.log.Info("rebalance: %s spot→futures %s USDT (same-exchange, instant)", name, amtStr)
-			if !e.cfg.DryRun {
-				if err := e.exchanges[name].TransferToFutures("USDT", amtStr); err != nil {
-					e.log.Error("rebalance: %s spot→futures failed: %v", name, err)
-				} else {
-					shortfall -= transferAmt
-					// Update local balance tracking
-					bi := balances[name]
-					bi.futures += transferAmt
-					bi.spot -= transferAmt
-					balances[name] = bi
-				}
-			}
-		}
+		shortfall, _ := e.transferSpotToFutures("rebalance", name, need, balances)
 		if shortfall > 10 {
-			crossDeficits = append(crossDeficits, deficit{name, shortfall})
+			crossDeficits = append(crossDeficits, rebalanceDeficit{exchange: name, amount: shortfall})
 		}
 	}
 
@@ -393,170 +575,225 @@ func (e *Engine) rebalanceFunds() {
 		return
 	}
 
-	// Phase 2: Cross-exchange transfers for remaining deficits.
-	// Calculate surplus per exchange.
-	surplus := map[string]float64{}
-	for name, exch := range e.exchanges {
-		bal := balances[name]
-		total := bal.futures + bal.spot
-		// Unified accounts (OKX, Bybit, Gate.io unified): spot and futures share
-		// the same collateral pool, so don't double-count.
-		type unifiedChecker interface{ IsUnified() bool }
-		if name == "okx" || name == "bybit" {
-			total = bal.futures // already unified
-		} else if uc, ok := exch.(unifiedChecker); ok && uc.IsUnified() {
-			total = bal.futures // Gate.io unified
-		}
-		surplus[name] = total - needs[name]
-	}
-
+	surplus := e.calculateTransferSurplus(balances, needs)
 	for _, def := range crossDeficits {
-		// Find best donor: highest surplus, margin healthy (below L3), not the recipient.
-		var bestDonor string
-		var bestSurplus float64
-		for name, s := range surplus {
-			if name == def.exchange || s <= def.amount {
-				continue
-			}
-			// Only withdraw from L0/L1/L2 exchanges (marginRatio below L3 threshold).
-			if balances[name].marginRatio >= e.cfg.MarginL3Threshold {
-				e.log.Info("rebalance: skipping donor %s (marginRatio=%.4f >= L3=%.4f)",
-					name, balances[name].marginRatio, e.cfg.MarginL3Threshold)
-				continue
-			}
-			if s > bestSurplus {
-				bestDonor = name
-				bestSurplus = s
-			}
-		}
-
+		bestDonor, _ := e.findBestTransferDonor("rebalance", def.exchange, def.amount, surplus, balances)
 		if bestDonor == "" {
 			e.log.Warn("rebalance: no donor found for %s deficit=%.2f", def.exchange, def.amount)
 			continue
 		}
 
-		// Find shared chain (prefer APT, fallback BEP20).
-		recipientAddrs := e.cfg.ExchangeAddresses[def.exchange]
-		if len(recipientAddrs) == 0 {
-			e.log.Warn("rebalance: no deposit addresses for %s", def.exchange)
-			continue
+		amount := def.amount * 1.05
+		if e.transferAcrossExchanges("rebalance", bestDonor, def.exchange, amount, needs[bestDonor], balances) {
+			surplus[bestDonor] -= amount
 		}
-
-		var chain, destAddr string
-		for _, c := range []string{"APT", "BEP20"} {
-			if addr, ok := recipientAddrs[c]; ok && addr != "" {
-				chain = c
-				destAddr = addr
-				break
-			}
-		}
-		if chain == "" {
-			e.log.Warn("rebalance: no shared chain between %s and %s", bestDonor, def.exchange)
-			continue
-		}
-
-		amount := def.amount * 1.05 // 5% buffer for fees
-		amtStr := fmt.Sprintf("%.4f", amount)
-
-		e.log.Info("rebalance: cross-exchange %s→%s %.2f USDT via %s",
-			bestDonor, def.exchange, amount, chain)
-
-		if e.cfg.DryRun {
-			e.log.Info("[DRY RUN] would transfer %.2f USDT from %s to %s via %s",
-				amount, bestDonor, def.exchange, chain)
-			continue
-		}
-
-		// Step 1: Donor futures→spot (if needed)
-		donorBal := balances[bestDonor]
-		if donorBal.spot < amount {
-			moveAmt := amount - donorBal.spot
-			// Cap to what's actually available in futures (leave needs covered)
-			maxMove := donorBal.futures - needs[bestDonor]
-			if moveAmt > maxMove && maxMove > 0 {
-				moveAmt = maxMove
-			}
-			if moveAmt <= 0 {
-				e.log.Warn("rebalance: %s has no excess futures to move to spot", bestDonor)
-				continue
-			}
-			moveStr := fmt.Sprintf("%.4f", moveAmt)
-			e.log.Info("rebalance: %s futures→spot %s USDT", bestDonor, moveStr)
-			if err := e.exchanges[bestDonor].TransferToSpot("USDT", moveStr); err != nil {
-				e.log.Error("rebalance: %s futures→spot failed: %v", bestDonor, err)
-				continue
-			}
-			e.recordTransfer(bestDonor, bestDonor+" spot", "USDT", "internal", moveStr, "0", "", "completed", "rebalance-prep")
-		}
-
-		// Verify donor spot balance before withdrawing
-		donorSpotBal, err := e.exchanges[bestDonor].GetSpotBalance()
-		if err != nil {
-			e.log.Error("rebalance: %s get spot balance failed: %v", bestDonor, err)
-			continue
-		}
-		withdrawAmt := amount
-		if donorSpotBal.Available < withdrawAmt {
-			withdrawAmt = donorSpotBal.Available
-		}
-		if withdrawAmt < 10 {
-			e.log.Warn("rebalance: %s spot balance too low to withdraw (%.2f)", bestDonor, donorSpotBal.Available)
-			continue
-		}
-		amtStr = fmt.Sprintf("%.4f", withdrawAmt)
-
-		// Step 2: Withdraw from donor
-		result, err := e.exchanges[bestDonor].Withdraw(exchange.WithdrawParams{
-			Coin:    "USDT",
-			Chain:   chain,
-			Address: destAddr,
-			Amount:  amtStr,
-		})
-		if err != nil {
-			e.log.Error("rebalance: withdraw from %s failed: %v", bestDonor, err)
-			continue
-		}
-		e.log.Info("rebalance: withdraw from %s txid=%s (%.2f USDT), waiting for deposit on %s...",
-			bestDonor, result.TxID, withdrawAmt, def.exchange)
-		e.recordTransfer(bestDonor, def.exchange, "USDT", chain, amtStr, result.Fee, result.TxID, "completed", "rebalance")
-
-		// Step 3: Poll recipient spot balance for arrival (up to 3min).
-		recipientExch := e.exchanges[def.exchange]
-		startBal := balances[def.exchange].spot
-		arrived := false
-		pollDeadline := time.Now().Add(3 * time.Minute)
-		for time.Now().Before(pollDeadline) {
-			time.Sleep(5 * time.Second)
-			spotBal, err := recipientExch.GetSpotBalance()
-			if err != nil {
-				continue
-			}
-			if spotBal.Available >= startBal+withdrawAmt*0.9 {
-				arrived = true
-				e.log.Info("rebalance: deposit confirmed on %s (spot=%.2f)", def.exchange, spotBal.Available)
-				break
-			}
-		}
-
-		if !arrived {
-			e.log.Warn("rebalance: deposit on %s not confirmed within 3min, skipping spot→futures", def.exchange)
-			continue
-		}
-
-		// Step 4: Recipient spot→futures (only if deposit confirmed)
-		transferStr := fmt.Sprintf("%.4f", withdrawAmt)
-		if err := recipientExch.TransferToFutures("USDT", transferStr); err != nil {
-			e.log.Error("rebalance: %s spot→futures failed: %v", def.exchange, err)
-		} else {
-			e.log.Info("rebalance: %s spot→futures %s USDT complete", def.exchange, transferStr)
-			e.recordTransfer(def.exchange+" spot", def.exchange, "USDT", "internal", transferStr, "0", "", "completed", "rebalance-recv")
-		}
-
-		// Reduce donor surplus
-		surplus[bestDonor] -= amount
 	}
 
 	e.log.Info("rebalance: complete")
+	return
+	/*
+
+		balances := e.snapshotRebalanceBalances("rebalance")
+
+		// Phase 1: Same-exchange spot→futures transfers (instant).
+		type deficit struct {
+			exchange string
+			amount   float64
+		}
+		var crossDeficits []rebalanceDeficit
+
+		for name, need := range needs {
+			shortfall, _ := e.transferSpotToFutures("rebalance", name, need, balances)
+			if false {
+				e.log.Info("rebalance: %s spot→futures %s USDT (same-exchange, instant)", name, amtStr)
+				if !e.cfg.DryRun {
+					if err := e.exchanges[name].TransferToFutures("USDT", amtStr); err != nil {
+						e.log.Error("rebalance: %s spot→futures failed: %v", name, err)
+					} else {
+						shortfall -= transferAmt
+						// Update local balance tracking
+						bi := balances[name]
+						bi.futures += transferAmt
+						bi.spot -= transferAmt
+						balances[name] = bi
+					}
+				}
+			}
+			if shortfall > 10 {
+				crossDeficits = append(crossDeficits, deficit{name, shortfall})
+			}
+		}
+
+		if len(crossDeficits) == 0 {
+			e.log.Info("rebalance: all exchanges funded, no cross-exchange transfers needed")
+			return
+		}
+
+		// Phase 2: Cross-exchange transfers for remaining deficits.
+		// Calculate surplus per exchange.
+		surplus := map[string]float64{}
+		for name, exch := range e.exchanges {
+			bal := balances[name]
+			total := bal.futures + bal.spot
+			// Unified accounts (OKX, Bybit, Gate.io unified): spot and futures share
+			// the same collateral pool, so don't double-count.
+			type unifiedChecker interface{ IsUnified() bool }
+			if name == "okx" || name == "bybit" {
+				total = bal.futures // already unified
+			} else if uc, ok := exch.(unifiedChecker); ok && uc.IsUnified() {
+				total = bal.futures // Gate.io unified
+			}
+			surplus[name] = total - needs[name]
+		}
+
+		for _, def := range crossDeficits {
+			// Find best donor: highest surplus, margin healthy (below L3), not the recipient.
+			var bestDonor string
+			var bestSurplus float64
+			for name, s := range surplus {
+				if name == def.exchange || s <= def.amount {
+					continue
+				}
+				// Only withdraw from L0/L1/L2 exchanges (marginRatio below L3 threshold).
+				if balances[name].marginRatio >= e.cfg.MarginL3Threshold {
+					e.log.Info("rebalance: skipping donor %s (marginRatio=%.4f >= L3=%.4f)",
+						name, balances[name].marginRatio, e.cfg.MarginL3Threshold)
+					continue
+				}
+				if s > bestSurplus {
+					bestDonor = name
+					bestSurplus = s
+				}
+			}
+
+			if bestDonor == "" {
+				e.log.Warn("rebalance: no donor found for %s deficit=%.2f", def.exchange, def.amount)
+				continue
+			}
+
+			// Find shared chain (prefer APT, fallback BEP20).
+			recipientAddrs := e.cfg.ExchangeAddresses[def.exchange]
+			if len(recipientAddrs) == 0 {
+				e.log.Warn("rebalance: no deposit addresses for %s", def.exchange)
+				continue
+			}
+
+			var chain, destAddr string
+			for _, c := range []string{"APT", "BEP20"} {
+				if addr, ok := recipientAddrs[c]; ok && addr != "" {
+					chain = c
+					destAddr = addr
+					break
+				}
+			}
+			if chain == "" {
+				e.log.Warn("rebalance: no shared chain between %s and %s", bestDonor, def.exchange)
+				continue
+			}
+
+			amount := def.amount * 1.05 // 5% buffer for fees
+			amtStr := fmt.Sprintf("%.4f", amount)
+
+			e.log.Info("rebalance: cross-exchange %s→%s %.2f USDT via %s",
+				bestDonor, def.exchange, amount, chain)
+
+			if e.cfg.DryRun {
+				e.log.Info("[DRY RUN] would transfer %.2f USDT from %s to %s via %s",
+					amount, bestDonor, def.exchange, chain)
+				continue
+			}
+
+			// Step 1: Donor futures→spot (if needed)
+			donorBal := balances[bestDonor]
+			if donorBal.spot < amount {
+				moveAmt := amount - donorBal.spot
+				// Cap to what's actually available in futures (leave needs covered)
+				maxMove := donorBal.futures - needs[bestDonor]
+				if moveAmt > maxMove && maxMove > 0 {
+					moveAmt = maxMove
+				}
+				if moveAmt <= 0 {
+					e.log.Warn("rebalance: %s has no excess futures to move to spot", bestDonor)
+					continue
+				}
+				moveStr := fmt.Sprintf("%.4f", moveAmt)
+				e.log.Info("rebalance: %s futures→spot %s USDT", bestDonor, moveStr)
+				if err := e.exchanges[bestDonor].TransferToSpot("USDT", moveStr); err != nil {
+					e.log.Error("rebalance: %s futures→spot failed: %v", bestDonor, err)
+					continue
+				}
+				e.recordTransfer(bestDonor, bestDonor+" spot", "USDT", "internal", moveStr, "0", "", "completed", "rebalance-prep")
+			}
+
+			// Verify donor spot balance before withdrawing
+			donorSpotBal, err := e.exchanges[bestDonor].GetSpotBalance()
+			if err != nil {
+				e.log.Error("rebalance: %s get spot balance failed: %v", bestDonor, err)
+				continue
+			}
+			withdrawAmt := amount
+			if donorSpotBal.Available < withdrawAmt {
+				withdrawAmt = donorSpotBal.Available
+			}
+			if withdrawAmt < 10 {
+				e.log.Warn("rebalance: %s spot balance too low to withdraw (%.2f)", bestDonor, donorSpotBal.Available)
+				continue
+			}
+			amtStr = fmt.Sprintf("%.4f", withdrawAmt)
+
+			// Step 2: Withdraw from donor
+			result, err := e.exchanges[bestDonor].Withdraw(exchange.WithdrawParams{
+				Coin:    "USDT",
+				Chain:   chain,
+				Address: destAddr,
+				Amount:  amtStr,
+			})
+			if err != nil {
+				e.log.Error("rebalance: withdraw from %s failed: %v", bestDonor, err)
+				continue
+			}
+			e.log.Info("rebalance: withdraw from %s txid=%s (%.2f USDT), waiting for deposit on %s...",
+				bestDonor, result.TxID, withdrawAmt, def.exchange)
+			e.recordTransfer(bestDonor, def.exchange, "USDT", chain, amtStr, result.Fee, result.TxID, "completed", "rebalance")
+
+			// Step 3: Poll recipient spot balance for arrival (up to 3min).
+			recipientExch := e.exchanges[def.exchange]
+			startBal := balances[def.exchange].spot
+			arrived := false
+			pollDeadline := time.Now().Add(3 * time.Minute)
+			for time.Now().Before(pollDeadline) {
+				time.Sleep(5 * time.Second)
+				spotBal, err := recipientExch.GetSpotBalance()
+				if err != nil {
+					continue
+				}
+				if spotBal.Available >= startBal+withdrawAmt*0.9 {
+					arrived = true
+					e.log.Info("rebalance: deposit confirmed on %s (spot=%.2f)", def.exchange, spotBal.Available)
+					break
+				}
+			}
+
+			if !arrived {
+				e.log.Warn("rebalance: deposit on %s not confirmed within 3min, skipping spot→futures", def.exchange)
+				continue
+			}
+
+			// Step 4: Recipient spot→futures (only if deposit confirmed)
+			transferStr := fmt.Sprintf("%.4f", withdrawAmt)
+			if err := recipientExch.TransferToFutures("USDT", transferStr); err != nil {
+				e.log.Error("rebalance: %s spot→futures failed: %v", def.exchange, err)
+			} else {
+				e.log.Info("rebalance: %s spot→futures %s USDT complete", def.exchange, transferStr)
+				e.recordTransfer(def.exchange+" spot", def.exchange, "USDT", "internal", transferStr, "0", "", "completed", "rebalance-recv")
+			}
+
+			// Reduce donor surplus
+			surplus[bestDonor] -= amount
+		}
+
+		e.log.Info("rebalance: complete")
+	*/
 }
 
 // recordTransfer saves a transfer record to the database for dashboard display.
@@ -582,6 +819,362 @@ func (e *Engine) recordTransfer(from, to, coin, chain, amount, fee, txID, status
 	if err := e.db.SaveTransfer(record); err != nil {
 		e.log.Error("recordTransfer: failed to save: %v", err)
 	}
+}
+
+// ensureCrossExchangeBalance attempts to fund the target exchange with at
+// least `needed` USDT in its futures account. It first tries a same-exchange
+// spot→futures transfer, then falls back to a cross-exchange withdrawal from
+// the healthiest donor exchange. Returns true once funds have reached the
+// recipient futures account.
+func (e *Engine) ensureCrossExchangeBalance(exchangeName string, needed float64) bool {
+	e.preRebalanceMu.Lock()
+	defer e.preRebalanceMu.Unlock()
+
+	if needed <= 0 {
+		return false
+	}
+	if _, ok := e.exchanges[exchangeName]; !ok {
+		e.log.Error("pre-trade rebalance: exchange %s not found", exchangeName)
+		return false
+	}
+
+	balances := e.snapshotRebalanceBalances("pre-trade rebalance")
+	if balances[exchangeName].futures >= needed {
+		e.log.Info("pre-trade rebalance: %s already has %.2f >= %.2f needed", exchangeName, balances[exchangeName].futures, needed)
+		return true
+	}
+
+	shortfall, moved := e.transferSpotToFutures("pre-trade rebalance", exchangeName, needed, balances)
+	if shortfall <= 0.01 {
+		return true
+	}
+
+	reserves := make(map[string]float64, len(e.exchanges))
+	for name := range e.exchanges {
+		reserves[name] = needed
+	}
+	surplus := e.calculateTransferSurplus(balances, reserves)
+	bestDonor, _ := e.findBestTransferDonor("pre-trade rebalance", exchangeName, shortfall, surplus, balances)
+	if bestDonor == "" {
+		e.log.Warn("pre-trade rebalance: no donor found for %s deficit=%.2f", exchangeName, shortfall)
+		return moved
+	}
+
+	if e.transferAcrossExchanges("pre-trade rebalance", bestDonor, exchangeName, shortfall*1.05, reserves[bestDonor], balances) {
+		return true
+	}
+
+	return moved
+}
+
+// ensureCrossExchangeBalance attempts to fund the target exchange with at
+// least `needed` USDT in its futures account. It first tries a same-exchange
+// spot→futures transfer (instant), then falls back to a cross-exchange
+// withdrawal from the best donor. Returns true if the target exchange has
+// sufficient futures balance after the attempt.
+func (e *Engine) ensureCrossExchangeBalanceLegacy(exchangeName string, needed float64) bool {
+	e.preRebalanceMu.Lock()
+	defer e.preRebalanceMu.Unlock()
+
+	targetExch, ok := e.exchanges[exchangeName]
+	if !ok {
+		e.log.Error("pre-trade rebalance: exchange %s not found", exchangeName)
+		return false
+	}
+
+	// Phase 0: Check if already sufficient.
+	futBal, err := targetExch.GetFuturesBalance()
+	if err != nil {
+		e.log.Error("pre-trade rebalance: %s GetFuturesBalance: %v", exchangeName, err)
+		return false
+	}
+	if futBal.Available >= needed {
+		e.log.Info("pre-trade rebalance: %s already has %.2f >= %.2f needed", exchangeName, futBal.Available, needed)
+		return true
+	}
+
+	// Phase 1: Same-exchange spot→futures (instant).
+	spotBal, err := targetExch.GetSpotBalance()
+	if err == nil && spotBal.Available > 0 {
+		transferAmt := needed - futBal.Available
+		if transferAmt > spotBal.Available {
+			transferAmt = spotBal.Available
+		}
+		amtStr := fmt.Sprintf("%.4f", transferAmt)
+		e.log.Info("pre-trade rebalance: %s spot→futures %s USDT (same-exchange, instant)", exchangeName, amtStr)
+		if !e.cfg.DryRun {
+			if err := targetExch.TransferToFutures("USDT", amtStr); err != nil {
+				e.log.Error("pre-trade rebalance: %s spot→futures failed: %v", exchangeName, err)
+			}
+		}
+		// Re-check after same-exchange transfer.
+		futBal, err = targetExch.GetFuturesBalance()
+		if err == nil && futBal.Available >= needed {
+			e.log.Info("pre-trade rebalance: %s funded after spot→futures (%.2f >= %.2f)", exchangeName, futBal.Available, needed)
+			return true
+		}
+	}
+
+	shortfall := needed - futBal.Available
+	if shortfall < 10 {
+		e.log.Info("pre-trade rebalance: %s shortfall %.2f too small, skipping cross-exchange", exchangeName, shortfall)
+		return futBal.Available >= needed
+	}
+
+	// Phase 2: Cross-exchange — find best donor.
+	type balInfo struct {
+		futures     float64
+		spot        float64
+		marginRatio float64
+	}
+	balances := map[string]balInfo{}
+	for name, exch := range e.exchanges {
+		var bi balInfo
+		if fb, err := exch.GetFuturesBalance(); err == nil {
+			bi.futures = fb.Available
+			bi.marginRatio = fb.MarginRatio
+		}
+		if sb, err := exch.GetSpotBalance(); err == nil {
+			bi.spot = sb.Available
+		}
+		balances[name] = bi
+	}
+
+	// Calculate surplus — total funds minus what this exchange needs for existing positions.
+	margin := e.cfg.CapitalPerLeg
+	if margin <= 0 {
+		margin = 50
+	}
+	maxTotal := float64(e.cfg.MaxPositions) * margin
+
+	var bestDonor string
+	var bestSurplus float64
+	for name, bi := range balances {
+		if name == exchangeName {
+			continue
+		}
+		total := bi.futures + bi.spot
+		// Unified accounts: don't double-count.
+		type unifiedChecker interface{ IsUnified() bool }
+		if name == "okx" || name == "bybit" {
+			total = bi.futures
+		} else if uc, ok := e.exchanges[name].(unifiedChecker); ok && uc.IsUnified() {
+			total = bi.futures
+		}
+		surplus := total - maxTotal // conservative: reserve maxTotal for donor's own needs
+		if surplus <= shortfall {
+			continue
+		}
+		if bi.marginRatio >= e.cfg.MarginL3Threshold {
+			e.log.Info("pre-trade rebalance: skipping donor %s (marginRatio=%.4f >= L3=%.4f)",
+				name, bi.marginRatio, e.cfg.MarginL3Threshold)
+			continue
+		}
+		if surplus > bestSurplus {
+			bestDonor = name
+			bestSurplus = surplus
+		}
+	}
+
+	if bestDonor == "" {
+		e.log.Warn("pre-trade rebalance: no donor found for %s deficit=%.2f", exchangeName, shortfall)
+		return false
+	}
+
+	// Find shared chain (prefer APT, fallback BEP20).
+	recipientAddrs := e.cfg.ExchangeAddresses[exchangeName]
+	if len(recipientAddrs) == 0 {
+		e.log.Warn("pre-trade rebalance: no deposit addresses for %s", exchangeName)
+		return false
+	}
+	var chain, destAddr string
+	for _, c := range []string{"APT", "BEP20"} {
+		if addr, ok := recipientAddrs[c]; ok && addr != "" {
+			chain = c
+			destAddr = addr
+			break
+		}
+	}
+	if chain == "" {
+		e.log.Warn("pre-trade rebalance: no shared chain between %s and %s", bestDonor, exchangeName)
+		return false
+	}
+
+	amount := shortfall * 1.05 // 5% buffer for fees
+	e.log.Info("pre-trade rebalance: %s needs %.2f USDT, transferring from %s via %s",
+		exchangeName, shortfall, bestDonor, chain)
+
+	if e.cfg.DryRun {
+		e.log.Info("[DRY RUN] pre-trade rebalance: would transfer %.2f USDT from %s to %s via %s",
+			amount, bestDonor, exchangeName, chain)
+		return false
+	}
+
+	// Step 1: Donor futures→spot (if needed).
+	donorBal := balances[bestDonor]
+	if donorBal.spot < amount {
+		moveAmt := amount - donorBal.spot
+		maxMove := donorBal.futures - maxTotal
+		if moveAmt > maxMove && maxMove > 0 {
+			moveAmt = maxMove
+		}
+		if moveAmt <= 0 {
+			e.log.Warn("pre-trade rebalance: %s has no excess futures to move to spot", bestDonor)
+			return false
+		}
+		moveStr := fmt.Sprintf("%.4f", moveAmt)
+		e.log.Info("pre-trade rebalance: %s futures→spot %s USDT", bestDonor, moveStr)
+		if err := e.exchanges[bestDonor].TransferToSpot("USDT", moveStr); err != nil {
+			e.log.Error("pre-trade rebalance: %s futures→spot failed: %v", bestDonor, err)
+			return false
+		}
+		e.recordTransfer(bestDonor, bestDonor+" spot", "USDT", "internal", moveStr, "0", "", "completed", "pre-rebalance-prep")
+	}
+
+	// Verify donor spot balance before withdrawing.
+	donorSpotBal, err := e.exchanges[bestDonor].GetSpotBalance()
+	if err != nil {
+		e.log.Error("pre-trade rebalance: %s get spot balance failed: %v", bestDonor, err)
+		return false
+	}
+	withdrawAmt := amount
+	if donorSpotBal.Available < withdrawAmt {
+		withdrawAmt = donorSpotBal.Available
+	}
+	if withdrawAmt < 10 {
+		e.log.Warn("pre-trade rebalance: %s spot balance too low to withdraw (%.2f)", bestDonor, donorSpotBal.Available)
+		return false
+	}
+	amtStr := fmt.Sprintf("%.4f", withdrawAmt)
+
+	// Step 2: Withdraw from donor.
+	result, err := e.exchanges[bestDonor].Withdraw(exchange.WithdrawParams{
+		Coin:    "USDT",
+		Chain:   chain,
+		Address: destAddr,
+		Amount:  amtStr,
+	})
+	if err != nil {
+		e.log.Error("pre-trade rebalance: withdraw from %s failed: %v", bestDonor, err)
+		return false
+	}
+	e.log.Info("pre-trade rebalance: withdraw from %s txid=%s (%.2f USDT), waiting for deposit on %s...",
+		bestDonor, result.TxID, withdrawAmt, exchangeName)
+	e.recordTransfer(bestDonor, exchangeName, "USDT", chain, amtStr, result.Fee, result.TxID, "completed", "pre-rebalance")
+
+	// Step 3: Poll recipient spot balance for arrival (up to 3min).
+	startBal := balances[exchangeName].spot
+	arrived := false
+	pollDeadline := time.Now().Add(3 * time.Minute)
+	for time.Now().Before(pollDeadline) {
+		time.Sleep(5 * time.Second)
+		sb, err := targetExch.GetSpotBalance()
+		if err != nil {
+			continue
+		}
+		if sb.Available >= startBal+withdrawAmt*0.9 {
+			arrived = true
+			e.log.Info("pre-trade rebalance: deposit confirmed on %s (spot=%.2f)", exchangeName, sb.Available)
+			break
+		}
+	}
+	if !arrived {
+		e.log.Warn("pre-trade rebalance: deposit on %s not confirmed within 3min", exchangeName)
+		return false
+	}
+
+	// Step 4: Recipient spot→futures.
+	transferStr := fmt.Sprintf("%.4f", withdrawAmt)
+	if err := targetExch.TransferToFutures("USDT", transferStr); err != nil {
+		e.log.Error("pre-trade rebalance: %s spot→futures failed: %v", exchangeName, err)
+		return false
+	}
+	e.log.Info("pre-trade rebalance: %s spot→futures %s USDT complete", exchangeName, transferStr)
+	e.recordTransfer(exchangeName+" spot", exchangeName, "USDT", "internal", transferStr, "0", "", "completed", "pre-rebalance-recv")
+
+	// Final check.
+	finalBal, err := targetExch.GetFuturesBalance()
+	if err != nil {
+		e.log.Error("pre-trade rebalance: %s final balance check failed: %v", exchangeName, err)
+		return false
+	}
+	e.log.Info("pre-trade rebalance: %s final futures=%.2f (needed=%.2f)", exchangeName, finalBal.Available, needed)
+	return finalBal.Available >= needed
+}
+
+// parseMarginDeficiency extracts exchange name and needed amount from an
+// "insufficient margin buffer" rejection reason string.
+var marginDeficitRe = regexp.MustCompile(`insufficient margin buffer on (\S+): need ([\d.]+)`)
+
+func parseMarginDeficiency(reason string) (exchName string, needed float64, ok bool) {
+	m := marginDeficitRe.FindStringSubmatch(reason)
+	if len(m) < 3 {
+		return "", 0, false
+	}
+	n, err := strconv.ParseFloat(m[2], 64)
+	if err != nil {
+		return "", 0, false
+	}
+	return m[1], n, true
+}
+
+func (e *Engine) marginDeficientExchanges(opp models.Opportunity, preferred string, needed float64) []string {
+	order := []string{preferred, opp.LongExchange, opp.ShortExchange}
+	seen := make(map[string]bool, len(order))
+	deficient := make([]string, 0, 2)
+
+	for _, name := range order {
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+
+		exch, ok := e.exchanges[name]
+		if !ok {
+			continue
+		}
+
+		futBal, err := exch.GetFuturesBalance()
+		if err != nil {
+			e.log.Warn("executeArbitrage: failed to refresh futures balance on %s before rebalance: %v", name, err)
+			if name == preferred {
+				deficient = append(deficient, name)
+			}
+			continue
+		}
+		if futBal.Available+0.01 < needed {
+			deficient = append(deficient, name)
+		}
+	}
+
+	return deficient
+}
+
+func (e *Engine) retryApprovalAfterMarginRebalance(opp models.Opportunity, approval *models.RiskApproval) (*models.RiskApproval, error) {
+	exchName, neededAmt, ok := parseMarginDeficiency(approval.Reason)
+	if !ok {
+		return approval, nil
+	}
+
+	deficient := e.marginDeficientExchanges(opp, exchName, neededAmt)
+	if len(deficient) == 0 {
+		e.log.Info("executeArbitrage: %s margin rejection appears stale, retrying approval", opp.Symbol)
+	} else {
+		e.log.Info("executeArbitrage: attempting pre-trade rebalance for %s on %v (need %.2f)", opp.Symbol, deficient, neededAmt)
+	}
+
+	fundsArrived := false
+	for _, name := range deficient {
+		if e.ensureCrossExchangeBalance(name, neededAmt) {
+			fundsArrived = true
+		}
+	}
+
+	if !fundsArrived && len(deficient) > 0 {
+		return approval, nil
+	}
+
+	return e.risk.Approve(opp)
 }
 
 // Stop signals all goroutines to exit.
@@ -1178,12 +1771,54 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 			continue
 		}
 		if !approval.Approved {
-			e.log.Info("risk rejected %s: %s", opp.Symbol, approval.Reason)
-			if e.rejStore != nil {
-				e.rejStore.AddOpp(opp, "risk", approval.Reason)
+			// Pre-trade rebalance: if rejected due to insufficient margin,
+			// attempt cross-exchange rebalance and retry Approve once.
+			originalReason := approval.Reason
+			approval, err = e.retryApprovalAfterMarginRebalance(opp, approval)
+			if err != nil {
+				e.log.Error("risk approval error on retry for %s: %v", opp.Symbol, err)
+				_ = e.db.ReleaseLock(lockResource)
+				continue
 			}
-			_ = e.db.ReleaseLock(lockResource)
-			continue
+			/*
+					e.log.Info("executeArbitrage: attempting pre-trade rebalance for %s (needs %.2f on %s)", opp.Symbol, neededAmt, exchName)
+					rebalanced = e.ensureCrossExchangeBalance(exchName, neededAmt)
+
+					// Check the other leg too — both may be deficient.
+					// The first Approve only returns the first failure; after
+					// rebalancing one leg, a quick re-approve may reveal the other.
+					if approval.Reason != originalReason {
+						retryApproval, retryErr := e.risk.Approve(opp)
+						if retryErr == nil && !retryApproval.Approved {
+							if exchName2, neededAmt2, ok2 := parseMarginDeficiency(retryApproval.Reason); ok2 && exchName2 != exchName {
+								e.log.Info("executeArbitrage: second leg also deficient, rebalancing %s (needs %.2f)", exchName2, neededAmt2)
+								e.ensureCrossExchangeBalance(exchName2, neededAmt2)
+							}
+						}
+						// Final retry — this is the one that counts.
+						approval, err = e.risk.Approve(opp)
+						if err != nil {
+							e.log.Error("risk approval error on retry for %s: %v", opp.Symbol, err)
+							_ = e.db.ReleaseLock(lockResource)
+							continue
+						}
+					}
+				}
+			*/
+
+			if !approval.Approved {
+				if approval.Reason != originalReason {
+					e.log.Info("risk still rejected %s after rebalance: %s", opp.Symbol, approval.Reason)
+				} else {
+					e.log.Info("risk rejected %s: %s", opp.Symbol, approval.Reason)
+				}
+				if e.rejStore != nil {
+					e.rejStore.AddOpp(opp, "risk", approval.Reason)
+				}
+				_ = e.db.ReleaseLock(lockResource)
+				continue
+			}
+			e.log.Info("executeArbitrage: risk approved %s after pre-trade rebalance", opp.Symbol)
 		}
 		e.log.Info("executeArbitrage: risk approved %s size=%.6f", opp.Symbol, approval.Size)
 

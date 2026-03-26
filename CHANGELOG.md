@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.7] - 2026-03-26
+
+### Fixed
+- **Margin safety buffer**: `Approve()` now requires `available >= requiredMargin × (1/L3Threshold)` (2× with default L3=0.50). Prevents positions from opening with borderline margin that immediately triggers L5 emergency close after fees are deducted (ENJUSDT incident: opened at 100% utilization → L5 in 28 seconds → -$0.20)
+
+### Added
+- **Pre-trade cross-exchange rebalance**: When `Approve()` rejects due to insufficient margin, the engine now automatically transfers funds from surplus exchanges before retrying. Supports all 6 exchanges as both donors and recipients. Flow: spot→futures (instant) → cross-exchange withdraw/deposit (3min poll) → retry Approve() once. Both legs checked independently
+- **gp mode rules in CLAUDE.md**: Codex agent dispatch protocol for mixed Claude+Codex teams
+
 ## [0.17.6] - 2026-03-26
 
 ### Changed

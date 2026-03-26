@@ -102,13 +102,16 @@ func (m *Manager) Approve(opp models.Opportunity) (*models.RiskApproval, error) 
 		return &models.RiskApproval{Approved: false, Reason: "insufficient capital for minimum position size"}, nil
 	}
 
-	// Verify enough free margin per leg
+	// Verify enough free margin per leg (with safety buffer based on L3 threshold)
 	requiredMarginPerLeg := (size * midPrice) / float64(leverage)
-	if longBal.Available < requiredMarginPerLeg {
-		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("insufficient margin on %s: need %.2f, have %.2f", opp.LongExchange, requiredMarginPerLeg, longBal.Available)}, nil
+	safetyMultiplier := 1.0 / m.cfg.MarginL3Threshold
+	safetyPct := (safetyMultiplier - 1) * 100
+	requiredWithBuffer := requiredMarginPerLeg * safetyMultiplier
+	if longBal.Available < requiredWithBuffer {
+		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("insufficient margin buffer on %s: need %.2f (including %.0f%% safety buffer), have %.2f", opp.LongExchange, requiredWithBuffer, safetyPct, longBal.Available)}, nil
 	}
-	if shortBal.Available < requiredMarginPerLeg {
-		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("insufficient margin on %s: need %.2f, have %.2f", opp.ShortExchange, requiredMarginPerLeg, shortBal.Available)}, nil
+	if shortBal.Available < requiredWithBuffer {
+		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("insufficient margin buffer on %s: need %.2f (including %.0f%% safety buffer), have %.2f", opp.ShortExchange, requiredWithBuffer, safetyPct, shortBal.Available)}, nil
 	}
 
 	// d. Orderbook depth / slippage check on both exchanges
