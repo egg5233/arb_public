@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.6] - 2026-03-26
+
+### Changed
+- **Default config aligned to egg's risk profile**: Updated 25 default values in config.go — relaxed persistence filters (lookback 90/180/360m, min_count=1), disabled OI rank and volatility filters, increased slippage limit (50 bps), longer entry/exit timeouts (300s), higher rotation threshold (100 bps/180m cooldown), spread reversal tolerance (1), re-enter cooldown (1h), top opportunities (25)
+
+### Added
+- **Adaptive sizing plan**: `docs/plan-adaptive-sizing.md` — binary search on orderbook depth to find max position size within slippage limit instead of rejecting outright
+
 ## [0.17.5] - 2026-03-26
 
 ### Fixed
