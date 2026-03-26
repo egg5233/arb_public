@@ -394,46 +394,79 @@ func (b *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
 	rate, _ := strconv.ParseFloat(resp.LastFundingRate, 64)
 	nextFunding := time.UnixMilli(resp.NextFundingTime)
 
-	// Try to get the funding interval from fundingInfo
-	interval, err := b.GetFundingInterval(symbol)
+	// Get funding interval and rate caps from fundingInfo
+	fi, err := b.getFundingInfo(symbol)
 	if err != nil {
 		// Default to 8 hours if we can't determine the interval
-		interval = 8 * time.Hour
+		fi = &fundingInfo{Interval: 8 * time.Hour}
 	}
 
 	return &exchange.FundingRate{
 		Symbol:      resp.Symbol,
 		Rate:        rate,
-		Interval:    interval,
+		Interval:    fi.Interval,
 		NextFunding: nextFunding,
+		MaxRate:     fi.MaxRate,
+		MinRate:     fi.MinRate,
 	}, nil
 }
 
-func (b *Adapter) GetFundingInterval(symbol string) (time.Duration, error) {
+// fundingInfo holds parsed data from /fapi/v1/fundingInfo for a single symbol.
+type fundingInfo struct {
+	Interval time.Duration
+	MaxRate  *float64 // adjustedFundingRateCap (per-period decimal), nil if absent
+	MinRate  *float64 // adjustedFundingRateFloor (per-period decimal), nil if absent
+}
+
+// getFundingInfo fetches interval and rate caps from /fapi/v1/fundingInfo.
+func (b *Adapter) getFundingInfo(symbol string) (*fundingInfo, error) {
 	body, err := b.client.Get("/fapi/v1/fundingInfo", nil)
 	if err != nil {
-		return 0, fmt.Errorf("GetFundingInterval: %w", err)
+		return nil, fmt.Errorf("getFundingInfo: %w", err)
 	}
 
 	var infos []struct {
-		Symbol               string `json:"symbol"`
-		FundingIntervalHours int    `json:"fundingIntervalHours"`
+		Symbol                    string `json:"symbol"`
+		FundingIntervalHours      int    `json:"fundingIntervalHours"`
+		AdjustedFundingRateCap    string `json:"adjustedFundingRateCap"`
+		AdjustedFundingRateFloor  string `json:"adjustedFundingRateFloor"`
 	}
 	if err := json.Unmarshal(body, &infos); err != nil {
-		return 0, fmt.Errorf("GetFundingInterval unmarshal: %w", err)
+		return nil, fmt.Errorf("getFundingInfo unmarshal: %w", err)
 	}
 
 	for _, info := range infos {
 		if info.Symbol == symbol {
+			fi := &fundingInfo{Interval: 8 * time.Hour}
 			if info.FundingIntervalHours > 0 {
-				return time.Duration(info.FundingIntervalHours) * time.Hour, nil
+				fi.Interval = time.Duration(info.FundingIntervalHours) * time.Hour
 			}
-			break
+			if info.AdjustedFundingRateCap != "" {
+				v, err := strconv.ParseFloat(info.AdjustedFundingRateCap, 64)
+				if err == nil {
+					fi.MaxRate = &v
+				}
+			}
+			if info.AdjustedFundingRateFloor != "" {
+				v, err := strconv.ParseFloat(info.AdjustedFundingRateFloor, 64)
+				if err == nil {
+					fi.MinRate = &v
+				}
+			}
+			return fi, nil
 		}
 	}
 
-	// Default to 8 hours
-	return 8 * time.Hour, nil
+	// Symbol not found — return defaults
+	return &fundingInfo{Interval: 8 * time.Hour}, nil
+}
+
+func (b *Adapter) GetFundingInterval(symbol string) (time.Duration, error) {
+	fi, err := b.getFundingInfo(symbol)
+	if err != nil {
+		return 0, err
+	}
+	return fi.Interval, nil
 }
 
 // ---------------------------------------------------------------------------

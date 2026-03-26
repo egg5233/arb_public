@@ -507,6 +507,8 @@ func (a *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
 		MarkPrice            string `json:"markPrice"`
 		IndexPrice           string `json:"indexPrice"`
 		FundingIntervalHours int    `json:"fundingIntervalHours"`
+		MinFundingRate       string `json:"minFundingRate"`
+		MaxFundingRate       string `json:"maxFundingRate"`
 	}
 	if err := json.Unmarshal(result, &resp); err != nil {
 		return nil, fmt.Errorf("bingx GetFundingRate parse: %w", err)
@@ -520,12 +522,25 @@ func (a *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
 		interval = time.Duration(resp.FundingIntervalHours) * time.Hour
 	}
 
-	return &exchange.FundingRate{
+	fr := &exchange.FundingRate{
 		Symbol:      fromBingXSymbol(resp.Symbol),
 		Rate:        rate,
 		Interval:    interval,
 		NextFunding: nextTime,
-	}, nil
+	}
+
+	if resp.MaxFundingRate != "" {
+		if v, err := strconv.ParseFloat(resp.MaxFundingRate, 64); err == nil {
+			fr.MaxRate = &v
+		}
+	}
+	if resp.MinFundingRate != "" {
+		if v, err := strconv.ParseFloat(resp.MinFundingRate, 64); err == nil {
+			fr.MinRate = &v
+		}
+	}
+
+	return fr, nil
 }
 
 // GetFundingInterval returns the funding interval for a symbol.

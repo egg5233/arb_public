@@ -67,6 +67,8 @@ type FundingRate struct {
 	NextRate    float64       // predicted next rate (if available)
 	Interval    time.Duration // funding interval
 	NextFunding time.Time     // next funding timestamp
+	MaxRate     *float64      // upper cap, per-period decimal (e.g. 0.025 = 2.5%). nil if unavailable.
+	MinRate     *float64      // lower cap, per-period decimal (e.g. -0.025 = -2.5%). nil if unavailable.
 }
 
 // Balance holds account balance info.

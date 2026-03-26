@@ -34,7 +34,13 @@ Funding intervals are **per-symbol per-exchange**, NOT static:
 2. Deduplicate by (symbol, longExchange, shortExchange), keep highest score
 3. Sort by composite score: `score = spread * (1.0 + 1.0/oiRank)`
 4. Take top N (default 5)
-5. Verify against exchange-native APIs (direction-only, no magnitude tolerance). Verifier also populates `NextFunding` per opportunity.
+5. Verify against exchange-native APIs. Verifier performs 4 checks per opportunity (all skipped for CoinGlass sources):
+   - **Direction check**: Reject if exchange rate sign contradicts Loris direction
+   - **Interval mismatch**: Reject if Loris interval vs exchange interval differ by >0.5h (catches stale interval data inflating normalized rates)
+   - **Rate magnitude**: Reject if per-leg Loris rate vs exchange rate differ by >50%
+   - **Spread magnitude**: Reject if net spread (Loris) vs net spread (exchange) differ by >50%
+   - **Funding rate cap**: Reject rates exceeding exchange-reported MaxRate/MinRate caps (±150 bps/h fallback)
+   Verifier also populates `NextFunding` per opportunity.
 6. **Persistence filter** (on entry scan only): Require opportunities to appear consistently across multiple recent scans before qualifying for execution. Key = `symbol|longExchange|shortExchange` (direction-sensitive). Thresholds vary by funding interval:
    - 1h interval: 2 appearances in 15min lookback
    - 4h interval: 4 appearances in 30min lookback
@@ -326,7 +332,7 @@ internal/
     engine_test.go                 Tests: effectiveAdvanceMin, classifyRotation
   discovery/
     scanner.go                     Fixed-schedule polling (Loris + CoinGlass), merge, persistence filter & broadcast
-    verifier.go                    Exchange-native rate verification (direction-only)
+    verifier.go                    Exchange-native rate verification (direction, interval, magnitude, spread, caps)
     ranker.go                      Profitability filter, composite scoring, fee schedules
     ranker_test.go                 Ranking tests
   database/

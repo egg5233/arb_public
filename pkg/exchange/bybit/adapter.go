@@ -505,11 +505,33 @@ func (a *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
 	nextMS, _ := strconv.ParseInt(t.NextFundingTime, 10, 64)
 	nextTime := time.UnixMilli(nextMS)
 
-	// Fetch the per-symbol funding interval
-	interval, err := a.GetFundingInterval(symbol)
-	if err != nil {
-		// Default to 8 hours if we can't determine the interval
-		interval = 8 * time.Hour
+	// Fetch per-symbol funding interval + rate caps from instruments-info
+	interval := 8 * time.Hour // default
+	var maxRate, minRate *float64
+	instParams := map[string]string{
+		"category": "linear",
+		"symbol":   symbol,
+	}
+	if instData, instErr := a.client.Get("/v5/market/instruments-info", instParams); instErr == nil {
+		var instResp struct {
+			List []struct {
+				FundingInterval  json.Number `json:"fundingInterval"`
+				UpperFundingRate string      `json:"upperFundingRate"`
+				LowerFundingRate string      `json:"lowerFundingRate"`
+			} `json:"list"`
+		}
+		if json.Unmarshal(instData, &instResp) == nil && len(instResp.List) > 0 {
+			inst := instResp.List[0]
+			if mins, e := inst.FundingInterval.Float64(); e == nil {
+				interval = time.Duration(mins) * time.Minute
+			}
+			if v, e := strconv.ParseFloat(inst.UpperFundingRate, 64); e == nil {
+				maxRate = &v
+			}
+			if v, e := strconv.ParseFloat(inst.LowerFundingRate, 64); e == nil {
+				minRate = &v
+			}
+		}
 	}
 
 	return &exchange.FundingRate{
@@ -517,6 +539,8 @@ func (a *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
 		Rate:        rate,
 		Interval:    interval,
 		NextFunding: nextTime,
+		MaxRate:     maxRate,
+		MinRate:     minRate,
 	}, nil
 }
 

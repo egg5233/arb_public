@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -12,8 +13,8 @@ import (
 const verifyTimeout = 10 * time.Second
 
 // VerifyRates cross-checks opportunities against exchange-native funding rate
-// APIs. Opportunities where the Loris rate diverges more than 20% from the
-// exchange-reported rate on either leg are dropped. Also populates NextFunding.
+// APIs. Checks interval agreement, rate magnitude (50% tolerance), spread
+// magnitude, sign agreement, and spread direction. Also populates NextFunding.
 func (s *Scanner) VerifyRates(opportunities []models.Opportunity) []models.Opportunity {
 	type result struct {
 		idx    int
@@ -77,6 +78,9 @@ func (s *Scanner) verifyOpportunity(opp models.Opportunity) (bool, models.Opport
 	// Fetch both rates in parallel.
 	type rateResult struct {
 		rate        *float64
+		intervalHrs float64
+		maxRate     *float64 // per-period decimal cap from exchange (nil if unavailable)
+		minRate     *float64 // per-period decimal floor from exchange (nil if unavailable)
 		nextFunding time.Time
 		err         error
 	}
@@ -98,6 +102,9 @@ func (s *Scanner) verifyOpportunity(opp models.Opportunity) (bool, models.Opport
 		if intervalHrs <= 0 {
 			intervalHrs = 8
 		}
+		longRes.intervalHrs = intervalHrs
+		longRes.maxRate = fr.MaxRate
+		longRes.minRate = fr.MinRate
 		rateBpsH := utils.RateToBpsPerHour(fr.Rate*10000, intervalHrs)
 		longRes.rate = &rateBpsH
 	}()
@@ -114,6 +121,9 @@ func (s *Scanner) verifyOpportunity(opp models.Opportunity) (bool, models.Opport
 		if intervalHrs <= 0 {
 			intervalHrs = 8
 		}
+		shortRes.intervalHrs = intervalHrs
+		shortRes.maxRate = fr.MaxRate
+		shortRes.minRate = fr.MinRate
 		rateBpsH := utils.RateToBpsPerHour(fr.Rate*10000, intervalHrs)
 		shortRes.rate = &rateBpsH
 	}()
@@ -154,10 +164,81 @@ func (s *Scanner) verifyOpportunity(opp models.Opportunity) (bool, models.Opport
 		opp.NextFunding = shortRes.nextFunding
 	}
 
-	// Direction-only verification: confirm the exchange-reported rates agree
-	// on sign with the Loris rates, and that the spread direction (short > long)
-	// holds. We avoid magnitude comparison because Loris and exchange interval
-	// metadata can differ, making normalized values unreliable for tolerance checks.
+	// --- Interval and magnitude checks (skip for CoinGlass — rates are zero placeholders) ---
+	if opp.Source != "coinglass" {
+		// Check 1: Per-leg interval agreement.
+		// Loris interval must match exchange interval; mismatches (e.g. 4h→1h change)
+		// cause rate normalization errors that inflate bps/h values.
+		lorisLongInterval := s.getLegInterval(opp.LongExchange, opp.Symbol)
+		lorisShortInterval := s.getLegInterval(opp.ShortExchange, opp.Symbol)
+
+		if longRes.intervalHrs > 0 && lorisLongInterval > 0 &&
+			math.Abs(lorisLongInterval-longRes.intervalHrs) > 0.5 {
+			s.log.Debug("Long interval mismatch for %s on %s: loris=%.0fh exchange=%.0fh",
+				opp.Symbol, opp.LongExchange, lorisLongInterval, longRes.intervalHrs)
+			return false, opp, fmt.Sprintf("long interval mismatch: loris=%.0fh exchange=%.0fh",
+				lorisLongInterval, longRes.intervalHrs)
+		}
+		if shortRes.intervalHrs > 0 && lorisShortInterval > 0 &&
+			math.Abs(lorisShortInterval-shortRes.intervalHrs) > 0.5 {
+			s.log.Debug("Short interval mismatch for %s on %s: loris=%.0fh exchange=%.0fh",
+				opp.Symbol, opp.ShortExchange, lorisShortInterval, shortRes.intervalHrs)
+			return false, opp, fmt.Sprintf("short interval mismatch: loris=%.0fh exchange=%.0fh",
+				lorisShortInterval, shortRes.intervalHrs)
+		}
+
+		// Check 2: Per-leg rate magnitude (50% tolerance).
+		if !rateMagnitudeOK(opp.LongRate, *longRes.rate, 0.50) {
+			s.log.Debug("Long rate magnitude divergence for %s on %s: loris=%.2f exchange=%.2f bps/h",
+				opp.Symbol, opp.LongExchange, opp.LongRate, *longRes.rate)
+			return false, opp, fmt.Sprintf("long rate magnitude divergence: loris=%.2f exchange=%.2f bps/h",
+				opp.LongRate, *longRes.rate)
+		}
+		if !rateMagnitudeOK(opp.ShortRate, *shortRes.rate, 0.50) {
+			s.log.Debug("Short rate magnitude divergence for %s on %s: loris=%.2f exchange=%.2f bps/h",
+				opp.Symbol, opp.ShortExchange, opp.ShortRate, *shortRes.rate)
+			return false, opp, fmt.Sprintf("short rate magnitude divergence: loris=%.2f exchange=%.2f bps/h",
+				opp.ShortRate, *shortRes.rate)
+		}
+
+		// Check 3: Spread-level magnitude (50% tolerance).
+		// Two legs each within tolerance can still produce an overstated net spread.
+		exchangeSpread := *shortRes.rate - *longRes.rate
+		if !rateMagnitudeOK(opp.Spread, exchangeSpread, 0.50) {
+			s.log.Debug("Spread magnitude divergence for %s: loris=%.2f exchange=%.2f bps/h",
+				opp.Symbol, opp.Spread, exchangeSpread)
+			return false, opp, fmt.Sprintf("spread magnitude divergence: loris=%.2f exchange=%.2f bps/h",
+				opp.Spread, exchangeSpread)
+		}
+
+		// Check 4: Funding rate cap validation.
+		// Reject if Loris rate exceeds exchange's own caps (or default ±150 bps/h).
+		const defaultCapBpsH = 150.0 // 1.5%/h fallback when exchange doesn't provide caps
+
+		longMaxBpsH, longMinBpsH := defaultCapBpsH, -defaultCapBpsH
+		if longRes.maxRate != nil && longRes.minRate != nil && longRes.intervalHrs > 0 {
+			longMaxBpsH = utils.RateToBpsPerHour(*longRes.maxRate*10000, longRes.intervalHrs)
+			longMinBpsH = utils.RateToBpsPerHour(*longRes.minRate*10000, longRes.intervalHrs)
+		}
+		if opp.LongRate > longMaxBpsH || opp.LongRate < longMinBpsH {
+			s.log.Debug("Long rate exceeds cap for %s on %s: loris=%.2f bps/h cap=[%.2f, %.2f]",
+				opp.Symbol, opp.LongExchange, opp.LongRate, longMinBpsH, longMaxBpsH)
+			return false, opp, fmt.Sprintf("long rate exceeds cap: loris=%.2f bps/h cap=[%.2f, %.2f]",
+				opp.LongRate, longMinBpsH, longMaxBpsH)
+		}
+
+		shortMaxBpsH, shortMinBpsH := defaultCapBpsH, -defaultCapBpsH
+		if shortRes.maxRate != nil && shortRes.minRate != nil && shortRes.intervalHrs > 0 {
+			shortMaxBpsH = utils.RateToBpsPerHour(*shortRes.maxRate*10000, shortRes.intervalHrs)
+			shortMinBpsH = utils.RateToBpsPerHour(*shortRes.minRate*10000, shortRes.intervalHrs)
+		}
+		if opp.ShortRate > shortMaxBpsH || opp.ShortRate < shortMinBpsH {
+			s.log.Debug("Short rate exceeds cap for %s on %s: loris=%.2f bps/h cap=[%.2f, %.2f]",
+				opp.Symbol, opp.ShortExchange, opp.ShortRate, shortMinBpsH, shortMaxBpsH)
+			return false, opp, fmt.Sprintf("short rate exceeds cap: loris=%.2f bps/h cap=[%.2f, %.2f]",
+				opp.ShortRate, shortMinBpsH, shortMaxBpsH)
+		}
+	}
 
 	// Check sign agreement on long leg (skip if either is near zero).
 	if opp.LongRate != 0 && *longRes.rate != 0 && !sameSign(opp.LongRate, *longRes.rate) {
@@ -186,4 +267,20 @@ func (s *Scanner) verifyOpportunity(opp models.Opportunity) (bool, models.Opport
 // sameSign returns true if both values have the same sign.
 func sameSign(a, b float64) bool {
 	return (a > 0 && b > 0) || (a < 0 && b < 0)
+}
+
+// rateMagnitudeOK checks if two rates are within tolerance of each other.
+// Uses absolute difference for small rates (< 5 bps/h) to avoid noise from
+// near-zero divisions, and ratio-based comparison for larger rates.
+func rateMagnitudeOK(loris, exchange, tolerance float64) bool {
+	// Both near zero — allow small absolute difference.
+	if math.Abs(exchange) < 5 && math.Abs(loris) < 5 {
+		return math.Abs(loris-exchange) < 5
+	}
+	// Exchange ~0 but Loris is not — check if Loris is small too.
+	if math.Abs(exchange) < 0.001 {
+		return math.Abs(loris) < 5
+	}
+	ratio := math.Abs(loris / exchange)
+	return ratio >= (1-tolerance) && ratio <= (1+tolerance)
 }

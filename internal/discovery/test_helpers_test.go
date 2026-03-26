@@ -54,6 +54,10 @@ func (s stubExchange) SetOrderCallback(func(exchange.OrderUpdate))           {}
 func (s stubExchange) GetFundingFees(string, time.Time) ([]exchange.FundingPayment, error) {
 	return nil, nil
 }
+func (s stubExchange) EnsureOneWayMode() error { return nil }
+func (s stubExchange) GetClosePnL(string, time.Time) ([]exchange.ClosePnL, error) {
+	return nil, nil
+}
 
 // makeNilExchangeMap builds a map[string]exchange.Exchange with stub implementations.
 func makeNilExchangeMap(names ...string) map[string]exchange.Exchange {

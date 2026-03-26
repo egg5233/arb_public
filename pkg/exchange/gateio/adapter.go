@@ -536,6 +536,7 @@ func (a *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
 		FundingRate      string  `json:"funding_rate"`
 		FundingNextApply float64 `json:"funding_next_apply"`
 		FundingInterval  int     `json:"funding_interval"`
+		FundingRateLimit string  `json:"funding_rate_limit"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("GetFundingRate unmarshal: %w", err)
@@ -550,12 +551,22 @@ func (a *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
 
 	nextFunding := time.Unix(int64(resp.FundingNextApply), 0)
 
-	return &exchange.FundingRate{
+	fr := &exchange.FundingRate{
 		Symbol:      fromGateSymbol(resp.Name),
 		Rate:        rate,
 		Interval:    interval,
 		NextFunding: nextFunding,
-	}, nil
+	}
+
+	if resp.FundingRateLimit != "" {
+		if limit, err := strconv.ParseFloat(resp.FundingRateLimit, 64); err == nil {
+			fr.MaxRate = &limit
+			negLimit := -limit
+			fr.MinRate = &negLimit
+		}
+	}
+
+	return fr, nil
 }
 
 func (a *Adapter) GetFundingInterval(symbol string) (time.Duration, error) {

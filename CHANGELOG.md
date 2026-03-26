@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.2] - 2026-03-26
+
+### Added
+- **Funding rate verification overhaul**: 4 new checks in `verifyOpportunity()` to catch stale/inflated rates:
+  1. **Per-leg interval mismatch**: Reject if Loris interval vs exchange-reported interval differ by >0.5h (root cause of RIVERUSDT 1080 bps/h false entry — Loris reported stale 4h after exchange switched to 1h, inflating rate 4x)
+  2. **Per-leg rate magnitude**: Reject if Loris rate vs exchange rate differ by >50% (using `rateMagnitudeOK` helper)
+  3. **Spread-level magnitude**: Reject if Loris net spread vs exchange-verified net spread differ by >50%
+  4. **Funding rate cap validation**: Reject rates exceeding exchange-reported caps (MaxRate/MinRate); falls back to ±150 bps/h default when exchange caps unavailable
+- **`MaxRate`/`MinRate` fields** (`*float64`) on `exchange.FundingRate` struct — all 6 adapters now parse funding rate caps:
+  - Binance: `adjustedFundingRateCap`/`Floor` from `/fapi/v1/fundingInfo`
+  - Bybit: `upperFundingRate`/`lowerFundingRate` from instruments-info
+  - OKX: `maxFundingRate`/`minFundingRate` from funding-rate endpoint
+  - Gate.io: `funding_rate_limit` (symmetric ±) from contracts endpoint
+  - Bitget: `maxFundingRate`/`minFundingRate` from current-fund-rate
+  - BingX: `maxFundingRate`/`minFundingRate` from premiumIndex
+- All new checks are skipped for CoinGlass-sourced opportunities (zero-rate placeholders)
+
+### Fixed
+- **RIVERUSDT false entry at 1080 bps/h**: Loris reported stale 4h interval after exchange switched to 1h, inflating normalized rate by 4x. New interval mismatch check prevents this class of error.
+
 ## [0.17.1] - 2026-03-26
 
 ### Fixed
