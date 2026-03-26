@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.1] - 2026-03-26
+
+### Fixed
+- **PnL reconciliation synchronous**: Changed from async (5s delay) to synchronous first attempt (2s), ensuring exchange-reported PnL is used before broadcasting to frontend
+- **Reconcile broadcast**: Added `BroadcastPositionUpdate` after successful PnL reconciliation — frontend now receives corrected PnL immediately
+- **Rotation PnL race condition**: Added `pnlReconcileMu` mutex to serialize `reconcilePnL` and `reconcileRotationPnL`, eliminating concurrent read/write races
+- **Rotation PnL accumulation**: Changed `RotationPnL` from `=` to `+=` to correctly accumulate PnL across multiple rotations
+- **Rotation PnL double-count**: When position is already closed, rotation reconcile now re-triggers full `tryReconcilePnL` instead of manually adjusting `RealizedPnL += rotPnL`
+
 ## [0.17.0] - 2026-03-25
 
 ### Fixed

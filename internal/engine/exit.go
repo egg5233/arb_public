@@ -403,9 +403,9 @@ exitLoop:
 		e.discovery.SetReEnterCooldown(pos.Symbol, cooldown)
 	}
 
-	// Reconcile PnL from exchange trade history asynchronously.
+	// Reconcile PnL from exchange trade history (immediate attempt is synchronous).
 	posCopy := *pos
-	go e.reconcilePnL(&posCopy)
+	e.reconcilePnL(&posCopy)
 
 	return nil
 }
@@ -415,19 +415,30 @@ exitLoop:
 // from real fill data. Runs async after position close. Updates the position
 // record and stats if different. Retries up to 3 times on failure.
 func (e *Engine) reconcilePnL(pos *models.ArbitragePosition) {
-	const maxRetries = 3
-	delays := []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second}
+	e.pnlReconcileMu.Lock()
 
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		time.Sleep(delays[attempt])
-
-		ok := e.tryReconcilePnL(pos, attempt+1)
-		if ok {
-			return
-		}
+	// Immediate attempt: wait 2s for exchange to finalize, then try once.
+	time.Sleep(2 * time.Second)
+	if e.tryReconcilePnL(pos, 1) {
+		e.pnlReconcileMu.Unlock()
+		return
 	}
-	e.log.Error("reconcile %s: all %d attempts failed, keeping local PnL=%.4f",
-		pos.ID, maxRetries, pos.RealizedPnL)
+	e.pnlReconcileMu.Unlock()
+
+	// Async retries if immediate attempt failed.
+	go func() {
+		delays := []time.Duration{5 * time.Second, 15 * time.Second}
+		for i, d := range delays {
+			time.Sleep(d)
+			e.pnlReconcileMu.Lock()
+			ok := e.tryReconcilePnL(pos, i+2)
+			e.pnlReconcileMu.Unlock()
+			if ok {
+				return
+			}
+		}
+		e.log.Error("reconcile %s: all attempts failed, keeping PnL=%.4f", pos.ID, pos.RealizedPnL)
+	}()
 }
 
 // tryReconcilePnL performs a single reconciliation attempt using exchange-native
@@ -558,6 +569,11 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 				e.log.Error("reconcile %s: failed to update history: %v", pos.ID, err)
 			}
 		}
+	}
+
+	// Broadcast corrected PnL to frontend.
+	if updated, err := e.db.GetPosition(pos.ID); err == nil && updated != nil {
+		e.api.BroadcastPositionUpdate(updated)
 	}
 
 	return true
@@ -956,9 +972,9 @@ func (e *Engine) closePositionWithMode(pos *models.ArbitragePosition, emergency 
 		e.discovery.SetReEnterCooldown(pos.Symbol, cooldown)
 	}
 
-	// Reconcile PnL from exchange trade history asynchronously.
+	// Reconcile PnL from exchange trade history (immediate attempt is synchronous).
 	posCopy := *pos
-	go e.reconcilePnL(&posCopy)
+	e.reconcilePnL(&posCopy)
 
 	return nil
 }
@@ -1617,10 +1633,13 @@ func (e *Engine) reconcileRotationPnL(posID string, oldExch exchange.Exchange, o
 	for attempt, delay := range delays {
 		time.Sleep(delay)
 
+		e.pnlReconcileMu.Lock()
+
 		records, err := oldExch.GetClosePnL(symbol, since)
 		if err != nil {
 			e.log.Warn("rotation PnL reconcile %s [attempt %d]: %s GetClosePnL failed: %v",
 				posID, attempt+1, oldExchName, err)
+			e.pnlReconcileMu.Unlock()
 			continue
 		}
 
@@ -1641,6 +1660,7 @@ func (e *Engine) reconcileRotationPnL(posID string, oldExch exchange.Exchange, o
 			}
 			e.log.Warn("rotation PnL reconcile %s [attempt %d]: no %s close record near rotation time on %s (total records=%d)",
 				posID, attempt+1, legSide, oldExchName, len(records))
+			e.pnlReconcileMu.Unlock()
 			continue
 		}
 
@@ -1654,43 +1674,32 @@ func (e *Engine) reconcileRotationPnL(posID string, oldExch exchange.Exchange, o
 			posID, attempt+1, legSide, oldExchName, rotPnL, len(filtered))
 
 		if err := e.db.UpdatePositionFields(posID, func(fresh *models.ArbitragePosition) bool {
-			fresh.RotationPnL = rotPnL // set, not +=, to be idempotent
+			fresh.RotationPnL += rotPnL // accumulate across multiple rotations
 			fresh.UpdatedAt = time.Now().UTC()
 			return true
 		}); err != nil {
 			e.log.Error("rotation PnL reconcile %s: failed to update: %v", posID, err)
+			e.pnlReconcileMu.Unlock()
 			return
 		}
-		e.log.Info("rotation PnL reconcile %s: RotationPnL set to %.4f", posID, rotPnL)
+		e.log.Info("rotation PnL reconcile %s: RotationPnL accumulated by %.4f", posID, rotPnL)
 
-		// If position is already closed, recompute RealizedPnL with the new RotationPnL.
+		// If position is already closed, re-run full reconciliation instead of
+		// manually adjusting RealizedPnL. This ensures RotationPnL (just updated
+		// above) is included correctly via the formula:
+		// reconciledPnL = longAgg.NetPnL + shortAgg.NetPnL + pos.RotationPnL
 		pos, err := e.db.GetPosition(posID)
 		if err != nil {
+			e.pnlReconcileMu.Unlock()
 			return
 		}
 		if pos.Status == models.StatusClosed {
-			oldPnL := pos.RealizedPnL
-			newPnL := oldPnL + rotPnL
-			e.log.Info("rotation PnL reconcile %s: position already closed, correcting PnL %.4f → %.4f",
-				posID, oldPnL, newPnL)
-			if err := e.db.UpdatePositionFields(posID, func(fresh *models.ArbitragePosition) bool {
-				fresh.RealizedPnL += rotPnL
-				return true
-			}); err != nil {
-				e.log.Error("rotation PnL reconcile %s: failed to correct closed PnL: %v", posID, err)
-				return
-			}
-			// Update stats and history.
-			if err := e.db.UpdateStats(rotPnL, false); err != nil {
-				e.log.Error("rotation PnL reconcile %s: failed to update stats: %v", posID, err)
-			}
-			updated, err := e.db.GetPosition(posID)
-			if err == nil && updated != nil {
-				if err := e.db.UpdateHistoryEntry(updated); err != nil {
-					e.log.Error("rotation PnL reconcile %s: failed to update history: %v", posID, err)
-				}
+			fresh, err := e.db.GetPosition(posID)
+			if err == nil && fresh != nil {
+				e.tryReconcilePnL(fresh, 1)
 			}
 		}
+		e.pnlReconcileMu.Unlock()
 		return
 	}
 	e.log.Error("rotation PnL reconcile %s: all attempts failed for %s on %s", posID, legSide, oldExchName)

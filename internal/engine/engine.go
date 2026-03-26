@@ -45,6 +45,9 @@ type Engine struct {
 	// Global capacity lock for manual open to prevent concurrent over-subscription.
 	capacityMu sync.Mutex
 
+	// Mutex to serialize PnL reconciliation (reconcilePnL + reconcileRotationPnL).
+	pnlReconcileMu sync.Mutex
+
 	// Rejection tracking for dashboard display.
 	rejStore *models.RejectionStore
 
