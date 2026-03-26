@@ -123,6 +123,9 @@ func (m *Manager) Approve(opp models.Opportunity) (*models.RiskApproval, error) 
 
 	// Estimate slippage on the ask side (buying / going long)
 	longSlippage := estimateSlippageFromLevels(longOB.Asks, size, midPrice)
+	if longSlippage >= math.MaxFloat64 {
+		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("insufficient orderbook depth on %s for size %.2f", opp.LongExchange, size)}, nil
+	}
 	if longSlippage > m.cfg.SlippageBPS {
 		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("slippage too high on %s: %.1f bps > %.1f bps limit", opp.LongExchange, longSlippage, m.cfg.SlippageBPS)}, nil
 	}
@@ -133,6 +136,9 @@ func (m *Manager) Approve(opp models.Opportunity) (*models.RiskApproval, error) 
 		shortMid = (shortOB.Bids[0].Price + shortOB.Asks[0].Price) / 2.0
 	}
 	shortSlippage := estimateSlippageFromLevels(shortOB.Bids, size, shortMid)
+	if shortSlippage >= math.MaxFloat64 {
+		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("insufficient orderbook depth on %s for size %.2f", opp.ShortExchange, size)}, nil
+	}
 	if shortSlippage > m.cfg.SlippageBPS {
 		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("slippage too high on %s: %.1f bps > %.1f bps limit", opp.ShortExchange, shortSlippage, m.cfg.SlippageBPS)}, nil
 	}

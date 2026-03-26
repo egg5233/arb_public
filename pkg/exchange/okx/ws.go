@@ -271,6 +271,8 @@ func (a *Adapter) handleBooks5(msg []byte) {
 	}
 
 	d := envelope.Data[0]
+	symbol := fromOKXInstID(envelope.Arg.InstID)
+	ctVal := a.getCtVal(symbol) // contracts → base units
 	parseLevels := func(raw [][]string) []exchange.PriceLevel {
 		levels := make([]exchange.PriceLevel, 0, len(raw))
 		for _, entry := range raw {
@@ -279,12 +281,11 @@ func (a *Adapter) handleBooks5(msg []byte) {
 			}
 			price, _ := strconv.ParseFloat(entry[0], 64)
 			qty, _ := strconv.ParseFloat(entry[1], 64)
+			qty *= ctVal // contracts → base units
 			levels = append(levels, exchange.PriceLevel{Price: price, Quantity: qty})
 		}
 		return levels
 	}
-
-	symbol := fromOKXInstID(envelope.Arg.InstID)
 	tsMs, _ := strconv.ParseInt(d.Ts, 10, 64)
 	ob := &exchange.Orderbook{
 		Symbol: symbol,

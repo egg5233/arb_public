@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.5] - 2026-03-26
+
+### Fixed
+- **OKX orderbook ctVal conversion**: REST `GetOrderbook` and WS `books5` now convert quantities from contracts to base units via ctVal. Previously raw contract counts were used — invisible for ctVal=1 symbols, 10x off for ctVal=10, caused math.MaxFloat64 slippage rejection for ctVal=100 symbols like SOPHUSDT.
+- **Risk manager slippage message**: Insufficient orderbook depth now shows "insufficient orderbook depth" instead of printing math.MaxFloat64 as a giant number.
+
+### Added
+- **`cmd/validate-docs/`**: Permanent reusable API doc validation tool. Calls all 12 read-only methods on all 6 exchanges, validates field names/types against real API responses. Usage: `go run ./cmd/validate-docs/ [--exchange NAME] [--verbose]`
+
 ## [0.17.4] - 2026-03-26
 
 ### Fixed

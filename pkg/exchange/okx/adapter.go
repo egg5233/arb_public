@@ -746,6 +746,8 @@ func (a *Adapter) GetOrderbook(symbol string, depth int) (*exchange.Orderbook, e
 		return &exchange.Orderbook{Symbol: symbol, Time: time.Now()}, nil
 	}
 
+	// OKX orderbook quantities are in contracts — convert to base units via ctVal.
+	ctVal := a.getCtVal(symbol)
 	parseLevels := func(levels [][]string) []exchange.PriceLevel {
 		out := make([]exchange.PriceLevel, 0, len(levels))
 		for _, l := range levels {
@@ -754,6 +756,7 @@ func (a *Adapter) GetOrderbook(symbol string, depth int) (*exchange.Orderbook, e
 			}
 			price, _ := strconv.ParseFloat(l[0], 64)
 			qty, _ := strconv.ParseFloat(l[1], 64)
+			qty *= ctVal // contracts → base units
 			out = append(out, exchange.PriceLevel{Price: price, Quantity: qty})
 		}
 		return out
