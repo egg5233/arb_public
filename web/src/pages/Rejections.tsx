@@ -1,6 +1,7 @@
 import { useState, useEffect, type FC } from 'react';
 import type { RejectedOpportunity } from '../types.ts';
 import { useLocale } from '../i18n/index.ts';
+import { ExchangeLink } from '../utils/tradingUrl.tsx';
 
 interface RejectionsProps {
   rejections: RejectedOpportunity[];
@@ -82,8 +83,8 @@ const Rejections: FC<RejectionsProps> = ({ rejections, getRejections, setRejecti
                 <tr key={i} className="text-gray-100">
                   <td className="py-2 font-mono text-gray-500 text-xs">{formatTime(r.timestamp)}</td>
                   <td className="py-2 font-mono">{r.symbol}</td>
-                  <td className="py-2 text-green-400 text-xs">{r.long_exchange}</td>
-                  <td className="py-2 text-red-400 text-xs">{r.short_exchange}</td>
+                  <td className="py-2 text-green-400 text-xs"><ExchangeLink exchange={r.long_exchange} symbol={r.symbol} /></td>
+                  <td className="py-2 text-red-400 text-xs"><ExchangeLink exchange={r.short_exchange} symbol={r.symbol} /></td>
                   <td className="py-2 text-right font-mono">{r.spread.toFixed(1)}</td>
                   <td className="py-2">
                     <span className={`px-2 py-0.5 rounded text-xs ${badge.bg} ${badge.text}`}>{r.stage}</span>

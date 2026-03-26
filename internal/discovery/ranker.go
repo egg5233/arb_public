@@ -70,8 +70,9 @@ func (s *Scanner) RankOpportunities(loris *models.LorisResponse) []models.Opport
 				}
 			}
 
-			// Loris rates are already in bps/hour.
-			rateBpsH := rawRate
+			// Loris rates are normalized to 8h equivalent (bps_per_period × 8/interval).
+			// Divide by 8 to get bps/hour.
+			rateBpsH := rawRate / 8.0
 			rates = append(rates, exRate{
 				exchange:    exch,
 				rateBpsH:    rateBpsH,

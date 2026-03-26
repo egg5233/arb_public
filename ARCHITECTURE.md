@@ -13,7 +13,7 @@ Funding intervals are **per-symbol per-exchange**, NOT static:
 - Gate.io/Bitget: default 8h (some pairs vary)
 - The bot fetches and tracks actual intervals via Loris API `FundingIntervals` map
 - All rates standardized to **bps per hour** as the universal internal unit
-- Loris rates are already bps/h (used directly); exchange API rates convert via `rate * 10000 / interval_hours`
+- Loris rates are normalized to 8h equivalent (`bps_per_period × 8/interval`); ranker divides by 8 to get bps/h. Exchange API rates convert via `rate * 10000 / interval_hours`
 - The scheduler fires **every hour** (0–23 UTC) to support 1h-interval tokens
 - A per-opportunity timing guard skips tokens whose next funding is not imminent
 
@@ -21,7 +21,7 @@ Funding intervals are **per-symbol per-exchange**, NOT static:
 
 **Source 1 — Loris API** (primary, every 60s)
 - `GET https://api.loris.tools/funding` — rates + per-symbol intervals
-- Rates already in bps/hour (used directly, no re-normalization)
+- Rates normalized to 8h equivalent; ranker divides by 8 to get bps/h
 
 **Source 2 — CoinGlass** (secondary, from Redis key `coinGlassArb`)
 - Pre-scraped arbitrage data with OI metrics

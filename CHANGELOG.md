@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.3] - 2026-03-26
+
+### Fixed
+- **Loris rate normalization**: Loris API returns rates as bps normalized to 8h equivalent (`bps_per_period × 8/interval`), NOT bps/hour as previously assumed. The ranker now divides by 8 to get correct bps/h. Impact: 4h interval symbols were 2x inflated, 1h interval symbols were 8x inflated (root cause of RIVER 1080 bps/h bug), 8h interval symbols unaffected
+
+### Dashboard
+- **Clickable exchange links in Rejected Opportunities**: Exchange names in the rejections table now link to the exchange's futures trading page (same `ExchangeLink` component used in History/Positions/Opportunities)
+
 ## [0.17.2] - 2026-03-26
 
 ### Added
