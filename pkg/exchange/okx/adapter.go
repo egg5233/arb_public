@@ -776,8 +776,23 @@ func (a *Adapter) GetOrderbook(symbol string, depth int) (*exchange.Orderbook, e
 // Withdraw
 // ---------------------------------------------------------------------------
 
-// TransferToFutures is a no-op for OKX — unified account, trading balance is already available.
-func (a *Adapter) TransferToFutures(coin string, amount string) error { return nil }
+// TransferToFutures moves funds from funding account (type 6) to trading account (type 18).
+// OKX "unified" mode still separates funding vs trading below the 10,000 USDT threshold,
+// so an explicit transfer is required before the bot can open positions.
+func (a *Adapter) TransferToFutures(coin string, amount string) error {
+	body := map[string]interface{}{
+		"ccy":  coin,
+		"amt":  amount,
+		"from": "6",  // funding account
+		"to":   "18", // trading account
+	}
+
+	_, err := a.client.Post("/api/v5/asset/transfer", body)
+	if err != nil {
+		return fmt.Errorf("TransferToFutures: %w", err)
+	}
+	return nil
+}
 
 // TransferToSpot moves funds from trading account to funding account.
 func (a *Adapter) TransferToSpot(coin string, amount string) error {

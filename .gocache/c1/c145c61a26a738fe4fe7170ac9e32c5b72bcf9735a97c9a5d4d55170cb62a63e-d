@@ -1,0 +1,5 @@
+./auth.go
+./frontend.go
+./handlers.go
+./server.go
+./ws.go

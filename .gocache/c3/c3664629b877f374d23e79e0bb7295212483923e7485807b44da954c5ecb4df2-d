@@ -1,0 +1,5 @@
+./backtest.go
+./delist.go
+./ranker.go
+./scanner.go
+./verifier.go

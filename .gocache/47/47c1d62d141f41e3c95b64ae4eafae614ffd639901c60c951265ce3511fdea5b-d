@@ -1,0 +1,5 @@
+./funding.go
+./interfaces.go
+./opportunity.go
+./position.go
+./rejection.go

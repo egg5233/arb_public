@@ -892,8 +892,10 @@ type exchangeInfo struct {
 // unifiedExchanges are exchanges with unified account models where
 // spot and futures share the same balance pool.
 // Gate.io is conditionally unified based on runtime detection.
+// NOTE: OKX is NOT unified here — despite "unified account mode", OKX
+// still separates funding (type 6) and trading (type 18) accounts for
+// balances below ~10 000 USDT. The dashboard must show both.
 var unifiedExchanges = map[string]bool{
-	"okx":   true,
 	"bybit": true,
 }
 

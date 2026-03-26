@@ -5,11 +5,12 @@ All notable changes to this project will be documented in this file.
 ## [0.17.7] - 2026-03-26
 
 ### Fixed
-- **Margin safety buffer**: `Approve()` now requires `available >= requiredMargin × (1/L3Threshold)` (2× with default L3=0.50). Prevents positions from opening with borderline margin that immediately triggers L5 emergency close after fees are deducted (ENJUSDT incident: opened at 100% utilization → L5 in 28 seconds → -$0.20)
+- **Margin safety buffer**: `Approve()` now requires `available >= requiredMargin × safetyMultiplier` (configurable via `margin_safety_multiplier`, default 2.0). Prevents positions from opening with borderline margin that immediately triggers L5 emergency close after fees are deducted
+- **OKX TransferToFutures was a no-op**: OKX has separate funding account (type 6) and trading account (type 18) even below 10000 USDT unified threshold. `TransferToFutures` now calls `/api/v5/asset/transfer` to move funds from funding → trading
+- **OKX dashboard balance display**: Removed OKX from `unifiedExchanges` map so dashboard shows both trading and funding account balances separately
 
 ### Added
-- **Pre-trade cross-exchange rebalance**: When `Approve()` rejects due to insufficient margin, the engine now automatically transfers funds from surplus exchanges before retrying. Supports all 6 exchanges as both donors and recipients. Flow: spot→futures (instant) → cross-exchange withdraw/deposit (3min poll) → retry Approve() once. Both legs checked independently
-- **gp mode rules in CLAUDE.md**: Codex agent dispatch protocol for mixed Claude+Codex teams
+- **`margin_safety_multiplier` config**: Configurable multiplier for margin entry check (Dashboard → Risk), replaces hardcoded L3-derived buffer
 
 ## [0.17.6] - 2026-03-26
 

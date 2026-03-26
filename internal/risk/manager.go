@@ -102,9 +102,9 @@ func (m *Manager) Approve(opp models.Opportunity) (*models.RiskApproval, error) 
 		return &models.RiskApproval{Approved: false, Reason: "insufficient capital for minimum position size"}, nil
 	}
 
-	// Verify enough free margin per leg (with safety buffer based on L3 threshold)
+	// Verify enough free margin per leg (with configurable safety buffer)
 	requiredMarginPerLeg := (size * midPrice) / float64(leverage)
-	safetyMultiplier := 1.0 / m.cfg.MarginL3Threshold
+	safetyMultiplier := m.cfg.MarginSafetyMultiplier
 	safetyPct := (safetyMultiplier - 1) * 100
 	requiredWithBuffer := requiredMarginPerLeg * safetyMultiplier
 	if longBal.Available < requiredWithBuffer {

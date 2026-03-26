@@ -1,0 +1,4 @@
+./adapter.go
+./client.go
+./ws.go
+./ws_private.go

@@ -46,7 +46,8 @@ type Config struct {
 	MarginL3Threshold float64 // trigger fund transfer (default: 0.50)
 	MarginL4Threshold float64 // trigger position reduction (default: 0.80)
 	MarginL5Threshold float64 // trigger emergency close (default: 0.95)
-	L4ReduceFraction  float64 // fraction to reduce at L4 (default: 0.50)
+	L4ReduceFraction      float64 // fraction to reduce at L4 (default: 0.50)
+	MarginSafetyMultiplier float64 // margin buffer multiplier for entry check (default: 2.0)
 
 	// Exit strategy
 	ExitDepthTimeoutSec  int     // depth-fill exit loop timeout before market fallback (default 45)
@@ -249,8 +250,9 @@ type jsonRisk struct {
 	MarginL3Threshold      *float64 `json:"margin_l3_threshold"`
 	MarginL4Threshold      *float64 `json:"margin_l4_threshold"`
 	MarginL5Threshold      *float64 `json:"margin_l5_threshold"`
-	L4ReduceFraction       *float64 `json:"l4_reduce_fraction"`
-	RiskMonitorIntervalSec *int     `json:"risk_monitor_interval_sec"`
+	L4ReduceFraction        *float64 `json:"l4_reduce_fraction"`
+	MarginSafetyMultiplier  *float64 `json:"margin_safety_multiplier"`
+	RiskMonitorIntervalSec  *int     `json:"risk_monitor_interval_sec"`
 }
 
 // Load reads configuration from config.json (if present), with env var overrides.
@@ -272,7 +274,8 @@ func Load() *Config {
 		MarginL3Threshold:       0.50,
 		MarginL4Threshold:       0.80,
 		MarginL5Threshold:       0.95,
-		L4ReduceFraction:        0.30,
+		L4ReduceFraction:           0.30,
+		MarginSafetyMultiplier:     2.0,
 		ExitDepthTimeoutSec:     300,
 		RiskMonitorIntervalSec:  300,
 		PersistLookback1h:       90 * time.Minute,
@@ -547,6 +550,9 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if rk.L4ReduceFraction != nil {
 			c.L4ReduceFraction = *rk.L4ReduceFraction
 		}
+		if rk.MarginSafetyMultiplier != nil {
+			c.MarginSafetyMultiplier = *rk.MarginSafetyMultiplier
+		}
 		if rk.RiskMonitorIntervalSec != nil {
 			c.RiskMonitorIntervalSec = *rk.RiskMonitorIntervalSec
 		}
@@ -742,6 +748,7 @@ func (c *Config) SaveJSON() error {
 	risk["margin_l4_threshold"] = c.MarginL4Threshold
 	risk["margin_l5_threshold"] = c.MarginL5Threshold
 	risk["l4_reduce_fraction"] = c.L4ReduceFraction
+	risk["margin_safety_multiplier"] = c.MarginSafetyMultiplier
 	risk["risk_monitor_interval_sec"] = c.RiskMonitorIntervalSec
 
 	ai := getMap(raw, "ai")
