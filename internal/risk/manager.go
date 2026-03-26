@@ -121,26 +121,81 @@ func (m *Manager) Approve(opp models.Opportunity) (*models.RiskApproval, error) 
 		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("empty orderbook on %s", opp.ShortExchange)}, nil
 	}
 
-	// Estimate slippage on the ask side (buying / going long)
-	longSlippage := estimateSlippageFromLevels(longOB.Asks, size, midPrice)
-	if longSlippage >= math.MaxFloat64 {
-		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("insufficient orderbook depth on %s for size %.2f", opp.LongExchange, size)}, nil
-	}
-	if longSlippage > m.cfg.SlippageBPS {
-		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("slippage too high on %s: %.1f bps > %.1f bps limit", opp.LongExchange, longSlippage, m.cfg.SlippageBPS)}, nil
-	}
-
-	// Estimate slippage on the bid side (selling / going short)
+	// Compute both mid prices for slippage estimation.
 	shortMid := midPrice
 	if len(shortOB.Bids) > 0 && len(shortOB.Asks) > 0 {
 		shortMid = (shortOB.Bids[0].Price + shortOB.Asks[0].Price) / 2.0
 	}
+
+	// Estimate slippage on both legs at full size.
+	longSlippage := estimateSlippageFromLevels(longOB.Asks, size, midPrice)
 	shortSlippage := estimateSlippageFromLevels(shortOB.Bids, size, shortMid)
-	if shortSlippage >= math.MaxFloat64 {
-		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("insufficient orderbook depth on %s for size %.2f", opp.ShortExchange, size)}, nil
-	}
-	if shortSlippage > m.cfg.SlippageBPS {
-		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("slippage too high on %s: %.1f bps > %.1f bps limit", opp.ShortExchange, shortSlippage, m.cfg.SlippageBPS)}, nil
+
+	if longSlippage > m.cfg.SlippageBPS || shortSlippage > m.cfg.SlippageBPS {
+		// Slippage too high at full size — try adaptive sizing.
+		// Load contract info from both exchanges; use the more restrictive step/min.
+		var stepSize, minSizeContract float64
+		for _, exch := range []exchange.Exchange{longExch, shortExch} {
+			contracts, err := exch.LoadAllContracts()
+			if err != nil {
+				continue
+			}
+			ci, ok := contracts[opp.Symbol]
+			if !ok {
+				continue
+			}
+			if ci.StepSize > stepSize {
+				stepSize = ci.StepSize
+			}
+			if ci.MinSize > minSizeContract {
+				minSizeContract = ci.MinSize
+			}
+		}
+		if stepSize <= 0 {
+			// No contract info available — skip adaptive sizing, reject as before.
+			bottleneck := opp.LongExchange
+			bps := longSlippage
+			if shortSlippage > longSlippage {
+				bottleneck = opp.ShortExchange
+				bps = shortSlippage
+			}
+			return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("slippage too high on %s: %.1f bps > %.1f bps limit", bottleneck, bps, m.cfg.SlippageBPS)}, nil
+		}
+
+		// Min size = max(contract minimum, $10 floor / price * leverage)
+		// Round UP to ensure we don't go below the capital floor.
+		minSizeFromCapital := (minCapitalFloor * float64(leverage)) / midPrice
+		minSizeFromCapital = math.Ceil(minSizeFromCapital/stepSize) * stepSize
+		adaptiveMinSize := math.Max(minSizeContract, minSizeFromCapital)
+
+		adaptedSize := findMaxSizeForSlippage(
+			longOB.Asks, shortOB.Bids,
+			midPrice, shortMid,
+			size, adaptiveMinSize,
+			m.cfg.SlippageBPS, stepSize,
+		)
+
+		if adaptedSize <= 0 {
+			minLong := estimateSlippageFromLevels(longOB.Asks, adaptiveMinSize, midPrice)
+			minShort := estimateSlippageFromLevels(shortOB.Bids, adaptiveMinSize, shortMid)
+			bottleneck := opp.LongExchange
+			bottleneckBps := minLong
+			if minShort > minLong {
+				bottleneck = opp.ShortExchange
+				bottleneckBps = minShort
+			}
+			return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf(
+				"slippage %.1f bps at minimum size %.0f ($%.2f) on %s (limit=%.1f bps)",
+				bottleneckBps, adaptiveMinSize, adaptiveMinSize*midPrice/float64(leverage), bottleneck, m.cfg.SlippageBPS,
+			)}, nil
+		}
+
+		originalNotional := size * midPrice / float64(leverage)
+		newNotional := adaptedSize * midPrice / float64(leverage)
+		m.log.Info("[adaptive] %s: size reduced %.0f → %.0f ($%.2f → $%.2f per leg, limit=%.1f bps)",
+			opp.Symbol, size, adaptedSize, originalNotional, newNotional, m.cfg.SlippageBPS)
+		size = adaptedSize
+		requiredMarginPerLeg = (size * midPrice) / float64(leverage)
 	}
 
 	// e. Cross-exchange price gap check (VWAP across depth for actual trade size)
@@ -395,4 +450,52 @@ func estimateSlippageFromLevels(levels []exchange.PriceLevel, size, midPrice flo
 		converted[i] = struct{ Price, Qty float64 }{Price: l.Price, Qty: l.Quantity}
 	}
 	return utils.EstimateSlippage(converted, size, midPrice)
+}
+
+// findMaxSizeForSlippage binary-searches for the largest position size that
+// keeps slippage within the limit on both exchanges. Returns 0 if even minSize
+// exceeds the limit.
+func findMaxSizeForSlippage(
+	askLevels, bidLevels []exchange.PriceLevel,
+	longMid, shortMid float64,
+	maxSize, minSize float64,
+	slippageLimit float64,
+	stepSize float64,
+) float64 {
+	// Fast path: original size fits
+	longSlip := estimateSlippageFromLevels(askLevels, maxSize, longMid)
+	shortSlip := estimateSlippageFromLevels(bidLevels, maxSize, shortMid)
+	if longSlip <= slippageLimit && shortSlip <= slippageLimit {
+		return maxSize
+	}
+
+	// Floor check: even minimum is too much
+	longSlip = estimateSlippageFromLevels(askLevels, minSize, longMid)
+	shortSlip = estimateSlippageFromLevels(bidLevels, minSize, shortMid)
+	if longSlip > slippageLimit || shortSlip > slippageLimit {
+		return 0
+	}
+
+	// Binary search: lo always passes, hi always fails or untested
+	lo, hi := minSize, maxSize
+	for i := 0; i < 20 && hi-lo > stepSize; i++ {
+		mid := utils.RoundToStep((lo+hi)/2, stepSize)
+		if mid <= lo {
+			mid = lo + stepSize
+		}
+		if mid >= hi {
+			break
+		}
+
+		worst := math.Max(
+			estimateSlippageFromLevels(askLevels, mid, longMid),
+			estimateSlippageFromLevels(bidLevels, mid, shortMid),
+		)
+		if worst <= slippageLimit {
+			lo = mid
+		} else {
+			hi = mid
+		}
+	}
+	return utils.RoundToStep(lo, stepSize)
 }

@@ -8,6 +8,13 @@ All notable changes to this project will be documented in this file.
 - **Default config aligned to egg's risk profile**: Updated 25 default values in config.go — relaxed persistence filters (lookback 90/180/360m, min_count=1), disabled OI rank and volatility filters, increased slippage limit (50 bps), longer entry/exit timeouts (300s), higher rotation threshold (100 bps/180m cooldown), spread reversal tolerance (1), re-enter cooldown (1h), top opportunities (25)
 
 ### Added
+- **Adaptive position sizing based on orderbook liquidity**: When slippage exceeds the limit at full size, binary-searches for the largest tradeable size within slippage constraints instead of rejecting outright. Range: [contract min / $10 floor, original size]. Fast path for liquid pairs (zero overhead). Logs `[adaptive]` with old→new size and notional when reduction occurs.
+  - New `findMaxSizeForSlippage()` function — pure binary search over `[minSize, maxSize]`, converges in ~10 iterations
+  - Uses max(longStep, shortStep) and max(longMin, shortMin) from both exchanges to ensure adapted size is tradeable on both legs
+  - Min size rounded UP (ceil) to respect $10 capital floor
+  - Falls back to original rejection if contract info unavailable (no unsafe stepSize=1 fallback)
+  - `requiredMarginPerLeg` recalculated after size reduction
+  - Single file change: `internal/risk/manager.go`
 - **Adaptive sizing plan**: `docs/plan-adaptive-sizing.md` — binary search on orderbook depth to find max position size within slippage limit instead of rejecting outright
 
 ## [0.17.5] - 2026-03-26

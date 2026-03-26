@@ -535,7 +535,7 @@ Each adapter: `adapter.go` (interface impl), `client.go` (REST), `ws.go` (public
 5. Orderbook non-empty on long exchange
 6. Position size calculation (CalculateSize)
 7. Margin per leg >= 10 USDT floor
-8. Slippage check on both exchanges (asks for long, bids for short)
+8. Slippage check on both exchanges (asks for long, bids for short) — if slippage exceeds the limit at full size, binary-searches for the largest tradeable size within slippage constraints (`findMaxSizeForSlippage`, ~10 iterations) instead of rejecting outright
 9. Cross-exchange price gap check (absolute gap hard cap + directional recovery limit)
 10. Per-exchange capital exposure cap (60% of total)
 11. Exchange concentration warning (>60% of positions)
