@@ -940,3 +940,17 @@ func (b *Adapter) EnsureOneWayMode() error {
 	}
 	return nil
 }
+
+// Close terminates all WebSocket connections for graceful shutdown.
+func (b *Adapter) Close() {
+	b.priceMu.Lock()
+	if b.priceConn != nil {
+		b.priceConn.Close()
+		b.priceConn = nil
+	}
+	if b.privConn != nil {
+		b.privConn.Close()
+		b.privConn = nil
+	}
+	b.priceMu.Unlock()
+}

@@ -91,7 +91,7 @@ func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 		params["price"] = req.Price
 	}
 	if req.ReduceOnly {
-		params["reduceOnly"] = "yes"
+		params["reduceOnly"] = "YES"
 	}
 
 	raw, err := a.client.Post("/api/v2/mix/order/place-order", params)
@@ -258,7 +258,7 @@ func parsePositions(raw string) ([]exchange.Position, error) {
 			HoldSide         string `json:"holdSide"`
 			Total            string `json:"total"`
 			Available        string `json:"available"`
-			AverageOpenPrice string `json:"averageOpenPrice"`
+			AverageOpenPrice string `json:"openPriceAvg"`
 			UnrealizedPL     string `json:"unrealizedPL"`
 			Leverage         string `json:"leverage"`
 			MarginMode       string `json:"marginMode"`
@@ -362,7 +362,7 @@ func (a *Adapter) SetMarginMode(symbol string, mode string) error {
 
 func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 	params := map[string]string{
-		"productType": "usdt-futures",
+		"productType": productTypeUSDTFutures,
 	}
 
 	raw, err := a.client.Get("/api/v2/mix/market/contracts", params)
@@ -526,7 +526,7 @@ func (a *Adapter) GetFundingInterval(symbol string) (time.Duration, error) {
 		Code string `json:"code"`
 		Data []struct {
 			Symbol          string `json:"symbol"`
-			FundingInterval string `json:"fundingInterval"` // e.g. "8" (hours)
+			FundingInterval string `json:"fundInterval"` // e.g. "8" (hours)
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
@@ -563,7 +563,7 @@ func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 		Data struct {
 			AccountEquity   string `json:"accountEquity"`
 			Available       string `json:"available"`
-			Frozen          string `json:"frozen"`
+			Frozen          string `json:"locked"`
 			CrossedRiskRate string `json:"crossedRiskRate"`
 		} `json:"data"`
 	}
@@ -605,7 +605,7 @@ func (a *Adapter) GetSpotBalance() (*exchange.Balance, error) {
 		Data []struct {
 			Coin      string `json:"coin"`
 			Available string `json:"available"`
-			Frozen    string `json:"frozen"`
+			Frozen    string `json:"locked"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
@@ -916,7 +916,7 @@ func (b *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 		"startTime":   strconv.FormatInt(startTime.UnixMilli(), 10),
 		"limit":       strconv.Itoa(limit),
 	}
-	body, err := b.client.Get("/api/v2/mix/order/fill-history", params)
+	body, err := b.client.Get("/api/v2/mix/order/fills", params)
 	if err != nil {
 		return nil, fmt.Errorf("GetUserTrades: %w", err)
 	}
@@ -979,7 +979,7 @@ func (a *Adapter) GetFundingFees(symbol string, since time.Time) ([]exchange.Fun
 	params := map[string]string{
 		"symbol":       symbol,
 		"productType":  "USDT-FUTURES",
-		"businessType": "funding_fee",
+		"businessType": "contract_settle_fee",
 		"startTime":    strconv.FormatInt(since.UnixMilli(), 10),
 		"limit":        "100",
 	}
@@ -1138,6 +1138,16 @@ func (a *Adapter) CancelStopLoss(symbol, orderID string) error {
 }
 
 // EnsureOneWayMode sets the account to one-way position mode.
+// Close terminates all WebSocket connections for graceful shutdown.
+func (a *Adapter) Close() {
+	if a.ws != nil {
+		a.ws.Stop()
+	}
+	if a.wsPriv != nil {
+		a.wsPriv.Stop()
+	}
+}
+
 func (a *Adapter) EnsureOneWayMode() error {
 	params := map[string]string{
 		"productType": "USDT-FUTURES",
@@ -1164,6 +1174,7 @@ func (a *Adapter) isOneWayMode() bool {
 	raw, err := a.client.Get("/api/v2/mix/account/account", map[string]string{
 		"productType": "USDT-FUTURES",
 		"symbol":      "BTCUSDT",
+		"marginCoin":  "USDT",
 	})
 	if err != nil {
 		return false

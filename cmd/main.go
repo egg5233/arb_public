@@ -270,6 +270,12 @@ func main() {
 	scanner.Stop()
 	log.Info("Discovery scanner stopped")
 
+	// Close all exchange WebSocket connections.
+	for name, exch := range exchanges {
+		exch.Close()
+		log.Info("Exchange %s WebSocket closed", name)
+	}
+
 	_ = db.Close()
 	log.Info("Shutdown complete")
 }

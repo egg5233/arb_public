@@ -238,14 +238,19 @@ func (a *Adapter) GetPendingOrders(symbol string) ([]exchange.Order, error) {
 
 	out := make([]exchange.Order, 0, len(raw))
 	for _, o := range raw {
+		// OKX sz is in contracts; convert to base units using ctVal.
+		sym := fromOKXInstID(o.InstID)
+		szF, _ := strconv.ParseFloat(o.Sz, 64)
+		szF *= a.getCtVal(sym)
+		sz := strconv.FormatFloat(szF, 'f', -1, 64)
 		out = append(out, exchange.Order{
 			OrderID:   o.OrdID,
 			ClientOid: o.ClOrdID,
-			Symbol:    fromOKXInstID(o.InstID),
+			Symbol:    sym,
 			Side:      o.Side,
 			OrderType: o.OrdType,
 			Price:     o.Px,
-			Size:      o.Sz,
+			Size:      sz,
 			Status:    mapState(o.State),
 		})
 	}
@@ -954,7 +959,7 @@ func (a *Adapter) GetFundingFees(symbol string, since time.Time) ([]exchange.Fun
 	params := map[string]string{
 		"instType": "SWAP",
 		"instId":   instID,
-		"subType":  "8",
+		"type":     "8",
 		"begin":    strconv.FormatInt(since.UnixMilli(), 10),
 		"limit":    "100",
 	}
@@ -963,18 +968,18 @@ func (a *Adapter) GetFundingFees(symbol string, since time.Time) ([]exchange.Fun
 		return nil, fmt.Errorf("GetFundingFees: %w", err)
 	}
 
-	var resp struct {
-		Data []struct {
-			BalChg string `json:"balChg"`
-			TS     string `json:"ts"`
-		} `json:"data"`
+	// OKX client already unwraps the { data: [...] } envelope,
+	// so body is the raw data array.
+	var records []struct {
+		BalChg string `json:"balChg"`
+		TS     string `json:"ts"`
 	}
-	if err := json.Unmarshal(body, &resp); err != nil {
+	if err := json.Unmarshal(body, &records); err != nil {
 		return nil, fmt.Errorf("GetFundingFees unmarshal: %w", err)
 	}
 
-	out := make([]exchange.FundingPayment, 0, len(resp.Data))
-	for _, r := range resp.Data {
+	out := make([]exchange.FundingPayment, 0, len(records))
+	for _, r := range records {
 		amt, _ := strconv.ParseFloat(r.BalChg, 64)
 		ms, _ := strconv.ParseInt(r.TS, 10, 64)
 		out = append(out, exchange.FundingPayment{
@@ -1001,11 +1006,15 @@ func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 	// OKX client already unwraps the { data: [...] } envelope,
 	// so body is the raw data array.
 	var records []struct {
-		Pnl           string `json:"pnl"`
+		Pnl           string `json:"pnl"`         // PnL excluding fees
+		Fee           string `json:"fee"`          // trading fee (negative = charged)
+		FundingFee    string `json:"fundingFee"`   // funding fee
+		RealizedPnl   string `json:"realizedPnl"`  // = pnl + fee + fundingFee + liqPenalty
 		OpenAvgPx     string `json:"openAvgPx"`
 		CloseAvgPx    string `json:"closeAvgPx"`
 		CloseTotalPos string `json:"closeTotalPos"`
 		PosSide       string `json:"posSide"` // "long", "short", or "net" (one-way mode)
+		Direction     string `json:"direction"` // "long" or "short" (available directly)
 		OpenMaxPos    string `json:"openMaxPos"`
 		UTime         string `json:"uTime"`
 	}
@@ -1015,26 +1024,42 @@ func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 
 	out := make([]exchange.ClosePnL, 0, len(records))
 	for _, r := range records {
-		netPnL, _ := strconv.ParseFloat(r.Pnl, 64)
+		ms, _ := strconv.ParseInt(r.UTime, 10, 64)
+
+		// OKX positions-history has no server-side time filter —
+		// filter client-side using the since parameter.
+		if time.UnixMilli(ms).Before(since) {
+			continue
+		}
+
+		pricePnL, _ := strconv.ParseFloat(r.Pnl, 64)
+		fee, _ := strconv.ParseFloat(r.Fee, 64)
+		fundingFee, _ := strconv.ParseFloat(r.FundingFee, 64)
+		realizedPnL, _ := strconv.ParseFloat(r.RealizedPnl, 64)
 		entryPrice, _ := strconv.ParseFloat(r.OpenAvgPx, 64)
 		exitPrice, _ := strconv.ParseFloat(r.CloseAvgPx, 64)
 		closeSize, _ := strconv.ParseFloat(r.CloseTotalPos, 64)
-		ms, _ := strconv.ParseInt(r.UTime, 10, 64)
+		closeSize *= a.getCtVal(symbol) // contracts → base units
 
-		// OKX positions-history only returns total pnl (inclusive of fees/funding).
-		// Fee and funding breakdowns are not available from this endpoint.
+		// Use realizedPnl if available (= pnl + fee + fundingFee + liqPenalty),
+		// otherwise fall back to pricePnL.
+		netPnL := realizedPnL
+		if netPnL == 0 && pricePnL != 0 {
+			netPnL = pricePnL + fee + fundingFee
+		}
 
-		// Infer side: posSide is "net" in one-way mode, need to determine direction.
-		side := r.PosSide
-		if side == "net" {
-			// In one-way mode, infer from openMaxPos sign or entry/exit prices.
+		// Determine side: prefer direction field, fall back to posSide/inference.
+		side := r.Direction
+		if side == "" {
+			side = r.PosSide
+		}
+		if side == "net" || side == "" {
 			maxPos, _ := strconv.ParseFloat(r.OpenMaxPos, 64)
 			if maxPos > 0 {
 				side = "long"
 			} else if maxPos < 0 {
 				side = "short"
 			} else if entryPrice > 0 && exitPrice > 0 {
-				// Fallback: if bought lower and sold higher, was long
 				if exitPrice > entryPrice {
 					side = "long"
 				} else {
@@ -1044,9 +1069,9 @@ func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 		}
 
 		out = append(out, exchange.ClosePnL{
-			PricePnL:   netPnL, // best approximation; no separate breakdown available
-			Fees:       0,
-			Funding:    0,
+			PricePnL:   pricePnL,
+			Fees:       fee,
+			Funding:    fundingFee,
 			NetPnL:     netPnL,
 			EntryPrice: entryPrice,
 			ExitPrice:  exitPrice,
@@ -1151,6 +1176,22 @@ func (a *Adapter) EnsureOneWayMode() error {
 		return fmt.Errorf("EnsureOneWayMode: %w", err)
 	}
 	return nil
+}
+
+// Close terminates all WebSocket connections for graceful shutdown.
+func (a *Adapter) Close() {
+	a.priceMu.Lock()
+	if a.priceConn != nil {
+		a.priceConn.Close()
+		a.priceConn = nil
+	}
+	a.priceMu.Unlock()
+	a.privMu.Lock()
+	if a.privConn != nil {
+		a.privConn.Close()
+		a.privConn = nil
+	}
+	a.privMu.Unlock()
 }
 
 // getPositionMode queries the current position mode from OKX.

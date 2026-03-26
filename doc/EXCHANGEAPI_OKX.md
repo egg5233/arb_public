@@ -1200,3 +1200,579 @@ Orders can also be placed via WebSocket (shares rate limit with REST):
 - Connection limit: 3 new connections per second per IP
 - Ping keepalive: send `"ping"` string, expect `"pong"` string
 - Auto-disconnect after 30 seconds without data
+
+---
+
+## Appendix: Additional Endpoints (Patched)
+
+### Trading Account — Positions History
+
+#### GET /api/v5/account/positions-history
+Retrieve the updated position data for the last 3 months. Returns in reverse chronological order using `uTime`.
+
+**Rate Limit**: 10 req/2s | **Rule**: User ID | **Permission**: Read
+
+**Parameters**:
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| instType | String | No | Instrument type: `MARGIN`, `SWAP`, `FUTURES`, `OPTION` |
+| instId | String | No | Instrument ID, e.g. `BTC-USD-SWAP` |
+| mgnMode | String | No | Margin mode: `cross`, `isolated` |
+| type | String | No | Type of latest close position: `1`=Close partially, `2`=Close all, `3`=Liquidation, `4`=Partial liquidation, `5`=ADL (not fully closed), `6`=ADL (fully closed) |
+| posId | String | No | Position ID. Expires if >30 days after last full close; new posId assigned. |
+| after | String | No | Pagination — records earlier than requested `uTime` (Unix ms) |
+| before | String | No | Pagination — records newer than requested `uTime` (Unix ms) |
+| limit | String | No | Max 100, default 100. All records with same `uTime` returned together. |
+
+**Response Example**:
+```json
+{
+  "code": "0",
+  "data": [{
+    "cTime": "1654177169995",
+    "ccy": "BTC",
+    "closeAvgPx": "29786.5999999789081085",
+    "closeTotalPos": "1",
+    "instId": "BTC-USD-SWAP",
+    "instType": "SWAP",
+    "lever": "10.0",
+    "mgnMode": "cross",
+    "openAvgPx": "29783.8999999995535393",
+    "openMaxPos": "1",
+    "realizedPnl": "0.001",
+    "fee": "-0.0001",
+    "fundingFee": "0",
+    "liqPenalty": "0",
+    "pnl": "0.0011",
+    "pnlRatio": "0.000906447858888",
+    "posId": "452587086133239818",
+    "posSide": "long",
+    "direction": "long",
+    "triggerPx": "",
+    "type": "1",
+    "uTime": "1654177174419",
+    "uly": "BTC-USD",
+    "nonSettleAvgPx": "",
+    "settledPnl": ""
+  }],
+  "msg": ""
+}
+```
+
+**Response Fields**:
+| Field | Type | Description |
+|-------|------|-------------|
+| instType | String | Instrument type |
+| instId | String | Instrument ID |
+| mgnMode | String | Margin mode: `cross`, `isolated` |
+| type | String | Latest close type: `1`=Partial close, `2`=Close all, `3`=Liquidation, `4`=Partial liquidation, `5`=ADL |
+| cTime | String | Created time of position (Unix ms) |
+| uTime | String | Updated time of position (Unix ms) |
+| openAvgPx | String | Average open price. Cross-margin expiry futures updates at settlement. |
+| nonSettleAvgPx | String | Non-settlement entry price (only reflects open/increase avg price). Only for cross FUTURES. |
+| closeAvgPx | String | Average closing price |
+| posId | String | Position ID |
+| openMaxPos | String | Max quantity of position |
+| closeTotalPos | String | Position's cumulative closed volume |
+| realizedPnl | String | Realized PnL. Formula: `realizedPnl = pnl + fee + fundingFee + liqPenalty + settledPnl` |
+| settledPnl | String | Accumulated settled PnL (by settlement price). Only for cross FUTURES. |
+| pnl | String | Profit and loss (excluding fee) |
+| pnlRatio | String | Realized P&L ratio |
+| fee | String | Accumulated fee (negative = charged, positive = rebate) |
+| fundingFee | String | Accumulated funding fee |
+| liqPenalty | String | Accumulated liquidation penalty (negative when present) |
+| posSide | String | Position side: `long`, `short`, `net` |
+| lever | String | Leverage |
+| direction | String | Direction: `long`, `short`. Only for MARGIN/FUTURES/SWAP/OPTION. |
+| triggerPx | String | Trigger mark price. Has value when type is 3/4/5; empty for type 1/2. |
+| uly | String | Underlying |
+| ccy | String | Currency used for margin |
+
+---
+
+### Trade — Historical Fills (Last 3 Months)
+
+#### GET /api/v5/trade/fills-history
+Retrieve transaction details from the last 3 months.
+
+**Rate Limit**: 10 req/2s | **Rule**: User ID | **Permission**: Read
+
+**Parameters**:
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| instType | String | **Yes** | Instrument type: `SPOT`, `MARGIN`, `SWAP`, `FUTURES`, `OPTION` |
+| instFamily | String | No | Instrument family. Applicable to FUTURES/SWAP/OPTION. |
+| instId | String | No | Instrument ID, e.g. `BTC-USDT` |
+| ordId | String | No | Order ID |
+| subType | String | No | Transaction subtype (see below) |
+| after | String | No | Pagination — records earlier than requested `billId` |
+| before | String | No | Pagination — records newer than requested `billId` |
+| begin | String | No | Filter begin timestamp (Unix ms) |
+| end | String | No | Filter end timestamp (Unix ms) |
+| limit | String | No | Max 100, default 100 |
+
+**Key subType Values**:
+| Value | Description |
+|-------|-------------|
+| 1 | Buy |
+| 2 | Sell |
+| 3 | Open long |
+| 4 | Open short |
+| 5 | Close long |
+| 6 | Close short |
+| 100-107 | Liquidation variants |
+| 112-113 | Delivery long/short |
+| 125-128 | ADL variants |
+
+**Response Example**:
+```json
+{
+  "code": "0",
+  "data": [{
+    "side": "buy",
+    "fillSz": "0.00192834",
+    "fillPx": "51858",
+    "fillPxVol": "",
+    "fillFwdPx": "",
+    "fee": "-0.00000192834",
+    "fillPnl": "0",
+    "ordId": "680800019749904384",
+    "feeRate": "-0.001",
+    "instType": "SPOT",
+    "fillPxUsd": "",
+    "instId": "BTC-USDT",
+    "clOrdId": "",
+    "posSide": "net",
+    "billId": "680800019754098688",
+    "subType": "1",
+    "fillMarkVol": "",
+    "tag": "",
+    "fillTime": "1708587373361",
+    "execType": "T",
+    "fillIdxPx": "",
+    "tradeId": "744876980",
+    "fillMarkPx": "",
+    "feeCcy": "BTC",
+    "ts": "1708587373362",
+    "tradeQuoteCcy": "USDT"
+  }],
+  "msg": ""
+}
+```
+
+**Response Fields**:
+| Field | Type | Description |
+|-------|------|-------------|
+| instType | String | Instrument type |
+| instId | String | Instrument ID |
+| tradeId | String | Last trade ID |
+| ordId | String | Order ID (always `""` for block trading) |
+| clOrdId | String | Client Order ID (always `""` for block trading) |
+| billId | String | Bill ID |
+| subType | String | Transaction type |
+| tag | String | Order tag |
+| fillPx | String | Last filled price |
+| fillSz | String | Last filled quantity |
+| fillIdxPx | String | Index price at trade execution |
+| fillPnl | String | Last filled PnL (for closing position orders; `0` otherwise) |
+| fillPxVol | String | Implied volatility when filled (options only) |
+| fillPxUsd | String | Options price in USD when filled (options only) |
+| fillMarkVol | String | Mark volatility when filled (options only) |
+| fillFwdPx | String | Forward price when filled (options only) |
+| fillMarkPx | String | Mark price when filled (FUTURES/SWAP/OPTION) |
+| side | String | Order side: `buy`, `sell` |
+| posSide | String | Position side: `long`, `short`, `net` |
+| execType | String | Liquidity: `T`=taker, `M`=maker |
+| feeCcy | String | Fee/rebate currency |
+| fee | String | Fee amount (negative = charged, positive = rebate) |
+| feeRate | String | Fee rate (SPOT/MARGIN only) |
+| ts | String | Data generation time (Unix ms) |
+| fillTime | String | Trade time (Unix ms) |
+| tradeQuoteCcy | String | Quote currency for trading |
+
+**Note**: For recent 3-day data, prefer `GET /api/v5/trade/fills` (higher rate limit: 60 req/2s).
+
+---
+
+### Trade — Pending Orders
+
+#### GET /api/v5/trade/orders-pending
+Retrieve all incomplete orders under the current account.
+
+**Rate Limit**: 60 req/2s | **Rule**: User ID | **Permission**: Read
+
+**Parameters**:
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| instType | String | No | Instrument type: `SPOT`, `MARGIN`, `SWAP`, `FUTURES`, `OPTION` |
+| instFamily | String | No | Instrument family (FUTURES/SWAP/OPTION) |
+| instId | String | No | Instrument ID, e.g. `BTC-USD-200927` |
+| ordType | String | No | Order type (comma-separated): `market`, `limit`, `post_only`, `fok`, `ioc`, `optimal_limit_ioc`, `mmp`, `mmp_and_post_only`, `op_fok` |
+| state | String | No | State: `live`, `partially_filled` |
+| after | String | No | Pagination — records earlier than requested `ordId` |
+| before | String | No | Pagination — records newer than requested `ordId` |
+| limit | String | No | Max 100, default 100 |
+
+**Response Example**:
+```json
+{
+  "code": "0",
+  "data": [{
+    "accFillSz": "0",
+    "avgPx": "",
+    "cTime": "1724733617998",
+    "category": "normal",
+    "clOrdId": "",
+    "fee": "0",
+    "feeCcy": "BTC",
+    "fillPx": "",
+    "fillSz": "0",
+    "fillTime": "",
+    "instId": "BTC-USDT",
+    "instType": "SPOT",
+    "lever": "",
+    "ordId": "1752588852617379840",
+    "ordType": "post_only",
+    "pnl": "0",
+    "posSide": "net",
+    "px": "13013.5",
+    "reduceOnly": "false",
+    "side": "buy",
+    "slOrdPx": "",
+    "slTriggerPx": "",
+    "slTriggerPxType": "",
+    "source": "",
+    "state": "live",
+    "stpMode": "cancel_maker",
+    "sz": "0.001",
+    "tag": "",
+    "tdMode": "cash",
+    "tpOrdPx": "",
+    "tpTriggerPx": "",
+    "tpTriggerPxType": "",
+    "tradeId": "",
+    "uTime": "1724733617998"
+  }],
+  "msg": ""
+}
+```
+
+**Response Key Fields**:
+| Field | Type | Description |
+|-------|------|-------------|
+| instType | String | Instrument type |
+| instId | String | Instrument ID |
+| ordId | String | Order ID |
+| clOrdId | String | Client Order ID |
+| tag | String | Order tag |
+| px | String | Price |
+| pxUsd | String | Options price in USD (options only) |
+| pxVol | String | Implied volatility (options only) |
+| sz | String | Quantity to buy or sell |
+| pnl | String | PnL (for closing position orders; `0` otherwise) |
+| ordType | String | Order type |
+| side | String | Order side: `buy`, `sell` |
+| posSide | String | Position side |
+| tdMode | String | Trade mode: `cross`, `isolated`, `cash` |
+| accFillSz | String | Accumulated fill quantity |
+| fillPx | String | Last filled price |
+| tradeId | String | Last trade ID |
+| fillSz | String | Last filled quantity |
+| fillTime | String | Last filled time |
+| avgPx | String | Average filled price (`""` if none) |
+| state | String | State: `live`, `partially_filled` |
+| lever | String | Leverage (MARGIN/FUTURES/SWAP) |
+| tpTriggerPx | String | Take-profit trigger price |
+| tpTriggerPxType | String | TP trigger price type: `last`, `index`, `mark` |
+| tpOrdPx | String | Take-profit order price |
+| slTriggerPx | String | Stop-loss trigger price |
+| slTriggerPxType | String | SL trigger price type: `last`, `index`, `mark` |
+| slOrdPx | String | Stop-loss order price |
+| feeCcy | String | Fee currency |
+| fee | String | Fee amount |
+| rebateCcy | String | Rebate currency |
+| rebate | String | Rebate amount |
+| source | String | Order source (`6`=trigger, `7`=TP/SL, `13`=algo, `25`=trailing) |
+| category | String | Category: `normal` |
+| reduceOnly | String | Reduce-only: `true` or `false` |
+| uTime | String | Update time (Unix ms) |
+| cTime | String | Creation time (Unix ms) |
+
+---
+
+### Trade — Query Single Order
+
+#### GET /api/v5/trade/order
+Get order details. *(Already documented in main section — included here for reference completeness.)*
+
+**Rate Limit**: 60 req/2s | **Rule**: User ID + Instrument ID | **Permission**: Read
+
+**Parameters**:
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| instId | String | Yes | Instrument ID |
+| ordId | String | Conditional | Order ID (either `ordId` or `clOrdId` required) |
+| clOrdId | String | Conditional | Client Order ID |
+
+Response fields are the same as GET /api/v5/trade/orders-pending plus additional filled-state fields: `cancelSource`, `cancelSourceReason`.
+
+---
+
+### Trade — Place Algo Order (Stop-Loss / Take-Profit)
+
+#### POST /api/v5/trade/order-algo
+Place algo orders including: trigger, conditional (TP/SL), OCO, chase, trailing stop, and TWAP orders.
+
+**Rate Limit**: 20 req/2s | **Rule**: User ID + Instrument ID (Options: User ID + Instrument Family) | **Permission**: Trade
+
+**Common Parameters**:
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| instId | String | Yes | Instrument ID, e.g. `BTC-USDT-SWAP` |
+| tdMode | String | Yes | Trade mode: `cross`, `isolated`, `cash` |
+| side | String | Yes | Order side: `buy`, `sell` |
+| ordType | String | Yes | Order type: `conditional`, `oco`, `trigger`, `move_order_stop`, `twap`, `chase` |
+| posSide | String | Conditional | Position side (required in long/short mode): `long`, `short` |
+| sz | String | Conditional | Quantity. Either `sz` or `closeFraction` required. |
+| tag | String | No | Order tag (up to 16 chars) |
+| algoClOrdId | String | No | Client-supplied Algo ID (up to 32 chars) |
+| tgtCcy | String | No | Target currency for SPOT market buy: `base_ccy`, `quote_ccy` |
+| closeFraction | String | Conditional | Fraction of position to close (only `1` supported = full close). Only for FUTURES/SWAP with `conditional`/`oco`. |
+| reduceOnly | Boolean | No | Reduce-only order (default `false`) |
+
+**TP/SL Parameters** (for `ordType` = `conditional` or `oco`):
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| tpTriggerPx | String | No | Take-profit trigger price |
+| tpTriggerPxType | String | No | TP trigger type: `last` (default), `index`, `mark` |
+| tpOrdPx | String | No | TP order price (`-1` = market price) |
+| tpOrdKind | String | No | TP order kind: `condition` (default), `limit` |
+| slTriggerPx | String | No | Stop-loss trigger price |
+| slTriggerPxType | String | No | SL trigger type: `last` (default), `index`, `mark` |
+| slOrdPx | String | No | SL order price (`-1` = market price) |
+| cxlOnClosePos | Boolean | No | Cancel TP/SL when position fully closed (default `false`). Requires `reduceOnly=true`. |
+
+**Request Example (Conditional TP/SL)**:
+```json
+{
+  "instId": "BTC-USDT-SWAP",
+  "tdMode": "cross",
+  "side": "buy",
+  "ordType": "conditional",
+  "sz": "2",
+  "posSide": "short",
+  "slTriggerPx": "99000",
+  "slOrdPx": "-1",
+  "slTriggerPxType": "mark"
+}
+```
+
+**Response Example**:
+```json
+{
+  "code": "0",
+  "data": [{
+    "algoClOrdId": "order1234",
+    "algoId": "1836487817828872192",
+    "clOrdId": "",
+    "sCode": "0",
+    "sMsg": "",
+    "tag": ""
+  }],
+  "msg": ""
+}
+```
+
+**Response Fields**:
+| Field | Type | Description |
+|-------|------|-------------|
+| algoId | String | Algo ID |
+| algoClOrdId | String | Client-supplied Algo ID |
+| sCode | String | Event result code (`0` = success) |
+| sMsg | String | Rejection message (empty on success) |
+| clOrdId | String | Client Order ID *(deprecated)* |
+| tag | String | Order tag |
+
+**Note**: When placing net TP/SL (`ordType=conditional`) with both TP and SL params, only SL logic executes; TP is ignored.
+
+---
+
+### Trade — Cancel Algo Orders
+
+#### POST /api/v5/trade/cancel-algos
+Cancel unfilled algo orders. Max 10 orders per request. Request body is an **array** of objects.
+
+**Rate Limit**: 20 req/2s | **Rule**: User ID + Instrument ID (Options: User ID + Instrument Family) | **Permission**: Trade
+
+**Request Body** (Array of objects):
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| instId | String | Yes | Instrument ID, e.g. `BTC-USDT` |
+| algoId | String | Conditional | Algo ID. Either `algoId` or `algoClOrdId` required. If both, `algoId` used. |
+| algoClOrdId | String | Conditional | Client-supplied Algo ID |
+
+**Request Example**:
+```json
+[
+  {
+    "algoId": "590919993110396111",
+    "instId": "BTC-USDT"
+  },
+  {
+    "algoId": "590920138287841222",
+    "instId": "BTC-USDT"
+  }
+]
+```
+
+**Response Example**:
+```json
+{
+  "code": "0",
+  "data": [{
+    "algoClOrdId": "",
+    "algoId": "1836489397437468672",
+    "clOrdId": "",
+    "sCode": "0",
+    "sMsg": "",
+    "tag": ""
+  }],
+  "msg": ""
+}
+```
+
+**Response Fields**:
+| Field | Type | Description |
+|-------|------|-------------|
+| algoId | String | Algo ID |
+| algoClOrdId | String | Client-supplied Algo ID *(deprecated)* |
+| sCode | String | Event result code (`0` = success) |
+| sMsg | String | Rejection message (empty on success) |
+| clOrdId | String | Client Order ID *(deprecated)* |
+| tag | String | Order tag *(deprecated)* |
+
+---
+
+### Funding Account — Withdrawal
+
+#### POST /api/v5/asset/withdrawal
+Withdraw assets from funding account. Only supports verified addresses (set via WEB/APP). Common sub-accounts do not support withdrawal.
+
+**Rate Limit**: 6 req/s | **Rule**: User ID | **Permission**: Withdraw
+
+**Parameters**:
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| ccy | String | Yes | Currency, e.g. `USDT` |
+| amt | String | Yes | Withdrawal amount (fee not included; reserve sufficient tx fees) |
+| dest | String | Yes | Withdrawal method: `3`=internal transfer, `4`=on-chain withdrawal |
+| toAddr | String | Yes | Destination address. For `dest=4`: wallet address (some formatted as `address:tag`). For `dest=3`: UID, email, phone, or login account name. |
+| toAddrType | String | No | Address type: `1`=wallet/email/phone/name, `2`=UID (only for `dest=3`) |
+| chain | String | Conditional | Chain name, e.g. `USDT-TRC20`, `USDT-ERC20`. Defaults to main chain. Required for on-chain withdrawal if multiple chains available. |
+| areaCode | String | Conditional | Phone area code (e.g. `86`). Required if `toAddr` is a phone number. |
+| clientId | String | No | Client-supplied ID (up to 32 chars) |
+| rcvrInfo | Object | Conditional | Recipient info (required for specific entity users on-chain withdrawal) |
+
+**rcvrInfo Object**:
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| walletType | String | Yes | `exchange` or `private` |
+| exchId | String | Conditional | Exchange ID (for `walletType=exchange`; use `0` if not in list) |
+| rcvrFirstName | String | Conditional | Receiver's first name |
+| rcvrLastName | String | Conditional | Receiver's last name |
+| rcvrCountry | String | Conditional | Recipient country (English name or ISO 3166-1 code) |
+| rcvrCountrySubDivision | String | Conditional | State/province |
+| rcvrTownName | String | Conditional | City |
+| rcvrStreetName | String | Conditional | Street address |
+
+**Request Example (on-chain)**:
+```json
+{
+  "amt": "100",
+  "dest": "4",
+  "ccy": "USDT",
+  "chain": "USDT-TRC20",
+  "toAddr": "TXtvfb7cdrn6VX9H49mgio8bUxZ3DGfvYF"
+}
+```
+
+**Request Example (internal transfer)**:
+```json
+{
+  "amt": "10",
+  "dest": "3",
+  "ccy": "USDT",
+  "toAddr": "user@example.com"
+}
+```
+
+**Response Example**:
+```json
+{
+  "code": "0",
+  "msg": "",
+  "data": [{
+    "amt": "0.1",
+    "wdId": "67485",
+    "ccy": "BTC",
+    "clientId": "",
+    "chain": "BTC-Bitcoin"
+  }]
+}
+```
+
+**Response Fields**:
+| Field | Type | Description |
+|-------|------|-------------|
+| ccy | String | Currency |
+| chain | String | Chain name, e.g. `USDT-ERC20` |
+| amt | String | Withdrawal amount |
+| wdId | String | Withdrawal ID |
+| clientId | String | Client-supplied ID |
+
+---
+
+### Trading Account — Bills Details (Completeness Patch)
+
+#### GET /api/v5/account/bills
+*(Already documented in main section. This patch adds missing parameters and response fields from the official docs.)*
+
+**Additional Request Parameters** (not in main section):
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| begin | String | No | Filter with begin timestamp (Unix ms), e.g. `1597026383085` |
+| end | String | No | Filter with end timestamp (Unix ms), e.g. `1597026383085` |
+
+**Additional Response Fields** (not in main section):
+| Field | Type | Description |
+|-------|------|-------------|
+| posBalChg | String | Change in balance amount at the position level |
+| posBal | String | Balance at the position level |
+| interest | String | Interest |
+| notes | String | Notes |
+| earnAmt | String | Auto earn amount (only when type is `381`) |
+| earnApr | String | Auto earn APR (only when type is `381`) |
+| fillIdxPx | String | Index price at trade execution |
+| fillMarkPx | String | Mark price when filled (FUTURES/SWAP/OPTIONS) |
+| fillPxVol | String | Implied volatility when filled (options only) |
+| fillPxUsd | String | Options price in USD when filled (options only) |
+| fillMarkVol | String | Mark volatility when filled (options only) |
+| fillFwdPx | String | Forward price when filled (options only) |
+
+**Bills Archive Endpoint** — For data beyond 7 days (up to 3 months), use:
+
+#### GET /api/v5/account/bills-archive
+Same parameters and response fields as `GET /api/v5/account/bills`, but covers the last 3 months.
+
+**Rate Limit**: 5 req/2s | **Rule**: User ID | **Permission**: Read
+
+**Note on `px` field semantics by subType**:
+- SubTypes 1-6 (trade fills): `px` = trade filled price
+- SubTypes 100-107 (liquidation): `px` = liquidation price
+- SubTypes 112-113 (delivery): `px` = delivery price
+- SubTypes 170-172 (exercise): `px` = exercise price
+- SubTypes 173-174 (funding fee): `px` = mark price
+
+**Funding Fee in Bills**:
+- SubType `173` = Funding fee expense → check `pnl` field for fee payment
+- SubType `174` = Funding fee income

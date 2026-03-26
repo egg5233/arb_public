@@ -1099,6 +1099,16 @@ func (a *Adapter) CancelStopLoss(symbol, orderID string) error {
 }
 
 // EnsureOneWayMode sets the account to one-way (MergedSingle) position mode.
+// Close terminates all WebSocket connections for graceful shutdown.
+func (a *Adapter) Close() {
+	if a.publicWS != nil {
+		a.publicWS.Close()
+	}
+	if a.privateWS != nil {
+		a.privateWS.Close()
+	}
+}
+
 func (a *Adapter) EnsureOneWayMode() error {
 	params := map[string]string{
 		"category": "linear",

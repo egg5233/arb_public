@@ -837,3 +837,202 @@ Incremental order book updates.
 - Use protocol-level ping/pong to keep alive
 - Application-level: send `{"channel": "futures.ping"}`, receive `futures.pong`
 - Auth: sign `channel=<channel>&event=<event>&time=<time>` with HMAC-SHA512
+
+---
+
+## Appendix: Additional Endpoints (Patched)
+
+### Position Close History
+
+#### Query Position Close History
+- **Endpoint**: `GET /api/v4/futures/{settle}/position_close`
+- **Auth**: Yes
+- **Parameters**:
+
+| Name | In | Type | Required | Description |
+|------|-----|------|----------|-------------|
+| settle | path | string | yes | `btc` or `usdt` |
+| contract | query | string | no | Futures contract, return related data only if specified |
+| limit | query | integer | no | Maximum number of records returned in a single list |
+| offset | query | integer | no | List offset, starting from 0 |
+| from | query | integer(int64) | no | Start timestamp (Unix seconds). Defaults to data start time of range returned by `to` and `limit` |
+| to | query | integer(int64) | no | End timestamp (Unix seconds). Defaults to current time |
+| side | query | string | no | Query side: `long` or `short` |
+| pnl | query | string | no | Query profit or loss |
+
+- **Response** (200): Array of position close records
+```json
+[
+  {
+    "time": 1546487347,
+    "pnl": "0.00013",
+    "pnl_pnl": "0.00011",
+    "pnl_fund": "0.00001",
+    "pnl_fee": "0.00001",
+    "side": "long",
+    "contract": "BTC_USDT",
+    "text": "web",
+    "max_size": "100",
+    "accum_size": "100",
+    "first_open_time": 1546487347,
+    "long_price": "2026.87",
+    "short_price": "2544.4"
+  }
+]
+```
+
+**Response Fields**:
+- `time`: Position close time (Unix timestamp, float)
+- `contract`: Futures contract (e.g. `BTC_USDT`)
+- `side`: Position side — `long` or `short`
+- `pnl`: Total PnL
+- `pnl_pnl`: PnL from position P/L
+- `pnl_fund`: PnL from funding fees
+- `pnl_fee`: PnL from transaction fees
+- `text`: Source of close order (see order `text` field for values)
+- `max_size`: Max trade size
+- `accum_size`: Cumulative closed position volume
+- `first_open_time`: First open time (Unix timestamp)
+- `long_price`: When side is `long`, opening average price; when side is `short`, closing average price
+- `short_price`: When side is `long`, closing average price; when side is `short`, opening average price
+
+---
+
+### Conditional / Price-Triggered Orders
+
+#### Create Price-Triggered Order
+- **Endpoint**: `POST /api/v4/futures/{settle}/price_orders`
+- **Auth**: Yes
+- **Body Parameters**:
+
+| Name | In | Type | Required | Description |
+|------|-----|------|----------|-------------|
+| initial | body | object | yes | Order parameters |
+| initial.contract | body | string | yes | Futures contract (e.g. `BTC_USDT`) |
+| initial.size | body | integer(int64) | no | Number of contracts. `0` = full close. Positive/negative indicates direction for partial close |
+| initial.price | body | string | yes | Order price. `"0"` = market price |
+| initial.close | body | boolean | no | Set `true` for full close in single-position mode |
+| initial.tif | body | string | no | Time in force: `gtc` (default), `ioc`. Market orders only support `ioc` |
+| initial.text | body | string | no | Order source: `web`, `api`, `app` |
+| initial.reduce_only | body | boolean | no | When `true`, ensures order only closes/reduces position |
+| initial.auto_size | body | string | no | Hedge mode full close (size=0): `close_long` or `close_short`. Not required for one-way mode or partial close |
+| trigger | body | object | yes | Trigger condition |
+| trigger.strategy_type | body | integer(int32) | no | `0` = price trigger (default), `1` = price spread trigger |
+| trigger.price_type | body | integer(int32) | no | `0` = latest trade price, `1` = mark price, `2` = index price |
+| trigger.price | body | string | yes | Trigger price value |
+| trigger.rule | body | integer(int32) | yes | `1` = trigger when price >= trigger price (trigger price must > last price). `2` = trigger when price <= trigger price (trigger price must < last price) |
+| trigger.expiration | body | integer | no | Max wait time in seconds. Order cancelled if timeout |
+| order_type | body | string | no | Take-profit/stop-loss type (see values below) |
+| settle | path | string | yes | `btc` or `usdt` |
+
+**order_type Values**:
+- `close-long-order`: Order TP/SL, close long position
+- `close-short-order`: Order TP/SL, close short position
+- `close-long-position`: Position TP/SL, close all long positions
+- `close-short-position`: Position TP/SL, close all short positions
+- `plan-close-long-position`: Position plan TP/SL, close all or partial long
+- `plan-close-short-position`: Position plan TP/SL, close all or partial short
+
+**Note**: The two `close-*-order` types are read-only and cannot be passed in requests.
+
+- **Response** (201):
+```json
+{
+  "id": 1432329
+}
+```
+
+**Request Body Example**:
+```json
+{
+  "initial": {
+    "contract": "BTC_USDT",
+    "size": 100,
+    "price": "5.03"
+  },
+  "trigger": {
+    "strategy_type": 0,
+    "price_type": 0,
+    "price": "3000",
+    "rule": 1,
+    "expiration": 86400
+  },
+  "order_type": "close-long-order"
+}
+```
+
+#### Cancel Single Conditional Order
+- **Endpoint**: `DELETE /api/v4/futures/{settle}/price_orders/{order_id}`
+- **Auth**: Yes
+- **Parameters**:
+
+| Name | In | Type | Required | Description |
+|------|-----|------|----------|-------------|
+| settle | path | string | yes | `btc` or `usdt` |
+| order_id | path | integer(int64) | yes | Order ID returned when order was successfully created |
+
+- **Response** (200): `FuturesPriceTriggeredOrder` object
+```json
+{
+  "initial": {
+    "contract": "BTC_USDT",
+    "size": 100,
+    "price": "5.03"
+  },
+  "trigger": {
+    "strategy_type": 0,
+    "price_type": 0,
+    "price": "3000",
+    "rule": 1,
+    "expiration": 86400
+  },
+  "id": 1283293,
+  "user": 1234,
+  "create_time": 1514764800,
+  "finish_time": 1514764900,
+  "trade_id": 13566,
+  "status": "finished",
+  "finish_as": "cancelled",
+  "reason": "",
+  "order_type": "close-long-order"
+}
+```
+
+#### FuturesPriceTriggeredOrder Schema Reference
+
+```json
+{
+  "initial": {
+    "contract": "string",
+    "size": 0,
+    "price": "string",
+    "close": false,
+    "tif": "gtc",
+    "text": "string",
+    "reduce_only": false,
+    "auto_size": "string",
+    "is_reduce_only": true,
+    "is_close": true
+  },
+  "trigger": {
+    "strategy_type": 0,
+    "price_type": 0,
+    "price": "string",
+    "rule": 1,
+    "expiration": 0
+  },
+  "id": 0,
+  "user": 0,
+  "create_time": 0,
+  "finish_time": 0,
+  "trade_id": 0,
+  "status": "open",
+  "finish_as": "cancelled",
+  "reason": "string",
+  "order_type": "string",
+  "me_order_id": 0
+}
+```
+
+**Status Values**: `open`, `finished`, `inactive`, `invalid`
+**finish_as Values**: `cancelled`, `succeeded`, `failed`, `expired`

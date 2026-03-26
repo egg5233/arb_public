@@ -1059,3 +1059,234 @@ No channel subscription needed — all private events are pushed automatically a
 - Maker: 0.0002 (0.02%)
 - Taker: 0.0005 (0.05%)
 - Fees may vary by VIP level
+
+---
+
+## Appendix: Additional Endpoints (Patched)
+
+### Query Position History (Closed Positions / PnL)
+- **Endpoint**: `GET /openApi/swap/v1/trade/positionHistory`
+- **Rate Limit**: 5/s per UID
+- **Auth**: Yes (Read permission)
+- **Description**: Query the position history of perpetual contracts under the current account. Returns closed position records with realized PnL, funding, and commission breakdown.
+- **Parameters**:
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| symbol | string | Yes | Trading pair, e.g. BTC-USDT |
+| currency | string | No | USDC or USDT |
+| timestamp | int64 | Yes | Request timestamp (ms) |
+| positionId | int64 | No | Position ID; if not provided, returns all |
+| startTs | int64 | Yes | Start timestamp (ms) |
+| endTs | int64 | Yes | End timestamp (ms) |
+| pageIndex | int64 | No | Page number, must be > 0 (default 1) |
+| pageSize | int64 | No | Page size, must be > 0 (default 20) |
+| recvWindow | int64 | No | Request valid window (ms) |
+
+- **Response Fields** (inside `data.positionHistory` array):
+
+| Field | Type | Description |
+|---|---|---|
+| symbol | string | Trading pair, e.g. BTC-USDT |
+| positionId | string | Position ID |
+| positionSide | string | Position side: `LONG` / `SHORT` |
+| isolated | bool | Isolated mode (true=isolated, false=cross) |
+| closeAllPositions | bool | All positions closed |
+| positionAmt | string | Position amount |
+| closePositionAmt | string | Closed position amount |
+| realisedProfit | string | Realized profit and loss |
+| netProfit | string | Net profit and loss |
+| avgClosePrice | float64 | Average close price |
+| avgPrice | string | Average open price |
+| leverage | int | Leverage |
+| positionCommission | string | Commission fee |
+| totalFunding | string | Funding fee |
+| openTime | int64 | Open time (ms) |
+| closeTime | int64 | Close time (ms) |
+
+- **Response Example**:
+```json
+{
+  "code": 0,
+  "msg": "",
+  "data": {
+    "positionHistory": [
+      {
+        "symbol": "BTC-USDT",
+        "positionId": "1792xxxxx",
+        "positionSide": "LONG",
+        "isolated": false,
+        "closeAllPositions": true,
+        "positionAmt": "0.0010",
+        "closePositionAmt": "0.0010",
+        "realisedProfit": "1.23",
+        "netProfit": "0.95",
+        "avgClosePrice": 65100.5,
+        "avgPrice": "65000.0",
+        "leverage": 5,
+        "positionCommission": "0.13",
+        "totalFunding": "-0.15",
+        "openTime": 1700409600000,
+        "closeTime": 1700496000000
+      }
+    ]
+  }
+}
+```
+
+---
+
+### Query All Fill Orders (Trade History)
+- **Endpoint**: `GET /openApi/swap/v2/trade/allFillOrders`
+- **Rate Limit**: 5/s per UID
+- **Auth**: Yes (Perpetual Futures Trading permission)
+- **Description**: Query the fill/trade history for perpetual contracts.
+
+> **WARNING — Parameter Mismatch in Adapter**: The official API requires `startTs`/`endTs` (not `startTime`/`endTime`) and `tradingUnit` is required. Our adapter (`adapter.go:868`) passes `startTime` and `limit` which are **not documented parameters** — this is likely the cause of empty/unreliable responses. Consider migrating to `GET /openApi/swap/v2/trade/fillHistory` which is a newer endpoint with pagination support.
+
+- **Parameters**:
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| orderId | int64 | No | If provided, only returns fills for that order |
+| currency | string | No | USDC or USDT |
+| tradingUnit | string | Yes | Trading unit: `COIN` or `CONT` |
+| startTs | int64 | Yes | Start timestamp (ms) |
+| endTs | int64 | Yes | End timestamp (ms) |
+| timestamp | int64 | Yes | Request timestamp (ms) |
+| recvWindow | int64 | No | Request valid window (ms) |
+
+- **Response Fields** (inside `data.fill_orders` array):
+
+| Field | Type | Description |
+|---|---|---|
+| filledTm | string | Transaction time (formatted string, e.g. "2024-01-15 10:30:00") |
+| symbol | string | Trading pair, e.g. BTC-USDT |
+| volume | string | Transaction quantity |
+| price | string | Transaction price |
+| amount | string | Transaction amount (USDT) |
+| commission | string | Commission fee |
+| currency | string | Asset unit, usually USDT |
+| orderId | string | Order ID |
+| liquidatedPrice | string | Estimated liquidation price (if triggered by liquidation) |
+| liquidatedMarginRatio | string | Margin ratio at liquidation |
+| workingType | string | Trigger price type: `MARK_PRICE` / `CONTRACT_PRICE` / `INDEX_PRICE` |
+| filledTime | string | Filled time (ms timestamp as string) |
+| side | string | Direction: `BUY` / `SELL` |
+| type | string | Order type: `LIMIT`, `MARKET`, etc. |
+| positionSide | string | Position direction: `LONG` / `SHORT` / `BOTH` |
+| clientOrderID | string | Custom order ID |
+| onlyOnePosition | bool | One-way position mode flag |
+
+- **Note**: A newer alternative endpoint exists: `GET /openApi/swap/v2/trade/fillHistory` which provides `tradeId`, `role` (maker/taker), `total` count, and supports `pageIndex`/`pageSize` pagination plus `lastFillId` cursor — recommended for new integrations.
+
+---
+
+### Query Fill History (Newer Alternative)
+- **Endpoint**: `GET /openApi/swap/v2/trade/fillHistory`
+- **Rate Limit**: 5/s per UID
+- **Auth**: Yes (Read permission)
+- **Description**: Newer fill history endpoint with pagination and trade ID support. Recommended over `allFillOrders`.
+- **Parameters**:
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| symbol | string | Yes | Trading pair, e.g. BTC-USDT |
+| currency | string | No | USDC or USDT |
+| orderId | int64 | No | Filter by order ID |
+| lastFillId | int64 | No | Last tradeId from previous query (cursor-based pagination) |
+| startTs | int64 | Yes | Start timestamp (ms) |
+| endTs | int64 | Yes | End timestamp (ms) |
+| timestamp | int64 | Yes | Request timestamp (ms) |
+| recvWindow | int64 | No | Request valid window (ms) |
+| pageIndex | int64 | No | Page number, must be > 0 |
+| pageSize | int64 | No | Page size, must be > 0 |
+
+- **Response Fields** (inside `data.fill_orders` array):
+
+| Field | Type | Description |
+|---|---|---|
+| symbol | string | Trading pair, e.g. BTC-USDT |
+| qty | string | Transaction quantity |
+| price | string | Transaction price |
+| quoteQty | string | Transaction amount (USDT) |
+| commission | string | Commission fee |
+| commissionAsset | string | Fee asset, usually USDT |
+| orderId | string | Order ID |
+| tradeId | string | Trade ID |
+| filledTime | string | Filled time (ms timestamp as string) |
+| side | string | Direction: `BUY` / `SELL` |
+| positionSide | string | Position direction: `LONG` / `SHORT` / `BOTH` |
+| role | string | Execution role: `TAKER` / `MAKER` |
+| total | int64 | Total matching records |
+
+---
+
+### Query API Key Permissions
+- **Endpoint**: `GET /openApi/v1/account/apiRestrictions`
+- **Rate Limit**: Not documented (use conservatively)
+- **Auth**: Yes (API key header only, no special permission required)
+- **Description**: Returns the permissions granted to the current API key. This is a Binance-compatible endpoint that BingX supports but does **not prominently document** in their official API reference. The response does NOT follow the standard `{code, data}` wrapper — it returns the permission object directly.
+- **Parameters**:
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| timestamp | int64 | Yes | Request timestamp (ms) |
+| recvWindow | int64 | No | Request valid window (ms) |
+
+- **Response Fields** (top-level object, NOT wrapped in `{code, data}`):
+
+| Field | Type | Description |
+|---|---|---|
+| enableReading | bool | Read permission enabled |
+| enableFutures | bool | Perpetual futures trading permission enabled |
+| permitsUniversalTransfer | bool | Universal transfer permission enabled |
+
+- **Response Example**:
+```json
+{
+  "enableReading": true,
+  "enableFutures": true,
+  "permitsUniversalTransfer": true
+}
+```
+
+- **Note**: Unlike most BingX endpoints, this response is NOT wrapped in the standard `{"code": 0, "msg": "", "data": ...}` envelope. Parse the response body directly. If the API key is invalid, a standard error envelope `{"code": N, "msg": "..."}` is returned instead.
+
+---
+
+### Withdraw
+- **Endpoint**: `POST /openApi/wallets/v1/capital/withdraw/apply`
+- **Rate Limit**: 2/s per UID
+- **Auth**: Yes (Withdraw permission required)
+- **Description**: Initiate a withdrawal from BingX.
+- **Parameters**:
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| coin | string | Yes | Coin name (e.g. USDT) |
+| network | string | No | Network name (e.g. BEP20, ERC20); uses default if omitted |
+| address | string | Yes | Withdrawal address |
+| addressTag | string | No | Tag or memo (required for some currencies like XRP, EOS) |
+| amount | float64 | Yes | Withdrawal amount |
+| walletType | int64 | Yes | Account type: 1=Fund Account, 2=Standard Futures, 3=Perpetual Futures, 4=Spot |
+| withdrawOrderId | string | No | Custom withdrawal ID for client tracking |
+| recvWindow | int64 | No | Request valid window (ms) |
+| timestamp | int64 | Yes | Request timestamp (ms) |
+
+- **Response Fields** (inside `data`):
+
+| Field | Type | Description |
+|---|---|---|
+| id | string | Withdrawal order ID |
+
+- **Response Example**:
+```json
+{
+  "code": 0,
+  "msg": "",
+  "data": {
+    "id": "7213fea8e94b4a5ab9e554d"
+  }
+}
+```

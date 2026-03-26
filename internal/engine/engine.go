@@ -1767,22 +1767,39 @@ func (e *Engine) executeTradeV2WithPos(opp models.Opportunity, pos *models.Arbit
 	defer longExch.UnsubscribeDepth(opp.Symbol)
 	defer shortExch.UnsubscribeDepth(opp.Symbol)
 
-	// Wait up to 2s for depth data to arrive
+	// Wait up to 8s for depth data to arrive with retry.
+	// Some exchanges (BingX) have unstable WS — re-subscribe if first attempt fails.
 	depthReady := false
-	for i := 0; i < 20; i++ {
-		_, lok := longExch.GetDepth(opp.Symbol)
-		_, sok := shortExch.GetDepth(opp.Symbol)
-		if lok && sok {
-			depthReady = true
+	for attempt := 0; attempt < 2; attempt++ {
+		for i := 0; i < 40; i++ { // 4s per attempt
+			_, lok := longExch.GetDepth(opp.Symbol)
+			_, sok := shortExch.GetDepth(opp.Symbol)
+			if lok && sok {
+				depthReady = true
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if depthReady {
 			break
 		}
-		time.Sleep(100 * time.Millisecond)
+		if attempt == 0 {
+			// First attempt failed — force re-subscribe (handles stale WS state)
+			e.log.Warn("depth subscribe retry for %s: re-subscribing both legs", opp.Symbol)
+			longExch.UnsubscribeDepth(opp.Symbol)
+			shortExch.UnsubscribeDepth(opp.Symbol)
+			time.Sleep(200 * time.Millisecond)
+			longExch.SubscribeDepth(opp.Symbol)
+			shortExch.SubscribeDepth(opp.Symbol)
+		}
 	}
 	if !depthReady {
 		pos.Status = models.StatusClosed
 		pos.UpdatedAt = time.Now().UTC()
 		_ = e.db.SavePosition(pos)
-		return fmt.Errorf("depth data not available after 2s for %s", opp.Symbol)
+		_, lok := longExch.GetDepth(opp.Symbol)
+		_, sok := shortExch.GetDepth(opp.Symbol)
+		return fmt.Errorf("depth data not available after 8s for %s (long=%v short=%v)", opp.Symbol, lok, sok)
 	}
 
 	// ---------------------------------------------------------------
@@ -1815,11 +1832,33 @@ func (e *Engine) executeTradeV2WithPos(opp models.Opportunity, pos *models.Arbit
 	e.log.Info("depth fill loop starting for %s: target=%.6f timeout=%ds",
 		opp.Symbol, targetSize, e.cfg.EntryTimeoutSec)
 
+	// Look up step size + min size for the "close enough" check.
+	var stepSize, minSize float64
+	if e.contracts != nil {
+		if exContracts, ok := e.contracts[opp.ShortExchange]; ok {
+			if ci, ok := exContracts[opp.Symbol]; ok {
+				stepSize = ci.StepSize
+				minSize = ci.MinSize
+			}
+		}
+	}
+
 fillLoop:
 	for {
-		remaining := targetSize - math.Min(confirmedLong, confirmedShort)
-		if remaining <= 0 {
-			e.log.Info("depth fill loop: target reached for %s", opp.Symbol)
+		filled := math.Min(confirmedLong, confirmedShort)
+		remaining := targetSize - filled
+		// Done if: exact target, within 0.5% tolerance, or remaining < step/min size (unfillable).
+		closeEnough := remaining <= 0 ||
+			(filled > 0 && remaining/targetSize < 0.005) ||
+			(filled > 0 && stepSize > 0 && remaining < stepSize) ||
+			(filled > 0 && minSize > 0 && remaining < minSize)
+		if closeEnough {
+			if remaining > 0 {
+				e.log.Info("depth fill loop: target ~reached for %s (%.1f%% filled, remaining %.6f < step/min)",
+					opp.Symbol, filled/targetSize*100, remaining)
+			} else {
+				e.log.Info("depth fill loop: target reached for %s", opp.Symbol)
+			}
 			break
 		}
 		if time.Now().After(deadline) {
@@ -1849,11 +1888,19 @@ fillLoop:
 		shortDepth, sok := shortExch.GetDepth(opp.Symbol)
 		longDepth, lok := longExch.GetDepth(opp.Symbol)
 		if !sok || !lok || len(shortDepth.Bids) == 0 || len(longDepth.Asks) == 0 {
+			if time.Now().After(deadline.Add(-290 * time.Second)) { // log once near start
+				e.log.Debug("depth fill %s: no depth (short=%v long=%v)", opp.Symbol, sok, lok)
+			}
 			continue
 		}
 
 		// Staleness check: skip if depth is older than 5 seconds
-		if time.Since(shortDepth.Time) > 5*time.Second || time.Since(longDepth.Time) > 5*time.Second {
+		shortAge := time.Since(shortDepth.Time)
+		longAge := time.Since(longDepth.Time)
+		if shortAge > 5*time.Second || longAge > 5*time.Second {
+			if time.Now().After(deadline.Add(-290 * time.Second)) { // log once near start
+				e.log.Debug("depth fill %s: stale (short=%.1fs long=%.1fs)", opp.Symbol, shortAge.Seconds(), longAge.Seconds())
+			}
 			continue
 		}
 
@@ -1962,7 +2009,8 @@ fillLoop:
 			}
 			shortFilled, shortAvg = e.confirmFill(shortExch, shortOID, opp.Symbol)
 			if shortFilled == 0 {
-				e.log.Info("depth tick: short leg got 0 fill, free abort")
+				shortConsecFails++
+				e.log.Info("depth tick: short leg got 0 fill (%d/%d)", shortConsecFails, maxConsecFails)
 				continue
 			}
 			shortConsecFails = 0
@@ -2011,7 +2059,8 @@ fillLoop:
 			}
 			longFilled, longAvg = e.confirmFill(longExch, longOID, opp.Symbol)
 			if longFilled == 0 {
-				e.log.Info("depth tick: long leg got 0 fill, free abort")
+				longConsecFails++
+				e.log.Info("depth tick: long leg got 0 fill (%d/%d)", longConsecFails, maxConsecFails)
 				continue
 			}
 			longConsecFails = 0
@@ -2241,36 +2290,51 @@ func (e *Engine) closeLeg(exch exchange.Exchange, symbol string, side exchange.S
 // sums the fees. Runs asynchronously after entry activation. Updates pos.EntryFees
 // in Redis if fees > 0.
 func (e *Engine) queryEntryFees(pos *models.ArbitragePosition) {
-	// Small delay to let exchanges finalize trade records.
-	time.Sleep(2 * time.Second)
-
 	since := pos.CreatedAt.Add(-1 * time.Minute)
-	var totalFees float64
-
 	longExch, lok := e.exchanges[pos.LongExchange]
 	shortExch, sok := e.exchanges[pos.ShortExchange]
 
-	if lok {
-		trades, err := longExch.GetUserTrades(pos.Symbol, since, 50)
-		if err != nil {
-			e.log.Warn("queryEntryFees %s: %s GetUserTrades failed: %v", pos.ID, pos.LongExchange, err)
-		} else {
-			for _, t := range trades {
-				totalFees += t.Fee
+	// Retry up to 3 times with increasing delays — some exchanges (BingX)
+	// are slow to make fill records available via REST after WS confirms.
+	delays := []time.Duration{5 * time.Second, 10 * time.Second, 20 * time.Second}
+	var longFees, shortFees float64
+
+	for attempt, delay := range delays {
+		time.Sleep(delay)
+		longFees, shortFees = 0, 0
+
+		if lok {
+			trades, err := longExch.GetUserTrades(pos.Symbol, since, 50)
+			if err != nil {
+				e.log.Warn("queryEntryFees %s: %s GetUserTrades failed: %v", pos.ID, pos.LongExchange, err)
+			} else {
+				for _, t := range trades {
+					longFees += t.Fee
+				}
 			}
 		}
-	}
-	if sok {
-		trades, err := shortExch.GetUserTrades(pos.Symbol, since, 50)
-		if err != nil {
-			e.log.Warn("queryEntryFees %s: %s GetUserTrades failed: %v", pos.ID, pos.ShortExchange, err)
-		} else {
-			for _, t := range trades {
-				totalFees += t.Fee
+		if sok {
+			trades, err := shortExch.GetUserTrades(pos.Symbol, since, 50)
+			if err != nil {
+				e.log.Warn("queryEntryFees %s: %s GetUserTrades failed: %v", pos.ID, pos.ShortExchange, err)
+			} else {
+				for _, t := range trades {
+					shortFees += t.Fee
+				}
 			}
+		}
+
+		// Both legs returned fees — done.
+		if longFees > 0 && shortFees > 0 {
+			break
+		}
+		if attempt < len(delays)-1 {
+			e.log.Debug("queryEntryFees %s: attempt %d — long=%.4f short=%.4f, retrying...",
+				pos.ID, attempt+1, longFees, shortFees)
 		}
 	}
 
+	totalFees := longFees + shortFees
 	if totalFees <= 0 {
 		return
 	}
@@ -2282,7 +2346,8 @@ func (e *Engine) queryEntryFees(pos *models.ArbitragePosition) {
 		e.log.Error("queryEntryFees %s: failed to update: %v", pos.ID, err)
 		return
 	}
-	e.log.Info("queryEntryFees %s: entry fees=%.4f (both legs)", pos.ID, totalFees)
+	e.log.Info("queryEntryFees %s: entry fees=%.4f (long=%s:%.4f short=%s:%.4f)",
+		pos.ID, totalFees, pos.LongExchange, longFees, pos.ShortExchange, shortFees)
 }
 
 // attachStopLosses places protective stop-loss orders on both legs of a position.

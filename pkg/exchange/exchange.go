@@ -80,4 +80,7 @@ type Exchange interface {
 
 	// Account Setup — ensure cross margin + one-way position mode
 	EnsureOneWayMode() error
+
+	// Close terminates all WebSocket connections for graceful shutdown.
+	Close()
 }

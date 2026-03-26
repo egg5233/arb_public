@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.4] - 2026-03-26
+
+### Fixed
+- **OKX GetClosePnL field parsing**: Now parses `fee`, `fundingFee`, `realizedPnl`, `direction` fields from positions-history response — previously reported all PnL as price PnL with zero fees/funding, overstating realized profits
+- **Bitget GetFuturesBalance field name**: `frozen` → `locked` to match actual API response (both occurrences)
+- **BingX GetPendingOrders field name**: `quantity` → `origQty` to match actual API response — order sizes were always empty
+- **BingX GetUserTrades endpoint**: Switched from undocumented `/allFillOrders` to `/fillHistory` with correct params (`startTs`/`endTs`, `fill_history_orders` wrapper, datetime `filledTime` format)
+- **Depth fill loop exit**: Now exits when remaining size < step size or min size (prevents hanging on unfillable remainders)
+- **Depth fill zero-fills**: Now count as consecutive failures (prevents order spam on instantly-cancelled IOC orders)
+- **Depth subscribe retry**: Unsub/resub on first failure (handles stale WS state after reconnect)
+- **Depth ready wait**: Increased to 8s with retry (handles slow BingX WS reconnects)
+- **queryEntryFees retry loop**: 5s/10s/20s delays for exchanges slow to index fills
+- **queryEntryFees per-leg fee logging**: Added diagnostics for fee retrieval
+
+### Added
+- **Exchange.Close() interface method**: All 6 adapters now close WS connections on SIGTERM/SIGINT for graceful shutdown
+- **Live API validation**: Called all read-only endpoints on all 6 exchanges, compared real responses against local docs, wrote corrections to annotations
+
+### Documentation
+- Patched missing endpoints into all 6 EXCHANGEAPI docs (Appendix sections)
+- Added/updated annotations in `doc/.annotations/` for all exchanges based on live API validation
+- BingX fillHistory response format correction (`fill_history_orders` wrapper, datetime `filledTime`)
+
 ## [0.17.3] - 2026-03-26
 
 ### Fixed

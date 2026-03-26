@@ -69,6 +69,7 @@ func (c *Client) sign(paramStr string) string {
 }
 
 // buildParamString constructs a sorted query string from parameters (with timestamp).
+// Returns the raw (unencoded) string for signing per BingX docs.
 func buildParamString(params map[string]string) string {
 	// Add timestamp
 	params["timestamp"] = fmt.Sprintf("%d", time.Now().UnixMilli())
@@ -81,9 +82,22 @@ func buildParamString(params map[string]string) string {
 
 	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
-		parts = append(parts, url.QueryEscape(k)+"="+url.QueryEscape(params[k]))
+		parts = append(parts, k+"="+params[k])
 	}
 	return strings.Join(parts, "&")
+}
+
+// encodeParamString URL-encodes a raw param string for use in request URLs/bodies.
+func encodeParamString(raw string) string {
+	pairs := strings.Split(raw, "&")
+	encoded := make([]string, 0, len(pairs))
+	for _, pair := range pairs {
+		kv := strings.SplitN(pair, "=", 2)
+		if len(kv) == 2 {
+			encoded = append(encoded, url.QueryEscape(kv[0])+"="+url.QueryEscape(kv[1]))
+		}
+	}
+	return strings.Join(encoded, "&")
 }
 
 // Get performs an authenticated GET request with retry logic.
@@ -109,19 +123,20 @@ func (c *Client) DoRequestRaw(method, path string, params map[string]string) ([]
 	}
 	paramStr := buildParamString(params)
 	signature := c.sign(paramStr)
-	signedParams := paramStr + "&signature=" + signature
+	// URL-encode for the actual request
+	encodedParams := encodeParamString(paramStr) + "&signature=" + signature
 
 	var fullURL string
 	var reqBody io.Reader
 
 	switch method {
 	case "GET", "DELETE":
-		fullURL = c.baseURL + path + "?" + signedParams
+		fullURL = c.baseURL + path + "?" + encodedParams
 	case "POST", "PUT":
 		fullURL = c.baseURL + path
-		reqBody = strings.NewReader(signedParams)
+		reqBody = strings.NewReader(encodedParams)
 	default:
-		fullURL = c.baseURL + path + "?" + signedParams
+		fullURL = c.baseURL + path + "?" + encodedParams
 	}
 
 	req, err := http.NewRequest(method, fullURL, reqBody)
@@ -147,22 +162,23 @@ func (c *Client) doRequest(method, path string, params map[string]string) (json.
 		params = make(map[string]string)
 	}
 
-	// Build sorted param string with timestamp, then sign
+	// Build sorted param string with timestamp, then sign raw (unencoded) string
 	paramStr := buildParamString(params)
 	signature := c.sign(paramStr)
-	signedParams := paramStr + "&signature=" + signature
+	// URL-encode for the actual request
+	encodedParams := encodeParamString(paramStr) + "&signature=" + signature
 
 	var fullURL string
 	var reqBody io.Reader
 
 	switch method {
 	case "GET", "DELETE":
-		fullURL = c.baseURL + path + "?" + signedParams
+		fullURL = c.baseURL + path + "?" + encodedParams
 	case "POST":
 		fullURL = c.baseURL + path
-		reqBody = strings.NewReader(signedParams)
+		reqBody = strings.NewReader(encodedParams)
 	default:
-		fullURL = c.baseURL + path + "?" + signedParams
+		fullURL = c.baseURL + path + "?" + encodedParams
 	}
 
 	req, err := http.NewRequest(method, fullURL, reqBody)

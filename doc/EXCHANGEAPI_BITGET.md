@@ -1207,3 +1207,275 @@ Access fee via `feeDetail[0].totalFee`. Previous bugs were caused by not properl
 ### Timestamp Format
 - All timestamps are Unix milliseconds (13 digits) unless noted
 - Exception: WebSocket login uses seconds (10 digits)
+
+---
+
+## Appendix: Additional Endpoints (Patched)
+
+---
+
+### Contract - Plan/Trigger Orders
+
+#### Place Plan Order (Trigger/Conditional Order)
+- **Endpoint**: `POST /api/v2/mix/order/place-plan-order`
+- **Rate Limit**: 10 req/sec/UID
+- **Auth**: Yes
+
+Place a trigger order, trailing stop order, or stop-loss/take-profit order.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| planType | String | Yes | `normal_plan`: Trigger order, `track_plan`: Trailing stop order |
+| symbol | String | Yes | Trading pair, e.g. `ETHUSDT` |
+| productType | String | Yes | `USDT-FUTURES`, `COIN-FUTURES`, `USDC-FUTURES` |
+| marginMode | String | Yes | `isolated` or `crossed` |
+| marginCoin | String | Yes | Margin coin (capitalized) |
+| size | String | Yes | Amount (base coin) |
+| price | String | No | Order price. Required for `limit` orders with `normal_plan`. Must be empty for `track_plan` |
+| callbackRatio | String | No | Callback rate for trailing stop orders only (max 10) |
+| triggerPrice | String | Yes | Trigger price |
+| triggerType | String | Yes | `mark_price` or `fill_price` (latest price) |
+| side | String | Yes | `buy` or `sell` |
+| tradeSide | String | No | Required in hedge-mode: `open` or `close` |
+| orderType | String | Yes | `limit` or `market`. For `track_plan`, must be `market` |
+| clientOid | String | No | Custom order ID |
+| reduceOnly | String | No | `YES` or `NO` (default). One-way mode only |
+| stopSurplusTriggerPrice | String | No | Take-profit trigger price (for `normal_plan`) or TP percentage (for `track_plan`, 0.01–999.99) |
+| stopSurplusExecutePrice | String | No | Take-profit execute price. Empty/0 = market order. Must be empty for `track_plan` |
+| stopSurplusTriggerType | String | No | `fill_price` or `mark_price`. Required when `stopSurplusTriggerPrice` is set |
+| stopLossTriggerPrice | String | No | Stop-loss trigger price (for `normal_plan`) or SL percentage (for `track_plan`, 0.01–999.99) |
+| stopLossExecutePrice | String | No | Stop-loss execute price. Empty/0 = market order. Must be empty for `track_plan` |
+| stopLossTriggerType | String | No | `fill_price` or `mark_price`. Required when `stopLossTriggerPrice` is set |
+| stpMode | String | No | STP mode: `none` (default), `cancel_taker`, `cancel_maker`, `cancel_both` |
+
+**Response:**
+```json
+{
+  "code": "00000",
+  "data": {
+    "orderId": "121212121212",
+    "clientOid": "BITGET#121212121212"
+  },
+  "msg": "success",
+  "requestTime": 1627293504612
+}
+```
+
+#### Cancel Plan Order
+- **Endpoint**: `POST /api/v2/mix/order/cancel-plan-order`
+- **Rate Limit**: 10 req/sec/UID
+- **Auth**: Yes
+
+Cancel trigger/plan orders. Can cancel by `productType` + `symbol`, or by order ID list.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| orderIdList | List | No | Trigger order ID list. If passed, `symbol` must also be set |
+| > orderId | String | No | Trigger order ID (either `orderId` or `clientOid` required) |
+| > clientOid | String | No | Custom trigger order ID |
+| symbol | String | No | Trading pair, e.g. `ETHUSDT` |
+| productType | String | Yes | `USDT-FUTURES`, `COIN-FUTURES`, `USDC-FUTURES` |
+| marginCoin | String | No | Margin coin (capitalized) |
+| planType | String | No | `normal_plan` (default), `profit_plan`, `loss_plan`, `pos_profit`, `pos_loss`, `moving_plan` |
+
+**Response:**
+```json
+{
+  "code": "00000",
+  "data": {
+    "successList": [
+      { "orderId": "121212121212", "clientOid": "123" }
+    ],
+    "failureList": [
+      { "orderId": "3", "clientOid": "123", "errorMsg": "notExistend" }
+    ]
+  },
+  "msg": "success",
+  "requestTime": 1627293504612
+}
+```
+
+**Response Fields:**
+- `successList`: Array of successfully cancelled orders (`orderId`, `clientOid`)
+- `failureList`: Array of failed cancellations (`orderId`, `clientOid`, `errorMsg`)
+
+---
+
+### Contract - Trade (Additional)
+
+#### Get Pending Orders
+- **Endpoint**: `GET /api/v2/mix/order/orders-pending`
+- **Rate Limit**: 10 req/sec/UID
+- **Auth**: Yes
+
+Query all existing pending (open) orders.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| orderId | String | No | Order ID filter (takes precedence over `clientOid`) |
+| clientOid | String | No | Custom order ID filter |
+| symbol | String | No | Trading pair, e.g. `ETHUSDT` |
+| productType | String | Yes | `USDT-FUTURES`, `COIN-FUTURES`, `USDC-FUTURES` |
+| status | String | No | `live` (default, not filled yet), `partially_filled` |
+| idLessThan | String | No | Pagination: before this ID (older data) |
+| startTime | String | No | Start time (ms), max 3 month span |
+| endTime | String | No | End time (ms), max 3 month span |
+| limit | String | No | Max 100, default 100 |
+
+**Response:**
+```json
+{
+  "code": "00000",
+  "data": {
+    "entrustedList": [{
+      "symbol": "ethusdt",
+      "size": "100",
+      "orderId": "123",
+      "clientOid": "12321",
+      "baseVolume": "12.1",
+      "fee": "",
+      "price": "1900",
+      "priceAvg": "1903",
+      "status": "partially_filled",
+      "side": "buy",
+      "force": "gtc",
+      "totalProfits": "0",
+      "posSide": "long",
+      "marginCoin": "usdt",
+      "quoteVolume": "22001.21",
+      "leverage": "20",
+      "marginMode": "cross",
+      "enterPointSource": "api",
+      "tradeSide": "open",
+      "posMode": "hedge_mode",
+      "orderType": "limit",
+      "orderSource": "normal",
+      "reduceOnly": "NO",
+      "cTime": "1627293504612",
+      "uTime": "1627293505612"
+    }],
+    "endId": "123"
+  },
+  "msg": "success",
+  "requestTime": 1627293504612
+}
+```
+
+**Key Response Fields:**
+- `entrustedList`: Array of pending orders
+- `status`: `live` (not filled) or `partially_filled`
+- `side`: `buy` or `sell`
+- `tradeSide`: `open` or `close`
+- `force`: `ioc`, `fok`, `gtc`, `post_only`
+- `enterPointSource`: `WEB`, `API`, `SYS`, `ANDROID`, `IOS`
+- `priceAvg`: Average fill price (empty when `live`)
+- `baseVolume`: Filled quantity so far
+- `endId`: Pagination cursor for `idLessThan`
+
+---
+
+### Contract - Position (Additional)
+
+#### Get Historical Position
+- **Endpoint**: `GET /api/v2/mix/position/history-position`
+- **Rate Limit**: 20 req/sec/UID
+- **Auth**: Yes
+- **Note**: Only supports data within 3 months
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| symbol | String | No | Trading pair filter |
+| productType | String | No | Default `USDT-FUTURES`. Ignored if `symbol` is set |
+| idLessThan | String | No | Pagination: before this ID (older data) |
+| startTime | String | No | Start time (ms), max 3 month span |
+| endTime | String | No | End time (ms), max 3 month span |
+| limit | String | No | Default 20, max 100 |
+
+**Response:**
+```json
+{
+  "code": "00000",
+  "msg": "success",
+  "requestTime": 1312312312321,
+  "data": {
+    "list": [{
+      "positionId": "xxxxxxxxxxx",
+      "marginCoin": "USDT",
+      "symbol": "BTCUSDT",
+      "holdSide": "long",
+      "openAvgPrice": "32000",
+      "closeAvgPrice": "32500",
+      "marginMode": "isolated",
+      "openTotalPos": "0.01",
+      "closeTotalPos": "0.01",
+      "pnl": "14.1",
+      "netProfit": "12.1",
+      "totalFunding": "0.1",
+      "openFee": "0.01",
+      "closeFee": "0.01",
+      "posMode": "one_way_mode",
+      "ctime": "1988824171000",
+      "utime": "1988824171000"
+    }],
+    "endId": "23423432423423234"
+  }
+}
+```
+
+**Key Response Fields:**
+- `list`: Array of historical position records
+- `holdSide`: `long` or `short`
+- `posMode`: `one_way_mode` or `hedge_mode`
+- `marginMode`: `isolated` or `crossed`
+- `openAvgPrice`: Average entry price
+- `closeAvgPrice`: Average exit price
+- `pnl`: Realized profit and loss
+- `netProfit`: Net profit (after fees and funding)
+- `totalFunding`: Accumulated funding costs
+- `openFee`: Total fee for position opening
+- `closeFee`: Total fee for position closing
+- `openTotalPos`: Accumulated opening amount
+- `closeTotalPos`: Accumulated closing amount
+- `endId`: Pagination cursor for `idLessThan`
+
+**Note:** Response wraps the list in `data.list` (not `data.entrustedList` like order history).
+
+---
+
+### Spot - Wallet (Additional)
+
+#### Withdrawal
+- **Endpoint**: `POST /api/v2/spot/wallet/withdrawal`
+- **Rate Limit**: 5 req/sec/UID
+- **Auth**: Yes
+- **Note**: Withdrawal address must be added in the address book on the Bitget web UI first
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| coin | String | Yes | Coin name, e.g. `USDT` |
+| transferType | String | Yes | `on_chain`: On-chain withdrawal, `internal_transfer`: Internal transfer |
+| address | String | Yes | Withdrawal address (chain address for `on_chain`, or UID/email/mobile for `internal_transfer`) |
+| chain | String | No | Chain network, e.g. `trc20`, `erc20`. Required when `transferType` is `on_chain` |
+| innerToType | String | No | Address type for internal transfers: `uid` (default), `email`, `mobile` |
+| areaCode | String | No | Required when `innerToType` is `mobile` |
+| tag | String | No | Address tag (required for some coins like EOS) |
+| size | String | Yes | Withdrawal amount |
+| remark | String | No | Note/memo |
+| clientOid | String | No | Custom order ID (idempotent) |
+
+**Response:**
+```json
+{
+  "code": "00000",
+  "msg": "success",
+  "requestTime": 1695808949356,
+  "data": {
+    "orderId": "123",
+    "clientOid": "123"
+  }
+}
+```
+
+**Response Fields:**
+- `orderId`: Withdrawal order ID
+- `clientOid`: Custom order ID

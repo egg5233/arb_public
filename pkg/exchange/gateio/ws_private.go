@@ -216,7 +216,7 @@ func (ws *PrivateWS) handleMessage(data []byte) {
 
 		// Map Gate.io status to unified status
 		status := o.Status
-		if o.FinishAs == "filled" {
+		if o.FinishAs == "filled" || (o.FinishAs == "ioc" && filledVol > 0) {
 			status = "filled"
 		} else if o.FinishAs == "cancelled" {
 			status = "cancelled"

@@ -440,7 +440,7 @@ pkg/
 
 ### 2.3 Exchange Interface
 
-32 methods across 13 categories:
+35 methods across 15 categories:
 
 ```go
 type Exchange interface {
@@ -493,6 +493,7 @@ type Exchange interface {
     // WebSocket: Private
     StartPrivateStream()
     GetOrderUpdate(orderID string) (OrderUpdate, bool)
+    SetOrderCallback(fn func(OrderUpdate))
 
     // Stop-Loss (conditional orders)
     PlaceStopLoss(params StopLossParams) (orderID string, err error)
@@ -502,6 +503,12 @@ type Exchange interface {
     GetUserTrades(symbol string, startTime time.Time, limit int) ([]Trade, error)
     GetFundingFees(symbol string, since time.Time) ([]FundingPayment, error)
     GetClosePnL(symbol string, since time.Time) ([]ClosePnL, error)
+
+    // Account Setup
+    EnsureOneWayMode() error
+
+    // Lifecycle
+    Close()
 }
 ```
 

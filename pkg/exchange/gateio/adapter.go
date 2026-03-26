@@ -148,7 +148,7 @@ func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 
 	orderReq := map[string]interface{}{
 		"contract": contract,
-		"size":     size,
+		"size":     strconv.FormatInt(size, 10),
 		"price":    req.Price,
 		"tif":      tif,
 	}
@@ -311,9 +311,10 @@ func (a *Adapter) GetPosition(symbol string) ([]exchange.Position, error) {
 		absSize = -raw.Size
 	}
 
-	crossLev, _ := raw.CrossLeverageLimit.Int64()
+	// leverage="0" means cross mode; leverage > 0 means isolated mode
+	lev, _ := strconv.ParseFloat(raw.Leverage, 64)
 	marginMode := "crossed"
-	if crossLev > 0 {
+	if lev > 0 {
 		marginMode = "isolated"
 	}
 
@@ -377,9 +378,10 @@ func (a *Adapter) GetAllPositions() ([]exchange.Position, error) {
 			absSize = -p.Size
 		}
 
-		crossLev, _ := p.CrossLeverageLimit.Int64()
+		// leverage="0" means cross mode; leverage > 0 means isolated mode
+		lev, _ := strconv.ParseFloat(p.Leverage, 64)
 		marginMode := "crossed"
-		if crossLev > 0 {
+		if lev > 0 {
 			marginMode = "isolated"
 		}
 
@@ -474,8 +476,8 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 	var contracts []struct {
 		Name             string `json:"name"`
 		QuantoMultiplier string `json:"quanto_multiplier"`
-		OrderSizeMin     int64  `json:"order_size_min"`
-		OrderSizeMax     int64  `json:"order_size_max"`
+		OrderSizeMin     json.Number `json:"order_size_min"`
+		OrderSizeMax     json.Number `json:"order_size_max"`
 		OrderPriceRound  string `json:"order_price_round"`
 		InTrade          bool   `json:"in_delisting"`
 	}
@@ -500,11 +502,21 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 			stepSize = quantoMult
 		}
 
+		// Convert min/max from contract counts to base asset units
+		sizeMin, _ := c.OrderSizeMin.Int64()
+		sizeMax, _ := c.OrderSizeMax.Int64()
+		minBase := float64(sizeMin)
+		maxBase := float64(sizeMax)
+		if quantoMult > 0 {
+			minBase *= quantoMult
+			maxBase *= quantoMult
+		}
+
 		ci := exchange.ContractInfo{
 			Symbol:        internalSymbol,
-			MinSize:       float64(c.OrderSizeMin),
+			MinSize:       minBase,
 			StepSize:      stepSize,
-			MaxSize:       float64(c.OrderSizeMax),
+			MaxSize:       maxBase,
 			SizeDecimals:  0, // Gate.io uses integer contract sizes
 			PriceStep:     priceStep,
 			PriceDecimals: countDecimals(c.OrderPriceRound),
@@ -1259,9 +1271,19 @@ func (a *Adapter) CancelStopLoss(symbol, orderID string) error {
 }
 
 // EnsureOneWayMode ensures Gate.io is in single (non-dual) position mode.
+// Close terminates all WebSocket connections for graceful shutdown.
+func (a *Adapter) Close() {
+	if a.priceWS != nil {
+		a.priceWS.Close()
+	}
+	if a.privateWS != nil {
+		a.privateWS.Close()
+	}
+}
+
 func (a *Adapter) EnsureOneWayMode() error {
-	// Gate.io: POST /futures/usdt/dual_mode?dual_mode=false (query param)
-	_, err := a.client.Post("/futures/usdt/dual_mode?dual_mode=false", "")
+	// Gate.io: POST /futures/usdt/dual_mode with JSON body
+	_, err := a.client.Post("/futures/usdt/dual_mode", `{"dual_mode":false}`)
 	if err != nil {
 		errMsg := err.Error()
 		// Already in single mode, has open positions, or no change needed

@@ -1438,3 +1438,315 @@ if (timestamp < serverTime + 1000 && serverTime - timestamp <= recvWindow) {
 13. **HTTP 503 handling**: "Unknown error" does NOT mean failure — check order status before retrying
 14. **WebSocket symbols**: Must be lowercase (e.g., `btcusdt@markPrice`, not `BTCUSDT@markPrice`)
 15. **Commission rate**: `makerCommissionRate`/`takerCommissionRate` are decimal (0.0004 = 0.04%)
+
+---
+
+## Appendix: Additional Endpoints (Patched)
+
+### Futures (USDS-M) — Trade
+
+#### New Algo Order
+- **Endpoint**: `POST /fapi/v1/algoOrder`
+- **Weight**: 0 on IP rate limit (`X-MBX-USED-WEIGHT-1M`)
+- **Security**: TRADE
+- **Parameters**:
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| algoType | ENUM | YES | Only `CONDITIONAL` supported |
+| symbol | STRING | YES | |
+| side | ENUM | YES | BUY, SELL |
+| positionSide | ENUM | NO | Default BOTH (One-way); LONG or SHORT (Hedge Mode, mandatory in Hedge) |
+| type | ENUM | YES | STOP_MARKET, TAKE_PROFIT_MARKET, STOP, TAKE_PROFIT, TRAILING_STOP_MARKET |
+| timeInForce | ENUM | NO | IOC, GTC, FOK, GTX, GTD. Default GTC |
+| quantity | DECIMAL | NO | Cannot be sent with closePosition=true |
+| price | DECIMAL | NO | |
+| triggerPrice | DECIMAL | NO | |
+| workingType | ENUM | NO | MARK_PRICE or CONTRACT_PRICE. Default CONTRACT_PRICE |
+| priceMatch | ENUM | NO | OPPONENT/OPPONENT_5/10/20, QUEUE/QUEUE_5/10/20. Cannot be used with price. Only for LIMIT/STOP/TAKE_PROFIT |
+| closePosition | STRING | NO | "true"/"false". Close-All, used with STOP_MARKET or TAKE_PROFIT_MARKET |
+| priceProtect | STRING | NO | "TRUE"/"FALSE", default "FALSE". Used with STOP_MARKET or TAKE_PROFIT_MARKET |
+| reduceOnly | STRING | NO | "true"/"false", default "false". Cannot be sent in Hedge Mode or with closePosition=true |
+| activatePrice | DECIMAL | NO | Used with TRAILING_STOP_MARKET; default latest price |
+| callbackRate | DECIMAL | NO | Used with TRAILING_STOP_MARKET; min 0.1, max 10 (1 = 1%) |
+| clientAlgoId | STRING | NO | Unique id. Regex: `^[\.A-Z\:/a-z0-9_-]{1,36}$` |
+| newOrderRespType | ENUM | NO | "ACK" (default), "RESULT" |
+| selfTradePreventionMode | ENUM | NO | EXPIRE_TAKER, EXPIRE_MAKER, EXPIRE_BOTH. Default NONE. Only effective when timeInForce is IOC/GTC/GTD |
+| goodTillDate | LONG | NO | Required for GTD. Must be > now + 600s, < 253402300799000 |
+| recvWindow | LONG | NO | |
+| timestamp | LONG | YES | |
+
+**Trigger conditions:**
+- **STOP/STOP_MARKET**: BUY when price >= triggerPrice; SELL when price <= triggerPrice
+- **TAKE_PROFIT/TAKE_PROFIT_MARKET**: BUY when price <= triggerPrice; SELL when price >= triggerPrice
+- **TRAILING_STOP_MARKET BUY**: lowest price after placement <= activatePrice AND latest >= lowest * (1 + callbackRate)
+- **TRAILING_STOP_MARKET SELL**: highest price after placement >= activatePrice AND latest <= highest * (1 - callbackRate)
+
+**closePosition=true notes:**
+- Cannot be used with `quantity` or `reduceOnly`
+- In Hedge Mode: cannot use BUY with LONG side, or SELL with SHORT side
+
+- **Response**:
+```json
+{
+  "algoId": 2146760,
+  "clientAlgoId": "6B2I9XVcJpCjqPAJ4YoFX7",
+  "algoType": "CONDITIONAL",
+  "orderType": "TAKE_PROFIT",
+  "symbol": "BNBUSDT",
+  "side": "SELL",
+  "positionSide": "BOTH",
+  "timeInForce": "GTC",
+  "quantity": "0.01",
+  "algoStatus": "NEW",
+  "triggerPrice": "750.000",
+  "price": "750.000",
+  "selfTradePreventionMode": "EXPIRE_MAKER",
+  "workingType": "CONTRACT_PRICE",
+  "priceMatch": "NONE",
+  "closePosition": false,
+  "priceProtect": false,
+  "reduceOnly": false,
+  "activatePrice": "",
+  "callbackRate": "",
+  "createTime": 1750485492076,
+  "updateTime": 1750485492076,
+  "triggerTime": 0,
+  "goodTillDate": 0
+}
+```
+**Note**: Returns `algoId` (not `orderId`). Use `algoId` for cancel via `DELETE /fapi/v1/algoOrder`. Required since 2025-12-09 for conditional orders on Binance futures.
+
+---
+
+### Futures (USDS-M) — Account (V2 Endpoints)
+
+#### Account Information V2
+- **Endpoint**: `GET /fapi/v2/account`
+- **Weight**: 5
+- **Security**: USER_DATA
+- **Parameters**:
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| recvWindow | LONG | NO | |
+| timestamp | LONG | YES | |
+
+- **Response** (single-asset mode):
+```json
+{
+  "feeTier": 0,
+  "feeBurn": true,
+  "canTrade": true,
+  "canDeposit": true,
+  "canWithdraw": true,
+  "updateTime": 0,
+  "multiAssetsMargin": false,
+  "tradeGroupId": -1,
+  "totalInitialMargin": "0.00000000",
+  "totalMaintMargin": "0.00000000",
+  "totalWalletBalance": "23.72469206",
+  "totalUnrealizedProfit": "0.00000000",
+  "totalMarginBalance": "23.72469206",
+  "totalPositionInitialMargin": "0.00000000",
+  "totalOpenOrderInitialMargin": "0.00000000",
+  "totalCrossWalletBalance": "23.72469206",
+  "totalCrossUnPnl": "0.00000000",
+  "availableBalance": "23.72469206",
+  "maxWithdrawAmount": "23.72469206",
+  "assets": [
+    {
+      "asset": "USDT",
+      "walletBalance": "23.72469206",
+      "unrealizedProfit": "0.00000000",
+      "marginBalance": "23.72469206",
+      "maintMargin": "0.00000000",
+      "initialMargin": "0.00000000",
+      "positionInitialMargin": "0.00000000",
+      "openOrderInitialMargin": "0.00000000",
+      "crossWalletBalance": "23.72469206",
+      "crossUnPnl": "0.00000000",
+      "availableBalance": "23.72469206",
+      "maxWithdrawAmount": "23.72469206",
+      "marginAvailable": true,
+      "updateTime": 1625474304765
+    }
+  ],
+  "positions": [
+    {
+      "symbol": "BTCUSDT",
+      "initialMargin": "0",
+      "maintMargin": "0",
+      "unrealizedProfit": "0.00000000",
+      "positionInitialMargin": "0",
+      "openOrderInitialMargin": "0",
+      "leverage": "100",
+      "isolated": true,
+      "entryPrice": "0.00000",
+      "maxNotional": "250000",
+      "bidNotional": "0",
+      "askNotional": "0",
+      "positionSide": "BOTH",
+      "positionAmt": "0",
+      "updateTime": 0
+    }
+  ]
+}
+```
+**Note**: V2 returns all positions (even empty) in `positions[]`. In single-asset mode, top-level margin fields refer to USDT only. In multi-asset mode, they represent USD-equivalent totals. The `isolated` field is a boolean (unlike V3 which omits it). V2 includes `leverage` and `maxNotional` directly in position objects. V3 is a safe drop-in replacement for the fields our adapter uses (`totalMarginBalance`, `totalMaintMargin`, `availableBalance`, `assets[]`).
+
+#### Position Information V2
+- **Endpoint**: `GET /fapi/v2/positionRisk`
+- **Weight**: 5
+- **Security**: USER_DATA
+- **Parameters**:
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| symbol | STRING | NO | |
+| recvWindow | LONG | NO | |
+| timestamp | LONG | YES | |
+
+- **Response** (One-way mode):
+```json
+[
+  {
+    "symbol": "BTCUSDT",
+    "positionAmt": "0.000",
+    "entryPrice": "0.00000",
+    "breakEvenPrice": "0.0",
+    "marginType": "isolated",
+    "isAutoAddMargin": "false",
+    "isolatedMargin": "0.00000000",
+    "leverage": "10",
+    "liquidationPrice": "0",
+    "markPrice": "6679.50671178",
+    "maxNotionalValue": "20000000",
+    "positionSide": "BOTH",
+    "notional": "0",
+    "isolatedWallet": "0",
+    "unRealizedProfit": "0.00000000",
+    "updateTime": 0
+  }
+]
+```
+- **Response** (Hedge mode):
+```json
+[
+  {
+    "symbol": "BTCUSDT",
+    "positionAmt": "0.001",
+    "entryPrice": "22185.2",
+    "breakEvenPrice": "0.0",
+    "markPrice": "21123.05052574",
+    "unRealizedProfit": "-1.06214947",
+    "liquidationPrice": "19731.45529116",
+    "leverage": "4",
+    "maxNotionalValue": "100000000",
+    "marginType": "cross",
+    "isolatedMargin": "0.00000000",
+    "isAutoAddMargin": "false",
+    "positionSide": "LONG",
+    "notional": "21.12305052",
+    "isolatedWallet": "0",
+    "updateTime": 1655217461579
+  }
+]
+```
+**Note**: V2 returns `leverage`, `marginType`, and `maxNotionalValue` directly in each position object. V3 drops these fields — must use `GET /fapi/v1/symbolConfig` to get leverage/marginType per symbol. Our adapter uses V2 because it depends on `leverage` and `marginType` fields. Use with WebSocket `ACCOUNT_UPDATE` for timeliness.
+
+---
+
+### Spot/Wallet — Account
+
+#### Get API Key Permission
+- **Endpoint**: `GET /sapi/v1/account/apiRestrictions`
+- **Weight**: 1 (IP)
+- **Security**: USER_DATA
+- **Base URL**: `https://api.binance.com`
+- **Parameters**:
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| recvWindow | LONG | NO | |
+| timestamp | LONG | YES | |
+
+- **Response**:
+```json
+{
+  "ipRestrict": false,
+  "createTime": 1698645219000,
+  "enableReading": true,
+  "enableWithdrawals": false,
+  "enableInternalTransfer": false,
+  "enableMargin": false,
+  "enableFutures": false,
+  "permitsUniversalTransfer": false,
+  "enableVanillaOptions": false,
+  "enableFixApiTrade": false,
+  "enableFixReadOnly": true,
+  "enableSpotAndMarginTrading": false,
+  "enablePortfolioMarginTrading": true
+}
+```
+**Note**: `enableFutures` is `false` if API key was created before futures account was opened, or if portfolio margin is enabled. `enableWithdrawals` requires IP Access Restriction to be enabled. Used by our adapter to verify API key permissions at startup.
+
+---
+
+### Spot/Wallet — Capital
+
+#### Withdraw
+- **Endpoint**: `POST /sapi/v1/capital/withdraw/apply`
+- **Weight**: 900 (UID)
+- **Security**: USER_DATA
+- **Base URL**: `https://api.binance.com`
+- **Parameters**:
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| coin | STRING | YES | |
+| withdrawOrderId | STRING | NO | Client-side ID for withdrawal; can be used in `GET /sapi/v1/capital/withdraw/history` for query |
+| network | STRING | NO | If not sent, returns with default network of the coin |
+| address | STRING | YES | |
+| addressTag | STRING | NO | Secondary address identifier (XRP, XMR, etc.) |
+| amount | DECIMAL | YES | |
+| transactionFeeFlag | BOOLEAN | NO | When making internal transfer: true = fee charged to destination; false = fee charged to sender. Default false |
+| name | STRING | NO | Description of the address. Space encoded as %20 |
+| walletType | INTEGER | NO | 0 = spot wallet, 1 = funding wallet. Default is current selected wallet |
+| recvWindow | LONG | NO | |
+| timestamp | LONG | YES | |
+
+- **Response**:
+```json
+{
+  "id": "7213fea8e94b4a5593d507237e5a555b"
+}
+```
+**Note**: Get available networks via `GET /sapi/v1/capital/config/getall`. Our adapter calls this after an automatic futures→spot transfer if spot balance is insufficient.
+
+---
+
+### Spot/Wallet — Transfer
+
+#### Legacy Futures Transfer
+- **Endpoint**: `POST /sapi/v1/futures/transfer`
+- **Weight**: 1
+- **Security**: USER_DATA
+- **Base URL**: `https://api.binance.com`
+- **Parameters**:
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| asset | STRING | YES | The asset to transfer (e.g., "USDT") |
+| amount | DECIMAL | YES | |
+| type | INT | YES | 1 = spot → USDS-M futures, 2 = USDS-M futures → spot, 3 = spot → COIN-M futures, 4 = COIN-M futures → spot |
+| recvWindow | LONG | NO | |
+| timestamp | LONG | YES | |
+
+- **Response**:
+```json
+{
+  "tranId": 100000001
+}
+```
+**Note**: This is a legacy endpoint. The modern replacement is `POST /sapi/v1/asset/transfer` (Universal Transfer) which uses string type codes (e.g., `MAIN_UMFUTURE`, `UMFUTURE_MAIN`) and requires the "Permits Universal Transfer" API key permission. Our adapter uses this legacy endpoint with type `1` (spot→futures) and `2` (futures→spot). May be deprecated by Binance in the future.

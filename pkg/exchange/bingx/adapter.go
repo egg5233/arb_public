@@ -171,7 +171,7 @@ func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 		params["reduceOnly"] = "true"
 	}
 	if req.ClientOid != "" {
-		params["clientOrderID"] = req.ClientOid
+		params["clientOrderId"] = req.ClientOid
 	}
 
 	result, err := a.client.Post("/openApi/swap/v2/trade/order", params)
@@ -222,12 +222,12 @@ func (a *Adapter) GetPendingOrders(symbol string) ([]exchange.Order, error) {
 	var resp struct {
 		Orders []struct {
 			OrderID       json.Number `json:"orderId"`
-			ClientOrderID string      `json:"clientOrderID"`
+			ClientOrderID string      `json:"clientOrderId"`
 			Symbol        string      `json:"symbol"`
 			Side          string      `json:"side"`
 			Type          string      `json:"type"`
 			Price         string      `json:"price"`
-			Quantity      string      `json:"quantity"`
+			Quantity      string      `json:"origQty"`
 			Status        string      `json:"status"`
 		} `json:"orders"`
 	}
@@ -856,32 +856,36 @@ func (a *Adapter) CancelStopLoss(symbol, orderID string) error {
 // ---------- Trade History ----------
 
 // GetUserTrades returns filled trades for a symbol since startTime.
+// Uses /openApi/swap/v2/trade/fillHistory (newer endpoint with correct params).
 func (a *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) ([]exchange.Trade, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
 	params := map[string]string{
-		"symbol":    toBingXSymbol(symbol),
-		"startTime": strconv.FormatInt(startTime.UnixMilli(), 10),
-		"limit":     strconv.Itoa(limit),
+		"symbol":  toBingXSymbol(symbol),
+		"startTs": strconv.FormatInt(startTime.UnixMilli(), 10),
+		"endTs":   strconv.FormatInt(time.Now().UnixMilli(), 10),
 	}
-	result, err := a.client.Get("/openApi/swap/v2/trade/allFillOrders", params)
+	if limit > 0 {
+		params["pageSize"] = strconv.Itoa(limit)
+	}
+	result, err := a.client.Get("/openApi/swap/v2/trade/fillHistory", params)
 	if err != nil {
 		return nil, fmt.Errorf("bingx GetUserTrades: %w", err)
 	}
 
 	var resp struct {
 		FillOrders []struct {
-			FilledTm    string `json:"filledTm"` // ms timestamp
-			OrderID     string `json:"orderId"`
-			Symbol      string `json:"symbol"`
-			Side        string `json:"side"`
-			Price       string `json:"price"`
-			Volume      string `json:"volume"`
-			Fee         string `json:"fee"`
-			FeeCurrency string `json:"feeCurrency"`
-			TradeID     string `json:"tradeId"`
-		} `json:"fill_orders"`
+			FilledTime      string `json:"filledTime"` // datetime string e.g. "2026-03-26T16:53:55.000+08:00"
+			OrderID         string `json:"orderId"`
+			Symbol          string `json:"symbol"`
+			Side            string `json:"side"`
+			Price           string `json:"price"`
+			Qty             string `json:"qty"`
+			Commission      string `json:"commission"`
+			CommissionAsset string `json:"commissionAsset"`
+			TradeID         string `json:"tradeId"`
+		} `json:"fill_history_orders"`
 	}
 	if err := json.Unmarshal(result, &resp); err != nil {
 		return nil, fmt.Errorf("bingx GetUserTrades parse: %w", err)
@@ -890,12 +894,12 @@ func (a *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 	trades := make([]exchange.Trade, 0, len(resp.FillOrders))
 	for _, t := range resp.FillOrders {
 		price, _ := strconv.ParseFloat(t.Price, 64)
-		qty, _ := strconv.ParseFloat(t.Volume, 64)
-		fee, _ := strconv.ParseFloat(t.Fee, 64)
+		qty, _ := strconv.ParseFloat(t.Qty, 64)
+		fee, _ := strconv.ParseFloat(t.Commission, 64)
 		if fee < 0 {
 			fee = -fee
 		}
-		ms, _ := strconv.ParseInt(t.FilledTm, 10, 64)
+		fillTime, _ := time.Parse("2006-01-02T15:04:05.000-07:00", t.FilledTime)
 		trades = append(trades, exchange.Trade{
 			TradeID:  t.TradeID,
 			OrderID:  t.OrderID,
@@ -904,8 +908,8 @@ func (a *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 			Price:    price,
 			Quantity: qty,
 			Fee:      fee,
-			FeeCoin:  t.FeeCurrency,
-			Time:     time.UnixMilli(ms),
+			FeeCoin:  t.CommissionAsset,
+			Time:     fillTime,
 		})
 	}
 	return trades, nil
@@ -1042,6 +1046,16 @@ var _ exchange.Exchange = (*Adapter)(nil)
 
 // EnsureOneWayMode is a no-op for BingX — position mode is set via UI only.
 // The adapter already uses positionSide=BOTH (one-way mode).
+// Close terminates all WebSocket connections for graceful shutdown.
+func (a *Adapter) Close() {
+	if a.publicWS != nil {
+		a.publicWS.Close()
+	}
+	if a.privateWS != nil {
+		a.privateWS.Close()
+	}
+}
+
 func (a *Adapter) EnsureOneWayMode() error {
 	return nil
 }

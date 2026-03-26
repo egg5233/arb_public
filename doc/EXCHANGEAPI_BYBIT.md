@@ -1204,3 +1204,278 @@ All responses: `{retCode, retMsg, result{}, retExtInfo{}, time}`
 - Query current rate via tickers endpoint (`fundingRate`, `nextFundingTime`)
 - Query history via `/v5/market/funding/history`
 - Caps available in `upperFundingRate`/`lowerFundingRate` (instruments-info) and `fundingCap` (tickers)
+
+---
+
+## Appendix: Additional Endpoints (Patched)
+
+### Account
+
+#### Get Transaction Log (UTA)
+- **Endpoint**: `GET /v5/account/transaction-log`
+- **Rate Limit**: 50/s
+- **Description**: Query transaction logs in your Unified account. Supports up to 2 years of data.
+
+| Parameter | Required | Type | Description |
+|-----------|----------|------|-------------|
+| accountType | false | string | Account Type. `UNIFIED` |
+| category | false | string | Product type: `spot`, `linear`, `option`, `inverse` |
+| currency | false | string | Currency, uppercase only |
+| baseCoin | false | string | BaseCoin, uppercase only. e.g., `BTC` of `BTCPERP` |
+| type | false | string | Types of transaction logs |
+| transSubType | false | string | `movePosition`, used to filter Move Position logs only |
+| startTime | false | integer | Start timestamp (ms). If neither startTime nor endTime passed, returns 24 hours by default. If both passed: `endTime - startTime <= 7 days` |
+| endTime | false | integer | End timestamp (ms) |
+| limit | false | integer | [1, 50]. Default: 20 |
+| cursor | false | string | Pagination cursor. Use `nextPageCursor` from response |
+
+**Response:**
+```json
+{
+    "retCode": 0,
+    "retMsg": "OK",
+    "result": {
+        "nextPageCursor": "21963%3A1%2C14954%3A1",
+        "list": [
+            {
+                "id": "592324_XRPUSDT_161440249321",
+                "symbol": "XRPUSDT",
+                "category": "linear",
+                "side": "Buy",
+                "transactionTime": "1672128000000",
+                "type": "SETTLEMENT",
+                "transSubType": "",
+                "qty": "100",
+                "size": "100",
+                "currency": "USDT",
+                "tradePrice": "0.3676",
+                "funding": "-0.003676",
+                "fee": "0.00000000",
+                "cashFlow": "0",
+                "change": "-0.003676",
+                "cashBalance": "5086.55825002",
+                "feeRate": "0.0001",
+                "bonusChange": "",
+                "tradeId": "534c0003-4bf7-486f-aa02-78cee36825e4",
+                "orderId": "1672128000-8-592324-1-2",
+                "orderLinkId": "",
+                "extraFees": ""
+            }
+        ]
+    },
+    "retExtInfo": {},
+    "time": 1672132481405
+}
+```
+
+**Response Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| list | array | Array of transaction log entries |
+| > id | string | Unique id |
+| > symbol | string | Symbol name |
+| > category | string | Product type |
+| > side | string | `Buy`, `Sell`, `None` |
+| > transactionTime | string | Transaction timestamp (ms) |
+| > type | string | Transaction type (e.g., `TRADE`, `SETTLEMENT`) |
+| > transSubType | string | Sub type, `movePosition` for Move Position logs |
+| > qty | string | Quantity |
+| > size | string | Rest position size after trade, short indicated with "-" |
+| > currency | string | e.g., `USDC`, `USDT`, `BTC`, `ETH` |
+| > tradePrice | string | Trade price |
+| > funding | string | Funding fee. Positive = received, negative = paid |
+| > fee | string | Trading fee. Positive = expense, negative = rebate |
+| > cashFlow | string | Cash flow (close position RPL, session settlement, transfers). Excludes trading fee and funding fee |
+| > change | string | `cashFlow + funding - fee` |
+| > cashBalance | string | Wallet balance after cash change |
+| > feeRate | string | Fee rate. For `TRADE`: trading fee rate. For `SETTLEMENT`: funding fee rate |
+| > bonusChange | string | Bonus change amount |
+| > tradeId | string | Trade ID |
+| > orderId | string | Order ID |
+| > orderLinkId | string | User customised order ID |
+| > extraFees | string | Extra fee info (Indonesian site spot / EU fiat orders only) |
+| nextPageCursor | string | Cursor for next page |
+
+---
+
+### Asset
+
+#### Withdraw
+- **Endpoint**: `POST /v5/asset/withdraw/create`
+- **Rate Limit**: 5/s (additional limit: once per 10 seconds per chain/coin combination)
+- **Description**: Withdraw assets from Bybit account. Off-chain transfer if target address is a Bybit address. Master UID API key only.
+
+| Parameter | Required | Type | Description |
+|-----------|----------|------|-------------|
+| coin | true | string | Coin, uppercase only |
+| chain | false | string | Chain. Required if `forceChain` = 0 or 1. Can be null if `forceChain` = 2 |
+| address | true | string | Wallet address (forceChain 0/1) or Bybit UID (forceChain 2). Case sensitive |
+| tag | false | string | Tag/memo. Required if tag exists in the wallet address list |
+| amount | true | string | Withdraw amount |
+| timestamp | true | integer | Current timestamp (ms). Used for preventing withdraw replay |
+| forceChain | false | integer | `0` (default): internal transfer if internal address. `1`: force on-chain. `2`: use UID to withdraw |
+| accountType | true | string | Wallet to withdraw from. `FUND`: Funding wallet. `UTA`: system transfers to Funding first. `FUND,UTA`: combo (Funding first, then UTA for remainder) |
+| feeType | false | integer | `0` (default): amount is actual received amount (calculate fee manually). `1`: amount is gross, system deducts fee automatically |
+| requestId | false | string | Idempotent ID, globally unique. Letters (case sensitive) + numbers, 1-32 chars |
+| beneficiary | false | object | Travel rule info. Required for KOR, IND, TR, KZ, ID users |
+
+**Response:**
+```json
+{
+    "retCode": 0,
+    "retMsg": "success",
+    "result": {
+        "id": "10195"
+    },
+    "retExtInfo": {},
+    "time": 1672196571239
+}
+```
+
+**Response Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| id | string | Withdrawal ID |
+
+**Fee Calculation:**
+- `feeType=0` + `withdrawPercentageFee != 0`: `handlingFee = inputAmount / (1 - withdrawPercentageFee) * withdrawPercentageFee + withdrawFee`
+- `feeType=0` + `withdrawPercentageFee = 0`: `handlingFee = withdrawFee`
+- `feeType=1` + `withdrawPercentageFee != 0`: `handlingFee = withdrawFee + (inputAmount - withdrawFee) * withdrawPercentageFee`
+- `feeType=1` + `withdrawPercentageFee = 0`: `handlingFee = withdrawFee`
+
+---
+
+### Position
+
+#### Switch Cross/Isolated Margin
+- **Endpoint**: `POST /v5/position/switch-isolated`
+- **Rate Limit**: 10/s
+- **Description**: Switch between cross margin mode and isolated margin mode per symbol. **Note**: This is an abandoned/legacy endpoint — UTA2.0 accounts should use `POST /v5/account/set-margin-mode` instead.
+
+| Parameter | Required | Type | Description |
+|-----------|----------|------|-------------|
+| category | true | string | Product type. UTA2.0: not supported. UTA1.0: `inverse`. Classic: `linear`, `inverse` |
+| symbol | true | string | Symbol name, e.g., `BTCUSDT`, uppercase only |
+| tradeMode | true | integer | `0`: cross margin. `1`: isolated margin |
+| buyLeverage | true | string | Must be equal to `sellLeverage` value |
+| sellLeverage | true | string | Must be equal to `buyLeverage` value |
+
+**Response:** Empty result object on success.
+```json
+{
+    "retCode": 0,
+    "retMsg": "OK",
+    "result": {},
+    "retExtInfo": {},
+    "time": 1675248433635
+}
+```
+
+**Important Notes:**
+- Error `110026`: Already in the requested margin mode (safe to ignore)
+- Error `100028`: Unified trading account — margin mode is managed at account level, use `/v5/account/set-margin-mode` instead
+
+**Example Request:**
+```json
+{
+    "category": "linear",
+    "symbol": "ETHUSDT",
+    "tradeMode": 1,
+    "buyLeverage": "10",
+    "sellLeverage": "10"
+}
+```
+
+---
+
+### User
+
+#### Get API Key Information
+- **Endpoint**: `GET /v5/user/query-api`
+- **Rate Limit**: 10/s
+- **Description**: Get information about the current API key. Any permission can access this endpoint. Works for both master and sub user API keys.
+
+**Request Parameters:** None
+
+**Response:**
+```json
+{
+    "retCode": 0,
+    "retMsg": "",
+    "result": {
+        "id": "13770661",
+        "note": "readwrite api key",
+        "apiKey": "XXXXXX",
+        "readOnly": 0,
+        "secret": "",
+        "permissions": {
+            "ContractTrade": ["Order", "Position"],
+            "Spot": ["SpotTrade"],
+            "Wallet": ["AccountTransfer", "SubMemberTransfer"],
+            "Options": ["OptionsTrade"],
+            "Derivatives": [],
+            "CopyTrading": [],
+            "BlockTrade": [],
+            "Exchange": [],
+            "NFT": [],
+            "Affiliate": [],
+            "Earn": []
+        },
+        "ips": ["*"],
+        "type": 1,
+        "deadlineDay": 66,
+        "expiredAt": "2023-12-22T07:20:25Z",
+        "createdAt": "2022-10-16T02:24:40Z",
+        "unified": 0,
+        "uta": 0,
+        "userID": 24617703,
+        "inviterID": 0,
+        "vipLevel": "No VIP",
+        "mktMakerLevel": "0",
+        "affiliateID": 0,
+        "rsaPublicKey": "",
+        "isMaster": true,
+        "parentUid": "0",
+        "kycLevel": "LEVEL_DEFAULT",
+        "kycRegion": ""
+    },
+    "retExtInfo": {},
+    "time": 1697525990798
+}
+```
+
+**Response Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| id | string | Unique ID (internal use) |
+| note | string | API key remark |
+| apiKey | string | API key |
+| readOnly | integer | `0`: Read and Write. `1`: Read only |
+| secret | string | Always empty string |
+| permissions | object | Permission types (see below) |
+| > ContractTrade | array | Contract trade permissions: `Order`, `Position` |
+| > Spot | array | Spot permissions: `SpotTrade` |
+| > Wallet | array | Wallet permissions: `AccountTransfer`, `SubMemberTransfer` (master), `SubMemberTransferList` (sub), `Withdraw` (master) |
+| > Options | array | USDC Contract permissions: `OptionsTrade` |
+| > Derivatives | array | `DerivativesTrade` |
+| > Exchange | array | Convert permissions: `ExchangeHistory` |
+| > Earn | array | Earn product permissions: `Earn` |
+| ips | array | IP whitelist. `["*"]` means no restriction |
+| type | integer | `1`: personal. `2`: connected to third-party app |
+| deadlineDay | integer | Remaining valid days (only for unbound IP or password-changed keys) |
+| expiredAt | datetime | Expiry date |
+| createdAt | datetime | Creation date |
+| uta | integer | `0`: regular account. `1`: unified trade account |
+| userID | integer | User ID |
+| inviterID | integer | Inviter ID (`0` = no referral) |
+| vipLevel | string | VIP Level |
+| mktMakerLevel | string | Market maker level |
+| affiliateID | integer | Affiliate ID (`0` = no binding) |
+| rsaPublicKey | string | RSA public key |
+| isMaster | boolean | Whether this API key belongs to master account |
+| parentUid | string | Main account UID. `"0"` when called by main account |
+| kycLevel | string | KYC level: `LEVEL_DEFAULT`, `LEVEL_1`, `LEVEL_2` |
+| kycRegion | string | KYC region |
