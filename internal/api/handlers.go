@@ -282,6 +282,7 @@ type configRiskResponse struct {
 	MarginL4Threshold      float64 `json:"margin_l4_threshold"`
 	MarginL5Threshold      float64 `json:"margin_l5_threshold"`
 	L4ReduceFraction       float64 `json:"l4_reduce_fraction"`
+	MarginSafetyMultiplier float64 `json:"margin_safety_multiplier"`
 	RiskMonitorIntervalSec int     `json:"risk_monitor_interval_sec"`
 }
 
@@ -380,6 +381,7 @@ func (s *Server) buildConfigResponse() configResponse {
 			MarginL4Threshold:      s.cfg.MarginL4Threshold,
 			MarginL5Threshold:      s.cfg.MarginL5Threshold,
 			L4ReduceFraction:       s.cfg.L4ReduceFraction,
+			MarginSafetyMultiplier: s.cfg.MarginSafetyMultiplier,
 			RiskMonitorIntervalSec: s.cfg.RiskMonitorIntervalSec,
 		},
 		AI: configAIResponse{
@@ -515,6 +517,7 @@ type riskUpdate struct {
 	MarginL4Threshold      *float64 `json:"margin_l4_threshold"`
 	MarginL5Threshold      *float64 `json:"margin_l5_threshold"`
 	L4ReduceFraction       *float64 `json:"l4_reduce_fraction"`
+	MarginSafetyMultiplier *float64 `json:"margin_safety_multiplier"`
 	RiskMonitorIntervalSec *int     `json:"risk_monitor_interval_sec"`
 }
 
@@ -689,6 +692,9 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		if rk.L4ReduceFraction != nil && *rk.L4ReduceFraction > 0 && *rk.L4ReduceFraction <= 1 {
 			s.cfg.L4ReduceFraction = *rk.L4ReduceFraction
 		}
+		if rk.MarginSafetyMultiplier != nil && *rk.MarginSafetyMultiplier >= 1.0 {
+			s.cfg.MarginSafetyMultiplier = *rk.MarginSafetyMultiplier
+		}
 		if rk.RiskMonitorIntervalSec != nil && *rk.RiskMonitorIntervalSec > 0 {
 			s.cfg.RiskMonitorIntervalSec = *rk.RiskMonitorIntervalSec
 		}
@@ -828,6 +834,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"margin_l4_threshold":           strconv.FormatFloat(snapshot.Risk.MarginL4Threshold, 'f', -1, 64),
 		"margin_l5_threshold":           strconv.FormatFloat(snapshot.Risk.MarginL5Threshold, 'f', -1, 64),
 		"l4_reduce_fraction":            strconv.FormatFloat(snapshot.Risk.L4ReduceFraction, 'f', -1, 64),
+		"margin_safety_multiplier":      strconv.FormatFloat(snapshot.Risk.MarginSafetyMultiplier, 'f', -1, 64),
 		"risk_monitor_interval_sec":     strconv.Itoa(snapshot.Risk.RiskMonitorIntervalSec),
 		"exit_depth_timeout_sec":        strconv.Itoa(snapshot.Strategy.Exit.DepthTimeoutSec),
 		"spread_reversal_tolerance":     strconv.Itoa(snapshot.Strategy.Exit.SpreadReversalTolerance),

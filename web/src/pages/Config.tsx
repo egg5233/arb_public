@@ -215,21 +215,32 @@ const NumberField: FC<{
   value: unknown;
   unit?: string;
   onChange: (v: string) => void;
-}> = ({ label, desc, value, unit, onChange }) => (
-  <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-    <div className="flex items-center gap-2 mb-2">
-      <label className="text-sm font-medium">{label}</label>
-      {unit && <span className="text-xs text-gray-500">({unit})</span>}
-      {desc && <Tooltip text={desc} />}
+}> = ({ label, desc, value, unit, onChange }) => {
+  const [localVal, setLocalVal] = useState(String(value ?? ''));
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    if (!focused) setLocalVal(String(value ?? ''));
+  }, [value, focused]);
+
+  return (
+    <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+      <div className="flex items-center gap-2 mb-2">
+        <label className="text-sm font-medium">{label}</label>
+        {unit && <span className="text-xs text-gray-500">({unit})</span>}
+        {desc && <Tooltip text={desc} />}
+      </div>
+      <input
+        type="text"
+        value={focused ? localVal : String(value ?? '')}
+        onFocus={() => { setFocused(true); setLocalVal(String(value ?? '')); }}
+        onChange={(e) => { setLocalVal(e.target.value); }}
+        onBlur={() => { setFocused(false); onChange(localVal); }}
+        className="w-full bg-gray-800 border border-gray-700 rounded-lg py-1.5 px-3 text-sm font-mono text-gray-100 focus:outline-none focus:border-blue-500"
+      />
     </div>
-    <input
-      type="text"
-      value={String(value ?? '')}
-      onChange={(e) => onChange(e.target.value)}
-      className="w-full bg-gray-800 border border-gray-700 rounded-lg py-1.5 px-3 text-sm font-mono text-gray-100 focus:outline-none focus:border-blue-500"
-    />
-  </div>
-);
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Main Config Component
@@ -247,6 +258,9 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
   // Exchange overrides: only fields the user actually typed
   const [exchangeOverrides, setExchangeOverrides] = useState<Record<string, Record<string, string>>>({});
 
+  // Track which config paths were changed (dirty fields only)
+  const [dirtyPaths, setDirtyPaths] = useState<Set<string>>(new Set());
+
   useEffect(() => {
     getConfig()
       .then((data) => {
@@ -259,6 +273,7 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
   // Generic change handler for config paths
   const handleChange = (path: string[], value: string) => {
     setDirty(true);
+    setDirtyPaths((prev) => new Set(prev).add(path[0]));
     setConfig((prev) => {
       const original = getByPath(prev, path);
       let parsed: unknown = value;
@@ -274,11 +289,13 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
 
   const handleBoolChange = (path: string[], value: boolean) => {
     setDirty(true);
+    setDirtyPaths((prev) => new Set(prev).add(path[0]));
     setConfig((prev) => setByPath(prev, path, value));
   };
 
   const handleNumberChange = (path: string[], value: number) => {
     setDirty(true);
+    setDirtyPaths((prev) => new Set(prev).add(path[0]));
     setConfig((prev) => setByPath(prev, path, value));
   };
 
@@ -296,21 +313,24 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
     setSaving(true);
     setMessage('');
     try {
-      // Merge exchange overrides into config for submission
-      let submitData = { ...config };
-      if (Object.keys(exchangeOverrides).length > 0) {
-        const exchanges = ((submitData.exchanges as Record<string, unknown>) || {});
-        for (const [exId, fields] of Object.entries(exchangeOverrides)) {
-          const exData = ((exchanges[exId] as Record<string, unknown>) || {});
-          const merged = { ...exData, ...fields } as Record<string, unknown>;
-          exchanges[exId] = merged;
+      // Only send dirty sections — backend supports partial updates
+      const submitData: Record<string, unknown> = {};
+      for (const key of dirtyPaths) {
+        if (key !== 'exchanges') {
+          submitData[key] = config[key];
         }
-        submitData = { ...submitData, exchanges };
       }
+
+      // Exchange overrides: only send fields the user actually typed
+      if (Object.keys(exchangeOverrides).length > 0) {
+        submitData.exchanges = exchangeOverrides;
+      }
+
       const updated = await updateConfig(submitData);
       setConfig(updated);
       setMessage(t('cfg.saved'));
       setDirty(false);
+      setDirtyPaths(new Set());
       setExchangeOverrides({});
     } catch (err) {
       setMessage(err instanceof Error ? err.message : t('cfg.failed'));
@@ -856,6 +876,15 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
               colorClass="text-blue-400"
             />
           </div>
+
+          {/* Margin safety multiplier */}
+          <NumberField
+            label={t('cfg.field.marginSafetyMultiplier')}
+            desc={t('cfg.desc.marginSafetyMultiplier')}
+            value={getByPath(config, ['risk', 'margin_safety_multiplier'])}
+            unit="×"
+            onChange={(v) => handleChange(['risk', 'margin_safety_multiplier'], v)}
+          />
 
           {/* Risk monitor interval */}
           <NumberField

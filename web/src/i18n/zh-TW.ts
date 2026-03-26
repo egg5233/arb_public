@@ -189,6 +189,7 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.field.l4ReduceTrigger': 'L4 減倉觸發',
   'cfg.field.l5EmergencyClose': 'L5 緊急平倉',
   'cfg.field.l4ReduceFraction': 'L4 減倉比例',
+  'cfg.field.marginSafetyMultiplier': '開倉保證金安全倍數',
   'cfg.field.spreadVolatilityMaxCV': '利差波動最大CV',
   'cfg.field.spreadVolatilityMinSamples': '利差波動樣本數',
   'cfg.field.fundingWindowMin': '結算距離',
@@ -266,6 +267,7 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.desc.l4ReduceTrigger': '超過此全倉維持率時觸發減倉以降低風險（0-1）',
   'cfg.desc.l5EmergencyClose': '超過此全倉維持率时触发 !!全部紧急平倉!! 以防止帳戶爆倉（0-1）',
   'cfg.desc.l4ReduceFraction': '達到L4閾值時減倉的比例。例如0.5 = 減倉50%',
+  'cfg.desc.marginSafetyMultiplier': '開倉時要求的保證金倍數。2.0 = 需要2倍保證金才允許開倉，防止開倉後立即觸發風控',
   'cfg.desc.dryRun': '啟用時，機器人記錄所有操作但不執行任何真實交易',
 
   // Logs

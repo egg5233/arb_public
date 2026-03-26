@@ -187,6 +187,7 @@ const en = {
   'cfg.field.l4ReduceTrigger': 'L4 Reduce Trigger',
   'cfg.field.l5EmergencyClose': 'L5 Emergency Close',
   'cfg.field.l4ReduceFraction': 'L4 Reduce Fraction',
+  'cfg.field.marginSafetyMultiplier': 'Margin Safety Multiplier',
   'cfg.field.spreadVolatilityMaxCV': 'Spread Volatility Max CV',
   'cfg.field.spreadVolatilityMinSamples': 'Volatility Min Samples',
   'cfg.field.fundingWindowMin': 'Funding Window',
@@ -264,6 +265,7 @@ const en = {
   'cfg.desc.l4ReduceTrigger': 'Margin ratio (0-1) that triggers position reduction on the affected exchange',
   'cfg.desc.l5EmergencyClose': 'Margin ratio (0-1) that triggers emergency close of all positions on the exchange',
   'cfg.desc.l4ReduceFraction': 'Fraction of position to reduce when L4 threshold is hit. e.g. 0.5 = reduce by 50%',
+  'cfg.desc.marginSafetyMultiplier': 'Required margin multiplier for opening positions. 2.0 = need 2× margin to prevent immediate L5 emergency close after fees',
   'cfg.desc.dryRun': 'When enabled, the bot logs all actions but does not execute any real trades',
 
   // Logs
