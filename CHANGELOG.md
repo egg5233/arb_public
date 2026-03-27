@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.18.1] - 2026-03-27
+
+### Fixed
+- **Bitget `PlaceStopLoss` `reduceOnly` casing**: Was lowercase `"yes"` — changed to `"YES"` to match Bitget API spec (second occurrence missed in earlier fix at line 1090)
+- **Build error from two `main` functions in `scripts/`**: Moved standalone debug scripts to separate subdirectories (`scripts/query-bingx-pnl/main.go`, `scripts/query-bitget-pnl/main.go`) so each has its own package
+
 ## [0.18.0] - 2026-03-28
 
 ### Added

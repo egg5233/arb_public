@@ -1087,7 +1087,7 @@ func (a *Adapter) PlaceStopLoss(params exchange.StopLossParams) (string, error) 
 		"triggerType":  "mark_price",
 		"size":         params.Size,
 		"side":         string(params.Side),
-		"reduceOnly":   "yes",
+		"reduceOnly":   "YES",
 	}
 
 	raw, err := a.client.Post("/api/v2/mix/order/place-plan-order", p)
