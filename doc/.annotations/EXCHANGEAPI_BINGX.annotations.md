@@ -46,3 +46,10 @@ type: correction
 ---
 GET /openApi/swap/v2/trade/fillHistory: Response wrapper key is `fill_history_orders` (NOT `fill_orders` as documented in official docs). The `filledTime` field is a datetime string like `"2026-03-26T16:53:55.000+08:00"` (NOT a ms timestamp). Field names in response: `qty` (not `volume`), `commission` (negative = cost), `commissionAsset`, `tradeId`, `orderId`, `price`, `side`, `symbol`. Parse `filledTime` with Go format `"2006-01-02T15:04:05.000-07:00"`.
 
+
+---
+date: 2026-03-27
+type: correction
+---
+GET /openApi/swap/v1/trade/positionHistory: The `netProfit` field ALREADY INCLUDES `realisedProfit + positionCommission + totalFunding`. Do NOT add `totalFunding` again. Verified from live data: netProfit=-3.4920 = realisedProfit(-0.9360) + commission(-0.1001) + totalFunding(-2.4559).
+

@@ -188,13 +188,14 @@ After sizing: round to contract step size, enforce min size, enforce 10 USDT min
    (with optional tolerance: allow N reversals before triggering, configurable via
    `SpreadReversalTolerance`, default 0 = immediate exit on first reversal)
 2. Skip evaluation within ±10min of funding settlement (rates unreliable)
+3. Min-hold gate: suppress exit before first funding settlement (`NextFunding`); manual close and margin emergencies bypass
 ```
 
 **Exit execution — Depth-Fill (non-emergency)**:
 1. Set position status to `exiting` (slot remains occupied)
 2. Spawn cancellable goroutine (`context.Context`)
 3. Subscribe to WS depth on both exchanges
-4. Depth-fill loop (200ms tick, `ExitDepthTimeoutSec` timeout):
+4. **Gap-gated** depth-fill loop (200ms tick, `ExitDepthTimeoutSec` timeout). Cross-exchange gap checked before each order pair; gap ceiling ramps from `ExitMaxGapBPS` (default 10 bps) to 3× over timeout:
    - Sell on long exchange: reduce-only IOC limit at `bid * (1 - slippage)`
    - Buy on short exchange: reduce-only IOC limit at `ask * (1 + slippage)` for matched qty
    - VWAP accumulation across fills

@@ -34,6 +34,13 @@ func (e *Engine) checkExitsV2() {
 			continue
 		}
 
+		// Min-hold gate: don't exit before first funding settlement.
+		// Prevents exiting before collecting any revenue (guaranteed loss).
+		// Manual close and margin emergencies bypass checkExitsV2 entirely.
+		if !pos.NextFunding.IsZero() && time.Now().Before(pos.NextFunding) {
+			continue
+		}
+
 		// Safety: spread reversal triggers exit (with optional tolerance).
 		if reversed, reason := e.checkSpreadReversal(pos); reversed {
 			tolerance := e.cfg.SpreadReversalTolerance
@@ -152,12 +159,32 @@ func (e *Engine) executeDepthExit(ctx context.Context, pos *models.ArbitragePosi
 	const maxConsecFails = 5
 
 	timeout := time.Duration(e.cfg.ExitDepthTimeoutSec) * time.Second
-	deadline := time.Now().Add(timeout)
+	startTime := time.Now()
+	deadline := startTime.Add(timeout)
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
-	e.log.Info("depth exit loop for %s: longSize=%.6f shortSize=%.6f timeout=%v",
-		pos.ID, totalLong, totalShort, timeout)
+	var gapRejected bool // only log gap rejection on state change
+
+	// Look up step/min size for unfillable remainder check.
+	var exitStepSize, exitMinSize float64
+	if e.contracts != nil {
+		for _, exchName := range []string{pos.LongExchange, pos.ShortExchange} {
+			if exContracts, ok := e.contracts[exchName]; ok {
+				if ci, ok := exContracts[pos.Symbol]; ok {
+					if ci.StepSize > exitStepSize {
+						exitStepSize = ci.StepSize
+					}
+					if ci.MinSize > exitMinSize {
+						exitMinSize = ci.MinSize
+					}
+				}
+			}
+		}
+	}
+
+	e.log.Info("depth exit loop for %s: longSize=%.6f shortSize=%.6f timeout=%v maxGap=%.1fbps",
+		pos.ID, totalLong, totalShort, timeout, e.cfg.ExitMaxGapBPS)
 
 exitLoop:
 	for {
@@ -198,29 +225,74 @@ exitLoop:
 			continue
 		}
 
-		// Determine chunk size from available depth.
+		// Cross-exchange exit gap: we SELL long (into bids), BUY short (from asks).
+		bestBid := longDepth.Bids[0].Price
+		bestAsk := shortDepth.Asks[0].Price
+		exitGapBPS := (bestAsk/bestBid - 1) * 10000
+
+		// Gap gate: single bounded ramp from ExitMaxGapBPS to 3x over the timeout.
+		elapsed := time.Since(startTime).Seconds()
+		totalSec := timeout.Seconds()
+		relaxFactor := 1.0 + 2.0*(elapsed/totalSec)
+		if relaxFactor > 3.0 {
+			relaxFactor = 3.0
+		}
+		effectiveMaxGap := e.cfg.ExitMaxGapBPS * relaxFactor
+
+		if exitGapBPS > effectiveMaxGap {
+			if !gapRejected {
+				e.log.Info("depth exit %s: gap=%.1fbps > limit=%.1fbps, waiting...",
+					pos.ID, exitGapBPS, effectiveMaxGap)
+				gapRejected = true
+			}
+			continue
+		}
+		if gapRejected {
+			e.log.Info("depth exit %s: gap=%.1fbps recovered (limit=%.1fbps)",
+				pos.ID, exitGapBPS, effectiveMaxGap)
+			gapRejected = false
+		}
+
+		// Aggregate depth only within the gap threshold (mirror entry pattern).
 		remaining := math.Min(longRemaining, shortRemaining)
-		bidQty := 0.0
+
+		// Check unfillable remainder.
+		if exitStepSize > 0 && remaining < exitStepSize {
+			e.log.Info("depth exit %s: remaining %.6f < step %.6f, done", pos.ID, remaining, exitStepSize)
+			break
+		}
+		if exitMinSize > 0 && remaining < exitMinSize {
+			e.log.Info("depth exit %s: remaining %.6f < min %.6f, done", pos.ID, remaining, exitMinSize)
+			break
+		}
+
+		var bidQty, askQty float64
 		for _, lvl := range longDepth.Bids {
+			levelGap := (bestAsk/lvl.Price - 1) * 10000
+			if levelGap > effectiveMaxGap {
+				break
+			}
 			bidQty += lvl.Quantity
 		}
-		askQty := 0.0
 		for _, lvl := range shortDepth.Asks {
+			levelGap := (lvl.Price/bestBid - 1) * 10000
+			if levelGap > effectiveMaxGap {
+				break
+			}
 			askQty += lvl.Quantity
+		}
+
+		if bidQty <= 0 || askQty <= 0 {
+			continue
 		}
 
 		size := math.Min(remaining, math.Min(bidQty, askQty))
 
 		// Round to step size.
-		if e.contracts != nil {
-			if exContracts, ok := e.contracts[pos.LongExchange]; ok {
-				if ci, ok := exContracts[pos.Symbol]; ok && ci.StepSize > 0 {
-					size = utils.RoundToStep(size, ci.StepSize)
-				}
-			}
+		if exitStepSize > 0 {
+			size = utils.RoundToStep(size, exitStepSize)
 		}
 
-		bestBid := longDepth.Bids[0].Price
 		if size*bestBid < e.cfg.MinChunkUSDT {
 			continue
 		}
@@ -256,7 +328,7 @@ exitLoop:
 		}
 
 		// Buy to close short for matched qty (reduce-only).
-		bestAsk := shortDepth.Asks[0].Price
+		bestAsk = shortDepth.Asks[0].Price // refresh from current depth
 		buyPrice := e.formatPrice(pos.ShortExchange, pos.Symbol, bestAsk*(1+slippage))
 		buySize := utils.FormatSize(filled, 6)
 

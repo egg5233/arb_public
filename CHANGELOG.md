@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.8] - 2026-03-27
+
+### Fixed
+- **BingX `GetClosePnL` double-counted funding fees**: `netProfit` already includes `realisedProfit + positionCommission + totalFunding`, but adapter added `totalFunding` again (`NetPnL: netPnL + funding`). This caused reconciliation to overwrite correct PnL with inflated losses. Example: BARDUSDT showed -$2.53 instead of correct -$0.08
+
+### Added
+- **Gap-gated exit**: `executeDepthExit` now checks cross-exchange gap before placing orders, mirroring entry's gap-aware pattern. Single bounded ramp from `ExitMaxGapBPS` (default 10 bps) to 3× over timeout. Spread-capped depth aggregation. Unfillable remainder check (remaining < step/min size)
+- **Min-hold gate**: `checkExitsV2` suppresses exits before first funding settlement (`NextFunding`). Manual close and margin emergencies bypass this gate
+- **`ExitMaxGapBPS` config** (default 10.0, JSON: `strategy.exit.max_gap_bps`): Maximum cross-exchange gap in basis points allowed for exit depth-fill orders
+- **Debug scripts**: `scripts/query_bingx_pnl.go`, `scripts/query_bitget_pnl.go` for exchange PnL investigation
+
+### Documentation
+- BingX annotation: `netProfit` includes all components, do not add funding again
+
 ## [0.17.7] - 2026-03-26
 
 ### Fixed

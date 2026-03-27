@@ -996,12 +996,12 @@ func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 			side = "short"
 		}
 
-		// BingX netProfit excludes funding — add totalFunding for true net PnL.
+		// BingX netProfit already includes realisedProfit + commission + totalFunding.
 		out = append(out, exchange.ClosePnL{
 			PricePnL:   pricePnL,
 			Fees:       fees,
 			Funding:    funding,
-			NetPnL:     netPnL + funding,
+			NetPnL:     netPnL,
 			EntryPrice: entryPrice,
 			ExitPrice:  exitPrice,
 			CloseSize:  math.Abs(closeSize),

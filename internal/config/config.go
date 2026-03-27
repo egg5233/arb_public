@@ -50,7 +50,8 @@ type Config struct {
 	MarginSafetyMultiplier float64 // margin buffer multiplier for entry check (default: 2.0)
 
 	// Exit strategy
-	ExitDepthTimeoutSec  int     // depth-fill exit loop timeout before market fallback (default 45)
+	ExitDepthTimeoutSec  int     // depth-fill exit loop timeout before market fallback (default 300)
+	ExitMaxGapBPS        float64 // max cross-exchange gap at exit; ramps to 3x over timeout (default 10)
 
 	// Risk monitor (log-only)
 	RiskMonitorIntervalSec int // interval between risk monitor checks in seconds (default: 300)
@@ -229,8 +230,9 @@ type jsonEntry struct {
 }
 
 type jsonExit struct {
-	DepthTimeoutSec         *int     `json:"depth_timeout_sec"`
-	SpreadReversalTolerance *int     `json:"spread_reversal_tolerance"`
+	DepthTimeoutSec         *int      `json:"depth_timeout_sec"`
+	SpreadReversalTolerance *int      `json:"spread_reversal_tolerance"`
+	MaxGapBPS               *float64  `json:"max_gap_bps"`
 }
 
 type jsonRotation struct {
@@ -277,6 +279,7 @@ func Load() *Config {
 		L4ReduceFraction:           0.30,
 		MarginSafetyMultiplier:     2.0,
 		ExitDepthTimeoutSec:     300,
+		ExitMaxGapBPS:           10.0,
 		RiskMonitorIntervalSec:  300,
 		PersistLookback1h:       90 * time.Minute,
 		PersistMinCount1h:       1,
@@ -503,6 +506,9 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 			}
 			if x.SpreadReversalTolerance != nil {
 				c.SpreadReversalTolerance = *x.SpreadReversalTolerance
+			}
+			if x.MaxGapBPS != nil {
+				c.ExitMaxGapBPS = *x.MaxGapBPS
 			}
 		}
 
@@ -733,6 +739,7 @@ func (c *Config) SaveJSON() error {
 	exit := getMap(strategy, "exit")
 	exit["depth_timeout_sec"] = c.ExitDepthTimeoutSec
 	exit["spread_reversal_tolerance"] = c.SpreadReversalTolerance
+	exit["max_gap_bps"] = c.ExitMaxGapBPS
 
 	rot := getMap(strategy, "rotation")
 	rot["threshold_bps"] = c.RotationThresholdBPS
