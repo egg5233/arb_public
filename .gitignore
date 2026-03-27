@@ -27,3 +27,6 @@ test.json
 failAPI.json
 gatetest
 coh.gocache
+coh
+validate-docs
+.codex-session

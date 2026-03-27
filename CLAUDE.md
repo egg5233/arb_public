@@ -63,8 +63,7 @@ Before making structural changes or adding new modules, read ARCHITECTURE.md in 
 Two skill types: **codex** and **codex-chat**.
 Always attempt to resume the persistent session before starting a new one.
 - Read the session ID from `.codex-session` (gitignored, local to each user)
-- If the file is missing or resume fails, start a new session and 
-  write the new session ID back to `.codex-session`
+- If the file is missing or resume fails, start a new session and write the new session ID back to `.codex-session`
 - Only start a fresh session if resume fails or the user explicitly asks
 
 ### Routing
