@@ -7,10 +7,73 @@ import (
 	"strconv"
 	"time"
 
-	"arb/pkg/exchange"
 	"arb/internal/models"
+	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
+
+// checkIntervalChanges queries both legs of every active position for their
+// current funding interval. If the two legs now have different intervals,
+// the position is flagged for exit via spawnExitGoroutine.
+// Called before checkExitsV2 on each ExitScan cycle.
+func (e *Engine) checkIntervalChanges() {
+	positions, err := e.db.GetActivePositions()
+	if err != nil {
+		e.log.Error("interval check: failed to get active positions: %v", err)
+		return
+	}
+
+	for _, pos := range positions {
+		if pos.Status != models.StatusActive {
+			continue
+		}
+
+		// Skip if an exit goroutine is already running.
+		e.exitMu.Lock()
+		running := e.exitActive[pos.ID]
+		e.exitMu.Unlock()
+		if running {
+			continue
+		}
+
+		longExch, ok := e.exchanges[pos.LongExchange]
+		if !ok {
+			continue
+		}
+		shortExch, ok := e.exchanges[pos.ShortExchange]
+		if !ok {
+			continue
+		}
+
+		longInterval, err := longExch.GetFundingInterval(pos.Symbol)
+		if err != nil {
+			e.log.Warn("interval check: %s failed to get interval from %s: %v", pos.Symbol, pos.LongExchange, err)
+			continue
+		}
+		shortInterval, err := shortExch.GetFundingInterval(pos.Symbol)
+		if err != nil {
+			e.log.Warn("interval check: %s failed to get interval from %s: %v", pos.Symbol, pos.ShortExchange, err)
+			continue
+		}
+
+		// Some adapters silently return 8h on API failure instead of an error.
+		// Skip the check if either leg reports the 8h default to avoid false exits.
+		if longInterval == 8*time.Hour || shortInterval == 8*time.Hour {
+			continue
+		}
+
+		diff := longInterval - shortInterval
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff > 30*time.Minute {
+			reason := fmt.Sprintf("interval mismatch: %s=%v %s=%v",
+				pos.LongExchange, longInterval, pos.ShortExchange, shortInterval)
+			e.log.Info("interval check: %s — %s, triggering exit", pos.ID, reason)
+			e.spawnExitGoroutine(pos, reason)
+		}
+	}
+}
 
 // checkExitsV2 evaluates all active positions for exit conditions.
 // Called on every scan result (every ~10 minutes).
@@ -165,6 +228,20 @@ func (e *Engine) executeDepthExit(ctx context.Context, pos *models.ArbitragePosi
 	defer ticker.Stop()
 
 	var gapRejected bool // only log gap rejection on state change
+	initialGapBPS := 0.0
+	baseGapBPS := e.cfg.ExitMaxGapBPS
+
+	// Snapshot the starting gap so exits that begin in a wide market do not wait
+	// for the ramp to catch up before the first fill attempts.
+	if longDepth, lok := longExch.GetDepth(pos.Symbol); lok {
+		if shortDepth, sok := shortExch.GetDepth(pos.Symbol); sok && len(longDepth.Bids) > 0 && len(shortDepth.Asks) > 0 {
+			initialGapBPS = (shortDepth.Asks[0].Price/longDepth.Bids[0].Price - 1) * 10000
+			baseGapBPS = math.Max(baseGapBPS, initialGapBPS)
+			if initialGapBPS > e.cfg.ExitMaxGapBPS {
+				e.log.Info("depth exit %s: initial gap %.1fbps > config %.1fbps, using dynamic baseline", pos.ID, initialGapBPS, e.cfg.ExitMaxGapBPS)
+			}
+		}
+	}
 
 	// Look up step/min size for unfillable remainder check.
 	var exitStepSize, exitMinSize float64
@@ -183,8 +260,8 @@ func (e *Engine) executeDepthExit(ctx context.Context, pos *models.ArbitragePosi
 		}
 	}
 
-	e.log.Info("depth exit loop for %s: longSize=%.6f shortSize=%.6f timeout=%v maxGap=%.1fbps",
-		pos.ID, totalLong, totalShort, timeout, e.cfg.ExitMaxGapBPS)
+	e.log.Info("depth exit loop for %s: longSize=%.6f shortSize=%.6f timeout=%v cfgGap=%.1fbps initialGap=%.1fbps baseGap=%.1fbps",
+		pos.ID, totalLong, totalShort, timeout, e.cfg.ExitMaxGapBPS, initialGapBPS, baseGapBPS)
 
 exitLoop:
 	for {
@@ -230,14 +307,14 @@ exitLoop:
 		bestAsk := shortDepth.Asks[0].Price
 		exitGapBPS := (bestAsk/bestBid - 1) * 10000
 
-		// Gap gate: single bounded ramp from ExitMaxGapBPS to 3x over the timeout.
+		// Gap gate: single bounded ramp from baseGapBPS to 3x over the timeout.
 		elapsed := time.Since(startTime).Seconds()
 		totalSec := timeout.Seconds()
 		relaxFactor := 1.0 + 2.0*(elapsed/totalSec)
 		if relaxFactor > 3.0 {
 			relaxFactor = 3.0
 		}
-		effectiveMaxGap := e.cfg.ExitMaxGapBPS * relaxFactor
+		effectiveMaxGap := baseGapBPS * relaxFactor
 
 		if exitGapBPS > effectiveMaxGap {
 			if !gapRejected {

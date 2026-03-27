@@ -620,6 +620,7 @@ func (e *Engine) run() {
 				e.rebalanceFunds()
 				e.log.Info("run loop: rebalanceScan handler done")
 			case discovery.ExitScan:
+				e.checkIntervalChanges()
 				e.checkExitsV2()
 				e.log.Info("run loop: exitScan handler done")
 			case discovery.RotateScan:

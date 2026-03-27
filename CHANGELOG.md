@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.18.0] - 2026-03-28
+
+### Added
+- **Cross-leg interval matching in ranker**: Pairs are now grouped by funding interval before selecting best long/short. Mixed-interval pairs (e.g. 1h vs 4h) are no longer ranked as opportunities. Falls back to best same-interval pair instead of discarding the symbol entirely
+- **Interval change monitor**: `checkIntervalChanges()` runs before every ExitScan, queries both legs' funding intervals via exchange APIs. Triggers position exit if intervals diverge (>30min difference). Skips 8h default values to avoid false exits from silent adapter fallbacks
+
 ## [0.17.8] - 2026-03-27
 
 ### Fixed

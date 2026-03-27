@@ -85,24 +85,40 @@ func (s *Scanner) RankOpportunities(loris *models.LorisResponse) []models.Opport
 			continue
 		}
 
-		// Step 2: Find best pair — lowest rate (long) and highest rate (short).
+		// Step 2: Group by interval, find best pair within each group,
+		// then pick the group with the widest spread.
+		// This avoids discarding valid same-interval pairs when the
+		// global best long/short happen to be on different intervals.
+		intervalGroups := make(map[int][]exRate) // key = interval rounded to nearest hour
+		for _, r := range rates {
+			key := int(math.Round(r.intervalHrs))
+			intervalGroups[key] = append(intervalGroups[key], r)
+		}
+
 		var bestLong, bestShort exRate
-		bestLong = rates[0]
-		bestShort = rates[0]
-		for _, r := range rates[1:] {
-			if r.rateBpsH < bestLong.rateBpsH {
-				bestLong = r
+		var spread float64
+		for _, group := range intervalGroups {
+			if len(group) < 2 {
+				continue
 			}
-			if r.rateBpsH > bestShort.rateBpsH {
-				bestShort = r
+			gLong, gShort := group[0], group[0]
+			for _, r := range group[1:] {
+				if r.rateBpsH < gLong.rateBpsH {
+					gLong = r
+				}
+				if r.rateBpsH > gShort.rateBpsH {
+					gShort = r
+				}
+			}
+			if gLong.exchange == gShort.exchange {
+				continue
+			}
+			gSpread := gShort.rateBpsH - gLong.rateBpsH
+			if gSpread > spread {
+				bestLong, bestShort, spread = gLong, gShort, gSpread
 			}
 		}
 
-		// Must be different exchanges and spread must be positive.
-		if bestLong.exchange == bestShort.exchange {
-			continue
-		}
-		spread := bestShort.rateBpsH - bestLong.rateBpsH // bps/h
 		if spread <= 0 {
 			continue
 		}
