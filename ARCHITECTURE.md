@@ -171,7 +171,7 @@ After sizing: round to contract step size, enforce min size, enforce 10 USDT min
 | OKX | `POST /api/v5/trade/order-algo` | `POST /api/v5/trade/cancel-algos` |
 
 **Position Consolidator**: Background goroutine (every 5min) reconciles local position records with actual exchange positions:
-- Missing leg detected → closes remaining leg and marks position closed
+- Missing leg detected → closes both legs (including "missing" one via re-query + local size fallback) and marks position closed. BingX legs require 3 consecutive misses before acting (guards against transient empty-position API responses)
 - Size mismatch >1% → syncs local record to exchange reality
 - **Balance enforcer**: After sync, if long/short differ by >5%, trims excess side via confirmed reduce-only market order, then cancels and re-places stop losses
 - Orphan exchange positions (not tracked locally) → auto-closes via reduce-only market IOC
@@ -369,11 +369,11 @@ pkg/
     exchange.go                    Unified Exchange interface (33 methods)
     types.go                       Shared types (Order, Position, Balance, Orderbook, etc.)
     factory.go                     Exchange factory (logic in cmd/main.go to avoid cycles)
-    binance/                       adapter.go, client.go, ws.go, ws_private.go
-    bitget/                        adapter.go, client.go, ws.go, ws_private.go
-    bybit/                         adapter.go, client.go, ws.go, ws_private.go
-    gateio/                        adapter.go, client.go, ws.go, ws_private.go, adapter_test.go
-    okx/                           adapter.go, client.go, ws.go, ws_private.go
+    binance/                       adapter.go, client.go, ws.go, ws_private.go, margin.go
+    bitget/                        adapter.go, client.go, ws.go, ws_private.go, margin.go
+    bybit/                         adapter.go, client.go, ws.go, ws_private.go, margin.go
+    gateio/                        adapter.go, client.go, ws.go, ws_private.go, adapter_test.go, margin.go
+    okx/                           adapter.go, client.go, ws.go, ws_private.go, margin.go
     bingx/                         adapter.go, client.go, ws.go, ws_private.go
   utils/
     math.go                        RoundToStep, EstimateSlippage, RateToBpsPerHour, GenerateID
@@ -524,7 +524,25 @@ type Exchange interface {
 - BingX: `BTCUSDT` ↔ `BTC-USDT` (hyphenated)
 - Others: `BTCUSDT` as-is
 
-Each adapter: `adapter.go` (interface impl), `client.go` (REST), `ws.go` (public WS), `ws_private.go` (private WS).
+Each adapter: `adapter.go` (interface impl), `client.go` (REST), `ws.go` (public WS), `ws_private.go` (private WS), `margin.go` (spot margin, optional).
+
+#### SpotMarginExchange (optional interface)
+
+Spot margin support for borrow-sell-buyback-repay strategies. Use type assertion (`exch.(exchange.SpotMarginExchange)`) to check support. BingX does not implement this interface.
+
+```go
+type SpotMarginExchange interface {
+    MarginBorrow(params MarginBorrowParams) error
+    MarginRepay(params MarginRepayParams) error
+    PlaceSpotMarginOrder(params SpotMarginOrderParams) (orderID string, err error)
+    GetMarginInterestRate(coin string) (*MarginInterestRate, error)
+    GetMarginBalance(coin string) (*MarginBalance, error)
+    TransferToMargin(coin string, amount string) error
+    TransferFromMargin(coin string, amount string) error
+}
+```
+
+Implemented by: Binance, Bybit, OKX, Gate.io (unified `/unified/*` cross margin endpoints), Bitget.
 
 **Gate.io quanto multiplier**: Gate.io uses contract-based sizing. The adapter converts between base units and contracts using `quanto_multiplier` in PlaceOrder (divide), GetPosition/GetOrderFilledQty (multiply), and WS order updates (multiply). All other code works in base asset units.
 

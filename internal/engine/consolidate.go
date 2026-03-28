@@ -19,7 +19,13 @@ func (e *Engine) StartConsolidator() {
 func (e *Engine) runConsolidator() {
 	// Run once at startup after a short delay for WS connections to establish.
 	time.Sleep(10 * time.Second)
-	e.consolidatePositions()
+
+	// missCount tracks consecutive "leg missing" detections per position+side.
+	// key: "posID:side" (e.g. "katusdt-123:short"). Only used for BingX legs
+	// to guard against transient API glitches returning empty positions.
+	missCount := map[string]int{}
+
+	e.consolidatePositions(missCount)
 
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
@@ -27,7 +33,7 @@ func (e *Engine) runConsolidator() {
 	for {
 		select {
 		case <-ticker.C:
-			e.consolidatePositions()
+			e.consolidatePositions(missCount)
 		case <-e.stopCh:
 			e.log.Info("consolidator stopped")
 			return
@@ -37,7 +43,7 @@ func (e *Engine) runConsolidator() {
 
 // consolidatePositions compares local position records with exchange state
 // and fixes mismatches.
-func (e *Engine) consolidatePositions() {
+func (e *Engine) consolidatePositions(missCount map[string]int) {
 	positions, err := e.db.GetActivePositions()
 	if err != nil {
 		e.log.Error("consolidate: failed to get positions: %v", err)
@@ -119,7 +125,7 @@ func (e *Engine) consolidatePositions() {
 		if busySymbols[pos.LongExchange+":"+pos.Symbol] || busySymbols[pos.ShortExchange+":"+pos.Symbol] {
 			continue
 		}
-		e.consolidatePosition(pos, siblingTotals)
+		e.consolidatePosition(pos, siblingTotals, missCount)
 	}
 
 	// Check for orphan exchange positions not tracked by any local record.
@@ -169,7 +175,12 @@ func (e *Engine) consolidatePositions() {
 // the local record if they don't match. siblingTotals maps
 // "exchange:symbol:side" → total size claimed by ALL local positions,
 // so duplicate-symbol positions sharing the same exchange leg are handled.
-func (e *Engine) consolidatePosition(pos *models.ArbitragePosition, siblingTotals map[string]float64) {
+// bingxMissThreshold is the number of consecutive consolidation cycles where
+// a BingX leg must report size=0 before we declare it missing. Guards against
+// transient BingX API responses returning empty position arrays.
+const bingxMissThreshold = 3
+
+func (e *Engine) consolidatePosition(pos *models.ArbitragePosition, siblingTotals map[string]float64, missCount map[string]int) {
 	longExch, lok := e.exchanges[pos.LongExchange]
 	shortExch, sok := e.exchanges[pos.ShortExchange]
 	if !lok || !sok {
@@ -220,18 +231,45 @@ func (e *Engine) consolidatePosition(pos *models.ArbitragePosition, siblingTotal
 	needsUpdate := false
 
 	// Check for missing legs (exchange position is 0 but local says it exists).
+	// For BingX legs, require multiple consecutive misses before acting —
+	// BingX API can transiently return empty position arrays.
 	if pos.LongSize > 0 && longSize == 0 {
+		missKey := pos.ID + ":long"
+		if pos.LongExchange == "bingx" {
+			missCount[missKey]++
+			if missCount[missKey] < bingxMissThreshold {
+				e.log.Warn("consolidate: %s long leg missing on bingx (local=%.6f exchange=0), miss %d/%d — waiting for confirmation",
+					pos.ID, pos.LongSize, missCount[missKey], bingxMissThreshold)
+				return
+			}
+		}
 		e.log.Warn("consolidate: %s long leg missing on %s (local=%.6f exchange=0), closing position",
 			pos.ID, pos.LongExchange, pos.LongSize)
+		delete(missCount, missKey)
 		e.markPositionClosed(pos, "long leg missing on exchange")
 		return
 	}
+	// Long leg is present — reset miss counter.
+	delete(missCount, pos.ID+":long")
+
 	if pos.ShortSize > 0 && shortSize == 0 {
+		missKey := pos.ID + ":short"
+		if pos.ShortExchange == "bingx" {
+			missCount[missKey]++
+			if missCount[missKey] < bingxMissThreshold {
+				e.log.Warn("consolidate: %s short leg missing on bingx (local=%.6f exchange=0), miss %d/%d — waiting for confirmation",
+					pos.ID, pos.ShortSize, missCount[missKey], bingxMissThreshold)
+				return
+			}
+		}
 		e.log.Warn("consolidate: %s short leg missing on %s (local=%.6f exchange=0), closing position",
 			pos.ID, pos.ShortExchange, pos.ShortSize)
+		delete(missCount, missKey)
 		e.markPositionClosed(pos, "short leg missing on exchange")
 		return
 	}
+	// Short leg is present — reset miss counter.
+	delete(missCount, pos.ID+":short")
 
 	// Check for size mismatches > 1%.
 	if longPct > 0.01 {
@@ -274,13 +312,20 @@ func (e *Engine) consolidatePosition(pos *models.ArbitragePosition, siblingTotal
 // markPositionClosed closes a position that has a missing leg on the exchange.
 // If the remaining leg still exists, it closes it too.
 func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string) {
-	// Try to close the remaining leg if it exists.
+	// Try to close BOTH legs — including the one reported as "missing".
+	// The "missing" leg may still exist on the exchange (transient API glitch),
+	// so we re-query and attempt to close it too.
 	if pos.LongSize > 0 {
 		if longExch, ok := e.exchanges[pos.LongExchange]; ok {
 			actualSize, err := getExchangePositionSize(longExch, pos.Symbol, "long")
 			if err == nil && actualSize > 0 {
-				e.log.Info("consolidate: closing remaining long leg on %s: %.6f", pos.LongExchange, actualSize)
+				e.log.Info("consolidate: closing long leg on %s: %.6f", pos.LongExchange, actualSize)
 				e.closeLeg(longExch, pos.Symbol, exchange.SideSell, e.formatSize(pos.LongExchange, pos.Symbol, actualSize))
+			} else {
+				// Leg not found on re-query — try closing with local size as fallback.
+				e.log.Info("consolidate: long leg not found on %s re-query, attempting close with local size %.6f",
+					pos.LongExchange, pos.LongSize)
+				e.closeLeg(longExch, pos.Symbol, exchange.SideSell, e.formatSize(pos.LongExchange, pos.Symbol, pos.LongSize))
 			}
 		}
 	}
@@ -288,8 +333,13 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 		if shortExch, ok := e.exchanges[pos.ShortExchange]; ok {
 			actualSize, err := getExchangePositionSize(shortExch, pos.Symbol, "short")
 			if err == nil && actualSize > 0 {
-				e.log.Info("consolidate: closing remaining short leg on %s: %.6f", pos.ShortExchange, actualSize)
+				e.log.Info("consolidate: closing short leg on %s: %.6f", pos.ShortExchange, actualSize)
 				e.closeLeg(shortExch, pos.Symbol, exchange.SideBuy, e.formatSize(pos.ShortExchange, pos.Symbol, actualSize))
+			} else {
+				// Leg not found on re-query — try closing with local size as fallback.
+				e.log.Info("consolidate: short leg not found on %s re-query, attempting close with local size %.6f",
+					pos.ShortExchange, pos.ShortSize)
+				e.closeLeg(shortExch, pos.Symbol, exchange.SideBuy, e.formatSize(pos.ShortExchange, pos.Symbol, pos.ShortSize))
 			}
 		}
 	}

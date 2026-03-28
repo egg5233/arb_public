@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.0] - 2026-03-28
+
+### Added
+- **SpotMarginExchange interface** (`pkg/exchange/types.go`): New optional interface for spot margin borrowing (borrow-sell-buyback-repay) with types `MarginBorrowParams`, `MarginRepayParams`, `SpotMarginOrderParams`, `MarginInterestRate`, `MarginBalance`
+- **Spot margin adapters** (`margin.go`): Implemented for 5 exchanges — Binance, Bybit, OKX, Gate.io (unified `/unified/*` endpoints for cross margin), Bitget. Each implements `MarginBorrow`, `MarginRepay`, `PlaceSpotMarginOrder`, `GetMarginInterestRate`, `GetMarginBalance`, `TransferToMargin`, `TransferFromMargin`. BingX excluded (no spot margin support)
+- **Margin API documentation**: `EXCHANGEAPI_{EXCHANGE}_MARGIN.md` for all 5 exchanges, `EXCHANGEAPI_GATEIO_UNIFIED.md` for Gate.io unified account endpoints, `SPEC_BINANCE_SPOT_MARGIN.md` for Binance spot margin spec
+
+### Fixed
+- **Consolidator BingX false positives**: BingX legs now require 3 consecutive "missing" detections (`bingxMissThreshold`) before force-closing, preventing false positives from transient API glitches returning empty position arrays
+- **`markPositionClosed` closes both legs**: Now attempts to close both legs including the one reported as "missing" (re-queries exchange, falls back to local size), guarding against transient API errors leaving orphan positions
+
 ## [0.18.9] - 2026-03-28
 
 ### Fixed

@@ -196,3 +196,76 @@ type PermissionResult struct {
 type PermissionChecker interface {
 	CheckPermissions() PermissionResult
 }
+
+// ---------------------------------------------------------------------------
+// Spot Margin (borrow-and-sell) types
+// ---------------------------------------------------------------------------
+
+// MarginBorrowParams contains parameters for borrowing a coin on spot margin.
+type MarginBorrowParams struct {
+	Coin   string // e.g. "BTC"
+	Amount string // quantity to borrow
+}
+
+// MarginRepayParams contains parameters for repaying a borrowed coin.
+type MarginRepayParams struct {
+	Coin   string // e.g. "BTC"
+	Amount string // quantity to repay (include interest)
+}
+
+// SpotMarginOrderParams contains parameters for placing a spot margin order.
+type SpotMarginOrderParams struct {
+	Symbol    string // e.g. "BTCUSDT"
+	Side      Side   // buy or sell
+	OrderType string // "limit" or "market"
+	Price     string // required for limit orders
+	Size      string // quantity in base coin
+	Force     string // "gtc", "ioc", "fok"
+	AutoBorrow bool  // if true, exchange auto-borrows on sell
+	AutoRepay  bool  // if true, exchange auto-repays on buy
+	ClientOid  string
+}
+
+// MarginInterestRate holds the borrow interest rate for a coin.
+type MarginInterestRate struct {
+	Coin       string
+	HourlyRate float64 // per-hour rate as decimal (e.g. 0.000005)
+	DailyRate  float64 // per-day rate as decimal (if available)
+}
+
+// MarginBalance holds spot margin account info for a coin.
+type MarginBalance struct {
+	Coin          string
+	TotalBalance  float64 // total holdings
+	Available     float64 // available (not frozen)
+	Borrowed      float64 // outstanding loan principal
+	Interest      float64 // accrued interest
+	NetBalance    float64 // total - borrowed - interest
+	MaxBorrowable float64 // maximum additional borrowable
+}
+
+// SpotMarginExchange is an optional interface for exchanges that support
+// spot margin borrowing (borrow-sell-buyback-repay). Use type assertion to check.
+// BingX does not implement this interface.
+type SpotMarginExchange interface {
+	// MarginBorrow borrows a coin on spot margin.
+	MarginBorrow(params MarginBorrowParams) error
+
+	// MarginRepay repays a borrowed coin (amount should include accrued interest).
+	MarginRepay(params MarginRepayParams) error
+
+	// PlaceSpotMarginOrder places a buy or sell order on spot margin.
+	PlaceSpotMarginOrder(params SpotMarginOrderParams) (orderID string, err error)
+
+	// GetMarginInterestRate returns the current borrow interest rate for a coin.
+	GetMarginInterestRate(coin string) (*MarginInterestRate, error)
+
+	// GetMarginBalance returns spot margin account info for a coin.
+	GetMarginBalance(coin string) (*MarginBalance, error)
+
+	// TransferToMargin moves funds from the main/futures account to the margin account.
+	TransferToMargin(coin string, amount string) error
+
+	// TransferFromMargin moves funds from the margin account back to main/futures.
+	TransferFromMargin(coin string, amount string) error
+}
