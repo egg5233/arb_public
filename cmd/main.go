@@ -199,14 +199,6 @@ func main() {
 				spotBal, err := exc.GetSpotBalance()
 				if err == nil {
 					db.SaveSpotBalance(name, spotBal.Available)
-					// Gate.io classic mode: spot balance = true account equity,
-					// futures balance is just the futures-allocated portion.
-					// For unified mode, GetFuturesBalance already returns accurate equity.
-					if name == "gateio" {
-						if ga, ok := exc.(*gateio.Adapter); ok && !ga.IsUnified() {
-							amount = spotBal.Available
-						}
-					}
 				}
 				if err := db.SaveBalance(name, amount); err != nil {
 					log.Warn("save balance %s: %v", name, err)

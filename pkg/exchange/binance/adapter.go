@@ -486,6 +486,7 @@ func (b *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 		Assets             []struct {
 			Asset            string `json:"asset"`
 			WalletBalance    string `json:"walletBalance"`
+			MarginBalance    string `json:"marginBalance"`
 			AvailableBalance string `json:"availableBalance"`
 		} `json:"assets"`
 	}
@@ -503,7 +504,9 @@ func (b *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 
 	for _, asset := range resp.Assets {
 		if asset.Asset == "USDT" {
-			total, _ := strconv.ParseFloat(asset.WalletBalance, 64)
+			// Use marginBalance (= walletBalance + unrealizedPnL) for Total
+			// so the dashboard reflects true equity including open position PnL.
+			total, _ := strconv.ParseFloat(asset.MarginBalance, 64)
 			available, _ := strconv.ParseFloat(asset.AvailableBalance, 64)
 
 			// Defensive: if availableBalance is 0 but wallet has funds, fall back.

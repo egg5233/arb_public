@@ -586,28 +586,30 @@ func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 	return &exchange.Balance{Currency: "USDT"}, nil
 }
 
-// GetSpotBalance returns the spot/funding account balance.
+// GetSpotBalance returns the fund account balance (where deposits land).
+// BingX split into 4 accounts (Fund/Spot/Standard Futures/Perpetual Futures)
+// in May 2025; deposits always go to the Fund account.
 func (a *Adapter) GetSpotBalance() (*exchange.Balance, error) {
-	result, err := a.client.Get("/openApi/spot/v1/account/balance", map[string]string{})
+	result, err := a.client.Get("/openApi/fund/v1/account/balance", map[string]string{})
 	if err != nil {
 		return nil, fmt.Errorf("bingx GetSpotBalance: %w", err)
 	}
 
 	var resp struct {
-		Balances []struct {
-			Asset  string `json:"asset"`
-			Free   string `json:"free"`
-			Locked string `json:"locked"`
-		} `json:"balances"`
+		Assets []struct {
+			Asset  string      `json:"asset"`
+			Free   json.Number `json:"free"`
+			Locked json.Number `json:"locked"`
+		} `json:"assets"`
 	}
 	if err := json.Unmarshal(result, &resp); err != nil {
 		return nil, fmt.Errorf("bingx GetSpotBalance parse: %w", err)
 	}
 
-	for _, b := range resp.Balances {
+	for _, b := range resp.Assets {
 		if b.Asset == "USDT" {
-			free, _ := strconv.ParseFloat(b.Free, 64)
-			locked, _ := strconv.ParseFloat(b.Locked, 64)
+			free, _ := b.Free.Float64()
+			locked, _ := b.Locked.Float64()
 			return &exchange.Balance{
 				Total:     free + locked,
 				Available: free,
@@ -622,14 +624,14 @@ func (a *Adapter) GetSpotBalance() (*exchange.Balance, error) {
 // ---------- Withdraw & Transfer ----------
 
 // TransferToSpot moves funds from perpetual futures to fund account.
+// Uses the asset transfer API (innerTransfer is for inter-user transfers).
 func (a *Adapter) TransferToSpot(coin string, amount string) error {
 	params := map[string]string{
-		"coin":                coin,
-		"amount":              amount,
-		"transferAccountType": "3", // PERPETUAL_FUTURES
-		"targetAccountType":   "1", // FUND
+		"type":   "PFUTURES_FUND",
+		"asset":  coin,
+		"amount": amount,
 	}
-	_, err := a.client.Post("/openApi/wallets/v1/capital/innerTransfer/apply", params)
+	_, err := a.client.Post("/openApi/api/v3/post/asset/transfer", params)
 	if err != nil {
 		return fmt.Errorf("bingx TransferToSpot: %w", err)
 	}
@@ -637,14 +639,14 @@ func (a *Adapter) TransferToSpot(coin string, amount string) error {
 }
 
 // TransferToFutures moves funds from fund account to perpetual futures.
+// Uses the asset transfer API (innerTransfer is for inter-user transfers).
 func (a *Adapter) TransferToFutures(coin string, amount string) error {
 	params := map[string]string{
-		"coin":                coin,
-		"amount":              amount,
-		"transferAccountType": "1", // FUND
-		"targetAccountType":   "3", // PERPETUAL_FUTURES
+		"type":   "FUND_PFUTURES",
+		"asset":  coin,
+		"amount": amount,
 	}
-	_, err := a.client.Post("/openApi/wallets/v1/capital/innerTransfer/apply", params)
+	_, err := a.client.Post("/openApi/api/v3/post/asset/transfer", params)
 	if err != nil {
 		return fmt.Errorf("bingx TransferToFutures: %w", err)
 	}

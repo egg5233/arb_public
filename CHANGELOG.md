@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.1] - 2026-03-28
+
+### Fixed
+- **BingX `GetSpotBalance`**: Now queries Fund account (`/openApi/fund/v1/account/balance`) instead of Spot account — deposits land in Fund after BingX's May 2025 account split. Uses `json.Number` for free/locked fields
+- **BingX `TransferToFutures`/`TransferToSpot`**: Now use `/openApi/api/v3/post/asset/transfer` with `type=FUND_PFUTURES`/`PFUTURES_FUND` — old endpoint (`innerTransfer/apply`) was for inter-user transfers, not intra-account
+- **Bybit `TransferToFutures`**: Now transfers FUND → UNIFIED via `/v5/asset/transfer/inter-transfer` — was incorrectly a no-op, but deposits land in FUND account, not UNIFIED
+- **Binance `GetFuturesBalance`**: Now uses `marginBalance` (includes unrealized PnL) instead of `walletBalance` (deposits only) for Total — dashboard was showing equity without uPnL
+- **Gate.io dashboard balance**: Removed incorrect override that replaced futures balance with spot balance when `IsUnified()` returned false
+
 ## [0.19.0] - 2026-03-28
 
 ### Added

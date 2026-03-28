@@ -667,8 +667,22 @@ func (a *Adapter) GetSpotBalance() (*exchange.Balance, error) {
 
 // ---------- Withdraw ----------
 
-// TransferToFutures is a no-op for Bybit — unified account, trading balance is already available.
-func (a *Adapter) TransferToFutures(coin string, amount string) error { return nil }
+// TransferToFutures moves funds from funding account to unified trading account.
+// Deposits and cross-exchange transfers land in FUND, not UNIFIED.
+func (a *Adapter) TransferToFutures(coin string, amount string) error {
+	reqParams := map[string]string{
+		"transferId":      generateUUID(),
+		"coin":            coin,
+		"amount":          amount,
+		"fromAccountType": "FUND",
+		"toAccountType":   "UNIFIED",
+	}
+	_, err := a.client.Post("/v5/asset/transfer/inter-transfer", reqParams)
+	if err != nil {
+		return fmt.Errorf("TransferToFutures: %w", err)
+	}
+	return nil
+}
 
 // TransferToSpot moves funds from unified trading account to funding account.
 func (a *Adapter) TransferToSpot(coin string, amount string) error {
