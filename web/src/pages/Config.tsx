@@ -608,6 +608,21 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
           </span>
         </div>
       </div>
+      <div>
+        <div className="flex items-center gap-2 mb-2">
+          <label className="text-sm font-medium">{t('cfg.field.allowMixedIntervals')}</label>
+          <Tooltip text={t('cfg.desc.allowMixedIntervals')} />
+        </div>
+        <div className="flex items-center gap-3">
+          <ToggleSwitch
+            on={getByPath(config, ['strategy', 'discovery', 'allow_mixed_intervals']) === true}
+            onChange={(v) => handleBoolChange(['strategy', 'discovery', 'allow_mixed_intervals'], v)}
+          />
+          <span className={`text-sm font-semibold ${getByPath(config, ['strategy', 'discovery', 'allow_mixed_intervals']) ? 'text-green-400' : 'text-red-400'}`}>
+            {getByPath(config, ['strategy', 'discovery', 'allow_mixed_intervals']) ? 'ON' : 'OFF'}
+          </span>
+        </div>
+      </div>
     </div>
   );
 
