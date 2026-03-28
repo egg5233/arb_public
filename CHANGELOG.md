@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.18.6] - 2026-03-27
+
+### Added
+- **`scripts/pull-release.sh`** — downloads the latest release binary from GitHub. Usage: `./scripts/pull-release.sh [--restart]`
+- **Funding history header shows position-level `FundingCollected`** (authoritative) instead of account-wide sum. Removed misleading running total
+
 ## [0.18.5] - 2026-03-27
 
 ### Fixed

@@ -216,11 +216,9 @@ const Positions: FC<PositionsProps> = ({ positions, onClose, onFetchFunding }) =
                       <div>
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-gray-300 text-xs font-semibold tracking-wide uppercase">{t('pos.fundingHistory')}</span>
-                          {fundingHistory.length > 0 && (
-                            <span className={`text-xs font-mono ${pnlColor(fundingHistory.reduce((s, f) => s + f.amount, 0))}`}>
-                              Total: ${fundingHistory.reduce((s, f) => s + f.amount, 0).toFixed(4)}
-                            </span>
-                          )}
+                          <span className={`text-xs font-mono ${pnlColor(p.funding_collected)}`}>
+                            {t('pos.fundingCollected')}: ${p.funding_collected.toFixed(4)}
+                          </span>
                         </div>
                         {fundingLoading ? (
                           <div className="text-gray-500 text-xs py-3 text-center">{t('pos.loading')}</div>
@@ -235,15 +233,12 @@ const Positions: FC<PositionsProps> = ({ positions, onClose, onFetchFunding }) =
                             (groups[key] ??= []).push(f);
                           }
                           const sortedDates = Object.keys(groups).sort((a, b) => b.localeCompare(a));
-                          let runningTotal = fundingHistory.reduce((s, f) => s + f.amount, 0);
 
                           return (
                             <div className="space-y-1 max-h-64 overflow-y-auto pr-1">
                               {sortedDates.map((date) => {
                                 const items = groups[date];
                                 const dayTotal = items.reduce((s, f) => s + f.amount, 0);
-                                const dayRunning = runningTotal;
-                                runningTotal -= dayTotal;
 
                                 return (
                                   <details key={date} open={date === sortedDates[0]} className="group">
@@ -253,14 +248,9 @@ const Positions: FC<PositionsProps> = ({ positions, onClose, onFetchFunding }) =
                                         <span className="text-xs font-mono text-gray-300">{date}</span>
                                         <span className="text-[10px] text-gray-500">{items.length} payments</span>
                                       </div>
-                                      <div className="flex items-center gap-3">
-                                        <span className={`text-xs font-mono ${pnlColor(dayTotal)}`}>
-                                          {dayTotal >= 0 ? '+' : ''}{dayTotal.toFixed(4)}
-                                        </span>
-                                        <span className="text-[10px] text-gray-500 font-mono w-16 text-right" title="Running total">
-                                          Σ {dayRunning.toFixed(3)}
-                                        </span>
-                                      </div>
+                                      <span className={`text-xs font-mono ${pnlColor(dayTotal)}`}>
+                                        {dayTotal >= 0 ? '+' : ''}{dayTotal.toFixed(4)}
+                                      </span>
                                     </summary>
                                     <div className="mt-0.5 ml-4 border-l border-gray-700/50 pl-2">
                                       {items.map((f, i) => {
