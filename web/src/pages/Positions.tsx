@@ -214,33 +214,80 @@ const Positions: FC<PositionsProps> = ({ positions, onClose, onFetchFunding }) =
 
                       {/* Section 2: Funding History */}
                       <div>
-                        <div className="text-gray-300 text-xs font-semibold mb-1">{t('pos.fundingHistory')}</div>
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-gray-300 text-xs font-semibold tracking-wide uppercase">{t('pos.fundingHistory')}</span>
+                          {fundingHistory.length > 0 && (
+                            <span className={`text-xs font-mono ${pnlColor(fundingHistory.reduce((s, f) => s + f.amount, 0))}`}>
+                              Total: ${fundingHistory.reduce((s, f) => s + f.amount, 0).toFixed(4)}
+                            </span>
+                          )}
+                        </div>
                         {fundingLoading ? (
-                          <div className="text-gray-500 text-xs">{t('pos.loading')}</div>
+                          <div className="text-gray-500 text-xs py-3 text-center">{t('pos.loading')}</div>
                         ) : fundingHistory.length === 0 ? (
                           <div className="text-gray-500 text-xs">-</div>
-                        ) : (
-                          <table className="w-full text-xs">
-                            <thead>
-                              <tr className="text-gray-500 text-left">
-                                <th className="pr-4 pb-1">Time</th>
-                                <th className="pr-4 pb-1">Exchange</th>
-                                <th className="pr-4 pb-1">Side</th>
-                                <th className="pr-4 pb-1 text-right">Amount</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {fundingHistory.map((f, i) => (
-                                <tr key={i} className="text-gray-300">
-                                  <td className="pr-4 py-0.5 font-mono">{formatDateTime(f.time)}</td>
-                                  <td className="pr-4 py-0.5">{f.exchange}</td>
-                                  <td className="pr-4 py-0.5">{f.side}</td>
-                                  <td className={`pr-4 py-0.5 text-right font-mono ${pnlColor(f.amount)}`}>${f.amount.toFixed(4)}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        )}
+                        ) : (() => {
+                          // Group by date
+                          const groups: Record<string, FundingEvent[]> = {};
+                          for (const f of fundingHistory) {
+                            const d = new Date(f.time);
+                            const key = isNaN(d.getTime()) ? 'Unknown' : d.toISOString().slice(0, 10);
+                            (groups[key] ??= []).push(f);
+                          }
+                          const sortedDates = Object.keys(groups).sort((a, b) => b.localeCompare(a));
+                          let runningTotal = fundingHistory.reduce((s, f) => s + f.amount, 0);
+
+                          return (
+                            <div className="space-y-1 max-h-64 overflow-y-auto pr-1">
+                              {sortedDates.map((date) => {
+                                const items = groups[date];
+                                const dayTotal = items.reduce((s, f) => s + f.amount, 0);
+                                const dayRunning = runningTotal;
+                                runningTotal -= dayTotal;
+
+                                return (
+                                  <details key={date} open={date === sortedDates[0]} className="group">
+                                    <summary className="flex items-center justify-between cursor-pointer select-none py-1.5 px-2 rounded bg-gray-700/30 hover:bg-gray-700/50 transition-colors">
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-[10px] text-gray-500 group-open:rotate-90 transition-transform">▶</span>
+                                        <span className="text-xs font-mono text-gray-300">{date}</span>
+                                        <span className="text-[10px] text-gray-500">{items.length} payments</span>
+                                      </div>
+                                      <div className="flex items-center gap-3">
+                                        <span className={`text-xs font-mono ${pnlColor(dayTotal)}`}>
+                                          {dayTotal >= 0 ? '+' : ''}{dayTotal.toFixed(4)}
+                                        </span>
+                                        <span className="text-[10px] text-gray-500 font-mono w-16 text-right" title="Running total">
+                                          Σ {dayRunning.toFixed(3)}
+                                        </span>
+                                      </div>
+                                    </summary>
+                                    <div className="mt-0.5 ml-4 border-l border-gray-700/50 pl-2">
+                                      {items.map((f, i) => {
+                                        const time = new Date(f.time);
+                                        const timeStr = isNaN(time.getTime()) ? '-' : time.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
+                                        return (
+                                          <div key={i} className="flex items-center justify-between py-0.5 text-xs hover:bg-gray-700/20 rounded px-1">
+                                            <div className="flex items-center gap-2">
+                                              <span className="font-mono text-gray-500 w-12">{timeStr}</span>
+                                              <span className={`px-1.5 py-0 rounded text-[10px] font-medium ${
+                                                f.side === 'long' ? 'bg-green-500/15 text-green-400' : 'bg-red-500/15 text-red-400'
+                                              }`}>{f.side}</span>
+                                              <span className="text-gray-400">{f.exchange}</span>
+                                            </div>
+                                            <span className={`font-mono ${pnlColor(f.amount)}`}>
+                                              {f.amount >= 0 ? '+' : ''}{f.amount.toFixed(4)}
+                                            </span>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </details>
+                                );
+                              })}
+                            </div>
+                          );
+                        })()}
                       </div>
 
                       {/* Section 3: Rotation History */}

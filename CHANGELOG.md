@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.18.4] - 2026-03-27
+
+### Improved
+- **Funding history section redesigned**: Date-grouped collapsible layout with daily subtotals, running totals, side badges (green/red pills), scrollable container, and grand total header. Replaces flat raw table that was hard to read
+
 ## [0.18.3] - 2026-03-27
 
 ### Added
