@@ -162,10 +162,9 @@ func (e *Engine) consolidatePositions(missCount map[string]int) {
 				} else {
 					closeSide = exchange.SideBuy
 				}
-				sizeStr := e.formatSize(name, ep.Symbol, size)
-				e.log.Info("consolidate: closing orphan %s %s on %s size=%s",
-					ep.Symbol, ep.HoldSide, name, sizeStr)
-				e.closeLeg(exch, ep.Symbol, closeSide, sizeStr)
+				e.log.Info("consolidate: closing orphan %s %s on %s size=%.6f (verified retry)",
+					ep.Symbol, ep.HoldSide, name, size)
+				e.closeFullyWithRetry(exch, ep.Symbol, closeSide, size)
 			}
 		}
 	}
@@ -310,22 +309,23 @@ func (e *Engine) consolidatePosition(pos *models.ArbitragePosition, siblingTotal
 }
 
 // markPositionClosed closes a position that has a missing leg on the exchange.
-// If the remaining leg still exists, it closes it too.
+// If the remaining leg still exists, it closes it with verified retry.
+// Only marks closed if confirmed flat.
 func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string) {
 	// Try to close BOTH legs — including the one reported as "missing".
 	// The "missing" leg may still exist on the exchange (transient API glitch),
-	// so we re-query and attempt to close it too.
+	// so we re-query and attempt to close it too. Uses verified retry (up to 10 attempts).
 	if pos.LongSize > 0 {
 		if longExch, ok := e.exchanges[pos.LongExchange]; ok {
 			actualSize, err := getExchangePositionSize(longExch, pos.Symbol, "long")
 			if err == nil && actualSize > 0 {
-				e.log.Info("consolidate: closing long leg on %s: %.6f", pos.LongExchange, actualSize)
-				e.closeLeg(longExch, pos.Symbol, exchange.SideSell, e.formatSize(pos.LongExchange, pos.Symbol, actualSize))
+				e.log.Info("consolidate: closing long leg on %s: %.6f (verified retry)", pos.LongExchange, actualSize)
+				e.closeFullyWithRetry(longExch, pos.Symbol, exchange.SideSell, actualSize)
 			} else {
 				// Leg not found on re-query — try closing with local size as fallback.
 				e.log.Info("consolidate: long leg not found on %s re-query, attempting close with local size %.6f",
 					pos.LongExchange, pos.LongSize)
-				e.closeLeg(longExch, pos.Symbol, exchange.SideSell, e.formatSize(pos.LongExchange, pos.Symbol, pos.LongSize))
+				e.closeFullyWithRetry(longExch, pos.Symbol, exchange.SideSell, pos.LongSize)
 			}
 		}
 	}
@@ -333,15 +333,41 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 		if shortExch, ok := e.exchanges[pos.ShortExchange]; ok {
 			actualSize, err := getExchangePositionSize(shortExch, pos.Symbol, "short")
 			if err == nil && actualSize > 0 {
-				e.log.Info("consolidate: closing short leg on %s: %.6f", pos.ShortExchange, actualSize)
-				e.closeLeg(shortExch, pos.Symbol, exchange.SideBuy, e.formatSize(pos.ShortExchange, pos.Symbol, actualSize))
+				e.log.Info("consolidate: closing short leg on %s: %.6f (verified retry)", pos.ShortExchange, actualSize)
+				e.closeFullyWithRetry(shortExch, pos.Symbol, exchange.SideBuy, actualSize)
 			} else {
 				// Leg not found on re-query — try closing with local size as fallback.
 				e.log.Info("consolidate: short leg not found on %s re-query, attempting close with local size %.6f",
 					pos.ShortExchange, pos.ShortSize)
-				e.closeLeg(shortExch, pos.Symbol, exchange.SideBuy, e.formatSize(pos.ShortExchange, pos.Symbol, pos.ShortSize))
+				e.closeFullyWithRetry(shortExch, pos.Symbol, exchange.SideBuy, pos.ShortSize)
 			}
 		}
+	}
+
+	// Verify both legs are flat before marking closed.
+	// If verification fails (API error), treat as NOT confirmed flat.
+	var longRemaining, shortRemaining float64
+	verifyOK := true
+	if longExch, ok := e.exchanges[pos.LongExchange]; ok {
+		rem, err := getExchangePositionSize(longExch, pos.Symbol, "long")
+		if err != nil {
+			e.log.Error("consolidate: cannot verify long leg for %s: %v, keeping active", pos.ID, err)
+			verifyOK = false
+		}
+		longRemaining = rem
+	}
+	if shortExch, ok := e.exchanges[pos.ShortExchange]; ok {
+		rem, err := getExchangePositionSize(shortExch, pos.Symbol, "short")
+		if err != nil {
+			e.log.Error("consolidate: cannot verify short leg for %s: %v, keeping active", pos.ID, err)
+			verifyOK = false
+		}
+		shortRemaining = rem
+	}
+	if !verifyOK || longRemaining > 0 || shortRemaining > 0 {
+		e.log.Error("consolidate: CRITICAL — %s not confirmed flat (long=%.6f short=%.6f verified=%v), keeping active",
+			pos.ID, longRemaining, shortRemaining, verifyOK)
+		return
 	}
 
 	pos.Status = models.StatusClosed
@@ -420,26 +446,35 @@ func (e *Engine) enforceBalance(pos *models.ArbitragePosition, longSize, shortSi
 		e.log.Error("consolidate: trim order %s on %s did not fill, skipping record update", orderID, trimExchName)
 		return
 	}
-	e.log.Info("consolidate: trim filled %.6f on %s for %s", filled, trimExchName, pos.ID)
+	e.log.Info("consolidate: trim filled %.6f/%.6f on %s for %s", filled, excess, trimExchName, pos.ID)
 
 	// Cancel old stop losses before updating sizes.
 	e.cancelStopLosses(pos)
 
-	// Update local record with confirmed balanced sizes.
-	balanced := minSide
+	// Use actual filled amount to compute new balanced size.
+	// If partial fill, remaining imbalance = excess - filled.
+	actualNewLong := longSize
+	actualNewShort := shortSize
+	if longSize > shortSize {
+		actualNewLong = longSize - filled // trimmed the long side
+	} else {
+		actualNewShort = shortSize - filled // trimmed the short side
+	}
+
 	if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
 		if fresh.Status != models.StatusActive {
 			return false
 		}
-		fresh.LongSize = balanced
-		fresh.ShortSize = balanced
+		fresh.LongSize = actualNewLong
+		fresh.ShortSize = actualNewShort
 		fresh.UpdatedAt = time.Now().UTC()
 		return true
 	}); err != nil {
 		e.log.Error("consolidate: failed to update %s after trim: %v", pos.ID, err)
 		return
 	}
-	e.log.Info("consolidate: %s balanced to long=%.6f short=%.6f", pos.ID, balanced, balanced)
+	e.log.Info("consolidate: %s balanced to long=%.6f short=%.6f (trimmed %.6f of %.6f excess)",
+		pos.ID, actualNewLong, actualNewShort, filled, excess)
 
 	// Re-read position and place new stop losses with correct sizes.
 	updated, err := e.db.GetPosition(pos.ID)

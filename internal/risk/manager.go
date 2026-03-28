@@ -239,6 +239,11 @@ func (m *Manager) Approve(opp models.Opportunity) (*models.RiskApproval, error) 
 	// f. Per-exchange capital exposure cap
 	// Ensure that the proposed position doesn't push any single exchange
 	// beyond 60% of total capital deployed across all exchanges.
+	// NOTE: totalCapital is intentionally the sum of only the two candidate
+	// exchanges (longBal + shortBal), not the full portfolio across all 6
+	// exchanges. This is more conservative — it limits exposure relative to
+	// the capital actually at risk in this pair, preventing over-concentration
+	// even when other exchanges have large idle balances.
 	totalCapital := longBal.Total + shortBal.Total
 	if totalCapital > 0 {
 		// Sum existing notional exposure per exchange from active positions.
@@ -357,19 +362,39 @@ func (m *Manager) CalculateSize(opp models.Opportunity, balances map[string]floa
 	m.log.Info("[sizing] %s: maxPosVal=%.4f price=%.6f rawSize=%.6f",
 		opp.Symbol, maxPositionValue, currentPrice, sizeInBase)
 
-	// Round down to contract step size
+	// Round down to contract step size — use the stricter (larger) of both
+	// exchanges' StepSize and MinSize so the result is valid on both sides.
+	var stepSize, minSizeContract float64
 	contracts, err := longExch.LoadAllContracts()
 	if err == nil {
 		if info, found := contracts[opp.Symbol]; found && info.StepSize > 0 {
-			beforeRound := sizeInBase
-			sizeInBase = utils.RoundToStep(sizeInBase, info.StepSize)
-			m.log.Info("[sizing] %s: stepSize=%.6f minSize=%.6f before=%.6f after=%.6f",
-				opp.Symbol, info.StepSize, info.MinSize, beforeRound, sizeInBase)
-			// Enforce minimum size
-			if sizeInBase < info.MinSize {
-				m.log.Info("[sizing] %s: rejected — size %.6f < minSize %.6f", opp.Symbol, sizeInBase, info.MinSize)
-				return 0
+			stepSize = info.StepSize
+			minSizeContract = info.MinSize
+		}
+	}
+	shortExch, sok := m.exchanges[opp.ShortExchange]
+	if sok {
+		shortContracts, serr := shortExch.LoadAllContracts()
+		if serr == nil {
+			if sinfo, found := shortContracts[opp.Symbol]; found && sinfo.StepSize > 0 {
+				if sinfo.StepSize > stepSize {
+					stepSize = sinfo.StepSize
+				}
+				if sinfo.MinSize > minSizeContract {
+					minSizeContract = sinfo.MinSize
+				}
 			}
+		}
+	}
+	if stepSize > 0 {
+		beforeRound := sizeInBase
+		sizeInBase = utils.RoundToStep(sizeInBase, stepSize)
+		m.log.Info("[sizing] %s: stepSize=%.6f minSize=%.6f before=%.6f after=%.6f",
+			opp.Symbol, stepSize, minSizeContract, beforeRound, sizeInBase)
+		// Enforce minimum size (stricter of both exchanges)
+		if sizeInBase < minSizeContract {
+			m.log.Info("[sizing] %s: rejected — size %.6f < minSize %.6f", opp.Symbol, sizeInBase, minSizeContract)
+			return 0
 		}
 	}
 

@@ -343,6 +343,12 @@ func (c *Client) UpdateStats(pnl float64, won bool) error {
 	return err
 }
 
+// AdjustPnL adjusts total_pnl without incrementing trade/win/loss counts.
+// Used for reconciliation corrections.
+func (c *Client) AdjustPnL(diff float64) error {
+	return c.rdb.HIncrByFloat(context.Background(), keyStats, "total_pnl", diff).Err()
+}
+
 // GetStats returns all fields from the stats hash.
 func (c *Client) GetStats() (map[string]string, error) {
 	ctx := context.Background()

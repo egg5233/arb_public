@@ -37,6 +37,7 @@ type Engine struct {
 	exitMu      sync.Mutex
 	exitCancels map[string]context.CancelFunc // posID → cancel running exit goroutine
 	exitActive  map[string]bool               // posID → true while exit goroutine is running
+	exitDone    map[string]chan struct{}       // posID → signalled when exit goroutine finishes
 
 	// Entry tracking: prevents consolidator from treating mid-fill positions as orphans.
 	entryMu     sync.Mutex
@@ -87,6 +88,7 @@ func NewEngine(
 		stopCh:        make(chan struct{}),
 		exitCancels:   make(map[string]context.CancelFunc),
 		exitActive:    make(map[string]bool),
+		exitDone:      make(map[string]chan struct{}),
 		entryActive:   make(map[string]string),
 		slIndex:       make(map[string]slEntry),
 		slFillCh:      make(chan slFillEvent, 64),
@@ -697,7 +699,20 @@ func (e *Engine) handleTransfer(action risk.HealthAction) {
 
 	amountStr := fmt.Sprintf("%.4f", action.Amount)
 
-	// Transfer from donor's futures to spot first
+	// NOTE: L3 cross-exchange transfer is NOT fully implemented. The code below
+	// only moves funds within each exchange's own accounts (futures→spot on donor,
+	// spot→futures on target). There is NO actual withdrawal/deposit between
+	// exchanges — that requires withdrawal API, deposit address lookup, on-chain
+	// confirmation, and is complex/risky to automate. For real cross-exchange
+	// rebalancing, rely on L4 (position reduction) or L5 (emergency close) instead.
+	if action.DonorExch != action.Exchange {
+		e.log.Error("L3 transfer: cross-exchange transfer from %s to %s is NOT possible — "+
+			"no withdrawal/deposit implemented. Skipping. L4/L5 will handle this.",
+			action.DonorExch, action.Exchange)
+		return
+	}
+
+	// Intra-exchange transfer: donor futures → spot, then spot → futures.
 	if err := donorExch.TransferToSpot("USDT", amountStr); err != nil {
 		e.log.Error("L3 transfer: donor %s futures->spot failed: %v", action.DonorExch, err)
 		return
@@ -719,11 +734,19 @@ func (e *Engine) handleTransfer(action risk.HealthAction) {
 func (e *Engine) cancelExitGoroutine(posID string) {
 	e.exitMu.Lock()
 	cancel, ok := e.exitCancels[posID]
+	done := e.exitDone[posID]
 	e.exitMu.Unlock()
 	if ok {
 		e.log.Info("cancelling exit goroutine for %s (preempted by L4/L5)", posID)
 		cancel()
-		time.Sleep(500 * time.Millisecond) // grace period for cleanup
+		if done != nil {
+			select {
+			case <-done:
+				e.log.Info("exit goroutine for %s confirmed stopped", posID)
+			case <-time.After(5 * time.Second):
+				e.log.Error("exit goroutine for %s did not stop within 5s", posID)
+			}
+		}
 	}
 }
 
@@ -1156,10 +1179,12 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 	e.log.Info("executeArbitrage: %d active positions, MaxPositions=%d", len(active), e.cfg.MaxPositions)
 	slots := e.cfg.MaxPositions - len(active)
 
-	// Build set of active symbols to block duplicate entries.
+	// Build set of occupied symbols to block duplicate entries.
+	// Any non-closed position (active, exiting, partial, pending, closing)
+	// blocks the symbol from new entry to prevent overlapping positions.
 	activeSymbols := make(map[string]bool)
 	for _, p := range active {
-		if p.Status == models.StatusActive {
+		if p.Status != models.StatusClosed {
 			activeSymbols[p.Symbol] = true
 		}
 	}
@@ -1616,7 +1641,7 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 	}
 	if longRes.err != nil {
 		e.log.Error("long IOC failed: %v, closing short leg", longRes.err)
-		e.closeLeg(shortExch, opp.Symbol, exchange.SideBuy, sizeStr) // buy to close short
+		e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, size) // buy to close short
 		pos.Status = models.StatusClosed
 		pos.UpdatedAt = time.Now().UTC()
 		_ = e.db.SavePosition(pos)
@@ -1624,7 +1649,7 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 	}
 	if shortRes.err != nil {
 		e.log.Error("short IOC failed: %v, closing long leg", shortRes.err)
-		e.closeLeg(longExch, opp.Symbol, exchange.SideSell, sizeStr) // sell to close long
+		e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, size) // sell to close long
 		pos.Status = models.StatusClosed
 		pos.UpdatedAt = time.Now().UTC()
 		_ = e.db.SavePosition(pos)
@@ -1658,10 +1683,10 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 		// Too small to keep — close whatever filled.
 		e.log.Warn("IOC fills too small for %s (min=%.2f USDT), aborting", posID, minFill*price)
 		if longFilled > 0 {
-			e.closeLeg(longExch, opp.Symbol, exchange.SideSell, utils.FormatSize(longFilled, 6))
+			e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
 		}
 		if shortFilled > 0 {
-			e.closeLeg(shortExch, opp.Symbol, exchange.SideBuy, utils.FormatSize(shortFilled, 6))
+			e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
 		}
 		pos.Status = models.StatusClosed
 		pos.UpdatedAt = time.Now().UTC()
@@ -1673,12 +1698,12 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 	if longFilled > minFill {
 		excess := longFilled - minFill
 		e.log.Info("trimming long excess %.6f on %s", excess, opp.LongExchange)
-		e.closeLeg(longExch, opp.Symbol, exchange.SideSell, utils.FormatSize(excess, 6))
+		e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, excess)
 	}
 	if shortFilled > minFill {
 		excess := shortFilled - minFill
 		e.log.Info("trimming short excess %.6f on %s", excess, opp.ShortExchange)
-		e.closeLeg(shortExch, opp.Symbol, exchange.SideBuy, utils.FormatSize(excess, 6))
+		e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, excess)
 	}
 
 	// ---------------------------------------------------------------
@@ -2016,7 +2041,9 @@ fillLoop:
 		// Determine less-liquid leg (higher consumption ratio = riskier → goes first)
 		shortFirst := (size / bidQty) >= (size / askQty)
 
-		sizeStr := e.formatSize(opp.ShortExchange, opp.Symbol, size)
+		// Format size per-leg: each exchange may have different StepSize/precision.
+		shortSizeStr := e.formatSize(opp.ShortExchange, opp.Symbol, size)
+		longSizeStr := e.formatSize(opp.LongExchange, opp.Symbol, size)
 		shortPriceStr := e.formatPrice(opp.ShortExchange, opp.Symbol, bidPrice)
 		longPriceStr := e.formatPrice(opp.LongExchange, opp.Symbol, askPrice)
 
@@ -2024,7 +2051,7 @@ fillLoop:
 
 		if shortFirst {
 			e.log.Info("depth tick: short-first %s size=%s bid=%.2f ask=%.2f spread=%.1fbps",
-				opp.Symbol, sizeStr, bidPrice, askPrice, spreadBPS)
+				opp.Symbol, shortSizeStr, bidPrice, askPrice, spreadBPS)
 
 			// Short leg first (sell into bids)
 			shortOID, err := shortExch.PlaceOrder(exchange.PlaceOrderParams{
@@ -2032,7 +2059,7 @@ fillLoop:
 				Side:      exchange.SideSell,
 				OrderType: "limit",
 				Price:     shortPriceStr,
-				Size:      sizeStr,
+				Size:      shortSizeStr,
 				Force:     "ioc",
 			})
 			if err != nil {
@@ -2061,7 +2088,7 @@ fillLoop:
 			if err != nil {
 				longConsecFails++
 				e.log.Warn("depth tick: long IOC failed (%d/%d) after short filled %.6f, closing short: %v", longConsecFails, maxConsecFails, shortFilled, err)
-				e.closeLeg(shortExch, opp.Symbol, exchange.SideBuy, e.formatSize(opp.ShortExchange, opp.Symbol, shortFilled))
+				e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
 				continue
 			}
 			longConsecFails = 0
@@ -2069,12 +2096,12 @@ fillLoop:
 			if longFilled < shortFilled {
 				excess := shortFilled - longFilled
 				e.log.Info("depth tick: trimming short excess %.6f", excess)
-				e.closeLeg(shortExch, opp.Symbol, exchange.SideBuy, e.formatSize(opp.ShortExchange, opp.Symbol, excess))
+				e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, excess)
 				shortFilled = longFilled // only count matched portion
 			}
 		} else {
 			e.log.Info("depth tick: long-first %s size=%s bid=%.2f ask=%.2f spread=%.1fbps",
-				opp.Symbol, sizeStr, bidPrice, askPrice, spreadBPS)
+				opp.Symbol, longSizeStr, bidPrice, askPrice, spreadBPS)
 
 			// Long leg first (buy from asks)
 			longOID, err := longExch.PlaceOrder(exchange.PlaceOrderParams{
@@ -2082,7 +2109,7 @@ fillLoop:
 				Side:      exchange.SideBuy,
 				OrderType: "limit",
 				Price:     longPriceStr,
-				Size:      sizeStr,
+				Size:      longSizeStr,
 				Force:     "ioc",
 			})
 			if err != nil {
@@ -2111,7 +2138,7 @@ fillLoop:
 			if err != nil {
 				shortConsecFails++
 				e.log.Warn("depth tick: short IOC failed (%d/%d) after long filled %.6f, closing long: %v", shortConsecFails, maxConsecFails, longFilled, err)
-				e.closeLeg(longExch, opp.Symbol, exchange.SideSell, e.formatSize(opp.LongExchange, opp.Symbol, longFilled))
+				e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
 				continue
 			}
 			shortConsecFails = 0
@@ -2119,7 +2146,7 @@ fillLoop:
 			if shortFilled < longFilled {
 				excess := longFilled - shortFilled
 				e.log.Info("depth tick: trimming long excess %.6f", excess)
-				e.closeLeg(longExch, opp.Symbol, exchange.SideSell, e.formatSize(opp.LongExchange, opp.Symbol, excess))
+				e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, excess)
 				longFilled = shortFilled // only count matched portion
 			}
 		}
@@ -2173,10 +2200,10 @@ fillLoop:
 	if minFill*price < minPositionUSDT {
 		e.log.Warn("depth fill too small for %s (%.2f USDT), aborting", posID, minFill*price)
 		if confirmedLong > 0 {
-			e.closeLeg(longExch, opp.Symbol, exchange.SideSell, e.formatSize(opp.LongExchange, opp.Symbol, confirmedLong))
+			e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, confirmedLong)
 		}
 		if confirmedShort > 0 {
-			e.closeLeg(shortExch, opp.Symbol, exchange.SideBuy, e.formatSize(opp.ShortExchange, opp.Symbol, confirmedShort))
+			e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, confirmedShort)
 		}
 		pos.Status = models.StatusClosed
 		pos.UpdatedAt = time.Now().UTC()
@@ -2188,12 +2215,12 @@ fillLoop:
 	if confirmedLong > minFill {
 		excess := confirmedLong - minFill
 		e.log.Info("trimming long excess %.6f on %s", excess, opp.LongExchange)
-		e.closeLeg(longExch, opp.Symbol, exchange.SideSell, e.formatSize(opp.LongExchange, opp.Symbol, excess))
+		e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, excess)
 	}
 	if confirmedShort > minFill {
 		excess := confirmedShort - minFill
 		e.log.Info("trimming short excess %.6f on %s", excess, opp.ShortExchange)
-		e.closeLeg(shortExch, opp.Symbol, exchange.SideBuy, e.formatSize(opp.ShortExchange, opp.Symbol, excess))
+		e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, excess)
 	}
 
 	// Finalize entry prices

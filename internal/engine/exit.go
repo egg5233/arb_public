@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"sync"
 	"time"
 
 	"arb/internal/models"
@@ -180,6 +181,16 @@ func (e *Engine) checkExitsV2() {
 			e.log.Info("exit check: %s — %s (reversal %d, exiting)", pos.ID, reason, pos.ReversalCount+1)
 			e.spawnExitGoroutine(pos, reason)
 			continue
+		} else if pos.ReversalCount > 0 {
+			// Spread recovered — reset reversal counter so tolerance resets.
+			pos.ReversalCount = 0
+			if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+				fresh.ReversalCount = 0
+				return true
+			}); err != nil {
+				e.log.Error("failed to reset reversal count for %s: %v", pos.ID, err)
+			}
+			e.log.Info("exit check: %s — spread recovered, reversal count reset", pos.ID)
 		}
 
 		// Skip spread evaluation within ±10min of funding settlement (rates unreliable).
@@ -206,6 +217,8 @@ func (e *Engine) spawnExitGoroutine(pos *models.ArbitragePosition, reason string
 	ctx, cancel := context.WithCancel(context.Background())
 	e.exitCancels[pos.ID] = cancel
 	e.exitActive[pos.ID] = true
+	done := make(chan struct{})
+	e.exitDone[pos.ID] = done
 	e.exitMu.Unlock()
 
 	// Set status to "exiting" and store exit reason.
@@ -224,7 +237,9 @@ func (e *Engine) spawnExitGoroutine(pos *models.ArbitragePosition, reason string
 			e.exitMu.Lock()
 			delete(e.exitCancels, pos.ID)
 			delete(e.exitActive, pos.ID)
+			delete(e.exitDone, pos.ID)
 			e.exitMu.Unlock()
+			close(done)
 		}()
 
 		e.log.Info("exit goroutine started for %s: %s", pos.ID, reason)
@@ -266,25 +281,50 @@ func (e *Engine) executeDepthExit(ctx context.Context, pos *models.ArbitragePosi
 	defer longExch.UnsubscribeDepth(pos.Symbol)
 	defer shortExch.UnsubscribeDepth(pos.Symbol)
 
-	// Wait up to 2s for depth data.
-	for i := 0; i < 20; i++ {
-		_, lok := longExch.GetDepth(pos.Symbol)
-		_, sok := shortExch.GetDepth(pos.Symbol)
-		if lok && sok {
+	// Wait up to 8s for depth data with unsub/resub retry (mirrors entry pattern).
+	depthReady := false
+	for attempt := 0; attempt < 2; attempt++ {
+		for i := 0; i < 40; i++ { // 4s per attempt
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			_, lok := longExch.GetDepth(pos.Symbol)
+			_, sok := shortExch.GetDepth(pos.Symbol)
+			if lok && sok {
+				depthReady = true
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if depthReady {
 			break
 		}
-		time.Sleep(100 * time.Millisecond)
+		if attempt == 0 {
+			e.log.Warn("depth exit %s: no depth after 4s, re-subscribing", pos.ID)
+			longExch.UnsubscribeDepth(pos.Symbol)
+			shortExch.UnsubscribeDepth(pos.Symbol)
+			time.Sleep(200 * time.Millisecond)
+			longExch.SubscribeDepth(pos.Symbol)
+			shortExch.SubscribeDepth(pos.Symbol)
+		}
 	}
 
 	var closedLong, closedShort float64
 	var longVWAPSum, shortVWAPSum float64
+
+	if !depthReady {
+		e.log.Warn("depth exit %s: no depth after 8s, using market close directly", pos.ID)
+	}
+
 	var longConsecFails, shortConsecFails int
 	const maxConsecFails = 5
 
 	timeout := time.Duration(e.cfg.ExitDepthTimeoutSec) * time.Second
 	startTime := time.Now()
 	deadline := startTime.Add(timeout)
-	ticker := time.NewTicker(200 * time.Millisecond)
+	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
 	var gapRejected bool // only log gap rejection on state change
@@ -320,8 +360,19 @@ func (e *Engine) executeDepthExit(ctx context.Context, pos *models.ArbitragePosi
 		}
 	}
 
-	e.log.Info("depth exit loop for %s: longSize=%.6f shortSize=%.6f timeout=%v cfgGap=%.1fbps initialGap=%.1fbps baseGap=%.1fbps",
-		pos.ID, totalLong, totalShort, timeout, e.cfg.ExitMaxGapBPS, initialGapBPS, baseGapBPS)
+	e.log.Info("depth exit for %s: longSize=%.6f shortSize=%.6f timeout=%v cfgGap=%.1fbps initialGap=%.1fbps baseGap=%.1fbps depthReady=%v",
+		pos.ID, totalLong, totalShort, timeout, e.cfg.ExitMaxGapBPS, initialGapBPS, baseGapBPS, depthReady)
+
+	lastFillTime := time.Now()
+
+	if !depthReady {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		e.cancelStopLosses(pos)
+		time.Sleep(500 * time.Millisecond)
+		goto marketFallback
+	}
 
 exitLoop:
 	for {
@@ -332,6 +383,10 @@ exitLoop:
 		}
 		if time.Now().After(deadline) {
 			e.log.Warn("depth exit: timeout for %s", pos.ID)
+			break
+		}
+		if time.Since(lastFillTime) > 30*time.Second {
+			e.log.Warn("depth exit: no fill progress for 30s for %s, falling back to market close", pos.ID)
 			break
 		}
 		if longConsecFails >= maxConsecFails || shortConsecFails >= maxConsecFails {
@@ -375,6 +430,14 @@ exitLoop:
 			relaxFactor = 3.0
 		}
 		effectiveMaxGap := baseGapBPS * relaxFactor
+		if effectiveMaxGap > 50 {
+			// Hard cap at 50bps. If we've been capped for >60% of timeout, bail to market.
+			effectiveMaxGap = 50
+			if elapsed > totalSec*0.6 {
+				e.log.Warn("depth exit %s: gap capped at 50bps for >60%% of timeout, breaking to market", pos.ID)
+				break
+			}
+		}
 
 		if exitGapBPS > effectiveMaxGap {
 			if !gapRejected {
@@ -437,7 +500,7 @@ exitLoop:
 		// Sell long leg first (reduce-only).
 		slippage := e.cfg.SlippageBPS / 10000.0
 		sellPrice := e.formatPrice(pos.LongExchange, pos.Symbol, bestBid*(1-slippage))
-		sizeStr := utils.FormatSize(size, 6)
+		sizeStr := e.formatSize(pos.LongExchange, pos.Symbol, size)
 
 		oid, err := longExch.PlaceOrder(exchange.PlaceOrderParams{
 			Symbol:     pos.Symbol,
@@ -467,7 +530,7 @@ exitLoop:
 		// Buy to close short for matched qty (reduce-only).
 		bestAsk = shortDepth.Asks[0].Price // refresh from current depth
 		buyPrice := e.formatPrice(pos.ShortExchange, pos.Symbol, bestAsk*(1+slippage))
-		buySize := utils.FormatSize(filled, 6)
+		buySize := e.formatSize(pos.ShortExchange, pos.Symbol, filled)
 
 		oid2, err := shortExch.PlaceOrder(exchange.PlaceOrderParams{
 			Symbol:     pos.Symbol,
@@ -487,23 +550,44 @@ exitLoop:
 		filled2, avg2 := e.confirmFill(shortExch, oid2, pos.Symbol)
 
 		closedShort += filled2
+		if filled2 > 0 {
+			lastFillTime = time.Now()
+		}
 		if avg2 > 0 {
 			shortVWAPSum += avg2 * filled2
 		}
 
-		// If short didn't fully fill, adjust long accumulator.
-		// The long IOC already executed — small delta imbalance is acceptable;
-		// consolidator will reconcile.
+		// If short didn't fully fill, do NOT decrement closedLong — the long
+		// was already sold on exchange. Falsifying bookkeeping causes the market
+		// fallback to re-sell shares that are already gone. The consolidator
+		// will reconcile any small imbalance.
 		if filled2 < filled {
 			excess := filled - filled2
-			closedLong -= excess
-			if avg > 0 {
-				longVWAPSum -= avg * excess
-			}
+			e.log.Warn("depth exit %s: short under-filled by %.6f (long=%.6f short=%.6f), imbalance will be reconciled by consolidator",
+				pos.ID, excess, filled, filled2)
 		}
 
 		e.log.Info("depth exit %s: tick closedLong=%.6f closedShort=%.6f",
 			pos.ID, closedLong, closedShort)
+	}
+
+	// Check for L4/L5 preemption before cancelling SLs — keep SL protection if preempted.
+	if ctx.Err() != nil {
+		e.log.Info("depth exit: cancelled after depth loop for %s — SLs preserved for emergency handler", pos.ID)
+		return ctx.Err()
+	}
+
+	// Cancel stop-loss orders after depth loop, before market fallback.
+	// This keeps SLs tracked during depth-fill for safety, but cancels before
+	// market orders to prevent SL triggering during aggressive close.
+	e.cancelStopLosses(pos)
+	time.Sleep(500 * time.Millisecond)
+
+marketFallback:
+	// Check for L4/L5 preemption before market fallback.
+	if ctx.Err() != nil {
+		e.log.Info("depth exit: cancelled before market fallback for %s", pos.ID)
+		return ctx.Err()
 	}
 
 	// Market fallback for remainder.
@@ -513,14 +597,19 @@ exitLoop:
 	if longRemaining > 0 || shortRemaining > 0 {
 		e.log.Info("depth exit: market fallback for %s (longRem=%.6f shortRem=%.6f)",
 			pos.ID, longRemaining, shortRemaining)
-		mktLongPrice, mktShortPrice := e.executeMarketClose(pos, longExch, shortExch, longRemaining, shortRemaining)
-		if longRemaining > 0 && mktLongPrice > 0 {
-			longVWAPSum += mktLongPrice * longRemaining
-			closedLong += longRemaining
+		if longRemaining > 0 {
+			filled, avg := e.closeFullyWithRetryPriced(ctx, longExch, pos.Symbol, exchange.SideSell, longRemaining)
+			if avg > 0 {
+				longVWAPSum += avg * filled
+			}
+			closedLong += filled
 		}
-		if shortRemaining > 0 && mktShortPrice > 0 {
-			shortVWAPSum += mktShortPrice * shortRemaining
-			closedShort += shortRemaining
+		if shortRemaining > 0 {
+			filled, avg := e.closeFullyWithRetryPriced(ctx, shortExch, pos.Symbol, exchange.SideBuy, shortRemaining)
+			if avg > 0 {
+				shortVWAPSum += avg * filled
+			}
+			closedShort += filled
 		}
 	}
 
@@ -549,12 +638,25 @@ exitLoop:
 		}
 	}
 
-	// Cancel stop-loss orders before closing.
-	e.cancelStopLosses(pos)
+	// Check for incomplete close (partial fill or ctx cancelled).
+	longRemainder := totalLong - closedLong
+	shortRemainder := totalShort - closedShort
+	fullyFlat := longRemainder <= 0 && shortRemainder <= 0
 
-	// Calculate PnL and finalize.
-	longPnL := (longClosePrice - pos.LongEntry) * totalLong
-	shortPnL := (pos.ShortEntry - shortClosePrice) * totalShort
+	if !fullyFlat {
+		// If cancelled by L4/L5, do NOT modify position state — emergency handler owns it now.
+		if ctx.Err() != nil {
+			e.log.Info("depth exit %s: cancelled during partial close (longRem=%.6f shortRem=%.6f) — deferring to emergency handler",
+				pos.ID, longRemainder, shortRemainder)
+			return ctx.Err()
+		}
+		e.log.Error("CRITICAL: depth-exit %s: NOT fully flat — longRemainder=%.6f shortRemainder=%.6f — manual intervention needed",
+			pos.ID, longRemainder, shortRemainder)
+	}
+
+	// Calculate PnL using actual closed quantities.
+	longPnL := (longClosePrice - pos.LongEntry) * closedLong
+	shortPnL := (pos.ShortEntry - shortClosePrice) * closedShort
 	realizedPnL := longPnL + shortPnL + pos.FundingCollected - pos.EntryFees
 
 	// Sanity check: PnL should not exceed position notional value.
@@ -568,53 +670,91 @@ exitLoop:
 		shortPnL = 0
 	}
 
-	if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
-		fresh.RealizedPnL = realizedPnL
-		fresh.LongExit = longClosePrice
-		fresh.ShortExit = shortClosePrice
-		fresh.Status = models.StatusClosed
-		fresh.UpdatedAt = time.Now().UTC()
-		fresh.LongSize = 0
-		fresh.ShortSize = 0
-		return true
-	}); err != nil {
-		e.log.Error("failed to save closed position %s: %v", pos.ID, err)
+	if fullyFlat {
+		if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+			fresh.RealizedPnL = realizedPnL
+			fresh.LongExit = longClosePrice
+			fresh.ShortExit = shortClosePrice
+			fresh.Status = models.StatusClosed
+			fresh.UpdatedAt = time.Now().UTC()
+			fresh.LongSize = 0
+			fresh.ShortSize = 0
+			return true
+		}); err != nil {
+			e.log.Error("failed to save closed position %s: %v", pos.ID, err)
+		}
+	} else {
+		// Partial close — only update remaining sizes, revert to active for retry.
+		// Do NOT write partial PnL/exit prices to avoid accumulation errors on retry.
+		if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+			fresh.Status = models.StatusActive
+			fresh.LongSize = longRemainder
+			fresh.ShortSize = shortRemainder
+			fresh.UpdatedAt = time.Now().UTC()
+			return true
+		}); err != nil {
+			e.log.Error("failed to save partial-closed position %s: %v", pos.ID, err)
+		}
 	}
 
-	// Re-read for broadcast.
-	pos.RealizedPnL = realizedPnL
-	pos.LongExit = longClosePrice
-	pos.ShortExit = shortClosePrice
-	pos.Status = models.StatusClosed
-	pos.LongSize = 0
-	pos.ShortSize = 0
+	// Update local pos for broadcast.
+	if fullyFlat {
+		pos.RealizedPnL = realizedPnL
+		pos.LongExit = longClosePrice
+		pos.ShortExit = shortClosePrice
+		pos.LongSize = 0
+		pos.ShortSize = 0
+		pos.Status = models.StatusClosed
 
-	if err := e.db.AddToHistory(pos); err != nil {
-		e.log.Error("failed to add to history: %v", err)
-	}
-	won := realizedPnL > 0
-	if err := e.db.UpdateStats(realizedPnL, won); err != nil {
-		e.log.Error("failed to update stats: %v", err)
-	}
-	e.api.BroadcastPositionUpdate(pos)
+		if err := e.db.AddToHistory(pos); err != nil {
+			e.log.Error("failed to add to history: %v", err)
+		}
+		won := realizedPnL > 0
+		if err := e.db.UpdateStats(realizedPnL, won); err != nil {
+			e.log.Error("failed to update stats: %v", err)
+		}
 
-	e.log.Info("position %s depth-exit closed: pnl=%.4f (long=%.4f short=%.4f funding=%.4f entryFees=%.4f)",
-		pos.ID, realizedPnL, longPnL, shortPnL, pos.FundingCollected, pos.EntryFees)
+		e.log.Info("position %s depth-exit closed: pnl=%.4f (long=%.4f short=%.4f funding=%.4f entryFees=%.4f)",
+			pos.ID, realizedPnL, longPnL, shortPnL, pos.FundingCollected, pos.EntryFees)
 
-	// Set symbol cooldown on loss close.
-	if realizedPnL < 0 && e.cfg.LossCooldownHours > 0 {
-		cooldown := time.Duration(e.cfg.LossCooldownHours * float64(time.Hour))
-		e.discovery.SetSymbolCooldown(pos.Symbol, cooldown)
-	}
-	// Set re-entry cooldown on any close.
-	if e.cfg.ReEnterCooldownHours > 0 {
-		cooldown := time.Duration(e.cfg.ReEnterCooldownHours * float64(time.Hour))
-		e.discovery.SetReEnterCooldown(pos.Symbol, cooldown)
-	}
+		// Set symbol cooldown on loss close.
+		if realizedPnL < 0 && e.cfg.LossCooldownHours > 0 {
+			cooldown := time.Duration(e.cfg.LossCooldownHours * float64(time.Hour))
+			e.discovery.SetSymbolCooldown(pos.Symbol, cooldown)
+		}
+		// Set re-entry cooldown on any close.
+		if e.cfg.ReEnterCooldownHours > 0 {
+			cooldown := time.Duration(e.cfg.ReEnterCooldownHours * float64(time.Hour))
+			e.discovery.SetReEnterCooldown(pos.Symbol, cooldown)
+		}
 
-	// Reconcile PnL from exchange trade history (immediate attempt is synchronous).
-	posCopy := *pos
-	e.reconcilePnL(&posCopy)
+		// Broadcast before reconcile — reconcilePnL will broadcast corrected data if PnL changes.
+		e.api.BroadcastPositionUpdate(pos)
+
+		// Reconcile PnL from exchange trade history (immediate attempt is synchronous).
+		posCopy := *pos
+		e.reconcilePnL(&posCopy)
+	} else {
+		pos.Status = models.StatusActive
+		pos.LongSize = longRemainder
+		pos.ShortSize = shortRemainder
+		e.log.Error("position %s depth-exit PARTIAL: longRem=%.6f shortRem=%.6f — reverted to active for retry",
+			pos.ID, longRemainder, shortRemainder)
+
+		// Clear stale SL order IDs before re-attaching.
+		_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+			fresh.LongSLOrderID = ""
+			fresh.ShortSLOrderID = ""
+			return true
+		})
+		pos.LongSLOrderID = ""
+		pos.ShortSLOrderID = ""
+
+		// Re-attach stop-losses for the remaining position.
+		e.attachStopLosses(pos)
+
+		e.api.BroadcastPositionUpdate(pos)
+	}
 
 	return nil
 }
@@ -755,16 +895,14 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 	}
 
 	if needsPnLUpdate {
+		// Adjust total_pnl only — do NOT call UpdateStats which increments trade/win/loss counts.
 		statsDiff := reconciledPnL - oldPnL
-		wasWon := oldPnL > 0
-		nowWon := reconciledPnL > 0
-		if wasWon != nowWon {
-			e.log.Warn("reconcile %s: win/loss status changed (old=%.4f new=%.4f)", pos.ID, oldPnL, reconciledPnL)
+		if err := e.db.AdjustPnL(statsDiff); err != nil {
+			e.log.Error("reconcile %s: failed to adjust stats PnL: %v", pos.ID, err)
+		} else {
+			e.log.Info("reconcile %s: corrected PnL %.4f → %.4f (stats adjusted by %.4f)",
+				pos.ID, oldPnL, reconciledPnL, statsDiff)
 		}
-		if err := e.db.UpdateStats(statsDiff, false); err != nil {
-			e.log.Error("reconcile %s: failed to update stats: %v", pos.ID, err)
-		}
-		e.log.Info("reconcile %s: corrected PnL %.4f → %.4f (diff=%.4f)", pos.ID, oldPnL, reconciledPnL, diff)
 	}
 	if needsFundingUpdate {
 		e.log.Info("reconcile %s: corrected FundingCollected %.4f → %.4f", pos.ID, pos.FundingCollected, reconciledFunding)
@@ -1083,15 +1221,43 @@ func (e *Engine) closePositionWithMode(pos *models.ArbitragePosition, emergency 
 		return fmt.Errorf("short exchange %s not found", pos.ShortExchange)
 	}
 
+	// Cancel stop-loss orders BEFORE closing legs to prevent SL triggers
+	// racing with the close orders.
+	e.cancelStopLosses(pos)
+
 	// Use local recorded sizes for THIS position (exchange total may include siblings).
 	longSize := pos.LongSize
 	shortSize := pos.ShortSize
 
 	var longClosePrice, shortClosePrice float64
 	if emergency {
-		e.log.Info("emergency market close for %s", pos.ID)
-		longClosePrice, shortClosePrice = e.executeMarketClose(pos, longExch, shortExch, longSize, shortSize)
+		// Emergency: fire both legs concurrently for fastest close.
+		e.log.Info("emergency market close for %s (concurrent)", pos.ID)
+		var wg sync.WaitGroup
+		var muClose sync.Mutex
+		if longSize > 0 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				lp, _ := e.executeMarketClose(pos, longExch, shortExch, longSize, 0)
+				muClose.Lock()
+				longClosePrice = lp
+				muClose.Unlock()
+			}()
+		}
+		if shortSize > 0 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, sp := e.executeMarketClose(pos, longExch, shortExch, 0, shortSize)
+				muClose.Lock()
+				shortClosePrice = sp
+				muClose.Unlock()
+			}()
+		}
+		wg.Wait()
 	} else {
+		// Smart close already fires IOC orders concurrently internally.
 		e.log.Info("IOC close for %s", pos.ID)
 		longClosePrice, shortClosePrice = e.executeSmartClose(pos, longExch, shortExch, longSize, shortSize)
 	}
@@ -1117,8 +1283,53 @@ func (e *Engine) closePositionWithMode(pos *models.ArbitragePosition, emergency 
 		}
 	}
 
-	// Cancel stop-loss orders before closing.
-	e.cancelStopLosses(pos)
+	// Verify both legs are actually flat on exchange before marking closed.
+	// waitForFill returns on any non-zero fill, which may be partial.
+	time.Sleep(500 * time.Millisecond) // brief delay for exchange state to settle
+	actualLong, longVerifyErr := getExchangePositionSize(longExch, pos.Symbol, "long")
+	actualShort, shortVerifyErr := getExchangePositionSize(shortExch, pos.Symbol, "short")
+
+	// If verification failed (API error), treat as NOT confirmed flat — safer to keep active.
+	notFlat := false
+	if longVerifyErr != nil || shortVerifyErr != nil {
+		e.log.Error("CRITICAL: closePositionWithMode %s — verification failed (longErr=%v shortErr=%v), assuming NOT flat",
+			pos.ID, longVerifyErr, shortVerifyErr)
+		notFlat = true
+		// Use original sizes as conservative estimate.
+		actualLong = longSize
+		actualShort = shortSize
+	} else if actualLong > 0 || actualShort > 0 {
+		e.log.Error("CRITICAL: closePositionWithMode %s — legs NOT flat after close (long=%.6f short=%.6f)",
+			pos.ID, actualLong, actualShort)
+		notFlat = true
+	}
+
+	if notFlat {
+		if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+			fresh.Status = models.StatusActive
+			fresh.LongSize = actualLong
+			fresh.ShortSize = actualShort
+			fresh.UpdatedAt = time.Now().UTC()
+			return true
+		}); err != nil {
+			e.log.Error("failed to revert position %s to active: %v", pos.ID, err)
+		}
+		pos.Status = models.StatusActive
+		pos.LongSize = actualLong
+		pos.ShortSize = actualShort
+		// Clear stale SL IDs before reattaching (old SLs were already cancelled).
+		_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+			fresh.LongSLOrderID = ""
+			fresh.ShortSLOrderID = ""
+			return true
+		})
+		pos.LongSLOrderID = ""
+		pos.ShortSLOrderID = ""
+		// Reattach SL protection for the remaining position.
+		e.attachStopLosses(pos)
+		e.api.BroadcastPositionUpdate(pos)
+		return fmt.Errorf("position %s not confirmed flat after close", pos.ID)
+	}
 
 	// Calculate realized PnL.
 	// Long PnL = (close - entry) * size
@@ -1198,7 +1409,7 @@ func (e *Engine) executeMarketClose(pos *models.ArbitragePosition, longExch, sho
 			Symbol:     pos.Symbol,
 			Side:       exchange.SideSell,
 			OrderType:  "market",
-			Size:       utils.FormatSize(longSize, 6),
+			Size:       e.formatSize(pos.LongExchange, pos.Symbol, longSize),
 			Force:      "ioc",
 			ReduceOnly: true,
 		})
@@ -1218,7 +1429,7 @@ func (e *Engine) executeMarketClose(pos *models.ArbitragePosition, longExch, sho
 			Symbol:     pos.Symbol,
 			Side:       exchange.SideBuy,
 			OrderType:  "market",
-			Size:       utils.FormatSize(shortSize, 6),
+			Size:       e.formatSize(pos.ShortExchange, pos.Symbol, shortSize),
 			Force:      "ioc",
 			ReduceOnly: true,
 		})
@@ -1270,7 +1481,7 @@ func (e *Engine) executeSmartClose(pos *models.ArbitragePosition, longExch, shor
 				Side:       exchange.SideSell,
 				OrderType:  "limit",
 				Price:      e.formatPrice(pos.LongExchange, pos.Symbol, longFloor),
-				Size:       utils.FormatSize(longSize, 6),
+				Size:       e.formatSize(pos.LongExchange, pos.Symbol, longSize),
 				Force:      "ioc",
 				ReduceOnly: true,
 			})
@@ -1287,7 +1498,7 @@ func (e *Engine) executeSmartClose(pos *models.ArbitragePosition, longExch, shor
 				Side:       exchange.SideBuy,
 				OrderType:  "limit",
 				Price:      e.formatPrice(pos.ShortExchange, pos.Symbol, shortCeiling),
-				Size:       utils.FormatSize(shortSize, 6),
+				Size:       e.formatSize(pos.ShortExchange, pos.Symbol, shortSize),
 				Force:      "ioc",
 				ReduceOnly: true,
 			})
@@ -1404,49 +1615,62 @@ func (e *Engine) checkRotations() {
 			}
 		}
 
-		// Find opportunity for same symbol.
-		var opp *models.Opportunity
-		for i := range opps {
-			if opps[i].Symbol == pos.Symbol {
-				opp = &opps[i]
-				break
-			}
-		}
-		if opp == nil {
-			continue
-		}
-
-		// Classify: which leg is shared, which should rotate?
-		sharedLeg, oldExch, newExch, legSide := classifyRotation(pos, opp)
-		if sharedLeg == "" {
-			continue // both legs same or both different
-		}
-
-		// Compute current live spread for position.
+		// Scan ALL opportunities for the same symbol, pick the best one.
 		currentSpread := e.computeLiveSpread(pos)
 
-		// Penalize moves to higher-frequency settlement exchanges.
-		settlementPenalty := e.settlementFrequencyPenalty(pos, *opp, legSide, oldExch, newExch)
-		improvement := opp.Spread - currentSpread - settlementPenalty
+		var bestOpp *models.Opportunity
+		var bestSharedLeg, bestOldExch, bestNewExch, bestLegSide string
+		var bestImprovement float64
 
-		// Apply threshold with hysteresis for return-to-previous.
-		threshold := e.cfg.RotationThresholdBPS
-		if newExch == pos.LastRotatedFrom {
-			threshold *= 2
+		for i := range opps {
+			if opps[i].Symbol != pos.Symbol {
+				continue
+			}
+
+			// Classify: which leg is shared, which should rotate?
+			sharedLeg, oldExch, newExch, legSide := classifyRotation(pos, &opps[i])
+			if sharedLeg == "" {
+				continue // both legs same or both different
+			}
+
+			// Penalize moves to higher-frequency settlement exchanges.
+			settlementPenalty := e.settlementFrequencyPenalty(pos, opps[i], legSide, oldExch, newExch)
+			improvement := opps[i].Spread - currentSpread - settlementPenalty
+
+			// Apply threshold with hysteresis for return-to-previous.
+			threshold := e.cfg.RotationThresholdBPS
+			if newExch == pos.LastRotatedFrom {
+				threshold *= 2
+			}
+			if improvement < threshold {
+				continue
+			}
+
+			if improvement > bestImprovement {
+				bestImprovement = improvement
+				bestOpp = &opps[i]
+				bestSharedLeg = sharedLeg
+				bestOldExch = oldExch
+				bestNewExch = newExch
+				bestLegSide = legSide
+			}
 		}
-		if improvement < threshold {
+
+		if bestOpp == nil {
 			continue
 		}
 
-		e.log.Info("rotation triggered for %s: %s leg %s → %s (current=%.1f opp=%.1f penalty=%.1f improvement=%.1f threshold=%.1f bps/h)",
-			pos.ID, legSide, oldExch, newExch, currentSpread, opp.Spread, settlementPenalty, improvement, threshold)
+		_ = bestSharedLeg // used for classification, logged via legSide
+
+		e.log.Info("rotation triggered for %s: %s leg %s → %s (current=%.1f opp=%.1f improvement=%.1f bps/h)",
+			pos.ID, bestLegSide, bestOldExch, bestNewExch, currentSpread, bestOpp.Spread, bestImprovement)
 
 		if e.cfg.DryRun {
-			e.log.Info("[DRY RUN] would rotate %s %s leg: %s → %s", pos.ID, legSide, oldExch, newExch)
+			e.log.Info("[DRY RUN] would rotate %s %s leg: %s → %s", pos.ID, bestLegSide, bestOldExch, bestNewExch)
 			continue
 		}
 
-		e.rotateLeg(pos, *opp, legSide, oldExch, newExch)
+		e.rotateLeg(pos, *bestOpp, bestLegSide, bestOldExch, bestNewExch)
 	}
 }
 
@@ -1733,51 +1957,40 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 	closeQty := openFilled // only close what we successfully opened
 	closeSizeStr := utils.FormatSize(closeQty, 6)
 
-	oldBBO, olok := e.getBBOWithFallback(oldExch, pos.Symbol)
-	if !olok {
-		// Can't get price — use a very aggressive price to ensure fill.
-		e.log.Warn("rotation: BBO unavailable on old exchange %s, using market close", oldExchName)
-		e.closeOldLegMarket(oldExch, pos.Symbol, closeSide, closeSizeStr)
-		goto updatePosition
+	// Close old leg with verified retry (up to 10 attempts).
+	// Only proceed with position update if old leg is confirmed closed.
+	e.log.Info("rotation step 2: close %s on %s size=%s (verified retry)", closeSide, oldExchName, closeSizeStr)
+	e.closeFullyWithRetry(oldExch, pos.Symbol, closeSide, closeQty)
+
+	// Verify old leg is actually flat before updating position record.
+	time.Sleep(500 * time.Millisecond)
+	oldSide := "short"
+	if legSide == "long" {
+		oldSide = "long"
 	}
-
-	{
-		var closePrice string
-		if legSide == "short" {
-			closePrice = e.formatPrice(oldExchName, pos.Symbol, oldBBO.Ask*(1+slippage))
-		} else {
-			closePrice = e.formatPrice(oldExchName, pos.Symbol, oldBBO.Bid*(1-slippage))
-		}
-
-		e.log.Info("rotation step 2: close %s on %s @ %s size=%s", closeSide, oldExchName, closePrice, closeSizeStr)
-
-		closeOID, err := oldExch.PlaceOrder(exchange.PlaceOrderParams{
-			Symbol:     pos.Symbol,
-			Side:       closeSide,
-			OrderType:  "limit",
-			Price:      closePrice,
-			Size:       closeSizeStr,
-			Force:      "ioc",
-			ReduceOnly: true,
+	remainingOnExch, verifyErr := getExchangePositionSize(oldExch, pos.Symbol, oldSide)
+	if verifyErr != nil {
+		// Verification failed — cannot confirm flat. Abort rotation, close new leg back.
+		e.log.Error("CRITICAL: rotation close for %s — verification failed on %s (err=%v), aborting. Closing new leg back.",
+			pos.ID, oldExchName, verifyErr)
+		e.closeFullyWithRetry(newExch, pos.Symbol, closeSide, openFilled)
+		return
+	}
+	if remainingOnExch > 0 {
+		e.log.Error("CRITICAL: rotation close for %s — old leg NOT flat on %s (remaining=%.6f), aborting. Closing new leg back.",
+			pos.ID, oldExchName, remainingOnExch)
+		// Write remaining old-leg size back to position before aborting.
+		_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+			if legSide == "short" {
+				fresh.ShortSize = remainingOnExch
+			} else {
+				fresh.LongSize = remainingOnExch
+			}
+			return true
 		})
-		if err != nil {
-			e.log.Error("rotation: close IOC failed on %s: %v — retrying with market", oldExchName, err)
-			e.closeOldLegMarket(oldExch, pos.Symbol, closeSide, closeSizeStr)
-			goto updatePosition
-		}
-
-		closeFilled, _ := e.confirmFill(oldExch, closeOID, pos.Symbol)
-		e.log.Info("rotation: close filled %.6f/%.6f on %s", closeFilled, closeQty, oldExchName)
-
-		// Market retry for any unfilled remainder.
-		remainder := closeQty - closeFilled
-		if remainder > 0.0001 {
-			e.log.Info("rotation: market close remainder %.6f on %s", remainder, oldExchName)
-			e.closeOldLegMarket(oldExch, pos.Symbol, closeSide, utils.FormatSize(remainder, 6))
-		}
+		e.closeFullyWithRetry(newExch, pos.Symbol, closeSide, openFilled)
+		return
 	}
-
-updatePosition:
 	// Update position record atomically.
 	if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
 		if fresh.Status != models.StatusActive {
@@ -1937,14 +2150,22 @@ func (e *Engine) updateRotationStopLoss(pos *models.ArbitragePosition, legSide, 
 	}
 	distance := 0.9 / leverage
 
-	// Cancel old SL.
+	// Cancel old SL and unregister from slIndex to prevent stale triggers.
 	if legSide == "short" && pos.ShortSLOrderID != "" {
+		// Unregister old SL from slIndex.
+		e.slIndexMu.Lock()
+		delete(e.slIndex, oldExchName+":"+pos.ShortSLOrderID)
+		e.slIndexMu.Unlock()
 		if exch, ok := e.exchanges[oldExchName]; ok {
 			if err := exch.CancelStopLoss(pos.Symbol, pos.ShortSLOrderID); err != nil {
 				e.log.Warn("rotation: cancel old short SL %s on %s: %v", pos.ShortSLOrderID, oldExchName, err)
 			}
 		}
 	} else if legSide == "long" && pos.LongSLOrderID != "" {
+		// Unregister old SL from slIndex.
+		e.slIndexMu.Lock()
+		delete(e.slIndex, oldExchName+":"+pos.LongSLOrderID)
+		e.slIndexMu.Unlock()
 		if exch, ok := e.exchanges[oldExchName]; ok {
 			if err := exch.CancelStopLoss(pos.Symbol, pos.LongSLOrderID); err != nil {
 				e.log.Warn("rotation: cancel old long SL %s on %s: %v", pos.LongSLOrderID, oldExchName, err)
@@ -1997,6 +2218,12 @@ func (e *Engine) updateRotationStopLoss(pos *models.ArbitragePosition, legSide, 
 	} else {
 		pos.LongSLOrderID = oid
 	}
+
+	// Register new SL in slIndex for instant fill detection (mirrors attachStopLosses).
+	e.slIndexMu.Lock()
+	key := newExchName + ":" + oid
+	e.slIndex[key] = slEntry{PosID: pos.ID, Leg: legSide}
+	e.slIndexMu.Unlock()
 }
 
 // getBBOWithFallback tries WS BBO then falls back to orderbook REST.
@@ -2032,11 +2259,22 @@ func (e *Engine) closeOldLegMarket(exch exchange.Exchange, symbol string, side e
 // the full quantity is closed or max retries exhausted. Single closeLeg calls
 // can partially fill on exchanges with low liquidity, leaving orphan positions.
 func (e *Engine) closeFullyWithRetry(exch exchange.Exchange, symbol string, side exchange.Side, totalQty float64) {
+	e.closeFullyWithRetryPriced(context.Background(), exch, symbol, side, totalQty)
+}
+
+// closeFullyWithRetryPriced retries market IOC up to 10 times. Returns total filled and VWAP avg price.
+// Respects ctx for L4/L5 preemption.
+func (e *Engine) closeFullyWithRetryPriced(ctx context.Context, exch exchange.Exchange, symbol string, side exchange.Side, totalQty float64) (totalFilled float64, avgPrice float64) {
 	remaining := totalQty
 	deadline := time.Now().Add(30 * time.Second)
+	var vwapSum float64
 
 	for attempt := 0; attempt < 10 && remaining > 0; attempt++ {
-		sizeStr := utils.FormatSize(remaining, 6)
+		if ctx.Err() != nil {
+			e.log.Info("closeFullyWithRetry %s %s: cancelled by context", exch.Name(), symbol)
+			break
+		}
+		sizeStr := e.formatSize(exch.Name(), symbol, remaining)
 		oid, err := exch.PlaceOrder(exchange.PlaceOrderParams{
 			Symbol:     symbol,
 			Side:       side,
@@ -2050,8 +2288,12 @@ func (e *Engine) closeFullyWithRetry(exch exchange.Exchange, symbol string, side
 			break
 		}
 
-		filled, _ := e.confirmFill(exch, oid, symbol)
+		filled, avg := e.confirmFill(exch, oid, symbol)
 		remaining -= filled
+		totalFilled += filled
+		if avg > 0 {
+			vwapSum += avg * filled
+		}
 		e.log.Info("closeFullyWithRetry %s %s: filled=%.6f remaining=%.6f", exch.Name(), symbol, filled, remaining)
 
 		if remaining <= 0 {
@@ -2068,4 +2310,9 @@ func (e *Engine) closeFullyWithRetry(exch exchange.Exchange, symbol string, side
 		e.log.Error("CRITICAL: closeFullyWithRetry %s %s failed to close %.6f of %.6f — manual intervention needed",
 			exch.Name(), symbol, remaining, totalQty)
 	}
+
+	if totalFilled > 0 {
+		avgPrice = vwapSum / totalFilled
+	}
+	return
 }

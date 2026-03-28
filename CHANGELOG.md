@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.3] - 2026-03-28
+
+### Fixed — Exit Optimization (Phase 1)
+- **Depth subscription hardened**: 8s wait with unsub/resub retry (was 2s no retry); ctx-aware for L4/L5 preemption; no-depth falls back to market immediately
+- **Progress-aware timeout**: 30s no-fill early break instead of fixed 300s timeout
+- **Market fallback**: `closeFullyWithRetryPriced` (retry up to 10x with actual fill prices) replaces one-shot `executeMarketClose`
+- **SL cancel timing**: cancelled after depth loop, before market fallback (was after everything)
+- **50bps hard cap**: gap gate clips at 50bps; breaks to market after 60% of timeout while capped
+- **Tick interval**: 100ms (was 200ms)
+- **formatSize**: exchange-aware in all exit/close paths (was hardcoded 6 decimal)
+- **Partial close safety**: reverts to `active` with remaining sizes + SL reattach (was unconditionally marking closed)
+- **L4/L5 preemption**: done-channel handshake replaces `cancel()+sleep(500ms)`; 6 ctx check points throughout exit flow
+
+### Fixed — Trading Logic Audit (16 issues from Codex gpt-5.4 audit)
+- **(C1)** `closePositionWithMode` verifies both legs flat on exchange before marking closed; treats verification errors as not-flat; reattaches SLs on rollback
+- **(C2)** Entry unwind: all `closeLeg` calls replaced with `closeFullyWithRetry` (verified retry)
+- **(C3)** Exit depth loop: no longer decrements `closedLong` when short under-fills (was falsifying bookkeeping)
+- **(C4)** Rotation: old leg close uses verified retry; aborts on verification failure; writes remaining size back
+- **(C5)** `updateRotationStopLoss`: unregisters old SL from slIndex before cancel; registers new SL after placement
+- **(H1)** Consolidator `markPositionClosed`: verified close + treats API errors as not-flat
+- **(H2)** Consolidator `enforceBalance`: uses actual filled amount instead of assuming full trim
+- **(H3)** Entry: formatSize per-leg (long uses long exchange rules, short uses short)
+- **(H4)** Risk: sizing enforces stricter of both exchanges' StepSize/MinSize
+- **(H5)** Emergency/manual close: SLs cancelled first; both legs fire concurrently via WaitGroup
+- **(H6)** L3 cross-exchange transfer: returns early (was executing meaningless intra-exchange transfers)
+- **(M1)** Reconcile: `AdjustPnL` adjusts total_pnl only, no longer increments trade/win/loss counts
+- **(M2)** `ReversalCount` resets to 0 when spread recovers
+- **(M3)** `checkRotations` scans all same-symbol opportunities, picks best spread improvement
+- **(M4)** Duplicate symbol check blocks any non-closed status (was only blocking active)
+- **(M5)** Exposure cap documented as intentionally per-pair conservative
+- **Consolidator orphan close**: all `closeLeg` replaced with `closeFullyWithRetry`
+
 ## [0.19.2] - 2026-03-28
 
 ### Fixed
