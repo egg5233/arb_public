@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.4] - 2026-03-29
+
+### Improved
+- **Dashboard dual timezone**: Funding history and open time now show both UTC and UTC+8 (e.g. `12:00 / 20:00 +8`)
+
 ## [0.19.3] - 2026-03-28
 
 ### Fixed — Exit Optimization (Phase 1)

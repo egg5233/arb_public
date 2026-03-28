@@ -39,7 +39,9 @@ function formatPrice(price: number): string {
 function formatDateTime(ts: string): string {
   const d = new Date(ts);
   if (isNaN(d.getTime())) return '-';
-  return d.toLocaleString('sv-SE', { timeZone: 'UTC' }).replace('T', ' ') + ' UTC';
+  const utc = d.toLocaleString('sv-SE', { timeZone: 'UTC' }).replace('T', ' ');
+  const tw8 = d.toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).replace('T', ' ');
+  return `${utc} UTC / ${tw8} +8`;
 }
 
 function pnlColor(v: number): string {
@@ -255,11 +257,13 @@ const Positions: FC<PositionsProps> = ({ positions, onClose, onFetchFunding }) =
                                     <div className="mt-0.5 ml-4 border-l border-gray-700/50 pl-2">
                                       {items.map((f, i) => {
                                         const time = new Date(f.time);
-                                        const timeStr = isNaN(time.getTime()) ? '-' : time.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
+                                        const utcStr = isNaN(time.getTime()) ? '-' : time.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
+                                        const tw8Str = isNaN(time.getTime()) ? '' : time.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Taipei' });
+                                        const timeStr = isNaN(time.getTime()) ? '-' : `${utcStr} / ${tw8Str} +8`;
                                         return (
                                           <div key={i} className="flex items-center justify-between py-0.5 text-xs hover:bg-gray-700/20 rounded px-1">
                                             <div className="flex items-center gap-2">
-                                              <span className="font-mono text-gray-500 w-12">{timeStr}</span>
+                                              <span className="font-mono text-gray-500 w-28">{timeStr}</span>
                                               <span className={`px-1.5 py-0 rounded text-[10px] font-medium ${
                                                 f.side === 'long' ? 'bg-green-500/15 text-green-400' : 'bg-red-500/15 text-red-400'
                                               }`}>{f.side}</span>
