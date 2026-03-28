@@ -36,6 +36,16 @@ func (e *Engine) checkIntervalChanges() {
 			continue
 		}
 
+		// Settlement-window guard: skip within ±10min of funding (rates unreliable).
+		if !pos.NextFunding.IsZero() {
+			untilFunding := time.Until(pos.NextFunding)
+			sinceFunding := -untilFunding
+			if (untilFunding > 0 && untilFunding < 10*time.Minute) ||
+				(sinceFunding > 0 && sinceFunding < 10*time.Minute) {
+				continue
+			}
+		}
+
 		longExch, ok := e.exchanges[pos.LongExchange]
 		if !ok {
 			continue
@@ -45,20 +55,21 @@ func (e *Engine) checkIntervalChanges() {
 			continue
 		}
 
-		longInterval, err := longExch.GetFundingInterval(pos.Symbol)
+		// Use GetFundingRate (returns rate + interval) instead of GetFundingInterval.
+		longRate, err := longExch.GetFundingRate(pos.Symbol)
 		if err != nil {
-			e.log.Warn("interval check: %s failed to get interval from %s: %v", pos.Symbol, pos.LongExchange, err)
 			continue
 		}
-		shortInterval, err := shortExch.GetFundingInterval(pos.Symbol)
+		shortRate, err := shortExch.GetFundingRate(pos.Symbol)
 		if err != nil {
-			e.log.Warn("interval check: %s failed to get interval from %s: %v", pos.Symbol, pos.ShortExchange, err)
 			continue
 		}
 
-		// Some adapters silently return 8h on API failure instead of an error.
-		// Skip the check if either leg reports the 8h default to avoid false exits.
-		if longInterval == 8*time.Hour || shortInterval == 8*time.Hour {
+		longInterval := longRate.Interval
+		shortInterval := shortRate.Interval
+
+		// Skip if either interval is zero/unset (API failure).
+		if longInterval <= 0 || shortInterval <= 0 {
 			continue
 		}
 
@@ -66,12 +77,51 @@ func (e *Engine) checkIntervalChanges() {
 		if diff < 0 {
 			diff = -diff
 		}
-		if diff > 30*time.Minute {
-			reason := fmt.Sprintf("interval mismatch: %s=%v %s=%v",
-				pos.LongExchange, longInterval, pos.ShortExchange, shortInterval)
-			e.log.Info("interval check: %s — %s, triggering exit", pos.ID, reason)
-			e.spawnExitGoroutine(pos, reason)
+		if diff <= 30*time.Minute {
+			continue // intervals match, nothing to do
 		}
+
+		// Intervals diverged — check if spread is still positive.
+		longIntervalH := longInterval.Hours()
+		shortIntervalH := shortInterval.Hours()
+
+		longBpsH := longRate.Rate * 10000 / longIntervalH
+		shortBpsH := shortRate.Rate * 10000 / shortIntervalH
+		currentSpread := shortBpsH - longBpsH
+
+		if currentSpread > 0 {
+			// Spread is still positive — keep the position.
+			// Update NextFunding to the collecting side's settlement time.
+			var collectingNextFunding time.Time
+			if longBpsH < 0 && shortBpsH < 0 {
+				collectingNextFunding = longRate.NextFunding // long collects
+			} else if longBpsH >= 0 && shortBpsH >= 0 {
+				collectingNextFunding = shortRate.NextFunding // short collects
+			} else {
+				// Mixed signs — use earliest
+				if longRate.NextFunding.Before(shortRate.NextFunding) {
+					collectingNextFunding = longRate.NextFunding
+				} else {
+					collectingNextFunding = shortRate.NextFunding
+				}
+			}
+			if !collectingNextFunding.IsZero() {
+				_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+					fresh.NextFunding = collectingNextFunding
+					return true
+				})
+			}
+
+			e.log.Info("interval check: %s — intervals diverged (%s=%v %s=%v) but spread=%.2f bps/h still positive, keeping",
+				pos.ID, pos.LongExchange, longInterval, pos.ShortExchange, shortInterval, currentSpread)
+			continue
+		}
+
+		// Spread is negative or zero — exit.
+		reason := fmt.Sprintf("interval mismatch + spread negative: %s=%v %s=%v spread=%.2f bps/h",
+			pos.LongExchange, longInterval, pos.ShortExchange, shortInterval, currentSpread)
+		e.log.Info("interval check: %s — %s, triggering exit", pos.ID, reason)
+		e.spawnExitGoroutine(pos, reason)
 	}
 }
 
@@ -149,12 +199,13 @@ func (e *Engine) spawnExitGoroutine(pos *models.ArbitragePosition, reason string
 	e.exitActive[pos.ID] = true
 	e.exitMu.Unlock()
 
-	// Set status to "exiting".
+	// Set status to "exiting" and store exit reason.
 	_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
 		if fresh.Status != models.StatusActive {
 			return false
 		}
 		fresh.Status = models.StatusExiting
+		fresh.ExitReason = reason
 		return true
 	})
 	e.api.BroadcastPositionUpdate(pos)

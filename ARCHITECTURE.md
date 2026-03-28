@@ -187,8 +187,13 @@ After sizing: round to contract step size, enforce min size, enforce 10 USDT min
 1. Safety: checkSpreadReversal() → exit if entry spread was positive but current is negative
    (with optional tolerance: allow N reversals before triggering, configurable via
    `SpreadReversalTolerance`, default 0 = immediate exit on first reversal)
-2. Skip evaluation within ±10min of funding settlement (rates unreliable)
-3. Min-hold gate: suppress exit before first funding settlement (`NextFunding`); manual close and margin emergencies bypass
+2. Interval monitor: checkIntervalChanges() → queries live rates+intervals via GetFundingRate().
+   Spread-aware: if intervals diverge but live spread is still positive (collecting side benefits
+   from shorter interval), keeps position open and updates NextFunding. Only exits if spread
+   goes negative. Skips within ±10min of funding settlement (same guard as spread reversal).
+   Controlled by `AllowMixedIntervals` config (default false) at ranking time.
+3. Skip evaluation within ±10min of funding settlement (rates unreliable)
+4. Min-hold gate: suppress exit before first funding settlement (`NextFunding`); manual close and margin emergencies bypass
 ```
 
 **Exit execution — Depth-Fill (non-emergency)**:

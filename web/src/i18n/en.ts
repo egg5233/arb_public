@@ -106,6 +106,7 @@ const en = {
   'hist.pnl': 'PnL',
   'hist.duration': 'Duration',
   'hist.rotations': 'Rotations',
+  'hist.exitReason': 'Exit Reason',
   'hist.noHistory': 'No trade history',
   'hist.loadMore': 'Load More',
   'hist.loading': 'Loading...',

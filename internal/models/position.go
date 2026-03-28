@@ -33,6 +33,7 @@ type ArbitragePosition struct {
 	RotationCount    int       `json:"rotation_count,omitempty"`    // total rotations for this position
 	ReversalCount    int       `json:"reversal_count,omitempty"`    // spread reversal occurrences (for tolerance)
 	EntryFees        float64   `json:"entry_fees,omitempty"`        // total entry trading fees (both legs)
+	ExitReason       string    `json:"exit_reason,omitempty"`       // why the position was closed
 }
 
 // PositionStatus constants.

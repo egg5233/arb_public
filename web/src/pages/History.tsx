@@ -67,6 +67,7 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
               <th className="pb-2 text-right">{t('hist.pnl')}</th>
               <th className="pb-2 text-right">{t('hist.duration')}</th>
               <th className="pb-2 text-right">{t('hist.rotations')}</th>
+              <th className="pb-2">{t('hist.exitReason')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-800">
@@ -100,11 +101,14 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
                 <td className="py-2 text-right font-mono text-gray-500">
                   {(tr.rotation_count ?? 0) > 0 ? tr.rotation_count : '-'}
                 </td>
+                <td className="py-2 text-gray-400 text-xs max-w-xs truncate" title={tr.exit_reason ?? ''}>
+                  {tr.exit_reason || '-'}
+                </td>
               </tr>
             ))}
             {trades.length === 0 && (
               <tr>
-                <td colSpan={14} className="py-4 text-center text-gray-500">{t('hist.noHistory')}</td>
+                <td colSpan={15} className="py-4 text-center text-gray-500">{t('hist.noHistory')}</td>
               </tr>
             )}
           </tbody>

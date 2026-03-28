@@ -108,6 +108,7 @@ const zhTW: Record<TranslationKey, string> = {
   'hist.pnl': '損益',
   'hist.duration': '持續時間',
   'hist.rotations': '輪換次數',
+  'hist.exitReason': '平倉原因',
   'hist.noHistory': '無交易歷史',
   'hist.loadMore': '載入更多',
   'hist.loading': '載入中...',

@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.18.2] - 2026-03-27
+
+### Added
+- **Spread-aware interval monitor**: `checkIntervalChanges()` now checks live spread before exiting on interval mismatch. If spread is still positive (collecting side benefits from shorter interval), the position is kept open instead of exiting. Updates `NextFunding` to the collecting side's settlement time
+- **`AllowMixedIntervals` config toggle** (default `false`): When enabled, ranker allows cross-interval pairs (e.g., 1h long + 4h short). The smarter interval monitor protects live positions by only exiting if spread goes negative
+- **Exit reason in History dashboard**: New "Exit Reason" / "平倉原因" column shows why each position was closed (spread reversal, interval mismatch, manual close, etc.). `ExitReason` field added to position model, stored when `spawnExitGoroutine()` is called
+
+### Improved
+- `checkIntervalChanges()` now uses `GetFundingRate()` instead of `GetFundingInterval()` — gets rate + interval in one call, reducing API traffic
+- Added settlement-window guard to interval check (skip within ±10min of funding, same as spread reversal check)
+- Removed blanket 8h interval skip — real 8h intervals are now monitored correctly
+
 ## [0.18.1] - 2026-03-27
 
 ### Fixed

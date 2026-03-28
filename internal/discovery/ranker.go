@@ -85,37 +85,55 @@ func (s *Scanner) RankOpportunities(loris *models.LorisResponse) []models.Opport
 			continue
 		}
 
-		// Step 2: Group by interval, find best pair within each group,
-		// then pick the group with the widest spread.
-		// This avoids discarding valid same-interval pairs when the
-		// global best long/short happen to be on different intervals.
-		intervalGroups := make(map[int][]exRate) // key = interval rounded to nearest hour
-		for _, r := range rates {
-			key := int(math.Round(r.intervalHrs))
-			intervalGroups[key] = append(intervalGroups[key], r)
-		}
-
+		// Step 2: Find best long/short pair.
 		var bestLong, bestShort exRate
 		var spread float64
-		for _, group := range intervalGroups {
-			if len(group) < 2 {
-				continue
+
+		if !s.cfg.AllowMixedIntervals {
+			// Group by interval, find best pair within each group,
+			// then pick the group with the widest spread.
+			// Prevents cross-interval pairs (e.g. 1h vs 4h).
+			intervalGroups := make(map[int][]exRate) // key = interval rounded to nearest hour
+			for _, r := range rates {
+				key := int(math.Round(r.intervalHrs))
+				intervalGroups[key] = append(intervalGroups[key], r)
 			}
-			gLong, gShort := group[0], group[0]
-			for _, r := range group[1:] {
-				if r.rateBpsH < gLong.rateBpsH {
-					gLong = r
+			for _, group := range intervalGroups {
+				if len(group) < 2 {
+					continue
 				}
-				if r.rateBpsH > gShort.rateBpsH {
-					gShort = r
+				gLong, gShort := group[0], group[0]
+				for _, r := range group[1:] {
+					if r.rateBpsH < gLong.rateBpsH {
+						gLong = r
+					}
+					if r.rateBpsH > gShort.rateBpsH {
+						gShort = r
+					}
+				}
+				if gLong.exchange == gShort.exchange {
+					continue
+				}
+				gSpread := gShort.rateBpsH - gLong.rateBpsH
+				if gSpread > spread {
+					bestLong, bestShort, spread = gLong, gShort, gSpread
 				}
 			}
-			if gLong.exchange == gShort.exchange {
-				continue
+		} else {
+			// Allow mixed intervals — pick global best long/short.
+			// The interval monitor protects live positions by checking spread.
+			bestLong = rates[0]
+			bestShort = rates[0]
+			for _, r := range rates[1:] {
+				if r.rateBpsH < bestLong.rateBpsH {
+					bestLong = r
+				}
+				if r.rateBpsH > bestShort.rateBpsH {
+					bestShort = r
+				}
 			}
-			gSpread := gShort.rateBpsH - gLong.rateBpsH
-			if gSpread > spread {
-				bestLong, bestShort, spread = gLong, gShort, gSpread
+			if bestLong.exchange != bestShort.exchange {
+				spread = bestShort.rateBpsH - bestLong.rateBpsH
 			}
 		}
 

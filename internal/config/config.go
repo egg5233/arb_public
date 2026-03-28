@@ -36,6 +36,7 @@ type Config struct {
 	MaxPriceGapBPS      float64       // hard reject above this gap (default 250)
 	MaxGapRecoveryIntervals float64   // max funding intervals to recover gap (default 1.0)
 	MaxIntervalHours    float64       // max funding interval hours to accept (0=disabled, e.g. 1=only 1h)
+	AllowMixedIntervals bool          // allow cross-interval pairs in ranker (default false)
 	DryRun              bool          // if true, skip trade execution (log only)
 
 	// Depth-driven entry execution
@@ -195,6 +196,7 @@ type jsonDiscovery struct {
 	PriceGapFreeBPS     *float64         `json:"price_gap_free_bps"`
 	MaxGapRecoveryIntervals *float64     `json:"max_gap_recovery_intervals"`
 	MaxIntervalHours    *float64         `json:"max_interval_hours"`
+	AllowMixedIntervals *bool            `json:"allow_mixed_intervals"`
 	DelistFilter        *bool            `json:"delist_filter"`
 	Persistence         *jsonPersistence `json:"persistence"`
 }
@@ -421,6 +423,9 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 			}
 			if d.MaxIntervalHours != nil {
 				c.MaxIntervalHours = *d.MaxIntervalHours
+			}
+			if d.AllowMixedIntervals != nil {
+				c.AllowMixedIntervals = *d.AllowMixedIntervals
 			}
 			if d.DelistFilter != nil {
 				c.DelistFilterEnabled = *d.DelistFilter
@@ -708,6 +713,7 @@ func (c *Config) SaveJSON() error {
 	if c.MaxIntervalHours > 0 {
 		disc["max_interval_hours"] = c.MaxIntervalHours
 	}
+	disc["allow_mixed_intervals"] = c.AllowMixedIntervals
 	disc["delist_filter"] = c.DelistFilterEnabled
 
 	persist := getMap(disc, "persistence")

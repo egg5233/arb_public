@@ -41,6 +41,7 @@ export interface Position {
   long_sl_order_id?: string;
   short_sl_order_id?: string;
   entry_fees?: number;
+  exit_reason?: string;
 }
 
 export interface Stats {
