@@ -2,10 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.18.7] - 2026-03-28
+## [0.18.8] - 2026-03-28
 
 ### Fixed
 - **Funding history ordering**: Added stable sort tiebreaker (side) so entries within the same timestamp always display in consistent order (long before short)
+- **pull-release.sh**: Removed `--version` probe that accidentally launched a full bot instance, causing port conflict and false update failure
+
+## [0.18.7] - 2026-03-28
+
+### Changed
+- **Update mechanism**: `handleUpdate` now uses `pull-release.sh` to download pre-built binaries from GitHub Releases instead of `make build` on server
 
 ## [0.18.6] - 2026-03-27
 

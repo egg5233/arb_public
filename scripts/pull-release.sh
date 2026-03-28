@@ -33,5 +33,4 @@ if [ "$1" = "--restart" ]; then
   echo "Service restarted."
 fi
 
-echo "Done. Running version:"
-"$INSTALL_DIR/$BINARY" --version 2>/dev/null || echo "$TAG"
+echo "Done. Version: $TAG"
