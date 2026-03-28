@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.18.5] - 2026-03-27
+
+### Fixed
+- **`checkIntervalChanges()` respects `AllowMixedIntervals` config**: When `false` (default), exits strictly on any interval mismatch (original fc99679d behavior). Spread-aware logic (keep position if spread positive) only applies when `AllowMixedIntervals=true`
+
 ## [0.18.4] - 2026-03-27
 
 ### Improved

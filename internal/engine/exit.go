@@ -81,7 +81,16 @@ func (e *Engine) checkIntervalChanges() {
 			continue // intervals match, nothing to do
 		}
 
-		// Intervals diverged — check if spread is still positive.
+		if !e.cfg.AllowMixedIntervals {
+			// Strict mode: exit on any interval mismatch.
+			reason := fmt.Sprintf("interval mismatch: %s=%v %s=%v",
+				pos.LongExchange, longInterval, pos.ShortExchange, shortInterval)
+			e.log.Info("interval check: %s — %s, triggering exit", pos.ID, reason)
+			e.spawnExitGoroutine(pos, reason)
+			continue
+		}
+
+		// AllowMixedIntervals: check if spread is still positive before exiting.
 		longIntervalH := longInterval.Hours()
 		shortIntervalH := shortInterval.Hours()
 
