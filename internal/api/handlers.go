@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -212,9 +213,12 @@ func (s *Server) handleGetPositionFunding(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// Sort by time descending.
+	// Sort by time descending, then by side for stable ordering within same timestamp.
 	sort.Slice(events, func(i, j int) bool {
-		return events[i].Time.After(events[j].Time)
+		if !events[i].Time.Equal(events[j].Time) {
+			return events[i].Time.After(events[j].Time)
+		}
+		return events[i].Side < events[j].Side
 	})
 
 	if events == nil {
@@ -1415,7 +1419,7 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	}})
 }
 
-// handleUpdate performs git pull + make build + service restart.
+// handleUpdate downloads the latest GitHub Release binary via pull-release.sh and restarts.
 func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1425,21 +1429,13 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	dir := workingDir()
 	var steps []string
 
-	// Step 1: git fetch + reset
-	steps = append(steps, "> git fetch origin main")
-	cmd := exec.Command("git", "fetch", "origin", "main", "--quiet")
+	// Step 1: run pull-release.sh to download latest release binary
+	script := filepath.Join(dir, "scripts", "pull-release.sh")
+	steps = append(steps, "> scripts/pull-release.sh")
+	cmd := exec.Command(script)
 	cmd.Dir = dir
-	if err := cmd.Run(); err != nil {
-		steps = append(steps, fmt.Sprintf("ERROR: %v", err))
-		writeJSON(w, http.StatusInternalServerError, Response{OK: false, Error: strings.Join(steps, "\n")})
-		return
-	}
-	steps = append(steps, "OK")
-
-	steps = append(steps, "> git reset --hard origin/main")
-	cmd = exec.Command("git", "reset", "--hard", "origin/main")
-	cmd.Dir = dir
-	if out, err := cmd.Output(); err != nil {
+	if out, err := cmd.CombinedOutput(); err != nil {
+		steps = append(steps, string(out))
 		steps = append(steps, fmt.Sprintf("ERROR: %v", err))
 		writeJSON(w, http.StatusInternalServerError, Response{OK: false, Error: strings.Join(steps, "\n")})
 		return
@@ -1447,20 +1443,17 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		steps = append(steps, strings.TrimSpace(string(out)))
 	}
 
-	// Step 2: make build
-	steps = append(steps, "> make build")
-	cmd = exec.Command("make", "build")
+	// Step 2: update VERSION file from remote
+	cmd = exec.Command("git", "fetch", "origin", "main", "--quiet")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "PATH=/usr/local/go/bin:"+os.Getenv("PATH"))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		steps = append(steps, string(out))
-		steps = append(steps, fmt.Sprintf("ERROR: %v", err))
-		writeJSON(w, http.StatusInternalServerError, Response{OK: false, Error: strings.Join(steps, "\n")})
-		return
+	_ = cmd.Run()
+	cmd = exec.Command("git", "show", "origin/main:VERSION")
+	cmd.Dir = dir
+	if out, err := cmd.Output(); err == nil {
+		newVersion := strings.TrimSpace(string(out))
+		os.WriteFile(filepath.Join(dir, "VERSION"), []byte(newVersion+"\n"), 0644)
 	}
-	steps = append(steps, "OK")
 
-	// Read new version
 	newVersion := strings.TrimSpace(readFileString("VERSION"))
 	steps = append(steps, fmt.Sprintf("\n更新完成: v%s", newVersion))
 	steps = append(steps, "2 秒後自動重啟...")

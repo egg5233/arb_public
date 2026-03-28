@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.18.7] - 2026-03-28
+
+### Fixed
+- **Funding history ordering**: Added stable sort tiebreaker (side) so entries within the same timestamp always display in consistent order (long before short)
+
 ## [0.18.6] - 2026-03-27
 
 ### Added
