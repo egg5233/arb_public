@@ -2,11 +2,6 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.18.5] - 2026-03-28
-
-### Added
-- **`AllowMixedIntervals` toggle in Dashboard**: Discovery tab now exposes the mixed-interval config as an ON/OFF switch with i18n support (zh-TW / en)
-
 ## [0.18.4] - 2026-03-27
 
 ### Improved
