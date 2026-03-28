@@ -147,6 +147,7 @@ function App() {
           <Positions
             positions={ws.positions}
             onClose={api.closePosition}
+            onFetchFunding={api.getPositionFunding}
           />
         );
       case 'history':

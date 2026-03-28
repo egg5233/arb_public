@@ -89,6 +89,15 @@ const en = {
   'pos.closeConfirm': 'Confirm Close',
   'pos.closeCancel': 'Cancel',
   'pos.noPositions': 'No active positions',
+  'pos.unrealizedPnl': 'Unrealized PnL',
+  'pos.longPnl': 'Long PnL',
+  'pos.shortPnl': 'Short PnL',
+  'pos.fundingHistory': 'Funding History',
+  'pos.rotationHistory': 'Rotation History',
+  'pos.openTime': 'Opened',
+  'pos.from': 'From',
+  'pos.to': 'To',
+  'pos.loading': 'Loading...',
 
   // History
   'hist.title': 'Trade History',

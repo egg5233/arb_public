@@ -72,6 +72,7 @@ func (s *Server) Start() {
 	// Position actions
 	mux.HandleFunc("/api/positions/close", s.cors(s.authMiddleware(s.handleClosePosition)))
 	mux.HandleFunc("/api/positions/open", s.cors(s.authMiddleware(s.handleOpenPosition)))
+	mux.HandleFunc("GET /api/positions/{id}/funding", s.cors(s.authMiddleware(s.handleGetPositionFunding)))
 
 	// Transfer routes
 	mux.HandleFunc("/api/transfer", s.cors(s.authMiddleware(s.handleTransfer)))

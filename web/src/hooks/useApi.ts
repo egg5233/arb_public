@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import type { Position, Opportunity, Stats, ExchangeInfo, TransferRecord, LogEntry, RejectedOpportunity } from '../types.ts';
+import type { Position, Opportunity, Stats, ExchangeInfo, TransferRecord, LogEntry, RejectedOpportunity, FundingEvent } from '../types.ts';
 
 const TOKEN_KEY = 'arb_token';
 
@@ -158,6 +158,10 @@ export function useApi() {
     return request<LogEntry[]>(`/api/logs?limit=${limit}`);
   }, []);
 
+  const getPositionFunding = useCallback((positionId: string) => {
+    return request<FundingEvent[]>(`/api/positions/${positionId}/funding`);
+  }, []);
+
   const getRejections = useCallback(() => {
     return request<RejectedOpportunity[]>('/api/rejections');
   }, []);
@@ -201,6 +205,7 @@ export function useApi() {
     getAddresses,
     updateAddresses,
     getLogs,
+    getPositionFunding,
     getRejections,
     diagnose,
     getPermissions,

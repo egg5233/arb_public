@@ -33,7 +33,19 @@ type ArbitragePosition struct {
 	RotationCount    int       `json:"rotation_count,omitempty"`    // total rotations for this position
 	ReversalCount    int       `json:"reversal_count,omitempty"`    // spread reversal occurrences (for tolerance)
 	EntryFees        float64   `json:"entry_fees,omitempty"`        // total entry trading fees (both legs)
-	ExitReason       string    `json:"exit_reason,omitempty"`       // why the position was closed
+	ExitReason         string           `json:"exit_reason,omitempty"`         // why the position was closed
+	LongUnrealizedPnL  float64          `json:"long_unrealized_pnl,omitempty"`
+	ShortUnrealizedPnL float64          `json:"short_unrealized_pnl,omitempty"`
+	RotationHistory    []RotationRecord `json:"rotation_history,omitempty"`
+}
+
+// RotationRecord captures a single leg rotation event for the position timeline.
+type RotationRecord struct {
+	From      string    `json:"from"`
+	To        string    `json:"to"`
+	LegSide   string    `json:"leg_side"` // "long" or "short"
+	PnL       *float64  `json:"pnl"`      // nil = not yet reconciled, 0 = real zero
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // PositionStatus constants.

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -145,6 +146,82 @@ func (s *Server) handleGetHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: history})
+}
+
+// handleGetPositionFunding returns per-payment funding history for a position.
+func (s *Server) handleGetPositionFunding(w http.ResponseWriter, r *http.Request) {
+	posID := r.PathValue("id")
+	if posID == "" {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "position id required"})
+		return
+	}
+
+	pos, err := s.db.GetPosition(posID)
+	if err != nil || pos == nil {
+		writeJSON(w, http.StatusNotFound, Response{Error: "position not found"})
+		return
+	}
+
+	type fundingEvent struct {
+		Exchange string    `json:"exchange"`
+		Side     string    `json:"side"`
+		Amount   float64   `json:"amount"`
+		Time     time.Time `json:"time"`
+	}
+
+	var events []fundingEvent
+
+	// Query funding from all exchanges that were ever part of this position
+	// (including rotated-away legs), not just the current pair.
+	queried := make(map[string]bool) // avoid duplicate queries
+	allExchanges := []struct {
+		name string
+		side string
+	}{
+		{pos.LongExchange, "long"},
+		{pos.ShortExchange, "short"},
+	}
+	// Add rotated-away exchanges from rotation history.
+	for _, rot := range pos.RotationHistory {
+		allExchanges = append(allExchanges, struct {
+			name string
+			side string
+		}{rot.From, rot.LegSide})
+	}
+
+	for _, leg := range allExchanges {
+		if queried[leg.name+":"+leg.side] {
+			continue
+		}
+		queried[leg.name+":"+leg.side] = true
+		exch, ok := s.exchanges[leg.name]
+		if !ok {
+			continue
+		}
+		fees, err := exch.GetFundingFees(pos.Symbol, pos.CreatedAt)
+		if err != nil {
+			continue
+		}
+		for _, f := range fees {
+			events = append(events, fundingEvent{
+				Exchange: leg.name,
+				Side:     leg.side,
+				Amount:   f.Amount,
+				Time:     f.Time,
+			})
+		}
+	}
+
+	// Sort by time descending.
+	sort.Slice(events, func(i, j int) bool {
+		return events[i].Time.After(events[j].Time)
+	})
+
+	if events == nil {
+		writeJSON(w, http.StatusOK, Response{OK: true, Data: []interface{}{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: events})
 }
 
 // handleGetOpportunities returns the cached opportunities slice.

@@ -42,6 +42,24 @@ export interface Position {
   short_sl_order_id?: string;
   entry_fees?: number;
   exit_reason?: string;
+  long_unrealized_pnl?: number;
+  short_unrealized_pnl?: number;
+  rotation_history?: RotationRecord[];
+}
+
+export interface RotationRecord {
+  from: string;
+  to: string;
+  leg_side: string;
+  pnl: number | null;
+  timestamp: string;
+}
+
+export interface FundingEvent {
+  exchange: string;
+  side: string;
+  amount: number;
+  time: string;
 }
 
 export interface Stats {

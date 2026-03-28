@@ -91,6 +91,15 @@ const zhTW: Record<TranslationKey, string> = {
   'pos.closeConfirm': '確認',
   'pos.closeCancel': '取消',
   'pos.noPositions': '無活躍持倉',
+  'pos.unrealizedPnl': '未實現損益',
+  'pos.longPnl': '多方損益',
+  'pos.shortPnl': '空方損益',
+  'pos.fundingHistory': '資金費率歷史',
+  'pos.rotationHistory': '輪換歷史',
+  'pos.openTime': '開倉時間',
+  'pos.from': '從',
+  'pos.to': '到',
+  'pos.loading': '載入中...',
 
   // History
   'hist.title': '交易歷史',

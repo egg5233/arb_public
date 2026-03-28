@@ -1787,6 +1787,12 @@ updatePosition:
 		fresh.LastRotatedAt = time.Now().UTC()
 		fresh.RotationCount++
 		fresh.EntrySpread = opp.Spread
+		fresh.RotationHistory = append(fresh.RotationHistory, models.RotationRecord{
+			From:      oldExchName,
+			To:        newExchName,
+			LegSide:   legSide,
+			Timestamp: time.Now().UTC(),
+		})
 		// Update NextFunding from the new exchange so it doesn't stay stale.
 		if newFR, frErr := newExch.GetFundingRate(pos.Symbol); frErr == nil && !newFR.NextFunding.IsZero() {
 			fresh.NextFunding = newFR.NextFunding
@@ -1876,6 +1882,14 @@ func (e *Engine) reconcileRotationPnL(posID string, oldExch exchange.Exchange, o
 		if err := e.db.UpdatePositionFields(posID, func(fresh *models.ArbitragePosition) bool {
 			fresh.RotationPnL += rotPnL // accumulate across multiple rotations
 			fresh.UpdatedAt = time.Now().UTC()
+			// Backfill PnL on the matching rotation history record (by From exchange + LegSide).
+			for i := len(fresh.RotationHistory) - 1; i >= 0; i-- {
+				r := &fresh.RotationHistory[i]
+				if r.From == oldExchName && r.LegSide == legSide && r.PnL == nil {
+					r.PnL = &rotPnL
+					break
+				}
+			}
 			return true
 		}); err != nil {
 			e.log.Error("rotation PnL reconcile %s: failed to update: %v", posID, err)

@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.18.3] - 2026-03-27
+
+### Added
+- **Positions dashboard — expandable detail row**: Click any position to reveal per-leg unrealized PnL, funding payment history, and rotation timeline
+- **`GET /api/positions/{id}/funding` endpoint**: Returns per-payment funding history from all exchanges, including rotated-away legs
+- **Per-leg unrealized PnL**: `long_unrealized_pnl` and `short_unrealized_pnl` updated every funding cycle, broadcast via WebSocket
+- **Rotation history array (`RotationRecord`)**: Tracks full rotation timeline with From, To, LegSide, PnL, Timestamp
+- **Absolute open time**: Displayed in position detail row
+
+### Fixed
+- **Rotation PnL backfill race**: `RotationRecord.PnL` changed from `float64` to `*float64` (nil = not reconciled, 0 = real zero). Backfill now matches by From exchange + LegSide instead of last array index
+- **Frontend funding fetch race**: Added `useRef` to track active position ID, stale responses are discarded
+- **Unrealized PnL preserved on API failure**: Defaults to previous value instead of zero when `GetPosition()` fails
+- **Unrealized PnL aggregation**: Accumulates across multiple position rows instead of overwriting
+- **Funding history endpoint includes rotated-away exchanges**: Now pulls from `RotationHistory`, not just current pair
+
 ## [0.18.2] - 2026-03-27
 
 ### Added

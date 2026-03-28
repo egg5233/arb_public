@@ -1,5 +1,5 @@
-import { useState, type FC } from 'react';
-import type { Position } from '../types.ts';
+import { useState, useEffect, useRef, Fragment, type FC } from 'react';
+import type { Position, FundingEvent } from '../types.ts';
 import { useLocale } from '../i18n/index.ts';
 import { tradingUrl } from '../utils/tradingUrl.tsx';
 
@@ -7,6 +7,7 @@ import { tradingUrl } from '../utils/tradingUrl.tsx';
 interface PositionsProps {
   positions: Position[];
   onClose?: (positionId: string) => Promise<void>;
+  onFetchFunding?: (positionId: string) => Promise<FundingEvent[]>;
 }
 
 function formatAge(created: string): string {
@@ -35,11 +36,65 @@ function formatPrice(price: number): string {
   return price.toFixed(6);
 }
 
-const Positions: FC<PositionsProps> = ({ positions, onClose }) => {
+function formatDateTime(ts: string): string {
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return '-';
+  return d.toLocaleString('sv-SE', { timeZone: 'UTC' }).replace('T', ' ') + ' UTC';
+}
+
+function pnlColor(v: number): string {
+  if (v > 0) return 'text-green-400';
+  if (v < 0) return 'text-red-400';
+  return 'text-gray-400';
+}
+
+const Positions: FC<PositionsProps> = ({ positions, onClose, onFetchFunding }) => {
   const { t } = useLocale();
   const [closingId, setClosingId] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
   const [closeError, setCloseError] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [fundingHistory, setFundingHistory] = useState<FundingEvent[]>([]);
+  const [fundingLoading, setFundingLoading] = useState(false);
+  const fetchIdRef = useRef<string | null>(null);
+
+  const toggleExpand = async (id: string) => {
+    if (expandedId === id) {
+      setExpandedId(null);
+      setFundingHistory([]);
+      fetchIdRef.current = null;
+      return;
+    }
+    setExpandedId(id);
+    setFundingHistory([]);
+    fetchIdRef.current = id;
+    if (onFetchFunding) {
+      setFundingLoading(true);
+      try {
+        const events = await onFetchFunding(id);
+        // Only apply if this is still the expanded position (prevents race).
+        if (fetchIdRef.current === id) {
+          setFundingHistory(events);
+        }
+      } catch {
+        if (fetchIdRef.current === id) {
+          setFundingHistory([]);
+        }
+      } finally {
+        if (fetchIdRef.current === id) {
+          setFundingLoading(false);
+        }
+      }
+    }
+  };
+
+  // Collapse if the expanded position disappears
+  useEffect(() => {
+    if (expandedId && !positions.find(p => p.id === expandedId)) {
+      setExpandedId(null);
+      setFundingHistory([]);
+    }
+  }, [positions, expandedId]);
 
   const handleClose = async () => {
     if (!closingId || !onClose) return;
@@ -83,8 +138,10 @@ const Positions: FC<PositionsProps> = ({ positions, onClose }) => {
           </thead>
           <tbody className="divide-y divide-gray-800">
             {positions.map((p) => (
-              <tr key={p.id} className="text-gray-100">
+              <Fragment key={p.id}>
+              <tr className={`text-gray-100 cursor-pointer hover:bg-gray-800/40 ${expandedId === p.id ? 'bg-gray-800/30' : ''}`} onClick={() => toggleExpand(p.id)}>
                 <td className="py-2 font-mono">
+                  <span className="mr-1 text-gray-500 text-xs">{expandedId === p.id ? '▼' : '▶'}</span>
                   {p.symbol}
                   {(p.rotation_count ?? 0) > 0 && (
                     <span className="ml-1.5 text-xs text-yellow-500" title={`Rotated ${p.rotation_count}x, last from ${p.last_rotated_from}${p.all_exchanges ? '. All: ' + p.all_exchanges.join(', ') : ''}`}>
@@ -94,12 +151,12 @@ const Positions: FC<PositionsProps> = ({ positions, onClose }) => {
                 </td>
                 <td className="py-2 text-sm">
                   <a href={tradingUrl(p.long_exchange, p.symbol)} target="_blank" rel="noopener noreferrer"
-                    className="text-green-400 hover:underline cursor-pointer">{p.long_exchange}</a>{' '}
+                    className="text-green-400 hover:underline cursor-pointer" onClick={e => e.stopPropagation()}>{p.long_exchange}</a>{' '}
                   <span className="font-mono text-xs">{p.long_size.toFixed(4)}@{formatPrice(p.long_entry)}</span>
                 </td>
                 <td className="py-2 text-sm">
                   <a href={tradingUrl(p.short_exchange, p.symbol)} target="_blank" rel="noopener noreferrer"
-                    className="text-red-400 hover:underline cursor-pointer">{p.short_exchange}</a>{' '}
+                    className="text-red-400 hover:underline cursor-pointer" onClick={e => e.stopPropagation()}>{p.short_exchange}</a>{' '}
                   <span className="font-mono text-xs">{p.short_size.toFixed(4)}@{formatPrice(p.short_entry)}</span>
                 </td>
                 <td className="py-2 text-right font-mono">{p.entry_spread.toFixed(1)} bps/h</td>
@@ -127,7 +184,7 @@ const Positions: FC<PositionsProps> = ({ positions, onClose }) => {
                 <td className="px-2 py-1">
                   {p.status === 'active' && onClose && (
                     <button
-                      onClick={() => setClosingId(p.id)}
+                      onClick={(e) => { e.stopPropagation(); setClosingId(p.id); }}
                       disabled={closing}
                       className="px-2 py-0.5 text-xs bg-red-600/20 text-red-400 rounded hover:bg-red-600/40 disabled:opacity-50"
                     >
@@ -136,6 +193,89 @@ const Positions: FC<PositionsProps> = ({ positions, onClose }) => {
                   )}
                 </td>
               </tr>
+              {expandedId === p.id && (
+                <tr className="bg-gray-800/50">
+                  <td colSpan={12} className="px-4 py-3">
+                    <div className="space-y-4 text-sm">
+                      {/* Section 1: Position Info */}
+                      <div>
+                        <div className="text-gray-400 text-xs mb-1">{t('pos.openTime')}: <span className="text-gray-200">{formatDateTime(p.created_at)}</span></div>
+                        <div className="text-gray-400 text-xs">
+                          {t('pos.unrealizedPnl')}:{' '}
+                          <span className={pnlColor(p.long_unrealized_pnl ?? 0)}>
+                            {t('pos.long')}: ${(p.long_unrealized_pnl ?? 0).toFixed(2)} ({p.long_exchange})
+                          </span>
+                          <span className="mx-2 text-gray-600">|</span>
+                          <span className={pnlColor(p.short_unrealized_pnl ?? 0)}>
+                            {t('pos.short')}: ${(p.short_unrealized_pnl ?? 0).toFixed(2)} ({p.short_exchange})
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Section 2: Funding History */}
+                      <div>
+                        <div className="text-gray-300 text-xs font-semibold mb-1">{t('pos.fundingHistory')}</div>
+                        {fundingLoading ? (
+                          <div className="text-gray-500 text-xs">{t('pos.loading')}</div>
+                        ) : fundingHistory.length === 0 ? (
+                          <div className="text-gray-500 text-xs">-</div>
+                        ) : (
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="text-gray-500 text-left">
+                                <th className="pr-4 pb-1">Time</th>
+                                <th className="pr-4 pb-1">Exchange</th>
+                                <th className="pr-4 pb-1">Side</th>
+                                <th className="pr-4 pb-1 text-right">Amount</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {fundingHistory.map((f, i) => (
+                                <tr key={i} className="text-gray-300">
+                                  <td className="pr-4 py-0.5 font-mono">{formatDateTime(f.time)}</td>
+                                  <td className="pr-4 py-0.5">{f.exchange}</td>
+                                  <td className="pr-4 py-0.5">{f.side}</td>
+                                  <td className={`pr-4 py-0.5 text-right font-mono ${pnlColor(f.amount)}`}>${f.amount.toFixed(4)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+
+                      {/* Section 3: Rotation History */}
+                      {p.rotation_history && p.rotation_history.length > 0 && (
+                        <div>
+                          <div className="text-gray-300 text-xs font-semibold mb-1">{t('pos.rotationHistory')}</div>
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="text-gray-500 text-left">
+                                <th className="pr-4 pb-1">Time</th>
+                                <th className="pr-4 pb-1">{t('pos.from')} → {t('pos.to')}</th>
+                                <th className="pr-4 pb-1">Leg</th>
+                                <th className="pr-4 pb-1 text-right">PnL</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {p.rotation_history.map((r, i) => (
+                                <tr key={i} className="text-gray-300">
+                                  <td className="pr-4 py-0.5 font-mono">{formatDateTime(r.timestamp)}</td>
+                                  <td className="pr-4 py-0.5">{r.from} → {r.to}</td>
+                                  <td className="pr-4 py-0.5">{r.leg_side}</td>
+                                  <td className={`pr-4 py-0.5 text-right font-mono ${pnlColor(r.pnl ?? 0)}`}>
+                                    {r.pnl != null ? `$${r.pnl.toFixed(2)}` : '-'}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </Fragment>
             ))}
             {positions.length === 0 && (
               <tr>

@@ -1046,7 +1046,35 @@ func (e *Engine) updateFundingCollected() {
 			continue // skip if either side failed
 		}
 
-		if fundingAccrued != 0 && fundingAccrued != pos.FundingCollected {
+		// Refresh unrealized PnL per leg from position data we already fetched.
+		// Only update if GetPosition succeeded; preserve last known value on failure.
+		longUPL := pos.LongUnrealizedPnL
+		shortUPL := pos.ShortUnrealizedPnL
+		if err1 == nil {
+			var acc float64
+			for _, p := range longPos {
+				if p.HoldSide == "long" && p.UnrealizedPL != "" {
+					upl, _ := strconv.ParseFloat(p.UnrealizedPL, 64)
+					acc += upl
+				}
+			}
+			longUPL = acc
+		}
+		if err2 == nil {
+			var acc float64
+			for _, p := range shortPos {
+				if p.HoldSide == "short" && p.UnrealizedPL != "" {
+					upl, _ := strconv.ParseFloat(p.UnrealizedPL, 64)
+					acc += upl
+				}
+			}
+			shortUPL = acc
+		}
+
+		uplChanged := longUPL != pos.LongUnrealizedPnL || shortUPL != pos.ShortUnrealizedPnL
+		fundingChanged := fundingAccrued != 0 && fundingAccrued != pos.FundingCollected
+
+		if fundingChanged || uplChanged {
 			nextFunding := e.computeNextFunding(pos.Symbol, pos.LongExchange, pos.ShortExchange)
 
 			// Re-read position from Redis and update atomically to avoid
@@ -1055,10 +1083,14 @@ func (e *Engine) updateFundingCollected() {
 				if fresh.Status != models.StatusActive {
 					return false // position is closing/closed, skip update
 				}
-				fresh.FundingCollected = fundingAccrued
-				if !fresh.NextFunding.IsZero() && time.Now().UTC().After(fresh.NextFunding) {
-					fresh.NextFunding = nextFunding
+				if fundingChanged {
+					fresh.FundingCollected = fundingAccrued
+					if !fresh.NextFunding.IsZero() && time.Now().UTC().After(fresh.NextFunding) {
+						fresh.NextFunding = nextFunding
+					}
 				}
+				fresh.LongUnrealizedPnL = longUPL
+				fresh.ShortUnrealizedPnL = shortUPL
 				return true
 			}); err != nil {
 				e.log.Error("trackFunding: failed to save position %s: %v", pos.ID, err)
