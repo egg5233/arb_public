@@ -213,10 +213,12 @@ func (s *Server) handleGetPositionFunding(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// Sort by time descending, then by side for stable ordering within same timestamp.
+	// Sort by time descending (truncated to hour), then by side for stable ordering.
 	sort.Slice(events, func(i, j int) bool {
-		if !events[i].Time.Equal(events[j].Time) {
-			return events[i].Time.After(events[j].Time)
+		ti := events[i].Time.Truncate(time.Hour)
+		tj := events[j].Time.Truncate(time.Hour)
+		if !ti.Equal(tj) {
+			return ti.After(tj)
 		}
 		return events[i].Side < events[j].Side
 	})

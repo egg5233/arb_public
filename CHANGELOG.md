@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.18.9] - 2026-03-28
+
+### Fixed
+- **Funding history ordering**: Truncate timestamps to hour before comparing so different exchanges' sub-second differences don't break tiebreaker sort
+
 ## [0.18.8] - 2026-03-28
 
 ### Fixed
