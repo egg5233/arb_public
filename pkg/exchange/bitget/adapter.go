@@ -48,7 +48,9 @@ func (a *Adapter) CheckPermissions() exchange.PermissionResult {
 		if err != nil {
 			return exchange.PermUnknown
 		}
-		var body struct{ Code string `json:"code"` }
+		var body struct {
+			Code string `json:"code"`
+		}
 		if json.Unmarshal([]byte(resp), &body) == nil && body.Code == "40009" {
 			return exchange.PermDenied
 		}
@@ -994,6 +996,7 @@ func (a *Adapter) GetFundingFees(symbol string, since time.Time) ([]exchange.Fun
 			Bills []struct {
 				Amount string `json:"amount"`
 				CTime  string `json:"cTime"`
+				Symbol string `json:"symbol"`
 			} `json:"bills"`
 		} `json:"data"`
 	}
@@ -1003,6 +1006,10 @@ func (a *Adapter) GetFundingFees(symbol string, since time.Time) ([]exchange.Fun
 
 	out := make([]exchange.FundingPayment, 0, len(resp.Data.Bills))
 	for _, b := range resp.Data.Bills {
+		// Filter: only include bills matching the requested symbol.
+		if b.Symbol != "" && b.Symbol != symbol {
+			continue
+		}
 		amt, _ := strconv.ParseFloat(b.Amount, 64)
 		ms, _ := strconv.ParseInt(b.CTime, 10, 64)
 		out = append(out, exchange.FundingPayment{
@@ -1030,16 +1037,16 @@ func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 		Code string `json:"code"`
 		Data struct {
 			List []struct {
-				NetProfit    string `json:"netProfit"`
-				Pnl          string `json:"pnl"`
-				TotalFunding string `json:"totalFunding"`
-				OpenFee      string `json:"openFee"`
-				CloseFee     string `json:"closeFee"`
-				OpenAvgPrice string `json:"openAvgPrice"`
+				NetProfit     string `json:"netProfit"`
+				Pnl           string `json:"pnl"`
+				TotalFunding  string `json:"totalFunding"`
+				OpenFee       string `json:"openFee"`
+				CloseFee      string `json:"closeFee"`
+				OpenAvgPrice  string `json:"openAvgPrice"`
 				CloseAvgPrice string `json:"closeAvgPrice"`
 				CloseTotalPos string `json:"closeTotalPos"`
-				HoldSide     string `json:"holdSide"`
-				UTime        string `json:"utime"`
+				HoldSide      string `json:"holdSide"`
+				UTime         string `json:"utime"`
 			} `json:"list"`
 		} `json:"data"`
 	}

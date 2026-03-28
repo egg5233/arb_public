@@ -172,38 +172,71 @@ func (s *Server) handleGetPositionFunding(w http.ResponseWriter, r *http.Request
 
 	var events []fundingEvent
 
-	// Query funding from all exchanges that were ever part of this position
-	// (including rotated-away legs), not just the current pair.
-	queried := make(map[string]bool) // avoid duplicate queries
-	allExchanges := []struct {
-		name string
-		side string
-	}{
-		{pos.LongExchange, "long"},
-		{pos.ShortExchange, "short"},
-	}
-	// Add rotated-away exchanges from rotation history.
-	for _, rot := range pos.RotationHistory {
-		allExchanges = append(allExchanges, struct {
-			name string
-			side string
-		}{rot.From, rot.LegSide})
+	// Build time-bounded leg windows so we only include funding payments
+	// that occurred while THIS position held each leg. Without this,
+	// account-wide GetFundingFees can include payments from other positions
+	// on the same symbol/exchange.
+	type legWindow struct {
+		name  string
+		side  string
+		start time.Time
+		end   time.Time // zero = still active
 	}
 
-	for _, leg := range allExchanges {
-		if queried[leg.name+":"+leg.side] {
+	var legs []legWindow
+
+	// Current legs: active from creation (or last rotation) until now.
+	longStart, shortStart := pos.CreatedAt, pos.CreatedAt
+	// Walk rotation history chronologically to find when current legs started.
+	for _, rot := range pos.RotationHistory {
+		if rot.LegSide == "long" {
+			longStart = rot.Timestamp
+		} else {
+			shortStart = rot.Timestamp
+		}
+	}
+	legs = append(legs, legWindow{pos.LongExchange, "long", longStart, time.Time{}})
+	legs = append(legs, legWindow{pos.ShortExchange, "short", shortStart, time.Time{}})
+
+	// Rotated-away legs: active from their start until the rotation timestamp.
+	// Walk rotations to reconstruct each previous leg's window.
+	prevLongExch, prevShortExch := pos.LongExchange, pos.ShortExchange
+	prevLongStart, prevShortStart := pos.CreatedAt, pos.CreatedAt
+	for _, rot := range pos.RotationHistory {
+		if rot.LegSide == "long" {
+			legs = append(legs, legWindow{prevLongExch, "long", prevLongStart, rot.Timestamp})
+			prevLongExch = rot.To
+			prevLongStart = rot.Timestamp
+		} else {
+			legs = append(legs, legWindow{prevShortExch, "short", prevShortStart, rot.Timestamp})
+			prevShortExch = rot.To
+			prevShortStart = rot.Timestamp
+		}
+	}
+
+	// Deduplicate: if a current leg was never rotated, it appears twice.
+	// Keep the widest window (start=CreatedAt, end=zero).
+	seen := make(map[string]bool)
+	for _, leg := range legs {
+		key := leg.name + ":" + leg.side
+		if seen[key] {
 			continue
 		}
-		queried[leg.name+":"+leg.side] = true
+		seen[key] = true
+
 		exch, ok := s.exchanges[leg.name]
 		if !ok {
 			continue
 		}
-		fees, err := exch.GetFundingFees(pos.Symbol, pos.CreatedAt)
+		fees, err := exch.GetFundingFees(pos.Symbol, leg.start)
 		if err != nil {
 			continue
 		}
 		for _, f := range fees {
+			// Filter by end time if this was a rotated-away leg.
+			if !leg.end.IsZero() && f.Time.After(leg.end) {
+				continue
+			}
 			events = append(events, fundingEvent{
 				Exchange: leg.name,
 				Side:     leg.side,

@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.2] - 2026-03-28
+
+### Fixed
+- **Bitget `GetFundingFees` symbol filter**: Bitget's bill API (`/api/v2/mix/account/bill`) returns bills from all symbols despite the `symbol` query param. Added `symbol` field parsing from bill response and filter to only include bills matching the requested symbol. This caused dashboard funding history totals to not match `funding_collected` (e.g. showing 4.01 USDT instead of correct 0.99 USDT for Bitget side)
+- **Funding history time-bounded leg windows**: `handleGetPositionFunding` now scopes each leg's funding query to the time window the position actually held that leg (start/end from rotation timestamps), preventing account-wide funding payments from other positions leaking into the history
+
 ## [0.19.1] - 2026-03-28
 
 ### Fixed
