@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.21.1] - 2026-03-29
+## [0.21.2] - 2026-03-29
 
 ### Added
 - **Spot-Futures Phase 3a — Manual entry execution** (`POST /api/spot/open`): Supports both directions (borrow-sell+long and buy-spot+short), market IOC orders, fill confirmation, rollback on failure. New `internal/spotengine/execution.go` with `ManualOpen` method. Engine caches latest discovery results for lookups; `SetSpotOpenHandler` callback registered in `cmd/main.go`
