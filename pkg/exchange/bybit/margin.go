@@ -98,20 +98,22 @@ func (a *Adapter) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (s
 // ---------------------------------------------------------------------------
 
 // GetMarginInterestRate returns the current borrow interest rate for a coin
-// from the collateral-info endpoint.
+// via the crypto-loan loanable-data endpoint (public, no auth needed).
+// Returns the actual flexible annualized rate, not the free-quota-adjusted rate.
 func (a *Adapter) GetMarginInterestRate(coin string) (*exchange.MarginInterestRate, error) {
 	params := map[string]string{
 		"currency": coin,
 	}
-	result, err := a.client.Get("/v5/account/collateral-info", params)
+	result, err := a.client.Get("/v5/crypto-loan-common/loanable-data", params)
 	if err != nil {
 		return nil, fmt.Errorf("bybit GetMarginInterestRate: %w", err)
 	}
 
 	var resp struct {
 		List []struct {
-			Currency         string `json:"currency"`
-			HourlyBorrowRate string `json:"hourlyBorrowRate"`
+			Currency                       string `json:"currency"`
+			FlexibleAnnualizedInterestRate string `json:"flexibleAnnualizedInterestRate"`
+			FlexibleBorrowable             bool   `json:"flexibleBorrowable"`
 		} `json:"list"`
 	}
 	if err := json.Unmarshal(result, &resp); err != nil {
@@ -120,15 +122,19 @@ func (a *Adapter) GetMarginInterestRate(coin string) (*exchange.MarginInterestRa
 
 	for _, item := range resp.List {
 		if strings.EqualFold(item.Currency, coin) {
-			hourly, _ := strconv.ParseFloat(item.HourlyBorrowRate, 64)
+			if !item.FlexibleBorrowable {
+				return nil, fmt.Errorf("bybit GetMarginInterestRate: %s does not support flexible borrowing", coin)
+			}
+			annualRate, _ := strconv.ParseFloat(item.FlexibleAnnualizedInterestRate, 64)
+			hourly := annualRate / 8760 // annualized → hourly
 			return &exchange.MarginInterestRate{
 				Coin:       coin,
 				HourlyRate: hourly,
-				DailyRate:  hourly * 24,
+				DailyRate:  annualRate / 365,
 			}, nil
 		}
 	}
-	return nil, fmt.Errorf("bybit GetMarginInterestRate: currency %s not found in response", coin)
+	return nil, fmt.Errorf("bybit GetMarginInterestRate: currency %s not found", coin)
 }
 
 // ---------------------------------------------------------------------------

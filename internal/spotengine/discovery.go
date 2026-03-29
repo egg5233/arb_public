@@ -15,15 +15,15 @@ import (
 
 // SpotArbOpportunity represents a scored spot-futures arbitrage opportunity.
 type SpotArbOpportunity struct {
-	Symbol     string  `json:"symbol"`
-	BaseCoin   string  `json:"base_coin"`
-	Exchange   string  `json:"exchange"`
-	Direction  string  `json:"direction"` // "borrow_sell_long" or "buy_spot_short"
-	FundingAPR float64 `json:"funding_apr"`
-	BorrowAPR  float64 `json:"borrow_apr"` // 0 for Direction B
-	FeeAPR     float64 `json:"fee_apr"`
-	NetAPR     float64 `json:"net_apr"`
-	Source     string  `json:"source"`
+	Symbol     string    `json:"symbol"`
+	BaseCoin   string    `json:"base_coin"`
+	Exchange   string    `json:"exchange"`
+	Direction  string    `json:"direction"` // "borrow_sell_long" or "buy_spot_short"
+	FundingAPR float64   `json:"funding_apr"`
+	BorrowAPR  float64   `json:"borrow_apr"` // 0 for Direction B
+	FeeAPR     float64   `json:"fee_apr"`
+	NetAPR     float64   `json:"net_apr"`
+	Source     string    `json:"source"`
 	Timestamp  time.Time `json:"timestamp"`
 }
 
@@ -111,24 +111,28 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 
 		// Check exchange is in allowed list (if configured).
 		if len(allowedExchanges) > 0 && !allowedExchanges[exchName] {
+			e.log.Info("spot discovery: FILTERED %s on %s — exchange not in allowed list", item.Symbol, exchName)
 			continue
 		}
 
 		// Check exchange implements SpotMarginExchange.
 		smExch, ok := e.spotMargin[exchName]
 		if !ok {
+			e.log.Info("spot discovery: FILTERED %s on %s — no SpotMarginExchange support", item.Symbol, exchName)
 			continue
 		}
 
 		// Determine direction from Portfolio field.
 		direction, baseCoin := parsePortfolio(item.Symbol, item.Portfolio)
 		if direction == "" || baseCoin == "" {
+			e.log.Info("spot discovery: FILTERED %s on %s — cannot parse portfolio: %q", item.Symbol, exchName, item.Portfolio)
 			continue
 		}
 
 		// Parse funding APR from the APR field (e.g. "43.21%").
 		fundingAPR := parsePercent(item.APR)
 		if fundingAPR <= 0 {
+			e.log.Info("spot discovery: FILTERED %s on %s — invalid funding APR: %q", item.Symbol, exchName, item.APR)
 			continue
 		}
 
@@ -137,15 +141,12 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 		if direction == "borrow_sell_long" {
 			rate, err := e.getCachedBorrowRate(exchName, baseCoin, smExch)
 			if err != nil {
-				e.log.Warn("spot discovery: borrow rate %s/%s: %v", exchName, baseCoin, err)
+				e.log.Info("spot discovery: FILTERED %s on %s — borrow unavailable: %v", item.Symbol, exchName, err)
 				continue
 			}
 			borrowAPR = rate.HourlyRate * 24 * 365
 
 			// Filter: borrow too expensive.
-			if borrowAPR > e.cfg.SpotFuturesMaxBorrowAPR {
-				continue
-			}
 		}
 
 		// Calculate fee APR (4 taker legs, annualized over assumed hold).
@@ -161,6 +162,9 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 
 		// Filter: net yield too low.
 		if netAPR < e.cfg.SpotFuturesMinNetYieldAPR {
+			e.log.Info("spot discovery: FILTERED %s on %s — net APR %.1f%% < min %.1f%% (funding=%.1f%% borrow=%.1f%% fees=%.1f%%)",
+				item.Symbol, exchName, netAPR*100, e.cfg.SpotFuturesMinNetYieldAPR*100,
+				fundingAPR*100, borrowAPR*100, feeAPR*100)
 			continue
 		}
 
@@ -282,7 +286,7 @@ func (e *SpotEngine) logDiscoveryResults(opps []SpotArbOpportunity) {
 		if opp.Direction == "borrow_sell_long" {
 			borrowStr = fmt.Sprintf("%.1f%%", opp.BorrowAPR*100)
 		}
-		e.log.Info("  [%d] %s on %s (%s) | Funding: %.1f%% | Borrow: %s | Fees: %.1f%% | Net: %.1f%% APR",
+		e.log.Info("  [%d] %s on %s (%s) | Funding: %.1f%% | Interest: %s | Fees: %.1f%% | Net: %.1f%% APR",
 			i+1, opp.Symbol, opp.Exchange, opp.Direction,
 			opp.FundingAPR*100, borrowStr, opp.FeeAPR*100, opp.NetAPR*100)
 	}
