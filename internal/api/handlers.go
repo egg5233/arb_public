@@ -378,9 +378,10 @@ type configEntryResponse struct {
 }
 
 type configExitResponse struct {
-	DepthTimeoutSec         int `json:"depth_timeout_sec"`
-	SpreadReversalTolerance int `json:"spread_reversal_tolerance"`
-	ZeroSpreadTolerance     int `json:"zero_spread_tolerance"`
+	DepthTimeoutSec         int  `json:"depth_timeout_sec"`
+	EnableSpreadReversal    bool `json:"enable_spread_reversal"`
+	SpreadReversalTolerance int  `json:"spread_reversal_tolerance"`
+	ZeroSpreadTolerance     int  `json:"zero_spread_tolerance"`
 }
 
 type configRotationResponse struct {
@@ -481,6 +482,7 @@ func (s *Server) buildConfigResponse() configResponse {
 			},
 			Exit: configExitResponse{
 				DepthTimeoutSec:         s.cfg.ExitDepthTimeoutSec,
+				EnableSpreadReversal:    s.cfg.EnableSpreadReversal,
 				SpreadReversalTolerance: s.cfg.SpreadReversalTolerance,
 				ZeroSpreadTolerance:     s.cfg.ZeroSpreadTolerance,
 			},
@@ -615,9 +617,10 @@ type entryUpdate struct {
 }
 
 type exitUpdate struct {
-	DepthTimeoutSec         *int `json:"depth_timeout_sec"`
-	SpreadReversalTolerance *int `json:"spread_reversal_tolerance"`
-	ZeroSpreadTolerance     *int `json:"zero_spread_tolerance"`
+	DepthTimeoutSec         *int  `json:"depth_timeout_sec"`
+	EnableSpreadReversal    *bool `json:"enable_spread_reversal"`
+	SpreadReversalTolerance *int  `json:"spread_reversal_tolerance"`
+	ZeroSpreadTolerance     *int  `json:"zero_spread_tolerance"`
 }
 
 type rotationUpdate struct {
@@ -771,6 +774,9 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		if x := st.Exit; x != nil {
 			if x.DepthTimeoutSec != nil && *x.DepthTimeoutSec > 0 {
 				s.cfg.ExitDepthTimeoutSec = *x.DepthTimeoutSec
+			}
+			if x.EnableSpreadReversal != nil {
+				s.cfg.EnableSpreadReversal = *x.EnableSpreadReversal
 			}
 			if x.SpreadReversalTolerance != nil && *x.SpreadReversalTolerance >= 0 {
 				s.cfg.SpreadReversalTolerance = *x.SpreadReversalTolerance
@@ -959,6 +965,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"margin_safety_multiplier":      strconv.FormatFloat(snapshot.Risk.MarginSafetyMultiplier, 'f', -1, 64),
 		"risk_monitor_interval_sec":     strconv.Itoa(snapshot.Risk.RiskMonitorIntervalSec),
 		"exit_depth_timeout_sec":        strconv.Itoa(snapshot.Strategy.Exit.DepthTimeoutSec),
+		"enable_spread_reversal":        strconv.FormatBool(snapshot.Strategy.Exit.EnableSpreadReversal),
 		"spread_reversal_tolerance":     strconv.Itoa(snapshot.Strategy.Exit.SpreadReversalTolerance),
 		"zero_spread_tolerance":         strconv.Itoa(snapshot.Strategy.Exit.ZeroSpreadTolerance),
 		"rotation_threshold_bps":        strconv.FormatFloat(snapshot.Strategy.Rotation.ThresholdBPS, 'f', -1, 64),

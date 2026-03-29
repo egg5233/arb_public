@@ -748,6 +748,21 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
           unit="sec"
           onChange={(v) => handleChange(['strategy', 'exit', 'depth_timeout_sec'], v)}
         />
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.field.enableSpreadReversal')}</label>
+            <Tooltip text={t('cfg.desc.enableSpreadReversal')} />
+          </div>
+          <div className="flex items-center gap-3">
+            <ToggleSwitch
+              on={getByPath(config, ['strategy', 'exit', 'enable_spread_reversal']) === true}
+              onChange={(v) => handleBoolChange(['strategy', 'exit', 'enable_spread_reversal'], v)}
+            />
+            <span className={`text-sm font-semibold ${getByPath(config, ['strategy', 'exit', 'enable_spread_reversal']) ? 'text-green-400' : 'text-red-400'}`}>
+              {getByPath(config, ['strategy', 'exit', 'enable_spread_reversal']) ? 'ON' : 'OFF'}
+            </span>
+          </div>
+        </div>
         <NumberField
           label={t('cfg.field.spreadReversalTolerance')}
           desc={t('cfg.desc.spreadReversalTolerance')}

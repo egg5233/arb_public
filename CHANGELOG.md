@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.21.4] - 2026-03-29
+
+### Added
+- **EnableSpreadReversal toggle**: Spread reversal exit check now has a dashboard-controllable on/off switch (default: on). Pre-settlement timer also respects the toggle
+
 ## [0.21.3] - 2026-03-29
 
 ### Added

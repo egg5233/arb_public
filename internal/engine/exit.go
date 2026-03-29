@@ -160,33 +160,35 @@ func (e *Engine) checkExitsV2() {
 		// Safety: spread reversal triggers exit (with optional tolerance).
 		// This check is BEFORE the min-hold gate — a reversed spread is a safety
 		// measure that must not be blocked by the min-hold requirement.
-		if reversed, reason := e.checkSpreadReversal(pos); reversed {
-			tolerance := e.cfg.SpreadReversalTolerance
-			if tolerance > 0 && pos.ReversalCount < tolerance {
-				pos.ReversalCount++
+		if e.cfg.EnableSpreadReversal {
+			if reversed, reason := e.checkSpreadReversal(pos); reversed {
+				tolerance := e.cfg.SpreadReversalTolerance
+				if tolerance > 0 && pos.ReversalCount < tolerance {
+					pos.ReversalCount++
+					if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+						fresh.ReversalCount = pos.ReversalCount
+						return true
+					}); err != nil {
+						e.log.Error("failed to update reversal count for %s: %v", pos.ID, err)
+					}
+					e.log.Info("exit check: %s — %s (reversal %d/%d, tolerating)", pos.ID, reason, pos.ReversalCount, tolerance)
+					e.schedulePreSettlementCheck(pos)
+					continue
+				}
+				e.log.Info("exit check: %s — %s (reversal %d, exiting)", pos.ID, reason, pos.ReversalCount+1)
+				e.spawnExitGoroutine(pos, reason)
+				continue
+			} else if pos.ReversalCount > 0 {
+				// Spread recovered — reset reversal counter so tolerance resets.
+				pos.ReversalCount = 0
 				if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
-					fresh.ReversalCount = pos.ReversalCount
+					fresh.ReversalCount = 0
 					return true
 				}); err != nil {
-					e.log.Error("failed to update reversal count for %s: %v", pos.ID, err)
+					e.log.Error("failed to reset reversal count for %s: %v", pos.ID, err)
 				}
-				e.log.Info("exit check: %s — %s (reversal %d/%d, tolerating)", pos.ID, reason, pos.ReversalCount, tolerance)
-				e.schedulePreSettlementCheck(pos)
-				continue
+				e.log.Info("exit check: %s — spread recovered, reversal count reset", pos.ID)
 			}
-			e.log.Info("exit check: %s — %s (reversal %d, exiting)", pos.ID, reason, pos.ReversalCount+1)
-			e.spawnExitGoroutine(pos, reason)
-			continue
-		} else if pos.ReversalCount > 0 {
-			// Spread recovered — reset reversal counter so tolerance resets.
-			pos.ReversalCount = 0
-			if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
-				fresh.ReversalCount = 0
-				return true
-			}); err != nil {
-				e.log.Error("failed to reset reversal count for %s: %v", pos.ID, err)
-			}
-			e.log.Info("exit check: %s — spread recovered, reversal count reset", pos.ID)
 		}
 
 		// Zero-spread safety: exit if both legs have equal funding rate for too long.
@@ -1212,6 +1214,11 @@ func (e *Engine) schedulePreSettlementCheck(pos *models.ArbitragePosition) {
 
 		select {
 		case <-timer.C:
+			// Re-check toggle — user may have disabled reversal since scheduling.
+			if !e.cfg.EnableSpreadReversal {
+				return
+			}
+
 			fresh, err := e.db.GetPosition(pos.ID)
 			if err != nil || fresh.Status != models.StatusActive {
 				return
