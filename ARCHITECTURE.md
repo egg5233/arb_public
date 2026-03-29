@@ -552,8 +552,6 @@ Implemented by: Binance, Bybit, OKX, Gate.io (unified `/unified/*` cross margin 
 
 **Gate.io unified account**: On startup, the adapter detects unified account mode via `GET /unified/unified_mode`. In unified mode, `GetFuturesBalance` reads from `/unified/accounts` instead of `/futures/usdt/accounts`, and `TransferToFutures` is a no-op (funds are shared). Falls back to classic mode if detection fails.
 
-**Binance Portfolio Margin (PM)**: On startup, the adapter auto-detects PM accounts via `/sapi/v1/account/apiRestrictions` (`enablePortfolioMarginTrading`). PM accounts use a dual-client approach: `client` points to `papi.binance.com` for all signed endpoints (orders, positions, balance, income), while `fapiClient` stays on `fapi.binance.com` for public endpoints (depth, exchangeInfo, premiumIndex, fundingInfo). Path remapping converts `/fapi/v1/*` → `/papi/v1/um/*` with special cases for balance, conditional orders, and listenKey. PM stop-loss uses `strategyType`/`strategyId` instead of `algoType`/`algoId`. WS private connects to `fstream.binance.com/pm/ws/` and handles `CONDITIONAL_ORDER_TRADE_UPDATE` events. Classic users are completely unaffected — all PM logic is gated behind `isPM`.
-
 ### 2.4 Risk Management
 
 #### Pre-Trade: 11-Point Risk Approval

@@ -50,9 +50,6 @@ func (b *Adapter) connectPrivateWS() error {
 	b.listenKey = listenKey
 
 	wsURL := "wss://fstream.binance.com/ws/" + listenKey
-	if b.isPM {
-		wsURL = "wss://fstream.binance.com/pm/ws/" + listenKey
-	}
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		return fmt.Errorf("private ws dial: %w", err)
@@ -101,8 +98,7 @@ func (b *Adapter) handlePrivateMessage(msg []byte) {
 		return
 	}
 
-	switch base.EventType {
-	case "ORDER_TRADE_UPDATE":
+	if base.EventType == "ORDER_TRADE_UPDATE" {
 		var evt struct {
 			Order struct {
 				Symbol        string `json:"s"`
@@ -142,52 +138,11 @@ func (b *Adapter) handlePrivateMessage(msg []byte) {
 		if upd.Status == "filled" && upd.FilledVolume > 0 && b.orderCallback != nil {
 			b.orderCallback(upd)
 		}
-
-	case "CONDITIONAL_ORDER_TRADE_UPDATE":
-		// PM accounts emit this when a conditional order (SL/TP) triggers.
-		// The payload uses "so" for the strategy order details.
-		var evt struct {
-			StrategyOrder struct {
-				Symbol      string `json:"s"`
-				Side        string `json:"S"`
-				OrderType   string `json:"o"`
-				OrderStatus string `json:"X"` // NEW, TRIGGERED, CANCELED, etc.
-				StrategyID  int64  `json:"si"`
-				OrderID     int64  `json:"i"`
-				AvgPrice    string `json:"ap"`
-				FilledQty   string `json:"z"`
-				ReduceOnly  bool   `json:"R"`
-			} `json:"so"`
-		}
-		if json.Unmarshal(msg, &evt) != nil {
-			return
-		}
-
-		so := evt.StrategyOrder
-		strategyID := strconv.FormatInt(so.StrategyID, 10)
-		filledVol, _ := strconv.ParseFloat(so.FilledQty, 64)
-		avgPrice, _ := strconv.ParseFloat(so.AvgPrice, 64)
-		status := strings.ToLower(so.OrderStatus)
-
-		wsPrivLog.Info("conditional order update: %s %s strategyId=%s status=%s filled=%.6f avg=%.8f",
-			so.Symbol, so.Side, strategyID, status, filledVol, avgPrice)
-
-		// Fire callback on TRIGGERED status so SL detection can match by strategyId.
-		if (status == "triggered" || status == "filled") && filledVol > 0 && b.orderCallback != nil {
-			b.orderCallback(exchange.OrderUpdate{
-				OrderID:      strategyID,
-				Status:       "filled",
-				FilledVolume: filledVol,
-				AvgPrice:     avgPrice,
-				Symbol:       so.Symbol,
-				ReduceOnly:   true, // conditional SL/TP is always reduce-only
-			})
-		}
 	}
 }
 
 func (b *Adapter) createListenKey() (string, error) {
-	body, err := b.client.Post(b.remapPath("/fapi/v1/listenKey"), nil)
+	body, err := b.client.Post("/fapi/v1/listenKey", nil)
 	if err != nil {
 		return "", err
 	}
@@ -201,6 +156,6 @@ func (b *Adapter) createListenKey() (string, error) {
 }
 
 func (b *Adapter) keepaliveListenKey() error {
-	_, err := b.client.Put(b.remapPath("/fapi/v1/listenKey"), nil)
+	_, err := b.client.Put("/fapi/v1/listenKey", nil)
 	return err
 }

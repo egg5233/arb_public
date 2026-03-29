@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.20.1] - 2026-03-29
+
+### Reverted — Binance Portfolio Margin (PM)
+- **Removed PM auto-detection, papi path remapping, PM balance parsing, PM conditional order handling, `CONDITIONAL_ORDER_TRADE_UPDATE` WS handler** — Binance adapter now uses classic fapi endpoints only. PM mode was too complex with limited benefit (no TP/SL in standard PM, different API surface)
+- Removed `doc/EXCHANGEAPI_BINANCE_PM.md` and `cmd/testpm/`
+- **Gate.io PM support retained** — `SetMarginMode`/`SetLeverage` no-op for portfolio mode still works
+
 ## [0.20.0] - 2026-03-29
 
 ### Added — Binance Portfolio Margin (PM) Support
