@@ -161,14 +161,6 @@ func (e *Engine) checkExitsV2() {
 		// This check is BEFORE the min-hold gate — a reversed spread is a safety
 		// measure that must not be blocked by the min-hold requirement.
 		if reversed, reason := e.checkSpreadReversal(pos); reversed {
-			// Also reset zero-spread counter when spread is reversed (not zero).
-			if pos.ZeroSpreadCount > 0 {
-				pos.ZeroSpreadCount = 0
-				_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
-					fresh.ZeroSpreadCount = 0
-					return true
-				})
-			}
 			tolerance := e.cfg.SpreadReversalTolerance
 			if tolerance > 0 && pos.ReversalCount < tolerance {
 				pos.ReversalCount++
@@ -179,7 +171,6 @@ func (e *Engine) checkExitsV2() {
 					e.log.Error("failed to update reversal count for %s: %v", pos.ID, err)
 				}
 				e.log.Info("exit check: %s — %s (reversal %d/%d, tolerating)", pos.ID, reason, pos.ReversalCount, tolerance)
-				e.schedulePreSettlementCheck(pos)
 				continue
 			}
 			e.log.Info("exit check: %s — %s (reversal %d, exiting)", pos.ID, reason, pos.ReversalCount+1)
@@ -1176,116 +1167,6 @@ func (e *Engine) checkZeroSpread(pos *models.ArbitragePosition) (bool, string) {
 	}
 
 	return false, ""
-}
-
-// schedulePreSettlementCheck sets a timer to check spread reversal just before
-// the next funding settlement. If the position still has a reversed spread and
-// ReversalCount >= 1, it triggers immediate exit to avoid paying another negative
-// funding fee.
-//
-// NOTE: This intentionally does NOT call checkSpreadReversal because that function
-// has a ±10min settlement guard that would always return false at T-10s.
-// Instead it performs an inline spread calculation.
-func (e *Engine) schedulePreSettlementCheck(pos *models.ArbitragePosition) {
-	if pos.NextFunding.IsZero() {
-		return
-	}
-
-	// Dedup: don't schedule if a timer is already pending for this position.
-	e.preSettleMu.Lock()
-	if e.preSettleActive[pos.ID] {
-		e.preSettleMu.Unlock()
-		return
-	}
-	e.preSettleActive[pos.ID] = true
-	e.preSettleMu.Unlock()
-
-	checkTime := pos.NextFunding.Add(-10 * time.Second)
-	delay := time.Until(checkTime)
-	if delay <= 0 {
-		e.preSettleMu.Lock()
-		delete(e.preSettleActive, pos.ID)
-		e.preSettleMu.Unlock()
-		return // too late, settlement already imminent or past
-	}
-
-	go func() {
-		defer func() {
-			e.preSettleMu.Lock()
-			delete(e.preSettleActive, pos.ID)
-			e.preSettleMu.Unlock()
-		}()
-
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-
-		select {
-		case <-timer.C:
-			// Re-read position to get fresh state
-			fresh, err := e.db.GetPosition(pos.ID)
-			if err != nil || fresh.Status != models.StatusActive {
-				return
-			}
-
-			// Skip if exit already running
-			e.exitMu.Lock()
-			running := e.exitActive[fresh.ID]
-			e.exitMu.Unlock()
-			if running {
-				return
-			}
-
-			// Only act if position has been flagged with at least one reversal
-			if fresh.ReversalCount == 0 {
-				return
-			}
-
-			// Inline spread check — bypasses the ±10min settlement guard in
-			// checkSpreadReversal so we can evaluate right before settlement.
-			longExch, ok := e.exchanges[fresh.LongExchange]
-			if !ok {
-				return
-			}
-			shortExch, ok := e.exchanges[fresh.ShortExchange]
-			if !ok {
-				return
-			}
-			longRate, err := longExch.GetFundingRate(fresh.Symbol)
-			if err != nil {
-				e.log.Error("pre-settlement check: %s — failed to get long rate: %v", fresh.ID, err)
-				return
-			}
-			shortRate, err := shortExch.GetFundingRate(fresh.Symbol)
-			if err != nil {
-				e.log.Error("pre-settlement check: %s — failed to get short rate: %v", fresh.ID, err)
-				return
-			}
-
-			longIntervalH := longRate.Interval.Hours()
-			if longIntervalH <= 0 {
-				longIntervalH = 8
-			}
-			shortIntervalH := shortRate.Interval.Hours()
-			if shortIntervalH <= 0 {
-				shortIntervalH = 8
-			}
-			longBpsH := longRate.Rate * 10000 / longIntervalH
-			shortBpsH := shortRate.Rate * 10000 / shortIntervalH
-			currentSpreadBpsH := shortBpsH - longBpsH
-
-			if fresh.EntrySpread > 0 && currentSpreadBpsH >= 0 {
-				e.log.Info("pre-settlement check: %s — spread recovered (%.4f bps/h), no action needed", fresh.ID, currentSpreadBpsH)
-				return
-			}
-
-			reason := fmt.Sprintf("pre-settlement reversal: entry=%.4f bps/h current=%.4f bps/h", fresh.EntrySpread, currentSpreadBpsH)
-			e.log.Info("pre-settlement check: %s — %s (ReversalCount=%d, exiting before settlement)", fresh.ID, reason, fresh.ReversalCount)
-			e.spawnExitGoroutine(fresh, reason)
-
-		case <-e.stopCh:
-			return
-		}
-	}()
 }
 
 // reducePosition partially closes both legs of a position by the given fraction,

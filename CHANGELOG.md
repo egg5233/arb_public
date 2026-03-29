@@ -11,10 +11,9 @@ All notable changes to this project will be documented in this file.
 - **Dashboard UI**: Added zero-spread tolerance config field with i18n (en + zh-TW)
 
 ### Fixed
-- **Spread reversal exit blocked by min-hold gate**: Moved safety checks (spread reversal, zero-spread) before the min-hold gate in `checkExitsV2` so they are never blocked by continuously-advancing `NextFunding`
-- **Pre-settlement timer was no-op**: Replaced `checkSpreadReversal` call (which has ±10min settlement guard) with inline spread calculation that works at T-10s
-- **Pre-settlement timer dedup**: Added `preSettleActive` map to prevent multiple timers for the same position
-- **ZeroSpreadCount stale on reversal**: Reset zero-spread counter when spread reversal branch fires
+- **Spread reversal exit blocked by min-hold gate**: Moved spread reversal check before the min-hold gate in `checkExitsV2` so it is never blocked by continuously-advancing `NextFunding`
+- **Simplified reversal logic**: Removed pre-settlement timer, kept original tolerance + reset logic
+- **Login mobile UX**: Removed `autoFocus` to match byreal login style, use placeholder instead
 - **Spot-futures discovery: OKX unborrowable coins passing filters**: OKX interest rate API returns rates for coins that can't actually be borrowed (e.g. SENT). Added borrowability verification via `GetMarginBalance(MaxBorrowable > 0)` for Direction A. For Direction B (buy spot + short), removed over-aggressive margin check since no borrowing is needed
 - **Bybit borrow rate endpoint returning 0%**: Switched from `/v5/account/collateral-info` (returned 0% within free quota) to `/v5/crypto-loan-common/loanable-data` (returns actual `flexibleAnnualizedInterestRate`). Discovery log renamed "Borrow" to "Interest"
 

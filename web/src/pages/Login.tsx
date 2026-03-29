@@ -36,7 +36,7 @@ const Login: FC<LoginProps> = ({ onLogin }) => {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             className="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-gray-100 text-sm focus:outline-none focus:border-blue-500 mb-4"
-            autoFocus
+            placeholder={t('login.password')}
           />
           {error && <p className="text-red-400 text-sm mb-4">{t('login.error')}</p>}
           <button
