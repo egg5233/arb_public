@@ -231,10 +231,10 @@ const Positions: FC<PositionsProps> = ({ positions, onClose, onFetchFunding }) =
                           const groups: Record<string, FundingEvent[]> = {};
                           for (const f of fundingHistory) {
                             const d = new Date(f.time);
-                            const key = isNaN(d.getTime()) ? 'Unknown' : d.toISOString().slice(0, 10);
+                            const key = isNaN(d.getTime()) ? 'Unknown' : d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Taipei' });
                             (groups[key] ??= []).push(f);
                           }
-                          const sortedDates = Object.keys(groups).sort((a, b) => b.localeCompare(a));
+                          const sortedDates = Object.keys(groups).sort((a, b) => a.localeCompare(b));
 
                           return (
                             <div className="space-y-1 max-h-64 overflow-y-auto pr-1">
@@ -243,7 +243,7 @@ const Positions: FC<PositionsProps> = ({ positions, onClose, onFetchFunding }) =
                                 const dayTotal = items.reduce((s, f) => s + f.amount, 0);
 
                                 return (
-                                  <details key={date} open={date === sortedDates[0]} className="group">
+                                  <details key={date} open={date === sortedDates[sortedDates.length - 1]} className="group">
                                     <summary className="flex items-center justify-between cursor-pointer select-none py-1.5 px-2 rounded bg-gray-700/30 hover:bg-gray-700/50 transition-colors">
                                       <div className="flex items-center gap-2">
                                         <span className="text-[10px] text-gray-500 group-open:rotate-90 transition-transform">▶</span>

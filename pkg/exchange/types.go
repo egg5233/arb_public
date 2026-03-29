@@ -107,6 +107,8 @@ type OrderUpdate struct {
 	Status       string
 	FilledVolume float64
 	AvgPrice     float64
+	Symbol       string // normalized symbol (e.g. "BTCUSDT"); empty if unknown
+	ReduceOnly   bool   // true if this is a reduce-only / close fill (SL, TP, liquidation)
 }
 
 // WithdrawParams contains parameters for a withdrawal request.

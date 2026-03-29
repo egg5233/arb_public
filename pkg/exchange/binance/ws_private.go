@@ -109,7 +109,7 @@ func (b *Adapter) handlePrivateMessage(msg []byte) {
 				OrderID       int64  `json:"i"`
 				AvgPrice      string `json:"ap"`
 				FilledQty     string `json:"z"`
-				ReduceOnly    bool   `json:"R"`
+				ReduceOnly    bool   `json:"ro"`
 				OrigQty       string `json:"q"`
 			} `json:"o"`
 		}
@@ -122,8 +122,8 @@ func (b *Adapter) handlePrivateMessage(msg []byte) {
 		filledVol, _ := strconv.ParseFloat(o.FilledQty, 64)
 		avgPrice, _ := strconv.ParseFloat(o.AvgPrice, 64)
 
-		wsPrivLog.Info("order update: %s %s %s status=%s filled=%.6f avg=%.8f",
-			o.Symbol, o.Side, oid, o.OrderStatus, filledVol, avgPrice)
+		wsPrivLog.Info("order update: %s %s %s status=%s filled=%.6f avg=%.8f reduceOnly=%v symbol=%s",
+			o.Symbol, o.Side, oid, o.OrderStatus, filledVol, avgPrice, o.ReduceOnly, o.Symbol)
 
 		upd := exchange.OrderUpdate{
 			OrderID:      oid,
@@ -131,6 +131,8 @@ func (b *Adapter) handlePrivateMessage(msg []byte) {
 			Status:       strings.ToLower(o.OrderStatus),
 			FilledVolume: filledVol,
 			AvgPrice:     avgPrice,
+			Symbol:       o.Symbol,
+			ReduceOnly:   o.ReduceOnly,
 		}
 		b.orderStore.Store(oid, upd)
 		if upd.Status == "filled" && upd.FilledVolume > 0 && b.orderCallback != nil {

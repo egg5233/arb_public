@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.5] - 2026-03-29
+
+### Added — SL Detection Overhaul
+- **`ReduceOnly` and `Symbol` fields on `OrderUpdate`**: All 6 exchange WS private handlers now parse reduce-only/close flags and symbol from order fill events (Binance `ro`+`s`, Bybit `reduceOnly`+`symbol`, OKX `reduceOnly`+`instId`, Gate.io `is_reduce_only`/`is_close`+`contract`, Bitget `reduceOnly`+`instId`, BingX `ro`/`STOP_MARKET`+`s`)
+- **Dual SL detection in `handleSLFill`**: Method 1 — original slIndex order ID lookup. Method 2 — ReduceOnly fill detection: when a reduce-only fill arrives for a symbol we hold and we didn't initiate it, verifies the leg is actually flat on the exchange before triggering emergency close
+- **`ownOrders` sync.Map**: Tracks bot-initiated order IDs (exits, trims, rotation closes, consolidator) to prevent false SL triggers from our own reduce-only fills
+- **`entryActive` guard**: Skips ReduceOnly detection during entry fills to avoid false triggers
+- **`triggerEmergencyClose` helper**: Extracted from `handleSLFill` for shared use by both detection methods
+
+### Fixed
+- **Consolidator PnL on close**: `markPositionClosed` now queries `GetClosePnL` from both exchanges to populate `LongExit`, `ShortExit`, `RealizedPnL`, and calls `UpdateStats` so consolidator-closed positions count in win/loss tracking. Previously these had zero exit prices and zero PnL in history
+- **Dashboard funding sort order**: Reversed to oldest-first (was newest-first); latest date group auto-opens instead of oldest
+- **Dashboard funding timezone**: Date grouping now uses Asia/Taipei (UTC+8) instead of UTC
+
 ## [0.19.4] - 2026-03-29
 
 ### Improved

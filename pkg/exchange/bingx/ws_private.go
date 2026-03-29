@@ -231,6 +231,8 @@ func (ws *PrivateWS) handleMessage(msg []byte) {
 			Quantity      string `json:"q"`  // original qty
 			AvgPrice      string `json:"ap"` // average fill price
 			FilledQty     string `json:"z"`  // cumulative filled qty
+			ReduceOnly    bool   `json:"ro"` // reduce-only flag
+			OrderType     string `json:"o"`  // order type (e.g. STOP_MARKET)
 		} `json:"o"`
 	}
 	if json.Unmarshal(msg, &orderMsg) != nil {
@@ -241,17 +243,25 @@ func (ws *PrivateWS) handleMessage(msg []byte) {
 	filledQty, _ := strconv.ParseFloat(o.FilledQty, 64)
 	avgPrice, _ := strconv.ParseFloat(o.AvgPrice, 64)
 
+	// Convert BingX symbol format "BTC-USDT" → "BTCUSDT"
+	symbol := strings.ReplaceAll(o.Symbol, "-", "")
+
+	// reduceOnly: explicit flag or inferred from STOP_MARKET order type
+	reduceOnly := o.ReduceOnly || o.OrderType == "STOP_MARKET"
+
 	update := exchange.OrderUpdate{
 		OrderID:      o.OrderID,
 		ClientOID:    o.ClientOrderID,
 		Status:       normalizeBingXWSStatus(o.Status),
 		FilledVolume: filledQty,
 		AvgPrice:     avgPrice,
+		Symbol:       symbol,
+		ReduceOnly:   reduceOnly,
 	}
 
 	ws.orderStore.Store(o.OrderID, update)
-	log.Info("order update: %s %s status=%s filled=%.6f avg=%.8f",
-		o.Symbol, o.OrderID, update.Status, filledQty, avgPrice)
+	log.Info("order update: %s %s status=%s filled=%.6f avg=%.8f reduceOnly=%v symbol=%s",
+		o.Symbol, o.OrderID, update.Status, filledQty, avgPrice, reduceOnly, symbol)
 	if update.Status == "filled" && update.FilledVolume > 0 && ws.onFill != nil && *ws.onFill != nil {
 		(*ws.onFill)(update)
 	}

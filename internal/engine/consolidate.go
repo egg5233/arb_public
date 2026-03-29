@@ -370,16 +370,52 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 		return
 	}
 
+	// Query close PnL from both exchanges to populate exit prices and realized PnL.
+	var longClosePrice, shortClosePrice, longPnL, shortPnL float64
+	if longExch, ok := e.exchanges[pos.LongExchange]; ok {
+		pnls, err := longExch.GetClosePnL(pos.Symbol, pos.CreatedAt)
+		if err == nil && len(pnls) > 0 {
+			// Use the most recent close record.
+			latest := pnls[len(pnls)-1]
+			longClosePrice = latest.ExitPrice
+			longPnL = latest.NetPnL
+			e.log.Info("consolidate: %s long close from %s: price=%.8f pnl=%.4f",
+				pos.ID, pos.LongExchange, longClosePrice, longPnL)
+		}
+	}
+	if shortExch, ok := e.exchanges[pos.ShortExchange]; ok {
+		pnls, err := shortExch.GetClosePnL(pos.Symbol, pos.CreatedAt)
+		if err == nil && len(pnls) > 0 {
+			latest := pnls[len(pnls)-1]
+			shortClosePrice = latest.ExitPrice
+			shortPnL = latest.NetPnL
+			e.log.Info("consolidate: %s short close from %s: price=%.8f pnl=%.4f",
+				pos.ID, pos.ShortExchange, shortClosePrice, shortPnL)
+		}
+	}
+
+	realizedPnL := longPnL + shortPnL + pos.FundingCollected
+	pos.RealizedPnL = realizedPnL
+	pos.LongExit = longClosePrice
+	pos.ShortExit = shortClosePrice
+	pos.LongSize = 0
+	pos.ShortSize = 0
 	pos.Status = models.StatusClosed
 	pos.UpdatedAt = time.Now().UTC()
+
 	if err := e.db.SavePosition(pos); err != nil {
 		e.log.Error("consolidate: failed to close %s: %v", pos.ID, err)
 	}
 	if err := e.db.AddToHistory(pos); err != nil {
 		e.log.Error("consolidate: failed to add %s to history: %v", pos.ID, err)
 	}
+	won := realizedPnL > 0
+	if err := e.db.UpdateStats(realizedPnL, won); err != nil {
+		e.log.Error("consolidate: failed to update stats for %s: %v", pos.ID, err)
+	}
 	e.api.BroadcastPositionUpdate(pos)
-	e.log.Info("consolidate: closed %s (%s)", pos.ID, reason)
+	e.log.Info("consolidate: closed %s (%s) pnl=%.4f (long=%.4f short=%.4f funding=%.4f)",
+		pos.ID, reason, realizedPnL, longPnL, shortPnL, pos.FundingCollected)
 }
 
 // enforceBalance trims the excess side when long and short sizes are

@@ -185,6 +185,8 @@ func (ws *WSPrivateClient) handlePrivateMessage(msg []byte) {
 		orderID, _ := dataMap["orderId"].(string)
 		clientOid, _ := dataMap["clientOid"].(string)
 		status, _ := dataMap["status"].(string)
+		instId, _ := dataMap["instId"].(string)
+		reduceOnly, _ := dataMap["reduceOnly"].(string) // "YES" or "NO"
 
 		accFillStr, _ := dataMap["accBaseVolume"].(string)
 		filled, _ := strconv.ParseFloat(accFillStr, 64)
@@ -201,8 +203,16 @@ func (ws *WSPrivateClient) handlePrivateMessage(msg []byte) {
 		}
 		ws.store.UpdateOrder(info)
 
+		// In one-way mode, reduceOnly="YES" means this is a close fill
+		// (SL trigger, TP trigger, or liquidation).
+		isClose := strings.EqualFold(reduceOnly, "YES")
+
+		// Normalize instId to internal symbol format (e.g. "4USDT").
+		symbol := strings.TrimSuffix(instId, "_UMCBL")
+
 		if filled > 0 {
-			wsPrivLog.Info("order update: %s status=%s filled=%.6f avg=%.8f", orderID, status, filled, avgPrice)
+			wsPrivLog.Info("order update: %s status=%s filled=%.6f avg=%.8f reduceOnly=%s symbol=%s",
+				orderID, status, filled, avgPrice, reduceOnly, symbol)
 		}
 		if info.Status == "filled" && info.FilledVolume > 0 && ws.onFill != nil && *ws.onFill != nil {
 			(*ws.onFill)(exchange.OrderUpdate{
@@ -211,6 +221,8 @@ func (ws *WSPrivateClient) handlePrivateMessage(msg []byte) {
 				Status:       info.Status,
 				FilledVolume: info.FilledVolume,
 				AvgPrice:     info.AvgPrice,
+				Symbol:       symbol,
+				ReduceOnly:   isClose,
 			})
 		}
 	}

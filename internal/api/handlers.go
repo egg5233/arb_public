@@ -246,12 +246,12 @@ func (s *Server) handleGetPositionFunding(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// Sort by time descending (truncated to hour), then by side for stable ordering.
+	// Sort by time ascending (oldest first), then by side for stable ordering.
 	sort.Slice(events, func(i, j int) bool {
 		ti := events[i].Time.Truncate(time.Hour)
 		tj := events[j].Time.Truncate(time.Hour)
 		if !ti.Equal(tj) {
-			return ti.After(tj)
+			return ti.Before(tj)
 		}
 		return events[i].Side < events[j].Side
 	})

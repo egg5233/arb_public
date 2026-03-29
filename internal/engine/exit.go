@@ -2287,6 +2287,7 @@ func (e *Engine) closeFullyWithRetryPriced(ctx context.Context, exch exchange.Ex
 			e.log.Error("closeFullyWithRetry %s %s attempt %d: %v", exch.Name(), symbol, attempt+1, err)
 			break
 		}
+		e.ownOrders.Store(exch.Name()+":"+oid, struct{}{})
 
 		filled, avg := e.confirmFill(exch, oid, symbol)
 		remaining -= filled

@@ -193,6 +193,7 @@ func (ws *PrivateWS) handleMessage(msg []byte) {
 			OrderStatus string `json:"orderStatus"`
 			CumExecQty  string `json:"cumExecQty"`
 			AvgPrice    string `json:"avgPrice"`
+			ReduceOnly  bool   `json:"reduceOnly"`
 		} `json:"data"`
 	}
 
@@ -214,11 +215,13 @@ func (ws *PrivateWS) handleMessage(msg []byte) {
 			Status:       normalizeOrderStatus(o.OrderStatus),
 			FilledVolume: filledQty,
 			AvgPrice:     avgPrice,
+			Symbol:       o.Symbol,
+			ReduceOnly:   o.ReduceOnly,
 		}
 
 		ws.orderStore.Store(o.OrderID, update)
-		log.Info("order update: %s %s status=%s filled=%.6f avg=%.8f",
-			o.Symbol, o.OrderID, update.Status, filledQty, avgPrice)
+		log.Info("order update: %s %s status=%s filled=%.6f avg=%.8f reduceOnly=%v",
+			o.Symbol, o.OrderID, update.Status, filledQty, avgPrice, o.ReduceOnly)
 		if update.Status == "filled" && update.FilledVolume > 0 && ws.onFill != nil && *ws.onFill != nil {
 			(*ws.onFill)(update)
 		}

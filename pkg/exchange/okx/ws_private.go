@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"arb/pkg/exchange"
@@ -150,13 +151,14 @@ func (a *Adapter) handleOrderMessage(msg []byte) {
 			Channel string `json:"channel"`
 		} `json:"arg"`
 		Data []struct {
-			InstID    string `json:"instId"`
-			OrdID     string `json:"ordId"`
-			ClOrdID   string `json:"clOrdId"`
-			State     string `json:"state"`
-			FillSz    string `json:"fillSz"`
-			AccFillSz string `json:"accFillSz"`
-			AvgPx     string `json:"avgPx"`
+			InstID     string `json:"instId"`
+			OrdID      string `json:"ordId"`
+			ClOrdID    string `json:"clOrdId"`
+			State      string `json:"state"`
+			FillSz     string `json:"fillSz"`
+			AccFillSz  string `json:"accFillSz"`
+			AvgPx      string `json:"avgPx"`
+			ReduceOnly string `json:"reduceOnly"`
 		} `json:"data"`
 	}
 
@@ -176,15 +178,19 @@ func (a *Adapter) handleOrderMessage(msg []byte) {
 
 		avgPrice, _ := strconv.ParseFloat(o.AvgPx, 64)
 
+		reduceOnly := strings.EqualFold(o.ReduceOnly, "true")
+
 		update := exchange.OrderUpdate{
 			OrderID:      o.OrdID,
 			ClientOID:    o.ClOrdID,
 			Status:       mapState(o.State),
 			FilledVolume: filledVol,
 			AvgPrice:     avgPrice,
+			Symbol:       symbol,
+			ReduceOnly:   reduceOnly,
 		}
 
-		wsPrivLog.Info("order update: %s state=%s filled=%.6f avg=%.8f", o.OrdID, o.State, filledVol, avgPrice)
+		wsPrivLog.Info("order update: %s sym=%s state=%s filled=%.6f avg=%.8f reduceOnly=%v", o.OrdID, symbol, o.State, filledVol, avgPrice, reduceOnly)
 
 		a.orderStore.Store(o.OrdID, update)
 		if o.ClOrdID != "" {

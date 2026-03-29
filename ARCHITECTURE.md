@@ -160,7 +160,10 @@ After sizing: round to contract step size, enforce min size, enforce 10 USDT min
 - **Exit**: `cancelStopLosses()` cancels both SLs before closing position
 - **Rotation**: `updateRotationStopLoss()` cancels old leg's SL, places new SL at new entry price
 - SL failures are logged but never block entry/exit/rotation
-- **Instant SL fill detection**: Engine maintains in-memory reverse index (`exchange:orderID → posID+leg`). All exchange WS adapters send filled orders to a buffered channel via `SetOrderCallback`. Engine goroutine `consumeSLFills` checks each fill against the SL index — on match, preempts any exit goroutine, sends dashboard alert, and triggers emergency close of the remaining leg. Eliminates the 5-minute consolidator delay for SL-triggered closes.
+- **Instant SL fill detection** (two methods): All exchange WS adapters parse `ReduceOnly` and `Symbol` from order fill events and send fills to a buffered channel via `SetOrderCallback`. Engine goroutine `consumeSLFills` checks each fill via two methods:
+  1. **slIndex lookup** (original): In-memory reverse index (`exchange:orderID → posID+leg`). On match, triggers `triggerEmergencyClose`.
+  2. **ReduceOnly detection** (fallback): When a reduce-only fill arrives for a symbol we hold, checks it's not a bot-initiated order (tracked in `ownOrders` sync.Map) and not during entry (`entryActive` guard), then verifies the leg is actually flat on the exchange via `getExchangePositionSize`. Only triggers emergency close if the leg is confirmed gone. Catches SL/TP/liquidation fills even when the exchange issues a new order ID on trigger (which the slIndex would miss).
+  Both methods call `triggerEmergencyClose` which preempts any exit goroutine, sends dashboard alert, and fires emergency close of the remaining leg.
 
 | Exchange | Place endpoint | Cancel endpoint |
 |----------|---------------|-----------------|
@@ -172,6 +175,7 @@ After sizing: round to contract step size, enforce min size, enforce 10 USDT min
 
 **Position Consolidator**: Background goroutine (every 5min) reconciles local position records with actual exchange positions:
 - Missing leg detected → closes both legs (including "missing" one via re-query + local size fallback) and marks position closed. BingX legs require 3 consecutive misses before acting (guards against transient empty-position API responses)
+- **PnL on close**: `markPositionClosed` queries `GetClosePnL` from both exchanges to populate `LongExit`, `ShortExit`, `RealizedPnL` (price PnL + fees + funding), and calls `UpdateStats` so consolidator-closed positions count in win/loss tracking
 - Size mismatch >1% → syncs local record to exchange reality
 - **Balance enforcer**: After sync, if long/short differ by >5%, trims excess side via confirmed reduce-only market order, then cancels and re-places stop losses
 - Orphan exchange positions (not tracked locally) → auto-closes via reduce-only market IOC

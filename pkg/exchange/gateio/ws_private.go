@@ -181,14 +181,16 @@ func (ws *PrivateWS) handleMessage(data []byte) {
 
 	// Gate.io sends order updates as an array
 	var orders []struct {
-		ID        int64           `json:"id"`
-		Contract  string          `json:"contract"`    // e.g. "G_USDT"
-		Text      string          `json:"text"`
-		Status    string          `json:"status"` // "open", "finished"
-		Size      int64           `json:"size"`
-		Left      int64           `json:"left"`
-		FillPrice json.Number     `json:"fill_price"` // Gate.io sends as number or string
-		FinishAs  string          `json:"finish_as"`   // "filled", "cancelled", "ioc", etc.
+		ID           int64           `json:"id"`
+		Contract     string          `json:"contract"`       // e.g. "BTC_USDT"
+		Text         string          `json:"text"`
+		Status       string          `json:"status"`         // "open", "finished"
+		Size         int64           `json:"size"`
+		Left         int64           `json:"left"`
+		FillPrice    json.Number     `json:"fill_price"`     // Gate.io sends as number or string
+		FinishAs     string          `json:"finish_as"`      // "filled", "cancelled", "ioc", etc.
+		IsReduceOnly bool            `json:"is_reduce_only"` // true if reduce-only order
+		IsClose      bool            `json:"is_close"`       // true if close-position order
 	}
 	if err := json.Unmarshal(msg.Result, &orders); err != nil {
 		wsPrivLog.Error("unmarshal order update: %v", err)
@@ -227,8 +229,10 @@ func (ws *PrivateWS) handleMessage(data []byte) {
 			clientOID = o.Text[2:]
 		}
 
-		wsPrivLog.Info("order update: %s status=%s filled=%.6f avg=%.8f finishAs=%s",
-			orderID, status, filledVol, avgPrice, o.FinishAs)
+		reduceOnly := o.IsReduceOnly || o.IsClose
+
+		wsPrivLog.Info("order update: %s sym=%s status=%s filled=%.6f avg=%.8f finishAs=%s reduceOnly=%v",
+			orderID, internalSymbol, status, filledVol, avgPrice, o.FinishAs, reduceOnly)
 
 		upd := exchange.OrderUpdate{
 			OrderID:      orderID,
@@ -236,6 +240,8 @@ func (ws *PrivateWS) handleMessage(data []byte) {
 			Status:       status,
 			FilledVolume: filledVol,
 			AvgPrice:     avgPrice,
+			Symbol:       internalSymbol,
+			ReduceOnly:   reduceOnly,
 		}
 		ws.store.Store(orderID, upd)
 		if upd.Status == "filled" && upd.FilledVolume > 0 && ws.onFill != nil && *ws.onFill != nil {

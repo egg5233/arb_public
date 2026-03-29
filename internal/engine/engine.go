@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,6 +57,11 @@ type Engine struct {
 	slIndexMu sync.RWMutex
 	slIndex   map[string]slEntry // "exchange:orderID" → posID + leg
 	slFillCh  chan slFillEvent   // buffered channel for non-blocking WS callbacks
+
+	// ownOrders tracks order IDs placed by the engine itself.
+	// Used by handleSLFill method 2 to avoid false-triggering on our own
+	// reduce-only fills (exits, L4 reductions, rotation closes, consolidator trims).
+	ownOrders sync.Map // "exchange:orderID" → struct{}{}
 }
 
 // slEntry maps a stop-loss order to its position and leg.
@@ -815,43 +821,115 @@ func (e *Engine) unregisterSLOrders(pos *models.ArbitragePosition) {
 }
 
 // handleSLFill processes an SL fill event from the slFillCh channel.
-// Runs in its own goroutine — does not block the WS handler.
+// Two detection methods:
+// 1. slIndex lookup — matches plan/algo order IDs (may miss if exchange issues new ID on trigger)
+// 2. ReduceOnly detection — if a close fill arrives for a symbol we hold, and we didn't initiate it,
+//    verify the leg is actually gone on the exchange before triggering emergency close.
 func (e *Engine) handleSLFill(exchName string, upd exchange.OrderUpdate) {
+	// Method 1: Try slIndex match (original approach).
 	key := exchName + ":" + upd.OrderID
 	e.slIndexMu.RLock()
 	entry, ok := e.slIndex[key]
 	e.slIndexMu.RUnlock()
-	if !ok {
-		return // not a known SL order
+
+	if ok {
+		e.triggerEmergencyClose(exchName, entry.PosID, entry.Leg, upd)
+		return
 	}
 
-	e.log.Warn("SL TRIGGERED: order %s on %s filled (pos=%s leg=%s size=%.6f)",
-		upd.OrderID, exchName, entry.PosID, entry.Leg, upd.FilledVolume)
+	// Method 2: Detect unexpected close fills via ReduceOnly flag.
+	// Works for all exchanges regardless of whether they set reduceOnly on SL fills
+	// (Binance uses closePosition=true which may not set ro).
+	if !upd.ReduceOnly || upd.Symbol == "" {
+		return
+	}
 
-	// Load fresh position.
-	pos, err := e.db.GetPosition(entry.PosID)
+	// Skip if this is a known bot-initiated order.
+	ownKey := exchName + ":" + upd.OrderID
+	if _, isOwn := e.ownOrders.LoadAndDelete(ownKey); isOwn {
+		return
+	}
+
+	// Find an active position on this exchange+symbol.
+	positions, err := e.db.GetActivePositions()
+	if err != nil {
+		return
+	}
+
+	for _, pos := range positions {
+		if pos.Status != models.StatusActive {
+			continue
+		}
+		// Match exchange + symbol.
+		var leg string
+		if pos.LongExchange == exchName && strings.EqualFold(pos.Symbol, upd.Symbol) {
+			leg = "long"
+		} else if pos.ShortExchange == exchName && strings.EqualFold(pos.Symbol, upd.Symbol) {
+			leg = "short"
+		} else {
+			continue
+		}
+
+		// Skip if we're actively exiting or entering this position.
+		e.exitMu.Lock()
+		exiting := e.exitActive[pos.ID]
+		e.exitMu.Unlock()
+		if exiting {
+			continue
+		}
+		e.entryMu.Lock()
+		entering := e.entryActive[exchName+":"+upd.Symbol] != ""
+		e.entryMu.Unlock()
+		if entering {
+			continue
+		}
+
+		// Verify: confirm the leg is actually gone on the exchange.
+		// This prevents false triggers from our own partial exits, L4 trims,
+		// rotation closes, and consolidator trims which also use reduceOnly.
+		exch, ok := e.exchanges[exchName]
+		if !ok {
+			continue
+		}
+		remaining, err := getExchangePositionSize(exch, pos.Symbol, leg)
+		if err != nil {
+			continue // can't verify, skip
+		}
+		if remaining > 0 {
+			// Leg still has size — this was a partial close (trim, L4 reduction, etc.), not SL.
+			continue
+		}
+
+		e.log.Warn("SL/LIQUIDATION DETECTED: %s on %s %s filled=%.6f avg=%.8f — leg confirmed flat (pos=%s leg=%s)",
+			upd.OrderID, exchName, upd.Symbol, upd.FilledVolume, upd.AvgPrice, pos.ID, leg)
+		e.triggerEmergencyClose(exchName, pos.ID, leg, upd)
+		return
+	}
+}
+
+// triggerEmergencyClose handles a detected SL/TP/liquidation fill on one leg.
+func (e *Engine) triggerEmergencyClose(exchName, posID, leg string, upd exchange.OrderUpdate) {
+	pos, err := e.db.GetPosition(posID)
 	if err != nil || pos == nil {
-		e.log.Error("SL fill: failed to load position %s: %v", entry.PosID, err)
+		e.log.Error("SL fill: failed to load position %s: %v", posID, err)
 		return
 	}
 	if pos.Status == models.StatusClosed || pos.Status == models.StatusClosing {
-		return // already closing
+		return
 	}
 
-	// Remove BOTH SL keys for this position to prevent duplicate triggers.
 	e.unregisterSLOrders(pos)
-
-	// Preempt any running exit goroutine.
 	e.cancelExitGoroutine(pos.ID)
 
-	// Broadcast alert to dashboard.
+	e.log.Warn("SL TRIGGERED: order %s on %s filled (pos=%s leg=%s size=%.6f)",
+		upd.OrderID, exchName, posID, leg, upd.FilledVolume)
+
 	e.api.BroadcastAlert(map[string]string{
 		"type":    "sl_triggered",
 		"symbol":  pos.Symbol,
-		"message": fmt.Sprintf("Stop-loss triggered on %s (%s leg) — emergency closing %s", exchName, entry.Leg, pos.ID),
+		"message": fmt.Sprintf("Stop-loss triggered on %s (%s leg) — emergency closing %s", exchName, leg, posID),
 	})
 
-	// Emergency close the remaining leg.
 	go e.closePositionEmergency(pos)
 }
 
@@ -2343,6 +2421,7 @@ func (e *Engine) closeLeg(exch exchange.Exchange, symbol string, side exchange.S
 		e.log.Error("closeLeg %s %s %s: %v", exch.Name(), symbol, side, err)
 		return
 	}
+	e.ownOrders.Store(exch.Name()+":"+oid, struct{}{})
 	e.log.Info("closeLeg %s %s %s order=%s", exch.Name(), symbol, side, oid)
 }
 
