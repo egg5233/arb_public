@@ -22,6 +22,10 @@ type SpotEngine struct {
 	log        *utils.Logger
 	stopCh     chan struct{}
 	wg         sync.WaitGroup
+
+	// latestOpps caches the most recent discovery scan results for ManualOpen lookups.
+	oppsMu     sync.RWMutex
+	latestOpps []SpotArbOpportunity
 }
 
 // NewSpotEngine creates a new SpotEngine with all required dependencies.
@@ -98,11 +102,26 @@ func (e *SpotEngine) discoveryLoop() {
 	}
 }
 
-// pushOppsToAPI sends discovery results to the API server for /api/spot/opportunities.
+// pushOppsToAPI sends discovery results to the API server for /api/spot/opportunities
+// and caches them locally for ManualOpen lookups.
 func (e *SpotEngine) pushOppsToAPI(opps []SpotArbOpportunity) {
+	// Cache locally for ManualOpen.
+	e.oppsMu.Lock()
+	e.latestOpps = opps
+	e.oppsMu.Unlock()
+
 	items := make([]interface{}, len(opps))
 	for i, o := range opps {
 		items[i] = o
 	}
 	e.api.SetSpotOpportunities(items)
+}
+
+// getLatestOpps returns a copy of the latest discovery scan results (thread-safe).
+func (e *SpotEngine) getLatestOpps() []SpotArbOpportunity {
+	e.oppsMu.RLock()
+	defer e.oppsMu.RUnlock()
+	out := make([]SpotArbOpportunity, len(e.latestOpps))
+	copy(out, e.latestOpps)
+	return out
 }

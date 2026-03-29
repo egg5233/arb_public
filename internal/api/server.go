@@ -27,7 +27,8 @@ type Server struct {
 	logSub        chan utils.LogEntry
 	rejStore      *models.RejectionStore
 	permissions   map[string]exchange.PermissionResult
-	spotOpps      []interface{}
+	spotOpps          []interface{}
+	spotOpenPosition  func(symbol, exchange, direction string) error
 }
 
 // NewServer creates a new Dashboard server.
@@ -97,6 +98,7 @@ func (s *Server) Start() {
 	mux.HandleFunc("/api/spot/history", s.cors(s.authMiddleware(s.handleGetSpotHistory)))
 	mux.HandleFunc("/api/spot/stats", s.cors(s.authMiddleware(s.handleGetSpotStats)))
 	mux.HandleFunc("/api/spot/opportunities", s.cors(s.authMiddleware(s.handleGetSpotOpportunities)))
+	mux.HandleFunc("/api/spot/open", s.cors(s.authMiddleware(s.handleSpotManualOpen)))
 
 	// System update
 	mux.HandleFunc("/api/check-update", s.cors(s.authMiddleware(s.handleCheckUpdate)))
@@ -228,6 +230,11 @@ func (s *Server) SetOpenHandler(fn func(symbol, longExchange, shortExchange stri
 // SetOpportunities updates the cached opportunities slice for the GET endpoint.
 func (s *Server) SetOpportunities(opps []models.Opportunity) {
 	s.opps = opps
+}
+
+// SetSpotOpenHandler registers the spot-futures engine's manual open callback.
+func (s *Server) SetSpotOpenHandler(fn func(symbol, exchange, direction string) error) {
+	s.spotOpenPosition = fn
 }
 
 // SetPermissions stores the startup permission check results.

@@ -1,8 +1,10 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"arb/internal/models"
 )
@@ -105,4 +107,43 @@ func (s *Server) BroadcastSpotPositionUpdate(pos *models.SpotFuturesPosition) {
 // SetSpotOpportunities updates the cached spot opportunities for the GET endpoint.
 func (s *Server) SetSpotOpportunities(opps []interface{}) {
 	s.spotOpps = opps
+}
+
+// handleSpotManualOpen triggers a manual spot-futures entry.
+func (s *Server) handleSpotManualOpen(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Symbol    string `json:"symbol"`
+		Exchange  string `json:"exchange"`
+		Direction string `json:"direction"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Symbol == "" || req.Exchange == "" || req.Direction == "" {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "symbol, exchange, direction required"})
+		return
+	}
+
+	if s.spotOpenPosition == nil {
+		writeJSON(w, http.StatusServiceUnavailable, Response{Error: "spot engine not available"})
+		return
+	}
+
+	if err := s.spotOpenPosition(req.Symbol, req.Exchange, req.Direction); err != nil {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "not found") {
+			writeJSON(w, http.StatusNotFound, Response{Error: errMsg})
+		} else if strings.Contains(errMsg, "already") || strings.Contains(errMsg, "capacity") {
+			writeJSON(w, http.StatusConflict, Response{Error: errMsg})
+		} else if strings.Contains(errMsg, "dry run") {
+			writeJSON(w, http.StatusUnprocessableEntity, Response{Error: errMsg})
+		} else {
+			writeJSON(w, http.StatusInternalServerError, Response{Error: errMsg})
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, Response{OK: true})
 }

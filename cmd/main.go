@@ -252,6 +252,7 @@ func main() {
 	var spotEng *spotengine.SpotEngine
 	if cfg.SpotFuturesEnabled {
 		spotEng = spotengine.NewSpotEngine(exchanges, db, apiSrv, cfg)
+		apiSrv.SetSpotOpenHandler(spotEng.ManualOpen)
 		spotEng.Start()
 		log.Info("Spot-futures engine started")
 	}

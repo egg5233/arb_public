@@ -129,10 +129,24 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 			continue
 		}
 
+		spotSymbol := normalizeSymbol(item.Symbol)
+
+		// For Direction A (borrow-sell), verify spot margin supports this coin.
+		// For Direction B (buy spot), we don't use spot margin — skip margin check.
+		var spotBal *exchange.MarginBalance
+		if direction == "borrow_sell_long" {
+			var err error
+			spotBal, err = smExch.GetMarginBalance(baseCoin)
+			if err != nil {
+				e.log.Info("spot discovery: FILTERED %s on %s — spot margin not available: %v", spotSymbol, exchName, err)
+				continue
+			}
+		}
+
 		// Parse funding APR from the APR field (e.g. "43.21%").
 		fundingAPR := parsePercent(item.APR)
 		if fundingAPR <= 0 {
-			e.log.Info("spot discovery: FILTERED %s on %s — invalid funding APR: %q", item.Symbol, exchName, item.APR)
+			e.log.Info("spot discovery: FILTERED %s on %s — invalid funding APR: %q", spotSymbol, exchName, item.APR)
 			continue
 		}
 
@@ -141,12 +155,24 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 		if direction == "borrow_sell_long" {
 			rate, err := e.getCachedBorrowRate(exchName, baseCoin, smExch)
 			if err != nil {
-				e.log.Info("spot discovery: FILTERED %s on %s — borrow unavailable: %v", item.Symbol, exchName, err)
+				e.log.Info("spot discovery: FILTERED %s on %s — borrow unavailable: %v", spotSymbol, exchName, err)
 				continue
 			}
 			borrowAPR = rate.HourlyRate * 24 * 365
 
 			// Filter: borrow too expensive.
+			if borrowAPR > e.cfg.SpotFuturesMaxBorrowAPR {
+				e.log.Info("spot discovery: FILTERED %s on %s — interest APR %.1f%% > max %.1f%%",
+					spotSymbol, exchName, borrowAPR*100, e.cfg.SpotFuturesMaxBorrowAPR*100)
+				continue
+			}
+
+			// Verify coin is actually borrowable (interest rate API may return rates
+			// for coins that cannot be borrowed).
+			if spotBal.MaxBorrowable <= 0 {
+				e.log.Info("spot discovery: FILTERED %s on %s — not borrowable (maxBorrowable=0)", spotSymbol, exchName)
+				continue
+			}
 		}
 
 		// Calculate fee APR (4 taker legs, annualized over assumed hold).

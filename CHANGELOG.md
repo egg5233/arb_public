@@ -4,16 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [0.21.1] - 2026-03-29
 
+### Added
+- **Spot-Futures Phase 3a — Manual entry execution** (`POST /api/spot/open`): Supports both directions (borrow-sell+long and buy-spot+short), market IOC orders, fill confirmation, rollback on failure. New `internal/spotengine/execution.go` with `ManualOpen` method. Engine caches latest discovery results for lookups; `SetSpotOpenHandler` callback registered in `cmd/main.go`
+- **Zero-spread exit**: Triggers exit when both legs have equal funding rate (spread ≈ 0) for N consecutive checks (`ZeroSpreadTolerance`, default 2, dashboard configurable)
+- **Pre-settlement check**: Schedules a timer 10s before funding settlement; if `ReversalCount ≥ 1` and spread still negative, exits immediately to avoid paying another negative funding fee
+- **Dashboard UI**: Added zero-spread tolerance config field with i18n (en + zh-TW)
+
 ### Fixed
 - **Spread reversal exit blocked by min-hold gate**: Moved safety checks (spread reversal, zero-spread) before the min-hold gate in `checkExitsV2` so they are never blocked by continuously-advancing `NextFunding`
 - **Pre-settlement timer was no-op**: Replaced `checkSpreadReversal` call (which has ±10min settlement guard) with inline spread calculation that works at T-10s
 - **Pre-settlement timer dedup**: Added `preSettleActive` map to prevent multiple timers for the same position
 - **ZeroSpreadCount stale on reversal**: Reset zero-spread counter when spread reversal branch fires
-
-### Added
-- **Zero-spread exit**: Triggers exit when both legs have equal funding rate (spread ≈ 0) for N consecutive checks (`ZeroSpreadTolerance`, default 2, dashboard configurable)
-- **Pre-settlement check**: Schedules a timer 10s before funding settlement; if `ReversalCount ≥ 1` and spread still negative, exits immediately to avoid paying another negative funding fee
-- **Dashboard UI**: Added zero-spread tolerance config field with i18n (en + zh-TW)
+- **Spot-futures discovery: OKX unborrowable coins passing filters**: OKX interest rate API returns rates for coins that can't actually be borrowed (e.g. SENT). Added borrowability verification via `GetMarginBalance(MaxBorrowable > 0)` for Direction A. For Direction B (buy spot + short), removed over-aggressive margin check since no borrowing is needed
+- **Bybit borrow rate endpoint returning 0%**: Switched from `/v5/account/collateral-info` (returned 0% within free quota) to `/v5/crypto-loan-common/loanable-data` (returns actual `flexibleAnnualizedInterestRate`). Discovery log renamed "Borrow" to "Interest"
 
 ## [0.21.0] - 2026-03-29
 
