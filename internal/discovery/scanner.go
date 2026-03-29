@@ -343,12 +343,18 @@ func (s *Scanner) coinGlassToOpportunities(cg *models.CoinGlassResponse) []model
 
 		score := spreadBpsH * (1.0 + 1.0/float64(oiRank))
 
+		// Derive approximate per-leg rates from CoinGlass FundingRate (short side rate).
+		// FundingRate is the rate on the short (collecting) exchange, e.g. "0.1976%".
+		// Long side rate ≈ short rate - spread.
+		shortRateBpsH := parseCGPercent(item.FundingRate) * 10000 / 8760.0
+		longRateBpsH := shortRateBpsH - spreadBpsH
+
 		opps = append(opps, models.Opportunity{
 			Symbol:        symbol,
 			LongExchange:  longEx,
 			ShortExchange: shortEx,
-			LongRate:      0, // CoinGlass doesn't provide per-leg rates
-			ShortRate:     0,
+			LongRate:      longRateBpsH,
+			ShortRate:     shortRateBpsH,
 			Spread:        spreadBpsH, // bps/h
 			CostRatio:     costRatio,
 			OIRank:        oiRank,

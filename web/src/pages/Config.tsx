@@ -769,6 +769,36 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
           value={getByPath(config, ['strategy', 'exit', 'spread_reversal_tolerance'])}
           onChange={(v) => handleChange(['strategy', 'exit', 'spread_reversal_tolerance'], v)}
         />
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.field.reversalPreSettlement')}</label>
+            <Tooltip text={t('cfg.desc.reversalPreSettlement')} />
+          </div>
+          <div className="flex items-center gap-3">
+            <ToggleSwitch
+              on={getByPath(config, ['strategy', 'exit', 'reversal_pre_settlement']) === true}
+              onChange={(v) => handleBoolChange(['strategy', 'exit', 'reversal_pre_settlement'], v)}
+            />
+            <span className={`text-sm font-semibold ${getByPath(config, ['strategy', 'exit', 'reversal_pre_settlement']) ? 'text-green-400' : 'text-red-400'}`}>
+              {getByPath(config, ['strategy', 'exit', 'reversal_pre_settlement']) ? 'ON' : 'OFF'}
+            </span>
+          </div>
+        </div>
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.field.reversalResetOnRecover')}</label>
+            <Tooltip text={t('cfg.desc.reversalResetOnRecover')} />
+          </div>
+          <div className="flex items-center gap-3">
+            <ToggleSwitch
+              on={getByPath(config, ['strategy', 'exit', 'reversal_reset_on_recover']) === true}
+              onChange={(v) => handleBoolChange(['strategy', 'exit', 'reversal_reset_on_recover'], v)}
+            />
+            <span className={`text-sm font-semibold ${getByPath(config, ['strategy', 'exit', 'reversal_reset_on_recover']) ? 'text-green-400' : 'text-red-400'}`}>
+              {getByPath(config, ['strategy', 'exit', 'reversal_reset_on_recover']) ? 'ON' : 'OFF'}
+            </span>
+          </div>
+        </div>
         <NumberField
           label={t('cfg.field.zeroSpreadTolerance')}
           desc={t('cfg.desc.zeroSpreadTolerance')}

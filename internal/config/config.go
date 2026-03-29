@@ -74,8 +74,10 @@ type Config struct {
 	SpreadStabilityOIRank8h int     // OI rank threshold for 8h (default 0, disabled)
 
 	// Exit tuning
-	EnableSpreadReversal    bool // enable spread reversal exit check (default true)
-	SpreadReversalTolerance int  // allow N reversals before triggering exit (default 0 = exit on first)
+	EnableSpreadReversal      bool // enable spread reversal exit check (default true)
+	SpreadReversalTolerance   int  // allow N reversals before triggering exit (default 0 = exit on first)
+	ReversalPreSettlement     bool // schedule pre-settlement check during tolerance (default true)
+	ReversalResetOnRecover    bool // reset reversal count when spread recovers (default true)
 	ZeroSpreadTolerance     int // exit after N consecutive checks where both legs have equal funding rate (0=disabled)
 
 	// Anti-spike filters
@@ -273,6 +275,8 @@ type jsonExit struct {
 	DepthTimeoutSec         *int      `json:"depth_timeout_sec"`
 	EnableSpreadReversal    *bool     `json:"enable_spread_reversal"`
 	SpreadReversalTolerance *int      `json:"spread_reversal_tolerance"`
+	ReversalPreSettlement   *bool     `json:"reversal_pre_settlement"`
+	ReversalResetOnRecover  *bool     `json:"reversal_reset_on_recover"`
 	ZeroSpreadTolerance     *int     `json:"zero_spread_tolerance"`
 	MaxGapBPS               *float64  `json:"max_gap_bps"`
 }
@@ -361,6 +365,8 @@ func Load() *Config {
 		RotationCooldownMin:        180,
 		EnableSpreadReversal:       true,
 		SpreadReversalTolerance:    1,
+		ReversalPreSettlement:      true,
+		ReversalResetOnRecover:     true,
 		ZeroSpreadTolerance:        2,
 		ReEnterCooldownHours:       1.0,
 		RedisAddr:               "localhost:6379",
@@ -581,6 +587,12 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 			}
 			if x.SpreadReversalTolerance != nil {
 				c.SpreadReversalTolerance = *x.SpreadReversalTolerance
+			}
+			if x.ReversalPreSettlement != nil {
+				c.ReversalPreSettlement = *x.ReversalPreSettlement
+			}
+			if x.ReversalResetOnRecover != nil {
+				c.ReversalResetOnRecover = *x.ReversalResetOnRecover
 			}
 			if x.ZeroSpreadTolerance != nil {
 				c.ZeroSpreadTolerance = *x.ZeroSpreadTolerance
@@ -863,6 +875,8 @@ func (c *Config) SaveJSON() error {
 	exit["depth_timeout_sec"] = c.ExitDepthTimeoutSec
 	exit["enable_spread_reversal"] = c.EnableSpreadReversal
 	exit["spread_reversal_tolerance"] = c.SpreadReversalTolerance
+	exit["reversal_pre_settlement"] = c.ReversalPreSettlement
+	exit["reversal_reset_on_recover"] = c.ReversalResetOnRecover
 	exit["zero_spread_tolerance"] = c.ZeroSpreadTolerance
 	exit["max_gap_bps"] = c.ExitMaxGapBPS
 

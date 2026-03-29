@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.21.5] - 2026-03-30
+
+### Added
+- **`ReversalPreSettlement` config param** (bool, default true): Controls whether `schedulePreSettlementCheck` is called during the spread reversal tolerance window. Configurable via dashboard toggle and JSON config
+- **`ReversalResetOnRecover` config param** (bool, default true): Controls whether the reversal count resets to zero when the spread recovers to positive. Configurable via dashboard toggle and JSON config
+- **CoinGlass per-leg rate derivation**: Discovery scanner now derives approximate long/short rates from CoinGlass `FundingRate` field instead of leaving them as zero
+
+### Changed
+- Files: `internal/config/config.go`, `internal/engine/exit.go`, `internal/api/handlers.go`, `internal/discovery/scanner.go`, `web/src/pages/Config.tsx`, `web/src/i18n/en.ts`, `web/src/i18n/zh-TW.ts`
+
 ## [0.21.4] - 2026-03-29
 
 ### Added
