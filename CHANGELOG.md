@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.20.0] - 2026-03-29
+
+### Added — Binance Portfolio Margin (PM) Support
+- **Auto-detection**: `NewAdapter` probes `/sapi/v1/account/apiRestrictions` for `enablePortfolioMarginTrading`; classic users completely unaffected — all changes gated behind `isPM`
+- **Dual-client architecture**: `client` points to `papi.binance.com` for signed endpoints; `fapiClient` stays on `fapi.binance.com` for public endpoints (depth, exchangeInfo, premiumIndex, fundingInfo)
+- **Path remapping**: `remapPath()` converts `/fapi/v1/*` → `/papi/v1/um/*` with special cases for balance (`/papi/v1/balance`), conditional orders (`/papi/v1/um/conditional/order`), and listenKey (`/papi/v1/listenKey`)
+- **PM balance parsing**: `parsePMBalance` uses `/papi/v1/balance` for per-asset totals + `/papi/v1/account` for `virtualMaxWithdrawAmount` (available) and margin ratio
+- **PM stop-loss**: Uses `strategyType`/`stopPrice`/`reduceOnly` instead of `algoType`/`triggerPrice`/`closePosition`; returns `strategyId`
+- **PM cancel stop-loss**: Uses `strategyId` + `symbol` instead of `algoId`
+- **PM margin mode**: `SetMarginMode` is a no-op for PM (unified margin)
+- **PM WebSocket**: Uses `wss://fstream.binance.com/pm/ws/{listenKey}` and `/papi/v1/listenKey`
+- **`CONDITIONAL_ORDER_TRADE_UPDATE` handler**: New WS event type for PM conditional order (SL/TP) triggers, fires `OrderUpdate` callback with strategyId
+- **PM API docs**: `doc/EXCHANGEAPI_BINANCE_PM.md`
+- **PM test utility**: `cmd/testpm/main.go`
+
 ## [0.19.5] - 2026-03-29
 
 ### Added — SL Detection Overhaul

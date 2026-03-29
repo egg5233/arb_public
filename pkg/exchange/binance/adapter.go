@@ -3,6 +3,7 @@ package binance
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"strconv"
 	"strings"
@@ -19,9 +20,11 @@ var _ exchange.Exchange = (*Adapter)(nil)
 
 // Adapter implements the exchange.Exchange interface for Binance USDT-M Futures.
 type Adapter struct {
-	client    *Client
-	apiKey    string
-	secretKey string
+	client     *Client
+	fapiClient *Client // always fapi.binance.com (for public endpoints)
+	isPM       bool    // true for Portfolio Margin accounts
+	apiKey     string
+	secretKey  string
 
 	// Price stream
 	priceStore sync.Map // symbol -> exchange.BBO
@@ -78,13 +81,70 @@ func (b *Adapter) CheckPermissions() exchange.PermissionResult {
 
 // NewAdapter creates a Binance Adapter from ExchangeConfig.
 func NewAdapter(cfg exchange.ExchangeConfig) *Adapter {
-	return &Adapter{
-		client:    NewClient(cfg.ApiKey, cfg.SecretKey),
-		apiKey:    cfg.ApiKey,
-		secretKey: cfg.SecretKey,
-		priceSyms: make(map[string]bool),
-		depthSyms: make(map[string]bool),
+	client := NewClient(cfg.ApiKey, cfg.SecretKey)
+	a := &Adapter{
+		client:     client,
+		fapiClient: client,
+		apiKey:     cfg.ApiKey,
+		secretKey:  cfg.SecretKey,
+		priceSyms:  make(map[string]bool),
+		depthSyms:  make(map[string]bool),
 	}
+	a.detectPM()
+	return a
+}
+
+// detectPM checks API key permissions to detect Portfolio Margin accounts.
+// Uses /sapi/v1/account/apiRestrictions which returns enablePortfolioMarginTrading.
+func (b *Adapter) detectPM() {
+	spotClient := b.client.WithBaseURL("https://api.binance.com")
+	data, err := spotClient.Get("/sapi/v1/account/apiRestrictions", map[string]string{})
+	if err != nil {
+		log.Printf("[binance] PM detection failed: %v (assuming classic)", err)
+		return
+	}
+	var resp struct {
+		EnablePortfolioMarginTrading bool `json:"enablePortfolioMarginTrading"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		log.Printf("[binance] PM detection parse failed: %v (assuming classic)", err)
+		return
+	}
+	if resp.EnablePortfolioMarginTrading {
+		b.isPM = true
+		b.client = b.client.WithBaseURL("https://papi.binance.com")
+		log.Printf("[binance] detected Portfolio Margin account, using papi.binance.com")
+	}
+}
+
+// remapPath converts fapi paths to papi equivalents for Portfolio Margin accounts.
+func (b *Adapter) remapPath(path string) string {
+	if !b.isPM {
+		return path
+	}
+	// Don't remap spot/sapi paths
+	if strings.HasPrefix(path, "/sapi/") {
+		return path
+	}
+	// Special cases where the mapping is not a simple prefix swap
+	switch path {
+	case "/fapi/v2/account":
+		return "/papi/v1/balance"
+	case "/fapi/v2/positionRisk":
+		return "/papi/v1/um/positionRisk"
+	case "/fapi/v1/algoOrder":
+		return "/papi/v1/um/conditional/order"
+	case "/fapi/v1/listenKey":
+		return "/papi/v1/listenKey"
+	}
+	// General rule: /fapi/v1/* → /papi/v1/um/*
+	if strings.HasPrefix(path, "/fapi/v1/") {
+		return "/papi/v1/um/" + strings.TrimPrefix(path, "/fapi/v1/")
+	}
+	if strings.HasPrefix(path, "/fapi/v2/") {
+		return "/papi/v1/um/" + strings.TrimPrefix(path, "/fapi/v2/")
+	}
+	return path
 }
 
 func (b *Adapter) Name() string { return "binance" }
@@ -111,7 +171,7 @@ func (b *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 		params["newClientOrderId"] = req.ClientOid
 	}
 
-	body, err := b.client.Post("/fapi/v1/order", params)
+	body, err := b.client.Post(b.remapPath("/fapi/v1/order"), params)
 	if err != nil {
 		return "", fmt.Errorf("PlaceOrder: %w", err)
 	}
@@ -131,7 +191,7 @@ func (b *Adapter) CancelOrder(symbol, orderID string) error {
 		"symbol":  symbol,
 		"orderId": orderID,
 	}
-	_, err := b.client.Delete("/fapi/v1/order", params)
+	_, err := b.client.Delete(b.remapPath("/fapi/v1/order"), params)
 	if err != nil {
 		// Ignore "Unknown order" -- already cancelled or filled
 		if isAPIError(err, -2011) {
@@ -144,7 +204,7 @@ func (b *Adapter) CancelOrder(symbol, orderID string) error {
 
 func (b *Adapter) GetPendingOrders(symbol string) ([]exchange.Order, error) {
 	params := map[string]string{"symbol": symbol}
-	body, err := b.client.Get("/fapi/v1/openOrders", params)
+	body, err := b.client.Get(b.remapPath("/fapi/v1/openOrders"), params)
 	if err != nil {
 		return nil, fmt.Errorf("GetPendingOrders: %w", err)
 	}
@@ -188,7 +248,7 @@ func (b *Adapter) GetOrderFilledQty(orderID, symbol string) (float64, error) {
 		"symbol":  symbol,
 		"orderId": orderID,
 	}
-	body, err := b.client.Get("/fapi/v1/order", params)
+	body, err := b.client.Get(b.remapPath("/fapi/v1/order"), params)
 	if err != nil {
 		return 0, fmt.Errorf("GetOrderFilledQty: %w", err)
 	}
@@ -229,7 +289,7 @@ func (b *Adapter) GetAllPositions() ([]exchange.Position, error) {
 }
 
 func (b *Adapter) fetchPositions(params map[string]string) ([]exchange.Position, error) {
-	body, err := b.client.Get("/fapi/v2/positionRisk", params)
+	body, err := b.client.Get(b.remapPath("/fapi/v2/positionRisk"), params)
 	if err != nil {
 		return nil, fmt.Errorf("GetPosition: %w", err)
 	}
@@ -287,7 +347,7 @@ func (b *Adapter) SetLeverage(symbol string, leverage string, holdSide string) e
 		"symbol":   symbol,
 		"leverage": leverage,
 	}
-	_, err := b.client.Post("/fapi/v1/leverage", params)
+	_, err := b.client.Post(b.remapPath("/fapi/v1/leverage"), params)
 	if err != nil {
 		return fmt.Errorf("SetLeverage: %w", err)
 	}
@@ -295,6 +355,9 @@ func (b *Adapter) SetLeverage(symbol string, leverage string, holdSide string) e
 }
 
 func (b *Adapter) SetMarginMode(symbol string, mode string) error {
+	if b.isPM {
+		return nil // Portfolio Margin uses unified margin, no per-symbol mode
+	}
 	binanceMode := "CROSSED"
 	if strings.ToLower(mode) == "isolated" {
 		binanceMode = "ISOLATED"
@@ -320,7 +383,7 @@ func (b *Adapter) SetMarginMode(symbol string, mode string) error {
 // ---------------------------------------------------------------------------
 
 func (b *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
-	body, err := b.client.Get("/fapi/v1/exchangeInfo", nil)
+	body, err := b.fapiClient.Get("/fapi/v1/exchangeInfo", nil)
 	if err != nil {
 		return nil, fmt.Errorf("LoadAllContracts: %w", err)
 	}
@@ -375,7 +438,7 @@ func (b *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 
 func (b *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
 	params := map[string]string{"symbol": symbol}
-	body, err := b.client.Get("/fapi/v1/premiumIndex", params)
+	body, err := b.fapiClient.Get("/fapi/v1/premiumIndex", params)
 	if err != nil {
 		return nil, fmt.Errorf("GetFundingRate: %w", err)
 	}
@@ -420,7 +483,7 @@ type fundingInfo struct {
 
 // getFundingInfo fetches interval and rate caps from /fapi/v1/fundingInfo.
 func (b *Adapter) getFundingInfo(symbol string) (*fundingInfo, error) {
-	body, err := b.client.Get("/fapi/v1/fundingInfo", nil)
+	body, err := b.fapiClient.Get("/fapi/v1/fundingInfo", nil)
 	if err != nil {
 		return nil, fmt.Errorf("getFundingInfo: %w", err)
 	}
@@ -474,11 +537,92 @@ func (b *Adapter) GetFundingInterval(symbol string) (time.Duration, error) {
 // ---------------------------------------------------------------------------
 
 func (b *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
-	body, err := b.client.Get("/fapi/v2/account", nil)
+	body, err := b.client.Get(b.remapPath("/fapi/v2/account"), nil)
 	if err != nil {
 		return nil, fmt.Errorf("GetFuturesBalance: %w", err)
 	}
 
+	if b.isPM {
+		return b.parsePMBalance(body)
+	}
+	return b.parseClassicBalance(body)
+}
+
+// parsePMBalance parses the /papi/v1/balance response for Portfolio Margin accounts.
+// Response is an array: [{asset, totalWalletBalance, umWalletBalance, umUnrealizedPNL, crossMarginFree, ...}]
+func (b *Adapter) parsePMBalance(body []byte) (*exchange.Balance, error) {
+	// /papi/v1/balance gives per-asset wallet details but not available balance.
+	// /papi/v1/account gives account-level equity, available balance, and margin ratio.
+	// We need both: per-asset total from balance, account-level available from account.
+
+	var assets []struct {
+		Asset              string `json:"asset"`
+		TotalWalletBalance string `json:"totalWalletBalance"`
+		UmWalletBalance    string `json:"umWalletBalance"`
+		UmUnrealizedPNL    string `json:"umUnrealizedPNL"`
+	}
+	if err := json.Unmarshal(body, &assets); err != nil {
+		return nil, fmt.Errorf("GetFuturesBalance PM unmarshal: %w", err)
+	}
+
+	var total float64
+	for _, a := range assets {
+		if a.Asset == "USDT" {
+			totalWallet, _ := strconv.ParseFloat(a.TotalWalletBalance, 64)
+			umPnl, _ := strconv.ParseFloat(a.UmUnrealizedPNL, 64)
+			total = totalWallet + umPnl
+			break
+		}
+	}
+
+	// Fetch available balance and margin ratio from /papi/v1/account.
+	available, marginRatio := b.fetchPMAccountInfo()
+
+	frozen := total - available
+	if frozen < 0 {
+		frozen = 0
+	}
+
+	return &exchange.Balance{
+		Total:       total,
+		Available:   available,
+		Frozen:      frozen,
+		Currency:    "USDT",
+		MarginRatio: marginRatio,
+	}, nil
+}
+
+// fetchPMAccountInfo fetches available balance and margin ratio from /papi/v1/account.
+// Returns (availableBalance, marginRatio).
+func (b *Adapter) fetchPMAccountInfo() (float64, float64) {
+	body, err := b.client.Get("/papi/v1/account", nil)
+	if err != nil {
+		return 0, 0
+	}
+	var resp struct {
+		AccountEquity            string `json:"accountEquity"`
+		AccountMaintMargin       string `json:"accountMaintMargin"`
+		VirtualMaxWithdrawAmount string `json:"virtualMaxWithdrawAmount"`
+	}
+	if json.Unmarshal(body, &resp) != nil {
+		return 0, 0
+	}
+
+	// virtualMaxWithdrawAmount is the best proxy for "available" in PM —
+	// it's the max amount that can be withdrawn/used for new positions.
+	available, _ := strconv.ParseFloat(resp.VirtualMaxWithdrawAmount, 64)
+
+	equity, _ := strconv.ParseFloat(resp.AccountEquity, 64)
+	maintMargin, _ := strconv.ParseFloat(resp.AccountMaintMargin, 64)
+	var marginRatio float64
+	if equity > 0 {
+		marginRatio = maintMargin / equity
+	}
+	return available, marginRatio
+}
+
+// parseClassicBalance parses the /fapi/v2/account response for classic accounts.
+func (b *Adapter) parseClassicBalance(body []byte) (*exchange.Balance, error) {
 	var resp struct {
 		TotalMarginBalance string `json:"totalMarginBalance"`
 		TotalMaintMargin   string `json:"totalMaintMargin"`
@@ -566,7 +710,7 @@ func (b *Adapter) GetOrderbook(symbol string, depth int) (*exchange.Orderbook, e
 		"symbol": symbol,
 		"limit":  strconv.Itoa(depth),
 	}
-	body, err := b.client.Get("/fapi/v1/depth", params)
+	body, err := b.fapiClient.Get("/fapi/v1/depth", params)
 	if err != nil {
 		return nil, fmt.Errorf("GetOrderbook: %w", err)
 	}
@@ -761,7 +905,7 @@ func (b *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 		"startTime": strconv.FormatInt(startTime.UnixMilli(), 10),
 		"limit":     strconv.Itoa(limit),
 	}
-	body, err := b.client.Get("/fapi/v1/userTrades", params)
+	body, err := b.client.Get(b.remapPath("/fapi/v1/userTrades"), params)
 	if err != nil {
 		return nil, fmt.Errorf("GetUserTrades: %w", err)
 	}
@@ -812,7 +956,7 @@ func (b *Adapter) GetFundingFees(symbol string, since time.Time) ([]exchange.Fun
 		"startTime":  strconv.FormatInt(since.UnixMilli(), 10),
 		"limit":      "1000",
 	}
-	body, err := b.client.Get("/fapi/v1/income", params)
+	body, err := b.client.Get(b.remapPath("/fapi/v1/income"), params)
 	if err != nil {
 		return nil, fmt.Errorf("GetFundingFees: %w", err)
 	}
@@ -850,7 +994,7 @@ func (b *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 			"startTime":  strconv.FormatInt(since.UnixMilli(), 10),
 			"limit":      "1000",
 		}
-		body, err := b.client.Get("/fapi/v1/income", params)
+		body, err := b.client.Get(b.remapPath("/fapi/v1/income"), params)
 		if err != nil {
 			return nil, fmt.Errorf("GetClosePnL income(%s): %w", incomeType, err)
 		}
@@ -887,8 +1031,12 @@ func (b *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 }
 
 // PlaceStopLoss places a STOP_MARKET algo order on Binance futures.
-// Since 2025-12-09, conditional orders must use POST /fapi/v1/algoOrder.
+// Classic: POST /fapi/v1/algoOrder; PM: POST /papi/v1/um/conditional/order (different params/response).
 func (b *Adapter) PlaceStopLoss(params exchange.StopLossParams) (string, error) {
+	if b.isPM {
+		return b.placePMStopLoss(params)
+	}
+
 	p := map[string]string{
 		"algoType":      "CONDITIONAL",
 		"symbol":        params.Symbol,
@@ -898,7 +1046,7 @@ func (b *Adapter) PlaceStopLoss(params exchange.StopLossParams) (string, error) 
 		"closePosition": "true",
 	}
 
-	body, err := b.client.Post("/fapi/v1/algoOrder", p)
+	body, err := b.client.Post(b.remapPath("/fapi/v1/algoOrder"), p)
 	if err != nil {
 		return "", fmt.Errorf("PlaceStopLoss: %w", err)
 	}
@@ -912,12 +1060,47 @@ func (b *Adapter) PlaceStopLoss(params exchange.StopLossParams) (string, error) 
 	return strconv.FormatInt(resp.AlgoID, 10), nil
 }
 
-// CancelStopLoss cancels an algo stop-loss order on Binance futures.
-func (b *Adapter) CancelStopLoss(symbol, orderID string) error {
-	params := map[string]string{
-		"algoId": orderID,
+// placePMStopLoss places a conditional stop-loss via the PM endpoint.
+// PM uses strategyType/stopPrice instead of algoType/type/triggerPrice,
+// and returns strategyId instead of algoId.
+func (b *Adapter) placePMStopLoss(params exchange.StopLossParams) (string, error) {
+	p := map[string]string{
+		"symbol":       params.Symbol,
+		"side":         mapSide(params.Side),
+		"strategyType": "STOP_MARKET",
+		"stopPrice":    params.TriggerPrice,
+		"reduceOnly":   "true",
 	}
-	_, err := b.client.Delete("/fapi/v1/algoOrder", params)
+
+	body, err := b.client.Post(b.remapPath("/fapi/v1/algoOrder"), p)
+	if err != nil {
+		return "", fmt.Errorf("PlaceStopLoss PM: %w", err)
+	}
+
+	var resp struct {
+		StrategyID int64 `json:"strategyId"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("PlaceStopLoss PM unmarshal: %w", err)
+	}
+	return strconv.FormatInt(resp.StrategyID, 10), nil
+}
+
+// CancelStopLoss cancels an algo stop-loss order on Binance futures.
+// Classic uses algoId; PM uses strategyId + symbol.
+func (b *Adapter) CancelStopLoss(symbol, orderID string) error {
+	var params map[string]string
+	if b.isPM {
+		params = map[string]string{
+			"symbol":     symbol,
+			"strategyId": orderID,
+		}
+	} else {
+		params = map[string]string{
+			"algoId": orderID,
+		}
+	}
+	_, err := b.client.Delete(b.remapPath("/fapi/v1/algoOrder"), params)
 	if err != nil {
 		if isAPIError(err, -2011) {
 			return nil
@@ -932,7 +1115,7 @@ func (b *Adapter) EnsureOneWayMode() error {
 	params := map[string]string{
 		"dualSidePosition": "false",
 	}
-	_, err := b.client.Post("/fapi/v1/positionSide/dual", params)
+	_, err := b.client.Post(b.remapPath("/fapi/v1/positionSide/dual"), params)
 	if err != nil {
 		// "No need to change position side" = already one-way
 		errMsg := err.Error()
