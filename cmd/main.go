@@ -13,6 +13,7 @@ import (
 	"arb/internal/discovery"
 	"arb/internal/engine"
 	"arb/internal/scraper"
+	"arb/internal/spotengine"
 	"arb/pkg/exchange"
 	"arb/pkg/exchange/binance"
 	"arb/pkg/exchange/bitget"
@@ -247,6 +248,14 @@ func main() {
 		log.Info("Spot-futures arbitrage scraper started")
 	}
 
+	// Start spot-futures arbitrage engine if enabled.
+	var spotEng *spotengine.SpotEngine
+	if cfg.SpotFuturesEnabled {
+		spotEng = spotengine.NewSpotEngine(exchanges, db, apiSrv, cfg)
+		spotEng.Start()
+		log.Info("Spot-futures engine started")
+	}
+
 	log.Info("Bot fully initialized. Waiting for shutdown signal...")
 
 	// Graceful shutdown
@@ -257,6 +266,11 @@ func main() {
 	log.Info("Received signal %v, shutting down...", sig)
 
 	// Stop in reverse order
+	if spotEng != nil {
+		spotEng.Stop()
+		log.Info("Spot-futures engine stopped")
+	}
+
 	eng.Stop()
 	log.Info("Engine stopped")
 

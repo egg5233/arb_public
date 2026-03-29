@@ -712,6 +712,91 @@ arb:reEnterCooldown:{symbol}        STRING  Re-entry cooldown flag (auto-expires
 6. Initialize: Scanner, RiskManager, RiskMonitor, HealthMonitor, API Server, Engine
 7. Start balance refresh goroutine (60s)
 8. Start all components: Scanner → RiskMon → HealthMon → API → Engine (incl. Consolidator)
-9. Wait for SIGINT/SIGTERM → graceful shutdown (reverse order)
+9. If `SpotFuturesEnabled`: create and start SpotEngine
+10. Wait for SIGINT/SIGTERM → graceful shutdown (reverse order, SpotEngine stops first)
+
+---
+
+## 3. Spot-Futures Arbitrage Engine
+
+A separate engine (`internal/spotengine/`) that runs **alongside** the perp-perp engine. It targets delta-neutral positions combining a spot margin leg and a futures hedge on the **same exchange**.
+
+### 3.1 Two Directions
+
+| Direction | Spot Leg | Futures Leg | Collects | Pays |
+|-----------|----------|-------------|----------|------|
+| **A** — Negative funding (`borrow_sell_long`) | Borrow coin → sell on spot | Long perpetual | Funding from long | Borrow interest |
+| **B** — Positive funding (`buy_spot_short`) | Buy coin on spot (hold) | Short perpetual | Funding from short | Nothing (capital locked) |
+
+### 3.2 Package Layout
+
+| Package | Purpose |
+|---------|---------|
+| `internal/spotengine/engine.go` | `SpotEngine` struct, lifecycle (`Start`/`Stop`), discovery loop goroutine |
+| `internal/spotengine/discovery.go` | Reads CoinGlass spot arb data from Redis, queries live borrow rates, scores opportunities by net APR |
+| `internal/models/spot_position.go` | `SpotFuturesPosition` data model — spot leg, futures leg, borrow tracking, P&L |
+| `internal/database/spot_state.go` | Redis CRUD — separate keys (`arb:spot_positions`, `arb:spot_history`, `arb:spot_stats`) |
+| `internal/api/spot_handlers.go` | Dashboard REST endpoints + WebSocket broadcasts for spot positions |
+| `doc/DESIGN_SPOT_FUTURES_RISK.md` | Extreme condition & risk design (10x squeeze, liquidation cascades) |
+
+### 3.3 Discovery Flow
+
+```
+CoinGlass scraper → Redis (coinGlassSpotArb)
+                        ↓
+SpotEngine.discoveryLoop (every scan_interval_min minutes)
+  1. Read + parse CoinGlass payload from Redis
+  2. Staleness check: reject if >60min old or bad timestamp
+  3. For each opportunity:
+     a. Normalize exchange name, check allowed list
+     b. Verify exchange implements SpotMarginExchange interface
+     c. Parse direction from Portfolio field ("Sell X" → A, "Buy X" → B)
+     d. Parse funding APR from CoinGlass APR field
+     e. Direction A only: fetch borrow rate (5min cache), filter by max_borrow_apr
+     f. Calculate fee APR: 4 taker legs × (365 / 30-day assumed hold)
+     g. Net APR = fundingAPR − borrowAPR − feeAPR
+     h. Filter by min_net_yield_apr
+  4. Rank by net APR descending, limit to top N
+  5. Push results to API server (GET /api/spot/opportunities)
+```
+
+### 3.4 Configuration
+
+JSON `config.json` → `spot_futures` section:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | false | Enable the spot-futures engine |
+| `max_positions` | 1 | Maximum concurrent spot-futures positions |
+| `capital_per_position` | 200 | USDT capital per position |
+| `leverage` | 3 | Futures leg leverage |
+| `monitor_interval_sec` | 300 | Position monitoring interval |
+| `min_net_yield_apr` | 0.10 | Minimum net APR after costs (10%) |
+| `max_borrow_apr` | 0.50 | Maximum borrow APR for Direction A (50%) |
+| `exchanges` | [] | Exchanges to consider (empty = all SpotMargin-capable) |
+| `scan_interval_min` | 10 | Discovery scan interval in minutes |
+
+Env overrides: `SPOT_FUTURES_ENABLED`, `SPOT_FUTURES_MAX_POSITIONS`, `SPOT_FUTURES_CAPITAL_PER_POSITION`, `SPOT_FUTURES_LEVERAGE`, `SPOT_FUTURES_MONITOR_INTERVAL`.
+
+### 3.5 Dashboard API
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/spot/positions` | GET | Active spot-futures positions |
+| `/api/spot/history` | GET | Closed positions (default limit 50) |
+| `/api/spot/stats` | GET | Win/loss/PnL counters |
+| `/api/spot/opportunities` | GET | Latest discovery scan results |
+
+WebSocket event: `spot_position_update` (single position), `spot_positions` (full active list).
+
+### 3.6 Integration with Perp-Perp Engine
+
+The spot-futures engine is **fully independent** — separate goroutines, separate Redis keys, separate API routes. It shares:
+- Exchange adapter instances (via `exchange.SpotMarginExchange` interface)
+- Redis client connection
+- API server (for route registration and WebSocket hub)
+- Config loader
+
+No coordination is needed between the two engines; they can run concurrently without interference.
 
 ---

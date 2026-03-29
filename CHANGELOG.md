@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.21.0] - 2026-03-29
+
+### Added — Spot-Futures Arbitrage Engine (Phase 1-2)
+- **New `internal/spotengine/` package**: Runs alongside existing perp-perp engine — separate discovery loop, separate position tracking, independent lifecycle
+- **Data model** (`internal/models/spot_position.go`): `SpotFuturesPosition` struct supporting both directions — Direction A (borrow-sell + long perp, negative funding) and Direction B (buy-spot + short perp, positive funding). Tracks spot leg, futures leg, borrow costs, funding collected, and P&L
+- **Redis CRUD** (`internal/database/spot_state.go`): Separate key namespace (`arb:spot_positions`, `arb:spot_positions:active`, `arb:spot_history`, `arb:spot_stats`). Full CRUD: `SaveSpotPosition`, `GetSpotPosition`, `GetActiveSpotPositions`, `AddToSpotHistory`, `UpdateSpotStats`, `GetSpotHistory`, `GetSpotStats`, `UpdateSpotPositionFields` (atomic read-mutate-write)
+- **Discovery scanner** (`internal/spotengine/discovery.go`): Reads CoinGlass spot arb data from Redis, queries live borrow rates via `SpotMarginExchange` interface, calculates net yield (`fundingAPR − borrowAPR − feeAPR`), ranks by net APR, filters by `min_net_yield_apr` and `max_borrow_apr`. Borrow rate cache with 5min TTL
+- **Dashboard API** (`internal/api/spot_handlers.go`): Four new authenticated endpoints — `GET /api/spot/positions`, `/api/spot/history`, `/api/spot/stats`, `/api/spot/opportunities`. WebSocket broadcast for spot position updates
+- **Config** (`internal/config/config.go`): New `spot_futures` JSON section with `enabled`, `max_positions`, `capital_per_position`, `leverage`, `monitor_interval_sec`, `min_net_yield_apr`, `max_borrow_apr`, `exchanges`, `scan_interval_min`. Env var overrides: `SPOT_FUTURES_ENABLED`, `SPOT_FUTURES_MAX_POSITIONS`, `SPOT_FUTURES_CAPITAL_PER_POSITION`, `SPOT_FUTURES_LEVERAGE`, `SPOT_FUTURES_MONITOR_INTERVAL`
+- **Engine integration** (`cmd/main.go`): SpotEngine created and started when `SpotFuturesEnabled=true`, graceful shutdown in reverse order
+- **Codex review fixes**: Stale data guard rejects CoinGlass data with unparseable or bad timestamps; discovery results pushed to API endpoint for `/api/spot/opportunities`
+- **Gate.io PM support**: `isPM` flag, `SetMarginMode`/`SetLeverage` no-op for portfolio margin mode
+- **Risk design document**: `doc/DESIGN_SPOT_FUTURES_RISK.md` — covers extreme condition scenarios (10x squeeze, liquidation cascades) for both directions, mitigation strategies
+
 ## [0.20.2] - 2026-03-29
 
 ### Added — CoinGlass Spot-Futures Arbitrage Scraper

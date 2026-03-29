@@ -140,6 +140,17 @@ type Config struct {
 	SpotArbEnabled    bool
 	SpotArbSchedule   string // comma-separated minutes, e.g. "15,35"
 	SpotArbChromePath string
+
+	// Spot-futures arbitrage engine
+	SpotFuturesEnabled           bool
+	SpotFuturesMaxPositions      int
+	SpotFuturesCapitalPerPosition float64
+	SpotFuturesLeverage          int
+	SpotFuturesMonitorIntervalSec int
+	SpotFuturesMinNetYieldAPR    float64  // minimum net APR after costs (decimal, e.g. 0.10 = 10%)
+	SpotFuturesMaxBorrowAPR      float64  // maximum borrow APR for Direction A (decimal, e.g. 0.50 = 50%)
+	SpotFuturesExchanges         []string // exchanges to consider (empty = all SpotMargin-capable)
+	SpotFuturesScanIntervalMin   int      // discovery scan interval in minutes
 }
 
 // ---------- Nested JSON config structs ----------
@@ -153,13 +164,26 @@ type jsonConfig struct {
 	Fund      *jsonFund               `json:"fund"`
 	Risk      *jsonRisk               `json:"risk"`
 	AI        *jsonAI                 `json:"ai"`
-	SpotArb   *jsonSpotArb            `json:"spot_arb"`
+	SpotArb     *jsonSpotArb            `json:"spot_arb"`
+	SpotFutures *jsonSpotFutures        `json:"spot_futures"`
 }
 
 type jsonSpotArb struct {
 	Enabled    *bool  `json:"enabled"`
 	Schedule   string `json:"schedule"`
 	ChromePath string `json:"chrome_path"`
+}
+
+type jsonSpotFutures struct {
+	Enabled            *bool    `json:"enabled"`
+	MaxPositions       *int     `json:"max_positions"`
+	CapitalPerPosition *float64 `json:"capital_per_position"`
+	Leverage           *int     `json:"leverage"`
+	MonitorIntervalSec *int     `json:"monitor_interval_sec"`
+	MinNetYieldAPR     *float64 `json:"min_net_yield_apr"`
+	MaxBorrowAPR       *float64 `json:"max_borrow_apr"`
+	Exchanges          []string `json:"exchanges"`
+	ScanIntervalMin    *int     `json:"scan_interval_min"`
 }
 
 type jsonExchange struct {
@@ -340,6 +364,13 @@ func Load() *Config {
 		AIMaxTokens:             4096,
 		SpotArbSchedule:         "15,35",
 		SpotArbChromePath:       detectChromePath(),
+		SpotFuturesMaxPositions:       1,
+		SpotFuturesCapitalPerPosition: 200,
+		SpotFuturesLeverage:           3,
+		SpotFuturesMonitorIntervalSec: 300,
+		SpotFuturesMinNetYieldAPR:     0.10, // 10%
+		SpotFuturesMaxBorrowAPR:       0.50, // 50%
+		SpotFuturesScanIntervalMin:    10,
 	}
 
 	// Load from JSON file
@@ -698,6 +729,37 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 			c.SpotArbChromePath = sa.ChromePath
 		}
 	}
+
+	// Spot-futures arbitrage engine
+	if sf := jc.SpotFutures; sf != nil {
+		if sf.Enabled != nil {
+			c.SpotFuturesEnabled = *sf.Enabled
+		}
+		if sf.MaxPositions != nil {
+			c.SpotFuturesMaxPositions = *sf.MaxPositions
+		}
+		if sf.CapitalPerPosition != nil {
+			c.SpotFuturesCapitalPerPosition = *sf.CapitalPerPosition
+		}
+		if sf.Leverage != nil {
+			c.SpotFuturesLeverage = *sf.Leverage
+		}
+		if sf.MonitorIntervalSec != nil {
+			c.SpotFuturesMonitorIntervalSec = *sf.MonitorIntervalSec
+		}
+		if sf.MinNetYieldAPR != nil {
+			c.SpotFuturesMinNetYieldAPR = *sf.MinNetYieldAPR
+		}
+		if sf.MaxBorrowAPR != nil {
+			c.SpotFuturesMaxBorrowAPR = *sf.MaxBorrowAPR
+		}
+		if len(sf.Exchanges) > 0 {
+			c.SpotFuturesExchanges = sf.Exchanges
+		}
+		if sf.ScanIntervalMin != nil {
+			c.SpotFuturesScanIntervalMin = *sf.ScanIntervalMin
+		}
+	}
 }
 
 // SaveJSON writes the current runtime config back to config.json,
@@ -1008,6 +1070,31 @@ func (c *Config) loadEnvOverrides() {
 	}
 	if v := os.Getenv("SPOT_ARB_CHROME_PATH"); v != "" {
 		c.SpotArbChromePath = v
+	}
+
+	// Spot-futures arbitrage engine
+	if v := os.Getenv("SPOT_FUTURES_ENABLED"); v != "" {
+		c.SpotFuturesEnabled = v == "1" || v == "true" || v == "yes"
+	}
+	if v := os.Getenv("SPOT_FUTURES_MAX_POSITIONS"); v != "" {
+		if i, err := strconv.Atoi(v); err == nil {
+			c.SpotFuturesMaxPositions = i
+		}
+	}
+	if v := os.Getenv("SPOT_FUTURES_CAPITAL_PER_POSITION"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			c.SpotFuturesCapitalPerPosition = f
+		}
+	}
+	if v := os.Getenv("SPOT_FUTURES_LEVERAGE"); v != "" {
+		if i, err := strconv.Atoi(v); err == nil {
+			c.SpotFuturesLeverage = i
+		}
+	}
+	if v := os.Getenv("SPOT_FUTURES_MONITOR_INTERVAL"); v != "" {
+		if i, err := strconv.Atoi(v); err == nil {
+			c.SpotFuturesMonitorIntervalSec = i
+		}
 	}
 }
 

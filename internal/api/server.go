@@ -27,6 +27,7 @@ type Server struct {
 	logSub        chan utils.LogEntry
 	rejStore      *models.RejectionStore
 	permissions   map[string]exchange.PermissionResult
+	spotOpps      []interface{}
 }
 
 // NewServer creates a new Dashboard server.
@@ -90,6 +91,12 @@ func (s *Server) Start() {
 
 	// Permissions
 	mux.HandleFunc("/api/permissions", s.cors(s.authMiddleware(s.handleGetPermissions)))
+
+	// Spot-futures routes
+	mux.HandleFunc("/api/spot/positions", s.cors(s.authMiddleware(s.handleGetSpotPositions)))
+	mux.HandleFunc("/api/spot/history", s.cors(s.authMiddleware(s.handleGetSpotHistory)))
+	mux.HandleFunc("/api/spot/stats", s.cors(s.authMiddleware(s.handleGetSpotStats)))
+	mux.HandleFunc("/api/spot/opportunities", s.cors(s.authMiddleware(s.handleGetSpotOpportunities)))
 
 	// System update
 	mux.HandleFunc("/api/check-update", s.cors(s.authMiddleware(s.handleCheckUpdate)))
