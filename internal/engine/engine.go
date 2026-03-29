@@ -40,6 +40,10 @@ type Engine struct {
 	exitActive  map[string]bool               // posID → true while exit goroutine is running
 	exitDone    map[string]chan struct{}       // posID → signalled when exit goroutine finishes
 
+	// Pre-settlement timer dedup.
+	preSettleMu     sync.Mutex
+	preSettleActive map[string]bool // posID → true while timer is pending
+
 	// Entry tracking: prevents consolidator from treating mid-fill positions as orphans.
 	entryMu     sync.Mutex
 	entryActive map[string]string // "exchange:symbol" → posID while depth fill is running
@@ -94,7 +98,8 @@ func NewEngine(
 		stopCh:        make(chan struct{}),
 		exitCancels:   make(map[string]context.CancelFunc),
 		exitActive:    make(map[string]bool),
-		exitDone:      make(map[string]chan struct{}),
+		exitDone:        make(map[string]chan struct{}),
+		preSettleActive: make(map[string]bool),
 		entryActive:     make(map[string]string),
 		slIndex:       make(map[string]slEntry),
 		slFillCh:      make(chan slFillEvent, 64),
