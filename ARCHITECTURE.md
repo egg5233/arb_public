@@ -29,6 +29,15 @@ Funding intervals are **per-symbol per-exchange**, NOT static:
 - Spread derived from `annualYield / 8760` to get bps/h (FundingRate interval varies)
 - OI-based rank approximation: >=10M→10, >=1M→50, >=100K→150, else→500
 
+**Source 3 — CoinGlass Spot-Futures Arb** (from Redis key `coinGlassSpotArb`)
+- Scraped by embedded `internal/scraper` goroutine using headless Chrome (chromedp)
+- Targets CoinGlass ArbitrageList page for spot-sell + futures-long opportunities
+- Runs on configurable schedule (default: minutes 15, 35 each hour) + once at startup
+- Writes JSON payload (timestamp, count, opportunities) to Redis key `coinGlassSpotArb`
+- Config: `config.json` → `spot_arb.enabled`, `spot_arb.schedule`, `spot_arb.chrome_path`; env overrides `SPOT_ARB_ENABLED`, `SPOT_ARB_SCHEDULE`, `SPOT_ARB_CHROME_PATH`
+- Chrome binary auto-detected from Puppeteer/Playwright caches and system paths
+- Standalone CLI: `cmd/spotarb/main.go` (imports shared package, supports `--cron`, `--no-redis`, `--json`)
+
 **Merge & Rank**:
 1. Poll both sources, convert to `[]Opportunity`
 2. Deduplicate by (symbol, longExchange, shortExchange), keep highest score
@@ -333,7 +342,10 @@ cmd/
   transfertest/main.go             Transfer test CLI
   fundmove/main.go                 Spot ↔ Futures transfer CLI
   wstest/                          WebSocket test CLI
+  spotarb/main.go                  Standalone spot-futures arb scraper CLI (--cron, --json, --no-redis)
 internal/
+  scraper/
+    spotarb.go                     CoinGlass spot-futures arb scraper (headless Chrome via chromedp)
   config/config.go                 JSON + env config
   engine/
     engine.go                      Main loop, parallel trade execution, funding tracker, rebalancing

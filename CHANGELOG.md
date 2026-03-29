@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.20.2] - 2026-03-29
+
+### Added — CoinGlass Spot-Futures Arbitrage Scraper
+- **Embedded scraper** (`internal/scraper/spotarb.go`): Scrapes CoinGlass ArbitrageList page using headless Chrome (chromedp) for spot-sell + futures-long arbitrage opportunities
+- **Configurable via `config.json`** under `"spot_arb"` section: `enabled`, `schedule` (comma-separated minutes), `chrome_path`
+- **Env var overrides**: `SPOT_ARB_ENABLED`, `SPOT_ARB_SCHEDULE`, `SPOT_ARB_CHROME_PATH`
+- **Redis output**: Writes scraped data to Redis key `coinGlassSpotArb` as JSON with timestamp and opportunity count
+- **Standalone CLI** preserved at `cmd/spotarb/main.go` — imports shared `internal/scraper` package, supports `--cron`, `--no-redis`, `--json` flags
+- **Chrome auto-detection**: Scans common Puppeteer/Playwright cache locations and system paths for Chrome binary
+- Runs as embedded goroutine on configurable schedule (default: minutes 15, 35 each hour), with immediate run on startup
+
 ## [0.20.1] - 2026-03-29
 
 ### Reverted — Binance Portfolio Margin (PM)

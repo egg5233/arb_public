@@ -12,6 +12,7 @@ import (
 	"arb/internal/database"
 	"arb/internal/discovery"
 	"arb/internal/engine"
+	"arb/internal/scraper"
 	"arb/pkg/exchange"
 	"arb/pkg/exchange/binance"
 	"arb/pkg/exchange/bitget"
@@ -236,6 +237,15 @@ func main() {
 	eng.MergeExistingDuplicates()
 	eng.Start()
 	log.Info("Engine started")
+
+	// Start spot-futures arbitrage scraper if enabled.
+	if cfg.SpotArbEnabled {
+		scraper.StartSpotArbScraper(scraper.SpotArbConfig{
+			Schedule:   cfg.SpotArbSchedule,
+			ChromePath: cfg.SpotArbChromePath,
+		}, db, log)
+		log.Info("Spot-futures arbitrage scraper started")
+	}
 
 	log.Info("Bot fully initialized. Waiting for shutdown signal...")
 

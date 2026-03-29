@@ -135,6 +135,11 @@ type Config struct {
 	AIAPIKey    string
 	AIModel     string
 	AIMaxTokens int
+
+	// Spot-futures arbitrage scraper
+	SpotArbEnabled    bool
+	SpotArbSchedule   string // comma-separated minutes, e.g. "15,35"
+	SpotArbChromePath string
 }
 
 // ---------- Nested JSON config structs ----------
@@ -148,6 +153,13 @@ type jsonConfig struct {
 	Fund      *jsonFund               `json:"fund"`
 	Risk      *jsonRisk               `json:"risk"`
 	AI        *jsonAI                 `json:"ai"`
+	SpotArb   *jsonSpotArb            `json:"spot_arb"`
+}
+
+type jsonSpotArb struct {
+	Enabled    *bool  `json:"enabled"`
+	Schedule   string `json:"schedule"`
+	ChromePath string `json:"chrome_path"`
 }
 
 type jsonExchange struct {
@@ -259,6 +271,22 @@ type jsonRisk struct {
 	RiskMonitorIntervalSec  *int     `json:"risk_monitor_interval_sec"`
 }
 
+// detectChromePath returns the first Chrome binary found in common locations.
+func detectChromePath() string {
+	candidates := []string{
+		"/home/solana/.cache/puppeteer/chrome/linux-146.0.7680.153/chrome-linux64/chrome",
+		"/usr/bin/google-chrome",
+		"/usr/bin/chromium-browser",
+		"/usr/bin/chromium",
+	}
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
 // Load reads configuration from config.json (if present), with env var overrides.
 // Priority: env var > config.json > default value.
 func Load() *Config {
@@ -310,6 +338,8 @@ func Load() *Config {
 		DashboardAddr:           ":8080",
 		AIModel:                 "gpt-5.4",
 		AIMaxTokens:             4096,
+		SpotArbSchedule:         "15,35",
+		SpotArbChromePath:       detectChromePath(),
 	}
 
 	// Load from JSON file
@@ -655,6 +685,19 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 			c.AIMaxTokens = *a.MaxTokens
 		}
 	}
+
+	// Spot-futures arbitrage scraper
+	if sa := jc.SpotArb; sa != nil {
+		if sa.Enabled != nil {
+			c.SpotArbEnabled = *sa.Enabled
+		}
+		if sa.Schedule != "" {
+			c.SpotArbSchedule = sa.Schedule
+		}
+		if sa.ChromePath != "" {
+			c.SpotArbChromePath = sa.ChromePath
+		}
+	}
 }
 
 // SaveJSON writes the current runtime config back to config.json,
@@ -954,6 +997,17 @@ func (c *Config) loadEnvOverrides() {
 	}
 	if v := os.Getenv("DASHBOARD_PASSWORD"); v != "" {
 		c.DashboardPassword = v
+	}
+
+	// Spot-futures arbitrage scraper
+	if v := os.Getenv("SPOT_ARB_ENABLED"); v != "" {
+		c.SpotArbEnabled = v == "1" || v == "true" || v == "yes"
+	}
+	if v := os.Getenv("SPOT_ARB_SCHEDULE"); v != "" {
+		c.SpotArbSchedule = v
+	}
+	if v := os.Getenv("SPOT_ARB_CHROME_PATH"); v != "" {
+		c.SpotArbChromePath = v
 	}
 }
 
