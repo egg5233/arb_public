@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.21.1] - 2026-03-29
+
+### Fixed
+- **Spread reversal exit blocked by min-hold gate**: Moved safety checks (spread reversal, zero-spread) before the min-hold gate in `checkExitsV2` so they are never blocked by continuously-advancing `NextFunding`
+- **Pre-settlement timer was no-op**: Replaced `checkSpreadReversal` call (which has ±10min settlement guard) with inline spread calculation that works at T-10s
+- **Pre-settlement timer dedup**: Added `preSettleActive` map to prevent multiple timers for the same position
+- **ZeroSpreadCount stale on reversal**: Reset zero-spread counter when spread reversal branch fires
+
+### Added
+- **Zero-spread exit**: Triggers exit when both legs have equal funding rate (spread ≈ 0) for N consecutive checks (`ZeroSpreadTolerance`, default 2, dashboard configurable)
+- **Pre-settlement check**: Schedules a timer 10s before funding settlement; if `ReversalCount ≥ 1` and spread still negative, exits immediately to avoid paying another negative funding fee
+- **Dashboard UI**: Added zero-spread tolerance config field with i18n (en + zh-TW)
+
 ## [0.21.0] - 2026-03-29
 
 ### Added — Spot-Futures Arbitrage Engine (Phase 1-2)

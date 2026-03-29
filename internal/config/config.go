@@ -75,6 +75,7 @@ type Config struct {
 
 	// Exit tuning
 	SpreadReversalTolerance int // allow N reversals before triggering exit (default 0 = exit on first)
+	ZeroSpreadTolerance     int // exit after N consecutive checks where both legs have equal funding rate (0=disabled)
 
 	// Anti-spike filters
 	SpreadVolatilityMaxCV      float64 // max stddev/mean for spread across scans (default 0.5, 0=disabled)
@@ -270,6 +271,7 @@ type jsonEntry struct {
 type jsonExit struct {
 	DepthTimeoutSec         *int      `json:"depth_timeout_sec"`
 	SpreadReversalTolerance *int      `json:"spread_reversal_tolerance"`
+	ZeroSpreadTolerance     *int     `json:"zero_spread_tolerance"`
 	MaxGapBPS               *float64  `json:"max_gap_bps"`
 }
 
@@ -356,6 +358,7 @@ func Load() *Config {
 		RotationThresholdBPS:    100,
 		RotationCooldownMin:        180,
 		SpreadReversalTolerance:    1,
+		ZeroSpreadTolerance:        2,
 		ReEnterCooldownHours:       1.0,
 		RedisAddr:               "localhost:6379",
 		RedisDB:                 2,
@@ -572,6 +575,9 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 			}
 			if x.SpreadReversalTolerance != nil {
 				c.SpreadReversalTolerance = *x.SpreadReversalTolerance
+			}
+			if x.ZeroSpreadTolerance != nil {
+				c.ZeroSpreadTolerance = *x.ZeroSpreadTolerance
 			}
 			if x.MaxGapBPS != nil {
 				c.ExitMaxGapBPS = *x.MaxGapBPS
@@ -850,6 +856,7 @@ func (c *Config) SaveJSON() error {
 	exit := getMap(strategy, "exit")
 	exit["depth_timeout_sec"] = c.ExitDepthTimeoutSec
 	exit["spread_reversal_tolerance"] = c.SpreadReversalTolerance
+	exit["zero_spread_tolerance"] = c.ZeroSpreadTolerance
 	exit["max_gap_bps"] = c.ExitMaxGapBPS
 
 	rot := getMap(strategy, "rotation")

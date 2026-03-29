@@ -754,6 +754,12 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
           value={getByPath(config, ['strategy', 'exit', 'spread_reversal_tolerance'])}
           onChange={(v) => handleChange(['strategy', 'exit', 'spread_reversal_tolerance'], v)}
         />
+        <NumberField
+          label={t('cfg.field.zeroSpreadTolerance')}
+          desc={t('cfg.desc.zeroSpreadTolerance')}
+          value={getByPath(config, ['strategy', 'exit', 'zero_spread_tolerance'])}
+          onChange={(v) => handleChange(['strategy', 'exit', 'zero_spread_tolerance'], v)}
+        />
       </div>
 
       <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider pt-2">{t('cfg.rotation')}</h3>
