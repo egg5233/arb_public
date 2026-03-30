@@ -1635,7 +1635,7 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 		changelog = cl
 	}
 
-	hasUpdate := latestVersion != currentVersion
+	hasUpdate := versionNewer(latestVersion, currentVersion)
 
 	// Structured runtime drift assessment (ARB-87).
 	prov := runtimeProvenance()
@@ -1648,6 +1648,37 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 		"runtime":        prov,
 		"changelog":      changelog,
 	}})
+}
+
+// versionNewer returns true when remote is a newer semver than local.
+// Both are expected in "major.minor.patch" format (e.g. "0.22.30").
+// Returns false on parse errors or when local >= remote.
+func versionNewer(remote, local string) bool {
+	parse := func(v string) (int, int, int, bool) {
+		parts := strings.SplitN(strings.TrimSpace(v), ".", 3)
+		if len(parts) != 3 {
+			return 0, 0, 0, false
+		}
+		maj, e1 := strconv.Atoi(parts[0])
+		min, e2 := strconv.Atoi(parts[1])
+		pat, e3 := strconv.Atoi(parts[2])
+		if e1 != nil || e2 != nil || e3 != nil {
+			return 0, 0, 0, false
+		}
+		return maj, min, pat, true
+	}
+	rMaj, rMin, rPat, rok := parse(remote)
+	lMaj, lMin, lPat, lok := parse(local)
+	if !rok || !lok {
+		return remote != local // fallback to inequality if unparseable
+	}
+	if rMaj != lMaj {
+		return rMaj > lMaj
+	}
+	if rMin != lMin {
+		return rMin > lMin
+	}
+	return rPat > lPat
 }
 
 // handleUpdate downloads the latest GitHub Release binary via pull-release.sh and restarts.

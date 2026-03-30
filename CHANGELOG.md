@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.31] - 2026-03-31
+
+### Fixed
+- **[api] `/api/check-update` now uses semver comparison for `hasUpdate`** — previously `hasUpdate` was `latestVersion != currentVersion`, which falsely reported updates when the local version was ahead of `origin/main`; now uses proper major.minor.patch ordering so `hasUpdate` is only true when remote is strictly newer; added `versionNewer()` helper with test coverage for newer/same/older/unparseable cases (`internal/api/handlers.go`, `internal/api/handlers_test.go`) ([ARB-90](/ARB/issues/ARB-90))
+
 ## [0.22.30] - 2026-03-31
 
 ### Fixed
