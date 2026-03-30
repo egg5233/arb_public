@@ -99,6 +99,15 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 		}
 	}
 
+	// Build active-position keys so rate/yield filters don't drop symbols
+	// that already have open positions (monitor/exit still needs fresh data).
+	activeKeys := make(map[string]bool)
+	if activePositions, err := e.db.GetActiveSpotPositions(); err == nil {
+		for _, p := range activePositions {
+			activeKeys[p.Symbol+":"+p.Exchange+":"+p.Direction] = true
+		}
+	}
+
 	now := time.Now().UTC()
 	var opps []SpotArbOpportunity
 
@@ -130,6 +139,7 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 		}
 
 		spotSymbol := normalizeSymbol(item.Symbol)
+		isActive := activeKeys[spotSymbol+":"+exchName+":"+direction]
 
 		// For Direction A (borrow-sell), verify spot margin supports this coin.
 		// For Direction B (buy spot), we don't use spot margin — skip margin check.
@@ -145,9 +155,11 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 
 		// Parse funding APR from the APR field (e.g. "43.21%").
 		fundingAPR := parsePercent(item.APR)
-		if fundingAPR <= 0 {
+		if fundingAPR <= 0 && !isActive {
 			e.log.Info("spot discovery: FILTERED %s on %s — invalid funding APR: %q", spotSymbol, exchName, item.APR)
 			continue
+		} else if fundingAPR <= 0 && isActive {
+			e.log.Info("spot discovery: BYPASSED filter for active position %s on %s — funding APR: %q", spotSymbol, exchName, item.APR)
 		}
 
 		// Calculate borrow APR (Direction A only).
@@ -161,10 +173,13 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 			borrowAPR = rate.HourlyRate * 24 * 365
 
 			// Filter: borrow too expensive.
-			if borrowAPR > e.cfg.SpotFuturesMaxBorrowAPR {
+			if borrowAPR > e.cfg.SpotFuturesMaxBorrowAPR && !isActive {
 				e.log.Info("spot discovery: FILTERED %s on %s — interest APR %.1f%% > max %.1f%%",
 					spotSymbol, exchName, borrowAPR*100, e.cfg.SpotFuturesMaxBorrowAPR*100)
 				continue
+			} else if borrowAPR > e.cfg.SpotFuturesMaxBorrowAPR && isActive {
+				e.log.Info("spot discovery: BYPASSED borrow filter for active position %s on %s — interest APR %.1f%% > max %.1f%%",
+					spotSymbol, exchName, borrowAPR*100, e.cfg.SpotFuturesMaxBorrowAPR*100)
 			}
 
 			// Verify coin is actually borrowable (interest rate API may return rates
@@ -187,11 +202,14 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 		netAPR := fundingAPR - borrowAPR - feeAPR
 
 		// Filter: net yield too low.
-		if netAPR < e.cfg.SpotFuturesMinNetYieldAPR {
+		if netAPR < e.cfg.SpotFuturesMinNetYieldAPR && !isActive {
 			e.log.Info("spot discovery: FILTERED %s on %s — net APR %.1f%% < min %.1f%% (funding=%.1f%% borrow=%.1f%% fees=%.1f%%)",
 				item.Symbol, exchName, netAPR*100, e.cfg.SpotFuturesMinNetYieldAPR*100,
 				fundingAPR*100, borrowAPR*100, feeAPR*100)
 			continue
+		} else if netAPR < e.cfg.SpotFuturesMinNetYieldAPR && isActive {
+			e.log.Info("spot discovery: BYPASSED yield filter for active position %s on %s — net APR %.1f%% < min %.1f%%",
+				spotSymbol, exchName, netAPR*100, e.cfg.SpotFuturesMinNetYieldAPR*100)
 		}
 
 		opps = append(opps, SpotArbOpportunity{

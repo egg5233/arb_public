@@ -177,6 +177,7 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		BorrowAmount:     borrowAmount,
 		BorrowRateHourly: opp.BorrowAPR / 8760,
 		FundingAPR:       opp.FundingAPR,
+		FeeAPR:           opp.FeeAPR,
 		CurrentBorrowAPR: opp.BorrowAPR,
 		NotionalUSDT:     notional,
 		EntryFees:        entryFees,

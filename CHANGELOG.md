@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.19] - 2026-03-30
+
+### Fixed
+- **Yield-below-minimum exit now fires correctly** — three combined bugs suppressed the exit trigger: (1) discovery filters dropped active positions whose rates degraded, starving monitor of fresh data; (2) `lookupCurrentFundingAPR` ignored zero/negative funding rates; (3) exit threshold omitted fee costs. Fixed by adding active-position bypass to 3 discovery filter gates, replacing `lookupCurrentFundingAPR` with `lookupCurrentOpp` returning the full opportunity, and including `feeAPR` in the yield threshold calculation (`discovery.go`, `monitor.go`, `exit_manager.go`, `spot_position.go`, `execution.go`)
+
 ## [0.22.18] - 2026-03-30
 
 ### Fixed

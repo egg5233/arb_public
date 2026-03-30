@@ -34,6 +34,7 @@ type SpotFuturesPosition struct {
 	BorrowCostAccrued   float64    `json:"borrow_cost_accrued"`
 	NegativeYieldSince  *time.Time `json:"negative_yield_since,omitempty"`
 	FundingAPR          float64    `json:"funding_apr"` // entry-time funding APR for yield comparison
+	FeeAPR              float64    `json:"fee_apr"`     // entry-time annualized fee cost for yield comparison
 
 	// P&L tracking
 	FundingCollected float64 `json:"funding_collected"`

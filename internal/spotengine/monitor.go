@@ -160,8 +160,8 @@ func (e *SpotEngine) updateBorrowCost(pos *models.SpotFuturesPosition, smExch ex
 
 	// Determine current funding APR for yield comparison.
 	fundingAPR := pos.FundingAPR
-	if latest := e.lookupCurrentFundingAPR(pos.Symbol, pos.Exchange, pos.Direction); latest > 0 {
-		fundingAPR = latest
+	if opp, found := e.lookupCurrentOpp(pos.Symbol, pos.Exchange, pos.Direction); found {
+		fundingAPR = opp.FundingAPR
 	}
 	negativeYield := fundingAPR > 0 && currentAPR > fundingAPR
 
@@ -284,14 +284,14 @@ func (e *SpotEngine) retryPendingRepay(pos *models.SpotFuturesPosition) {
 	e.completeExit(updated, updated.ExitReason)
 }
 
-// lookupCurrentFundingAPR searches the latest discovery scan for the current
-// funding APR of a symbol/exchange/direction combination.
-func (e *SpotEngine) lookupCurrentFundingAPR(symbol, exchName, direction string) float64 {
+// lookupCurrentOpp searches the latest discovery scan for the full opportunity
+// matching a symbol/exchange/direction combination.
+func (e *SpotEngine) lookupCurrentOpp(symbol, exchName, direction string) (SpotArbOpportunity, bool) {
 	opps := e.getLatestOpps()
 	for _, opp := range opps {
 		if opp.Symbol == symbol && opp.Exchange == exchName && opp.Direction == direction {
-			return opp.FundingAPR
+			return opp, true
 		}
 	}
-	return 0
+	return SpotArbOpportunity{}, false
 }

@@ -48,10 +48,22 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 	// ---------------------------------------------------------------
 	// 2. Funding Rate Drop
 	// ---------------------------------------------------------------
-	currentFundingAPR := e.lookupCurrentFundingAPR(pos.Symbol, pos.Exchange, pos.Direction)
-	if currentFundingAPR <= 0 {
-		// Symbol not in latest scan — fall back to entry-time APR.
+	var currentFundingAPR, feeAPR float64
+	if opp, found := e.lookupCurrentOpp(pos.Symbol, pos.Exchange, pos.Direction); found {
+		currentFundingAPR = opp.FundingAPR
+		feeAPR = opp.FeeAPR
+	} else {
+		// Symbol not in latest scan — fall back to entry-time data.
 		currentFundingAPR = pos.FundingAPR
+		feeAPR = pos.FeeAPR
+	}
+	// Last-resort feeAPR: calculate from spotFees if position predates FeeAPR field.
+	if feeAPR == 0 {
+		takerFee := spotFees[pos.Exchange]
+		if takerFee == 0 {
+			takerFee = 0.0005
+		}
+		feeAPR = takerFee * 4 * (365.0 / assumedHoldDays)
 	}
 	if currentFundingAPR > 0 {
 		borrowAPR := pos.CurrentBorrowAPR
@@ -59,10 +71,11 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 			borrowAPR = 0 // Direction B has no borrow
 		}
 		minNet := e.cfg.SpotFuturesMinNetYieldAPR
-		if currentFundingAPR-borrowAPR < minNet {
-			e.log.Warn("exit trigger: %s net yield %.2f%% < min %.2f%% (funding=%.2f%% borrow=%.2f%%)",
-				pos.Symbol, (currentFundingAPR-borrowAPR)*100, minNet*100,
-				currentFundingAPR*100, borrowAPR*100)
+		netYield := currentFundingAPR - borrowAPR - feeAPR
+		if netYield < minNet {
+			e.log.Warn("exit trigger: %s net yield %.2f%% < min %.2f%% (funding=%.2f%% borrow=%.2f%% fees=%.2f%%)",
+				pos.Symbol, netYield*100, minNet*100,
+				currentFundingAPR*100, borrowAPR*100, feeAPR*100)
 			return "yield_below_minimum", false
 		}
 	}
