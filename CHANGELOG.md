@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.5] - 2026-03-30
+
+### Fixed
+- **Exit retry/fallback for spot-futures ClosePosition** — three-layer retry architecture prevents positions from being stranded in `exiting` status: (1) `retryLeg()` wrapper retries each close leg 3× with 2s delay, escalating to emergency market close on futures exhaustion; (2) monitor detects stuck exits after 2min and re-triggers `initiateExit`, promoting to emergency after 5 retries; (3) already-closed legs are skipped on retry to avoid double-closing (`execution.go`, `monitor.go`, `exit_manager.go`, `spot_position.go`)
+
 ## [0.22.4] - 2026-03-30
 
 ### Fixed

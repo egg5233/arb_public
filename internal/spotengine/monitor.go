@@ -49,6 +49,23 @@ func (e *SpotEngine) monitorTick() {
 			e.retryPendingRepay(pos)
 			continue
 		}
+		if pos.Status == models.SpotStatusExiting && !pos.PendingRepay {
+			if pos.ExitTriggeredAt != nil && time.Since(*pos.ExitTriggeredAt) > 2*time.Minute {
+				if e.isExiting(pos.ID) {
+					// Exit goroutine still running — don't double-trigger.
+					continue
+				}
+				_ = e.lockedUpdatePosition(pos.ID, func(p *models.SpotFuturesPosition) bool {
+					p.ExitRetryCount++
+					return true
+				})
+				isEmergency := pos.ExitRetryCount >= 5
+				e.log.Warn("monitor: retrying stuck exit for %s (retry #%d, emergency=%v)",
+					pos.ID, pos.ExitRetryCount+1, isEmergency)
+				go e.initiateExit(pos, pos.ExitReason, isEmergency)
+			}
+			continue
+		}
 		if pos.Status != models.SpotStatusActive {
 			continue
 		}

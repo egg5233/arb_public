@@ -218,11 +218,16 @@ func (e *SpotEngine) initiateExit(pos *models.SpotFuturesPosition, reason string
 	}()
 
 	// Update position status to "exiting".
+	// Only reset ExitRetryCount on fresh exits (not monitor retries).
 	now := time.Now().UTC()
+	isFreshExit := pos.Status != models.SpotStatusExiting
 	err := e.lockedUpdatePosition(pos.ID, func(p *models.SpotFuturesPosition) bool {
 		p.Status = models.SpotStatusExiting
 		p.ExitReason = reason
 		p.ExitTriggeredAt = &now
+		if isFreshExit {
+			p.ExitRetryCount = 0
+		}
 		return true
 	})
 	if err != nil {
