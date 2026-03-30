@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.7] - 2026-03-30
+
+### Fixed
+- **Direction A repay stall after partial buyback or accrued interest** — `retryPendingRepay` now queries `GetMarginBalance` for actual liability (principal + interest) and available balance; if the account is short, it buys the deficit via market IOC before retrying repay, preventing infinite retry loops with accruing interest (`monitor.go`)
+
 ## [0.22.6] - 2026-03-30
 
 ### Fixed

@@ -207,8 +207,9 @@ func (e *SpotEngine) broadcastHealth(pos *models.SpotFuturesPosition) {
 }
 
 // retryPendingRepay retries margin repay for a position whose trade legs are
-// closed but repay failed (e.g. Bybit blackout). On success, completes the
-// exit flow. On failure, logs and waits for the next monitor tick.
+// closed but repay failed (e.g. Bybit blackout, partial buyback, or accrued
+// interest shortfall). It queries the actual liability via GetMarginBalance
+// and buys the missing spot if the account is short before retrying repay.
 func (e *SpotEngine) retryPendingRepay(pos *models.SpotFuturesPosition) {
 	smExch, ok := e.spotMargin[pos.Exchange]
 	if !ok {
@@ -216,7 +217,44 @@ func (e *SpotEngine) retryPendingRepay(pos *models.SpotFuturesPosition) {
 		return
 	}
 
-	repayAmount := utils.FormatSize(pos.BorrowAmount, 6)
+	// Query actual liability (principal + accrued interest) and available balance.
+	bal, balErr := smExch.GetMarginBalance(pos.BaseCoin)
+	repayAmount := utils.FormatSize(pos.BorrowAmount, 6) // fallback
+	if balErr == nil && bal.Borrowed > 0 {
+		liability := bal.Borrowed + bal.Interest
+		repayAmount = utils.FormatSize(liability, 6)
+
+		// If we don't hold enough coin, buy the shortfall.
+		deficit := liability - bal.Available
+		if deficit > 0 {
+			// Add 0.5% buffer for slippage on the market buy.
+			deficitWithBuffer := deficit * 1.005
+			deficitStr := utils.FormatSize(deficitWithBuffer, 6)
+			e.log.Info("retryPendingRepay: account short %.6f %s (available=%.6f, liability=%.6f) — buying deficit %s",
+				deficit, pos.BaseCoin, bal.Available, liability, deficitStr)
+
+			orderID, buyErr := smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
+				Symbol:    pos.Symbol,
+				Side:      exchange.SideBuy,
+				OrderType: "market",
+				Size:      deficitStr,
+				Force:     "ioc",
+			})
+			if buyErr != nil {
+				e.log.Warn("retryPendingRepay: deficit buy failed for %s: %v — will retry next tick", pos.ID, buyErr)
+				return
+			}
+
+			// Confirm fill via the futures exchange adapter (has WS/REST order tracking).
+			if futExch, fOk := e.exchanges[pos.Exchange]; fOk {
+				filled, _ := e.confirmSpotFill(futExch, orderID, pos.Symbol)
+				e.log.Info("retryPendingRepay: deficit buy filled %.6f %s for %s", filled, pos.BaseCoin, pos.ID)
+			}
+		}
+	} else if balErr != nil {
+		e.log.Warn("retryPendingRepay: GetMarginBalance failed for %s: %v — using original BorrowAmount", pos.BaseCoin, balErr)
+	}
+
 	e.log.Info("retryPendingRepay: attempting repay %s %s for %s", repayAmount, pos.BaseCoin, pos.ID)
 
 	if err := smExch.MarginRepay(exchange.MarginRepayParams{
