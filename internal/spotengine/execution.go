@@ -54,14 +54,14 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		return fmt.Errorf("exchange %s not found", exchName)
 	}
 
-	// 1d. Check no duplicate symbol already open.
+	// 1d. Check no duplicate symbol already open (any exchange).
 	active, err := e.db.GetActiveSpotPositions()
 	if err != nil {
 		return fmt.Errorf("failed to check active positions: %w", err)
 	}
 	for _, pos := range active {
-		if pos.Symbol == symbol && pos.Exchange == exchName {
-			return fmt.Errorf("position for %s on %s already open", symbol, exchName)
+		if pos.Symbol == symbol {
+			return fmt.Errorf("position for %s already open on %s", symbol, pos.Exchange)
 		}
 	}
 

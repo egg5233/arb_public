@@ -35,10 +35,10 @@ func (e *SpotEngine) checkRiskGate(opp SpotArbOpportunity) RiskGateResult {
 		return RiskGateResult{Allowed: false, Reason: fmt.Sprintf("at_capacity_%d/%d", len(active), e.cfg.SpotFuturesMaxPositions)}
 	}
 
-	// 3. Duplicate: no active position for same symbol on same exchange.
+	// 3. Duplicate: no active position for same symbol (any exchange).
 	for _, pos := range active {
-		if pos.Symbol == symbol && pos.Exchange == exchName {
-			return RiskGateResult{Allowed: false, Reason: fmt.Sprintf("duplicate_%s_%s", symbol, exchName)}
+		if pos.Symbol == symbol {
+			return RiskGateResult{Allowed: false, Reason: fmt.Sprintf("duplicate_%s_on_%s", symbol, pos.Exchange)}
 		}
 	}
 

@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.3] - 2026-03-30
+
+### Fixed
+- **Spot-futures duplicate guard blocks per-symbol across all exchanges** — `checkRiskGate` and `ManualOpen` duplicate-position checks now compare symbol only (not symbol+exchange), preventing concurrent positions on the same asset across different exchanges as documented in ARCHITECTURE.md (`risk_gate.go`, `execution.go`)
+
 ## [0.22.2] - 2026-03-30
 
 ### Fixed
