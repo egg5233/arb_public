@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.21.10] - 2026-03-30
+
+### Fixed
+- **Bitget API signature failure for non-ASCII symbols** — Chinese character symbols (e.g. 龙虾USDT) caused HMAC signature mismatch due to `http.NewRequest` re-encoding percent-escaped UTF-8 bytes; fixed by setting `req.URL.RawQuery` directly to preserve exact query string used for signing (`client.go`)
+
 ## [0.21.9] - 2026-03-30
 
 ### Fixed
