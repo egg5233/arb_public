@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.26] - 2026-03-31
+
+### Fixed
+- **[spot-futures] Empty `/api/spot/stats` payload no longer yields NaN dashboard stats on cold start** — `handleGetSpotStats` now normalizes missing `total_pnl`, `win_count`, `loss_count`, and `trade_count` fields to `"0"` before returning; added defensive `|| '0'` defaults in `Overview.tsx` when parsing stats fields so partial or malformed payloads cannot produce `NaN` values; added 3 regression tests covering cold start (empty hash), partial hash, and full hash cases (`internal/api/spot_stats_test.go`) ([ARB-78](/ARB/issues/ARB-78))
+
 ## [0.22.25] - 2026-03-31
 
 ### Fixed
