@@ -21,15 +21,23 @@ type RiskChecker interface {
 	// an approval decision that includes the recommended position size and
 	// price, or a rejection reason.
 	Approve(opp Opportunity) (*RiskApproval, error)
+
+	// ApproveWithReserved is like Approve but subtracts already-reserved
+	// margin (from prior approvals in the same batch) before checking
+	// balance sufficiency. This prevents concurrent margin over-commitment
+	// when multiple candidates are approved sequentially then executed in
+	// parallel. Pass nil to behave identically to Approve.
+	ApproveWithReserved(opp Opportunity, reserved map[string]float64) (*RiskApproval, error)
 }
 
 // RiskApproval holds the result of a RiskChecker.Approve call.
 type RiskApproval struct {
-	Approved bool    `json:"approved"`
-	Size     float64 `json:"size"`
-	Reason   string  `json:"reason"`
-	Price    float64 `json:"price"`
-	GapBPS   float64 `json:"gap_bps"` // cross-exchange price gap at approval time
+	Approved       bool    `json:"approved"`
+	Size           float64 `json:"size"`
+	Reason         string  `json:"reason"`
+	Price          float64 `json:"price"`
+	GapBPS         float64 `json:"gap_bps"`         // cross-exchange price gap at approval time
+	RequiredMargin float64 `json:"required_margin"` // per-leg margin with safety buffer (for reservation)
 }
 
 // RiskAlert represents an alert emitted by the risk monitor for dashboard

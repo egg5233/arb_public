@@ -101,7 +101,7 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
                 <td className="py-2 text-right font-mono text-gray-500">
                   {(tr.rotation_count ?? 0) > 0 ? tr.rotation_count : '-'}
                 </td>
-                <td className="py-2 text-gray-400 text-xs max-w-xs truncate" title={tr.exit_reason ?? ''}>
+                <td className="py-2 text-gray-400 text-xs max-w-[120px] truncate" title={tr.exit_reason ?? ''}>
                   {tr.exit_reason || '-'}
                 </td>
               </tr>

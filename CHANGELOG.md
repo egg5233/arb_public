@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.21.11] - 2026-03-31
+
+### Fixed
+- **Concurrent margin over-commitment (Gate.io INSUFFICIENT_AVAILABLE)** — Phase 1 batch approval now tracks reserved margin per-exchange via reservation map, preventing multiple candidates from approving against the same balance (`manager.go`, `engine.go`)
+- **IOC depth-fill blind ordering** — depth-fill loop now checks cached balance (5s TTL, fail-closed) before each IOC order and caps size to affordable amount; INSUFFICIENT errors invalidate cache for immediate refresh (`engine.go`)
+- **Rebalance underfunding** — `rebalanceFunds()` and `ensureFuturesBalance()` now use `CapitalPerLeg × MarginSafetyMultiplier` instead of raw `CapitalPerLeg` (`engine.go`, `manager.go`)
+- **Gate.io classic balance masking** — removed `available=0 → total` fallback that hid real insufficient margin state (`adapter.go`)
+- **Adaptive sizing stale reservation** — `requiredWithBuffer` now recomputed after slippage-adaptive size reduction (`manager.go`)
+- **Balance re-fetch nil dereference** — post-transfer balance refresh now keeps old balance on error instead of panicking (`manager.go`)
+- **History exit_reason truncation** — narrowed max-width for better table display (`History.tsx`)
+
 ## [0.21.10] - 2026-03-30
 
 ### Fixed

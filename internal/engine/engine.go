@@ -19,6 +19,15 @@ import (
 	"arb/pkg/utils"
 )
 
+// isMarginError detects insufficient margin/balance errors across exchanges.
+// Case-insensitive to handle varying error message formats.
+func isMarginError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "insufficient") ||
+		strings.Contains(msg, "not enough") ||
+		strings.Contains(msg, "margin") && strings.Contains(msg, "available")
+}
+
 // Engine is the core arbitrage engine. It orchestrates discovery, risk
 // approval, trade execution, position management and exit logic.
 type Engine struct {
@@ -329,6 +338,7 @@ func (e *Engine) rebalanceFunds() {
 	if margin <= 0 {
 		margin = 50 // fallback
 	}
+	margin *= e.cfg.MarginSafetyMultiplier // buffer need with safety multiplier
 	maxTotal := float64(e.cfg.MaxPositions) * margin
 	needs := map[string]float64{}
 	for _, opp := range opps {
@@ -1288,6 +1298,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 	}
 	var candidates []candidate
 	newSlotCandidates := 0
+	reserved := map[string]float64{} // tracks margin committed by prior approvals in this batch
 
 	for _, opp := range opps {
 		if activeSymbols[opp.Symbol] {
@@ -1309,7 +1320,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 		}
 
 		e.log.Info("executeArbitrage: risk.Approve %s...", opp.Symbol)
-		approval, err := e.risk.Approve(opp)
+		approval, err := e.risk.ApproveWithReserved(opp, reserved)
 		if err != nil {
 			e.log.Error("risk approval error for %s: %v", opp.Symbol, err)
 			if e.rejStore != nil {
@@ -1335,6 +1346,8 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 		}
 
 		candidates = append(candidates, candidate{opp, approval.Size, approval.Price, approval.GapBPS, lockResource})
+		reserved[opp.LongExchange] += approval.RequiredMargin
+		reserved[opp.ShortExchange] += approval.RequiredMargin
 		newSlotCandidates++
 	}
 
@@ -1984,6 +1997,10 @@ func (e *Engine) executeTradeV2WithPos(opp models.Opportunity, pos *models.Arbit
 		}
 	}
 
+	// Cached balance for margin pre-check (refreshed every 5s, not every 100ms tick)
+	var cachedLongBal, cachedShortBal *exchange.Balance
+	var lastBalCheck time.Time
+
 fillLoop:
 	for {
 		filled := math.Min(confirmedLong, confirmedShort)
@@ -2130,6 +2147,64 @@ fillLoop:
 		shortPriceStr := e.formatPrice(opp.ShortExchange, opp.Symbol, bidPrice)
 		longPriceStr := e.formatPrice(opp.LongExchange, opp.Symbol, askPrice)
 
+		// Margin pre-check: cap size to what both exchanges can actually afford.
+		// Cache balance for 5s to avoid hammering REST APIs every 100ms tick.
+		leverage := float64(e.cfg.Leverage)
+		if leverage <= 0 {
+			leverage = 1
+		}
+
+		if time.Since(lastBalCheck) > 5*time.Second {
+			if lb, err := longExch.GetFuturesBalance(); err == nil {
+				cachedLongBal = lb
+			} else {
+				cachedLongBal = nil // fail-closed: clear stale cache
+				e.log.Warn("depth tick: long balance refresh failed: %v", err)
+			}
+			if sb, err := shortExch.GetFuturesBalance(); err == nil {
+				cachedShortBal = sb
+			} else {
+				cachedShortBal = nil // fail-closed: clear stale cache
+				e.log.Warn("depth tick: short balance refresh failed: %v", err)
+			}
+			lastBalCheck = time.Now()
+		}
+		// Fail-closed: if we have no cached balance, skip this tick (don't place orders blind)
+		if cachedLongBal == nil || cachedShortBal == nil {
+			e.log.Warn("depth tick: no cached balance for %s, skipping tick", opp.Symbol)
+			continue
+		}
+		{
+			// Max affordable size per leg = (available * leverage) / price
+			maxLongSize := (cachedLongBal.Available * leverage) / askPrice
+			maxShortSize := (cachedShortBal.Available * leverage) / bidPrice
+			affordableSize := math.Min(maxLongSize, maxShortSize)
+
+			if affordableSize < size {
+				// Round down to step size
+				if e.contracts != nil {
+					if exContracts, ok := e.contracts[opp.ShortExchange]; ok {
+						if ci, ok := exContracts[opp.Symbol]; ok && ci.StepSize > 0 {
+							affordableSize = utils.RoundToStep(affordableSize, ci.StepSize)
+						}
+					}
+				}
+				if affordableSize > 0 && affordableSize*bidPrice >= e.cfg.MinChunkUSDT {
+					e.log.Info("depth tick: margin cap %s size %.6f → %.6f (longAvail=%.2f shortAvail=%.2f)",
+						opp.Symbol, size, affordableSize, cachedLongBal.Available, cachedShortBal.Available)
+					size = affordableSize
+					// Re-format sizes after capping
+					shortSizeStr = e.formatSize(opp.ShortExchange, opp.Symbol, size)
+					longSizeStr = e.formatSize(opp.LongExchange, opp.Symbol, size)
+				} else {
+					e.log.Warn("depth tick: insufficient margin for %s min chunk (longAvail=%.2f shortAvail=%.2f), skipping tick",
+						opp.Symbol, cachedLongBal.Available, cachedShortBal.Available)
+					continue
+				}
+			}
+		}
+
+		// On INSUFFICIENT errors, invalidate cache to force fresh balance next tick
 		var longFilled, longAvg, shortFilled, shortAvg float64
 
 		if shortFirst {
@@ -2147,6 +2222,11 @@ fillLoop:
 			})
 			if err != nil {
 				shortConsecFails++
+				// On margin error, refresh balance to get accurate state
+				if isMarginError(err) {
+					e.log.Warn("depth tick: short IOC margin insufficient for %s, invalidating cache", opp.Symbol)
+					lastBalCheck = time.Time{} // force immediate refresh next tick
+				}
 				e.log.Warn("depth tick: short IOC failed (%d/%d): %v", shortConsecFails, maxConsecFails, err)
 				continue
 			}
@@ -2170,6 +2250,10 @@ fillLoop:
 			})
 			if err != nil {
 				longConsecFails++
+				if isMarginError(err) {
+					e.log.Warn("depth tick: long IOC margin insufficient for %s after short filled, invalidating cache", opp.Symbol)
+					lastBalCheck = time.Time{}
+				}
 				e.log.Warn("depth tick: long IOC failed (%d/%d) after short filled %.6f, closing short: %v", longConsecFails, maxConsecFails, shortFilled, err)
 				e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
 				continue
@@ -2197,6 +2281,11 @@ fillLoop:
 			})
 			if err != nil {
 				longConsecFails++
+				// On margin error, refresh balance to get accurate state
+				if isMarginError(err) {
+					e.log.Warn("depth tick: long IOC margin insufficient for %s, invalidating cache", opp.Symbol)
+					lastBalCheck = time.Time{} // force immediate refresh next tick
+				}
 				e.log.Warn("depth tick: long IOC failed (%d/%d): %v", longConsecFails, maxConsecFails, err)
 				continue
 			}
@@ -2220,6 +2309,10 @@ fillLoop:
 			})
 			if err != nil {
 				shortConsecFails++
+				if isMarginError(err) {
+					e.log.Warn("depth tick: short IOC margin insufficient for %s after long filled, invalidating cache", opp.Symbol)
+					lastBalCheck = time.Time{}
+				}
 				e.log.Warn("depth tick: short IOC failed (%d/%d) after long filled %.6f, closing long: %v", shortConsecFails, maxConsecFails, longFilled, err)
 				e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
 				continue
