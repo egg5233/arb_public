@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.28] - 2026-03-31
+
+### Fixed
+- **[api] Binary drift monitor detects stale running process after build** — added background goroutine (`internal/api/drift_monitor.go`) that compares on-disk binary mtime against process start time every 60s; logs `ERROR` and broadcasts `binary_drift` alert to WebSocket clients on drift; `/api/check-update` now returns `binaryDrift: true` when process predates the current binary; prevents silent runtime drift where a deploy succeeds but old PID continues serving stale code ([ARB-81](/ARB/issues/ARB-81))
+
 ## [0.22.27] - 2026-03-31
 
 ### Fixed
