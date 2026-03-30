@@ -213,13 +213,28 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 		return opps[i].NetAPR > opps[j].NetAPR
 	})
 
-	// Limit to top N.
+	// Limit to top N, but always keep entries that match active positions
+	// so that monitor/exit logic never falls back to stale entry-time data.
 	topN := e.cfg.SpotFuturesMaxPositions * 3 // show 3x max positions
 	if topN < 5 {
 		topN = 5
 	}
 	if len(opps) > topN {
-		opps = opps[:topN]
+		activeKeys := make(map[string]bool)
+		if activePositions, err := e.db.GetActiveSpotPositions(); err == nil {
+			for _, p := range activePositions {
+				activeKeys[p.Symbol+":"+p.Exchange+":"+p.Direction] = true
+			}
+		}
+
+		kept := make([]SpotArbOpportunity, 0, topN+len(activeKeys))
+		kept = append(kept, opps[:topN]...)
+		for _, opp := range opps[topN:] {
+			if activeKeys[opp.Symbol+":"+opp.Exchange+":"+opp.Direction] {
+				kept = append(kept, opp)
+			}
+		}
+		opps = kept
 	}
 
 	return opps

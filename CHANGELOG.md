@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.11] - 2026-03-30
+
+### Fixed
+- **Funding-drop and negative-yield exits now see all active positions** — discovery scan top-N truncation now preserves entries that match active positions, so `lookupCurrentFundingAPR` never falls back to stale entry-time funding data for open trades (`discovery.go`)
+
 ## [0.22.10] - 2026-03-30
 
 ### Fixed
