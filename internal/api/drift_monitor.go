@@ -5,6 +5,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"arb/pkg/utils"
@@ -162,8 +163,16 @@ func (s *Server) scheduleDriftRestart(log *utils.Logger) {
 		})
 		go func() {
 			time.Sleep(grace)
-			log.Warn("exiting for binary drift remediation — supervisor will restart")
-			os.Exit(1)
+			log.Warn("sending SIGTERM for binary drift remediation — graceful shutdown will run")
+			p, err := os.FindProcess(os.Getpid())
+			if err != nil {
+				log.Error("cannot find own process for SIGTERM, falling back to os.Exit: %v", err)
+				os.Exit(1)
+			}
+			if err := p.Signal(syscall.SIGTERM); err != nil {
+				log.Error("cannot send SIGTERM to self, falling back to os.Exit: %v", err)
+				os.Exit(1)
+			}
 		}()
 	})
 }
