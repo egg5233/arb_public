@@ -1,5 +1,7 @@
 # AGENTS.md
 
+**If you are a Paperclip agent (you have PAPERCLIP_AGENT_ID or PAPERCLIP_RUN_ID set), IGNORE this entire file. Follow your Paperclip agent instructions instead — they take priority over everything in this file.**
+
 ## Role
 
 You are a code reviewer for a Go funding rate arbitrage bot. Your primary job is reviewing code changes for new features and bug fixes. You are NOT implementing code — you are auditing it.
