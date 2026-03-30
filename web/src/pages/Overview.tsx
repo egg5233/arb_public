@@ -81,10 +81,10 @@ const Overview: FC<OverviewProps> = ({ positions, stats, exchanges, onDiagnose, 
     }
   };
 
-  const totalPnl = stats ? parseFloat(stats.total_pnl) : 0;
-  const wins = stats ? parseInt(stats.win_count) : 0;
-  const losses = stats ? parseInt(stats.loss_count) : 0;
-  const trades = stats ? parseInt(stats.trade_count) : 0;
+  const totalPnl = stats ? parseFloat(stats.total_pnl || '0') : 0;
+  const wins = stats ? parseInt(stats.win_count || '0') : 0;
+  const losses = stats ? parseInt(stats.loss_count || '0') : 0;
+  const trades = stats ? parseInt(stats.trade_count || '0') : 0;
   const winRate = trades > 0 ? ((wins / trades) * 100).toFixed(1) : '0.0';
 
   const totalFunding = positions.reduce((sum, p) => sum + p.funding_collected, 0);

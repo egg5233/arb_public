@@ -75,6 +75,13 @@ func (s *Server) handleGetSpotStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Normalize missing fields to zero for cold start / partial hash.
+	for _, key := range []string{"total_pnl", "win_count", "loss_count", "trade_count"} {
+		if _, ok := stats[key]; !ok {
+			stats[key] = "0"
+		}
+	}
+
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: stats})
 }
 
