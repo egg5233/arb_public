@@ -98,6 +98,15 @@ func (e *SpotEngine) monitorPosition(pos *models.SpotFuturesPosition) {
 		latest = pos // fall back to original
 	}
 
+	// Persist live economics snapshot for API/dashboard consumption.
+	e.updateLiveEconomics(latest, isDirA)
+
+	// Re-read again to include live economics for broadcast.
+	latest, err = e.db.GetSpotPosition(pos.ID)
+	if err != nil {
+		e.log.Error("monitor: failed to re-read position %s after economics update: %v", pos.ID, err)
+	}
+
 	// Broadcast health for all directions.
 	e.broadcastHealth(latest)
 
@@ -204,6 +213,48 @@ func (e *SpotEngine) updateBorrowCost(pos *models.SpotFuturesPosition, smExch ex
 // broadcastHealth sends a position health update via WebSocket.
 func (e *SpotEngine) broadcastHealth(pos *models.SpotFuturesPosition) {
 	e.api.BroadcastSpotHealth(pos)
+}
+
+// updateLiveEconomics computes and persists the current funding, fee, and net
+// yield snapshot so the API and dashboard reflect the same economics the exit
+// engine uses.
+func (e *SpotEngine) updateLiveEconomics(pos *models.SpotFuturesPosition, isDirA bool) {
+	now := time.Now()
+	var currentFundingAPR, feeAPR float64
+	source := "entry_fallback"
+
+	if opp, found := e.lookupCurrentOpp(pos.Symbol, pos.Exchange, pos.Direction); found {
+		currentFundingAPR = opp.FundingAPR
+		feeAPR = opp.FeeAPR
+		source = "live_scan"
+	} else {
+		currentFundingAPR = pos.FundingAPR
+		feeAPR = pos.FeeAPR
+	}
+
+	// Last-resort feeAPR for legacy positions predating FeeAPR field.
+	if feeAPR == 0 {
+		takerFee := spotFees[pos.Exchange]
+		if takerFee == 0 {
+			takerFee = 0.0005
+		}
+		feeAPR = takerFee * 4 * (365.0 / assumedHoldDays)
+	}
+
+	borrowAPR := pos.CurrentBorrowAPR
+	if !isDirA {
+		borrowAPR = 0
+	}
+	netYield := currentFundingAPR - borrowAPR - feeAPR
+
+	_ = e.lockedUpdatePosition(pos.ID, func(p *models.SpotFuturesPosition) bool {
+		p.CurrentFundingAPR = currentFundingAPR
+		p.CurrentFeeAPR = feeAPR
+		p.CurrentNetYieldAPR = netYield
+		p.YieldDataSource = source
+		p.YieldSnapshotAt = &now
+		return true
+	})
 }
 
 // retryPendingRepay retries margin repay for a position whose trade legs are

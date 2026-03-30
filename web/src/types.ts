@@ -130,6 +130,12 @@ export interface SpotPosition {
   current_borrow_apr: number;
   borrow_cost_accrued: number;
   funding_apr: number;
+  fee_apr: number;
+  current_funding_apr: number;
+  current_fee_apr: number;
+  current_net_yield_apr: number;
+  yield_data_source: string;
+  yield_snapshot_at: string;
   notional_usdt: number;
   realized_pnl: number;
   entry_fees: number;

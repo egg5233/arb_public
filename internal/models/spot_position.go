@@ -36,6 +36,13 @@ type SpotFuturesPosition struct {
 	FundingAPR          float64    `json:"funding_apr"` // entry-time funding APR for yield comparison
 	FeeAPR              float64    `json:"fee_apr"`     // entry-time annualized fee cost for yield comparison
 
+	// Live economics snapshot (updated by monitorLoop each tick)
+	CurrentFundingAPR   float64    `json:"current_funding_apr"`
+	CurrentFeeAPR       float64    `json:"current_fee_apr"`
+	CurrentNetYieldAPR  float64    `json:"current_net_yield_apr"`
+	YieldDataSource     string     `json:"yield_data_source"`      // "live_scan" or "entry_fallback"
+	YieldSnapshotAt     *time.Time `json:"yield_snapshot_at,omitempty"`
+
 	// P&L tracking
 	FundingCollected float64 `json:"funding_collected"`
 	EntryFees        float64 `json:"entry_fees"`

@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.23] - 2026-03-31
+
+### Fixed
+- **[spot-futures] Health API and dashboard now show live net yield** — added live economics snapshot fields (`CurrentFundingAPR`, `CurrentFeeAPR`, `CurrentNetYieldAPR`, `YieldDataSource`, `YieldSnapshotAt`) to position model, persisted by monitor each tick via `updateLiveEconomics()`. Health endpoint returns live fields instead of stale entry-time funding. Dashboard uses `current_net_yield_apr` from backend instead of local recomputation. Frontend now handles `spot_position_health` WS messages for real-time updates. Fallback to entry-time data is explicitly labeled ([ARB-69](/ARB/issues/ARB-69))
+
 ## [0.22.22] - 2026-03-31
 
 ### Fixed

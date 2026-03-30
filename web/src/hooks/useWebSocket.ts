@@ -101,6 +101,19 @@ export function useWebSocket(enabled: boolean) {
                 return [...prev, updated];
               });
               break;
+            case 'spot_position_health':
+              setSpotPositions((prev) => {
+                const updated = msg.data as SpotPosition;
+                if (!updated || !updated.id) return prev;
+                const idx = prev.findIndex((p) => p.id === updated.id);
+                if (idx >= 0) {
+                  const next = [...prev];
+                  next[idx] = { ...next[idx], ...updated };
+                  return next;
+                }
+                return prev;
+              });
+              break;
           }
         } catch {
           // ignore parse errors

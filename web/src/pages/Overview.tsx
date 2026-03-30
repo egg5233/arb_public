@@ -226,7 +226,10 @@ const Overview: FC<OverviewProps> = ({ positions, stats, exchanges, onDiagnose, 
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {activeSpotPositions.map((pos) => {
-                const netYield = pos.funding_apr - pos.current_borrow_apr;
+                const netYield = pos.current_net_yield_apr !== undefined && pos.current_net_yield_apr !== 0
+                  ? pos.current_net_yield_apr
+                  : pos.funding_apr - pos.current_borrow_apr;
+                const isFallback = pos.yield_data_source === 'entry_fallback';
                 const duration = Math.floor((Date.now() - new Date(pos.created_at).getTime()) / 3600000);
                 const dir = pos.direction === 'borrow_sell_long' ? 'A' : 'B';
                 return (
@@ -246,8 +249,8 @@ const Overview: FC<OverviewProps> = ({ positions, stats, exchanges, onDiagnose, 
                         </span>
                       </div>
                       <div>
-                        <span className="text-gray-500">Net Yield</span>
-                        <span className={`ml-1 font-mono ${netYield < 0 ? 'text-red-400' : 'text-green-400'}`}>
+                        <span className="text-gray-500">Net Yield{isFallback ? ' *' : ''}</span>
+                        <span className={`ml-1 font-mono ${netYield < 0 ? 'text-red-400' : 'text-green-400'}`} title={isFallback ? 'Entry-time estimate (live scan unavailable)' : 'Live scan'}>
                           {(netYield * 100).toFixed(1)}%
                         </span>
                       </div>
