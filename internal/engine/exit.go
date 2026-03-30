@@ -194,11 +194,13 @@ func (e *Engine) checkExitsV2() {
 		}
 
 		// Zero-spread safety: exit if both legs have equal funding rate for too long.
+		// When tolerance is reached, schedule a post-settlement confirmation instead
+		// of exiting immediately — rates often diverge again after settlement.
 		if e.cfg.ZeroSpreadTolerance > 0 {
 			if zeroSpread, zReason := e.checkZeroSpread(pos); zeroSpread {
 				if pos.ZeroSpreadCount+1 >= e.cfg.ZeroSpreadTolerance {
-					e.log.Info("exit check: %s — %s (zero-spread %d/%d, exiting)", pos.ID, zReason, pos.ZeroSpreadCount+1, e.cfg.ZeroSpreadTolerance)
-					e.spawnExitGoroutine(pos, zReason)
+					e.log.Info("exit check: %s — %s (zero-spread %d/%d, scheduling post-settlement confirm)", pos.ID, zReason, pos.ZeroSpreadCount+1, e.cfg.ZeroSpreadTolerance)
+					e.schedulePostSettlementZeroCheck(pos)
 					continue
 				}
 				pos.ZeroSpreadCount++
@@ -1233,7 +1235,9 @@ func (e *Engine) schedulePreSettlementCheck(pos *models.ArbitragePosition) {
 				return
 			}
 
-			if fresh.ReversalCount == 0 {
+			tolerance := e.cfg.SpreadReversalTolerance
+			if tolerance > 0 && fresh.ReversalCount < tolerance {
+				e.log.Info("pre-settlement check: %s — ReversalCount=%d < tolerance=%d, skipping exit", fresh.ID, fresh.ReversalCount, tolerance)
 				return
 			}
 
@@ -1274,6 +1278,115 @@ func (e *Engine) schedulePreSettlementCheck(pos *models.ArbitragePosition) {
 
 			reason := fmt.Sprintf("pre-settlement reversal: entry=%.4f bps/h current=%.4f bps/h", fresh.EntrySpread, currentSpreadBpsH)
 			e.log.Info("pre-settlement check: %s — %s (ReversalCount=%d, exiting before settlement)", fresh.ID, reason, fresh.ReversalCount)
+			e.spawnExitGoroutine(fresh, reason)
+
+		case <-e.stopCh:
+			return
+		}
+	}()
+}
+
+// schedulePostSettlementZeroCheck sets a timer to fire 2 minutes after the next
+// funding settlement. If the spread is still zero at that point, it triggers exit.
+// This avoids closing a position prematurely when rates often diverge after settlement.
+func (e *Engine) schedulePostSettlementZeroCheck(pos *models.ArbitragePosition) {
+	if pos.NextFunding.IsZero() {
+		e.log.Warn("post-settlement zero-check: %s — NextFunding is zero, cannot schedule (will retry next exit cycle)", pos.ID)
+		return
+	}
+
+	// Dedup: reuse the pre-settle map to prevent multiple timers per position.
+	e.preSettleMu.Lock()
+	key := "zero:" + pos.ID
+	if e.preSettleActive[key] {
+		e.preSettleMu.Unlock()
+		return
+	}
+	e.preSettleActive[key] = true
+	e.preSettleMu.Unlock()
+
+	// Check 2 minutes after settlement — rates should have updated by then.
+	checkTime := pos.NextFunding.Add(2 * time.Minute)
+	delay := time.Until(checkTime)
+	if delay <= 0 {
+		e.preSettleMu.Lock()
+		delete(e.preSettleActive, key)
+		e.preSettleMu.Unlock()
+		return
+	}
+
+	e.log.Info("post-settlement zero-check scheduled for %s at %s (in %s)", pos.ID, checkTime.UTC().Format("15:04:05"), delay.Round(time.Second))
+
+	go func() {
+		defer func() {
+			e.preSettleMu.Lock()
+			delete(e.preSettleActive, key)
+			e.preSettleMu.Unlock()
+		}()
+
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+
+		select {
+		case <-timer.C:
+			fresh, err := e.db.GetPosition(pos.ID)
+			if err != nil || fresh.Status != models.StatusActive {
+				return
+			}
+
+			e.exitMu.Lock()
+			running := e.exitActive[fresh.ID]
+			e.exitMu.Unlock()
+			if running {
+				return
+			}
+
+			// Re-check spread after settlement.
+			longExch, ok := e.exchanges[fresh.LongExchange]
+			if !ok {
+				return
+			}
+			shortExch, ok := e.exchanges[fresh.ShortExchange]
+			if !ok {
+				return
+			}
+			longRate, err := longExch.GetFundingRate(fresh.Symbol)
+			if err != nil {
+				e.log.Warn("post-settlement zero-check %s: failed to get long rate: %v", fresh.ID, err)
+				return
+			}
+			shortRate, err := shortExch.GetFundingRate(fresh.Symbol)
+			if err != nil {
+				e.log.Warn("post-settlement zero-check %s: failed to get short rate: %v", fresh.ID, err)
+				return
+			}
+
+			longIntervalH := longRate.Interval.Hours()
+			if longIntervalH <= 0 {
+				longIntervalH = 8
+			}
+			shortIntervalH := shortRate.Interval.Hours()
+			if shortIntervalH <= 0 {
+				shortIntervalH = 8
+			}
+			longBpsH := longRate.Rate * 10000 / longIntervalH
+			shortBpsH := shortRate.Rate * 10000 / shortIntervalH
+			currentSpreadBpsH := shortBpsH - longBpsH
+
+			const epsilon = 0.01
+			if currentSpreadBpsH > epsilon || currentSpreadBpsH < -epsilon {
+				// Spread is no longer zero (diverged or reversed) — reset counter and let it live.
+				// Reversed spreads are handled separately by checkSpreadReversal.
+				e.log.Info("post-settlement zero-check: %s — spread diverged to %.4f bps/h, resetting zero-spread count", fresh.ID, currentSpreadBpsH)
+				_ = e.db.UpdatePositionFields(fresh.ID, func(f *models.ArbitragePosition) bool {
+					f.ZeroSpreadCount = 0
+					return true
+				})
+				return
+			}
+
+			reason := fmt.Sprintf("zero spread confirmed post-settlement: long=%.4f bps/h short=%.4f bps/h spread=%.4f bps/h", longBpsH, shortBpsH, currentSpreadBpsH)
+			e.log.Info("post-settlement zero-check: %s — %s, exiting", fresh.ID, reason)
 			e.spawnExitGoroutine(fresh, reason)
 
 		case <-e.stopCh:

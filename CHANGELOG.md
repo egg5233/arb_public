@@ -9,6 +9,11 @@ All notable changes to this project will be documented in this file.
 - **`ReversalResetOnRecover` config param** (bool, default true): Controls whether the reversal count resets to zero when the spread recovers to positive. Configurable via dashboard toggle and JSON config
 - **CoinGlass per-leg rate derivation**: Discovery scanner now derives approximate long/short rates from CoinGlass `FundingRate` field instead of leaving them as zero
 
+### Fixed
+- **Pre-settlement reversal respects tolerance**: Pre-settlement check now compares `ReversalCount` against `SpreadReversalTolerance` (e.g. tolerance=3 means skip exit when count < 3). Previously exited on any count >= 1
+- **Zero-spread post-settlement confirmation**: When zero-spread count reaches tolerance, instead of exiting immediately, schedules a check 2 minutes after next funding settlement. If spread recovered, resets count; if still zero, then exits. Prevents premature exits when rates often diverge after settlement
+- **Zero-spread epsilon consistency**: Post-settlement zero check now uses symmetric `|spread| < epsilon` matching `checkZeroSpread`, so negative non-zero spreads are no longer misclassified as zero
+
 ### Changed
 - Files: `internal/config/config.go`, `internal/engine/exit.go`, `internal/api/handlers.go`, `internal/discovery/scanner.go`, `web/src/pages/Config.tsx`, `web/src/i18n/en.ts`, `web/src/i18n/zh-TW.ts`
 
