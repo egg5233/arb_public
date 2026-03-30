@@ -1,7 +1,6 @@
 package spotengine
 
 import (
-	"strings"
 	"sync"
 	"time"
 
@@ -34,7 +33,7 @@ type SpotEngine struct {
 	exitMu    sync.Mutex
 	exitState exitState
 
-	// lastSeen tracks which symbol:exchange keys were present in the previous scan
+	// lastSeen tracks which symbols were present in the previous scan
 	// so we can delete Redis persistence counters for symbols that disappeared.
 	lastSeen map[string]bool
 
@@ -163,9 +162,9 @@ func (e *SpotEngine) isExiting(posID string) bool {
 func (e *SpotEngine) updatePersistenceCounts(opps []SpotArbOpportunity) {
 	seen := make(map[string]bool, len(opps))
 	for _, opp := range opps {
-		key := opp.Symbol + ":" + opp.Exchange
+		key := opp.Symbol
 		seen[key] = true
-		if _, err := e.db.IncrSpotPersistence(opp.Symbol, opp.Exchange); err != nil {
+		if _, err := e.db.IncrSpotPersistence(opp.Symbol); err != nil {
 			e.log.Error("persist incr %s: %v", key, err)
 		}
 	}
@@ -173,11 +172,8 @@ func (e *SpotEngine) updatePersistenceCounts(opps []SpotArbOpportunity) {
 	// Delete counters for symbols that disappeared since last scan.
 	for key := range e.lastSeen {
 		if !seen[key] {
-			parts := strings.SplitN(key, ":", 2)
-			if len(parts) == 2 {
-				if err := e.db.DeleteSpotPersistence(parts[0], parts[1]); err != nil {
-					e.log.Error("persist del %s: %v", key, err)
-				}
+			if err := e.db.DeleteSpotPersistence(key); err != nil {
+				e.log.Error("persist del %s: %v", key, err)
 			}
 		}
 	}
@@ -186,10 +182,10 @@ func (e *SpotEngine) updatePersistenceCounts(opps []SpotArbOpportunity) {
 
 // getPersistenceCount returns how many consecutive scans a symbol has appeared in.
 // Returns 0 on Redis error (fail-closed: denies entry if Redis is down).
-func (e *SpotEngine) getPersistenceCount(symbol, exchName string) int {
-	count, err := e.db.GetSpotPersistence(symbol, exchName)
+func (e *SpotEngine) getPersistenceCount(symbol string) int {
+	count, err := e.db.GetSpotPersistence(symbol)
 	if err != nil {
-		e.log.Error("persist get %s:%s: %v", symbol, exchName, err)
+		e.log.Error("persist get %s: %v", symbol, err)
 		return 0
 	}
 	return count

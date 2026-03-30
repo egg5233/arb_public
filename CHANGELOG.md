@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.6] - 2026-03-30
+
+### Fixed
+- **Spot-futures persistence filter keyed per symbol instead of per exchange** — changed Redis key from `arb:spot_persistence:{symbol}:{exchange}` to `arb:spot_persistence:{symbol}` so persistence counter no longer resets when the qualifying exchange rotates between scans; old composite keys auto-expire via 20-min TTL (`spot_state.go`, `engine.go`, `risk_gate.go`)
+
 ## [0.22.5] - 2026-03-30
 
 ### Fixed

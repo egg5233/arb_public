@@ -55,7 +55,7 @@ func (e *SpotEngine) checkRiskGate(opp SpotArbOpportunity) RiskGateResult {
 	// 5. Persistence: symbol must appear in N consecutive scans.
 	required := e.cfg.SpotFuturesPersistenceScans
 	if required > 0 {
-		count := e.getPersistenceCount(symbol, exchName)
+		count := e.getPersistenceCount(symbol)
 		if count < required {
 			return RiskGateResult{Allowed: false, Reason: fmt.Sprintf("persistence_%d/%d", count, required)}
 		}
