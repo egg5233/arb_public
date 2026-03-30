@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import type { Position, Opportunity, Stats, ExchangeInfo, TransferRecord, LogEntry, RejectedOpportunity, FundingEvent } from '../types.ts';
+import type { Position, Opportunity, Stats, ExchangeInfo, TransferRecord, LogEntry, RejectedOpportunity, FundingEvent, SpotPosition, SpotStats } from '../types.ts';
 
 const TOKEN_KEY = 'arb_token';
 
