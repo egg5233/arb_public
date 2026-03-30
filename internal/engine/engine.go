@@ -381,6 +381,10 @@ func (e *Engine) rebalanceFunds() {
 			if transferAmt > bal.spot {
 				transferAmt = bal.spot
 			}
+			if transferAmt < 1.0 {
+				e.log.Debug("rebalance: %s spot→futures skip (%.4f USDT below minimum)", name, transferAmt)
+				continue
+			}
 			amtStr := fmt.Sprintf("%.4f", transferAmt)
 			e.log.Info("rebalance: %s spot→futures %s USDT (same-exchange, instant)", name, amtStr)
 			if !e.cfg.DryRun {

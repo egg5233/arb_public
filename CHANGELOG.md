@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.21.10] - 2026-03-30
+
+### Fixed
+- **Bitget rebalancer zero-amount transfer** — skip spot→futures transfer when amount < $1 instead of calling API with 0.0000 USDT; eliminates hourly `code=40020` errors (`engine.go`)
+
 ## [0.21.9] - 2026-03-30
 
 ### Fixed
