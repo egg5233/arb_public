@@ -226,7 +226,7 @@ const Overview: FC<OverviewProps> = ({ positions, stats, exchanges, onDiagnose, 
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {activeSpotPositions.map((pos) => {
-                const netYield = pos.current_net_yield_apr !== undefined && pos.current_net_yield_apr !== 0
+                const netYield = pos.yield_data_source && pos.yield_data_source !== 'entry_fallback'
                   ? pos.current_net_yield_apr
                   : pos.funding_apr - pos.current_borrow_apr;
                 const isFallback = pos.yield_data_source === 'entry_fallback';

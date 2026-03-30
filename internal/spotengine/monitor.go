@@ -102,9 +102,11 @@ func (e *SpotEngine) monitorPosition(pos *models.SpotFuturesPosition) {
 	e.updateLiveEconomics(latest, isDirA)
 
 	// Re-read again to include live economics for broadcast.
-	latest, err = e.db.GetSpotPosition(pos.ID)
-	if err != nil {
+	if updated, err := e.db.GetSpotPosition(pos.ID); err != nil {
 		e.log.Error("monitor: failed to re-read position %s after economics update: %v", pos.ID, err)
+		// latest retains its pre-updateLiveEconomics value — stale but safe
+	} else {
+		latest = updated
 	}
 
 	// Broadcast health for all directions.
