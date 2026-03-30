@@ -17,8 +17,10 @@ const (
 	keySpotPositionsActive = "arb:spot_positions:active"
 	keySpotHistory         = "arb:spot_history"
 	keySpotStats           = "arb:spot_stats"
+	keySpotPersistPrefix   = "arb:spot_persistence:"
 
 	spotHistoryMaxLen = 500
+	spotPersistTTL    = 20 * time.Minute
 )
 
 // ---------------------------------------------------------------------------
@@ -206,4 +208,44 @@ func (c *Client) HasSpotCooldown(symbol string) (bool, error) {
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// ---------------------------------------------------------------------------
+// Spot Persistence (consecutive-scan counters)
+// ---------------------------------------------------------------------------
+
+// IncrSpotPersistence atomically increments the consecutive-scan counter
+// for a symbol+exchange pair and refreshes the TTL.
+func (c *Client) IncrSpotPersistence(symbol, exchange string) (int64, error) {
+	ctx := context.Background()
+	key := keySpotPersistPrefix + symbol + ":" + exchange
+	pipe := c.rdb.Pipeline()
+	incr := pipe.Incr(ctx, key)
+	pipe.Expire(ctx, key, spotPersistTTL)
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return incr.Val(), nil
+}
+
+// GetSpotPersistence returns the current consecutive-scan count.
+func (c *Client) GetSpotPersistence(symbol, exchange string) (int, error) {
+	ctx := context.Background()
+	key := keySpotPersistPrefix + symbol + ":" + exchange
+	val, err := c.rdb.Get(ctx, key).Int()
+	if err == redis.Nil {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return val, nil
+}
+
+// DeleteSpotPersistence removes the persistence counter (symbol disappeared).
+func (c *Client) DeleteSpotPersistence(symbol, exchange string) error {
+	ctx := context.Background()
+	key := keySpotPersistPrefix + symbol + ":" + exchange
+	return c.rdb.Del(ctx, key).Err()
 }

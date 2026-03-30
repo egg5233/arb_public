@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.4] - 2026-03-30
+
+### Fixed
+- **Spot-futures persistence filter now Redis-backed instead of process-local** — `updatePersistenceCounts` and `getPersistenceCount` use Redis keys (`arb:spot_persistence:{symbol}:{exchange}`) with 20-minute TTL instead of in-memory `map[string]int`; persistence history survives process restarts and is shared across runtimes as specified in ARB-9 (`engine.go`, `spot_state.go`)
+
 ## [0.22.3] - 2026-03-30
 
 ### Fixed
