@@ -1,6 +1,7 @@
 package spotengine
 
 import (
+	"errors"
 	"time"
 
 	"arb/internal/models"
@@ -46,6 +47,10 @@ func (e *SpotEngine) monitorTick() {
 
 	for _, pos := range positions {
 		if pos.Status == models.SpotStatusExiting && pos.PendingRepay {
+			// Skip retry if deferred until a specific time (e.g. Bybit blackout).
+			if pos.PendingRepayRetryAt != nil && time.Now().UTC().Before(*pos.PendingRepayRetryAt) {
+				continue
+			}
 			e.retryPendingRepay(pos)
 			continue
 		}
@@ -314,15 +319,26 @@ func (e *SpotEngine) retryPendingRepay(pos *models.SpotFuturesPosition) {
 		Coin:   pos.BaseCoin,
 		Amount: repayAmount,
 	}); err != nil {
+		var blackout *exchange.ErrRepayBlackout
+		if errors.As(err, &blackout) {
+			e.log.Info("retryPendingRepay: Bybit blackout for %s — deferring retry until %s",
+				pos.ID, blackout.RetryAfter.Format(time.RFC3339))
+			_ = e.lockedUpdatePosition(pos.ID, func(p *models.SpotFuturesPosition) bool {
+				p.PendingRepayRetryAt = &blackout.RetryAfter
+				return true
+			})
+			return
+		}
 		e.log.Warn("retryPendingRepay: repay still failing for %s: %v — will retry next tick", pos.ID, err)
 		return
 	}
 
 	e.log.Info("retryPendingRepay: repay succeeded for %s — completing exit", pos.ID)
 
-	// Clear PendingRepay flag.
+	// Clear PendingRepay flag and retry-after.
 	if err := e.lockedUpdatePosition(pos.ID, func(p *models.SpotFuturesPosition) bool {
 		p.PendingRepay = false
+		p.PendingRepayRetryAt = nil
 		return true
 	}); err != nil {
 		e.log.Error("retryPendingRepay: failed to clear PendingRepay for %s: %v", pos.ID, err)

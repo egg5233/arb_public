@@ -215,6 +215,16 @@ type MarginRepayParams struct {
 	Amount string // quantity to repay (include interest)
 }
 
+// ErrRepayBlackout is returned when a repay attempt is blocked by a
+// scheduled exchange maintenance/blackout window. RetryAfter indicates
+// the earliest time the caller should retry.
+type ErrRepayBlackout struct {
+	RetryAfter time.Time
+	Message    string
+}
+
+func (e *ErrRepayBlackout) Error() string { return e.Message }
+
 // SpotMarginOrderParams contains parameters for placing a spot margin order.
 type SpotMarginOrderParams struct {
 	Symbol    string // e.g. "BTCUSDT"

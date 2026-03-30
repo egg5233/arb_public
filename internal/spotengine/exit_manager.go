@@ -285,6 +285,7 @@ func (e *SpotEngine) initiateExit(pos *models.SpotFuturesPosition, reason string
 	if pos.PendingRepay {
 		if err := e.lockedUpdatePosition(pos.ID, func(p *models.SpotFuturesPosition) bool {
 			p.PendingRepay = true
+			p.PendingRepayRetryAt = pos.PendingRepayRetryAt
 			p.FuturesExit = pos.FuturesExit
 			p.SpotExitPrice = pos.SpotExitPrice
 			p.ExitFees = pos.ExitFees
@@ -292,7 +293,12 @@ func (e *SpotEngine) initiateExit(pos *models.SpotFuturesPosition, reason string
 		}); err != nil {
 			e.log.Error("initiateExit: failed to persist PendingRepay for %s: %v", pos.ID, err)
 		}
-		e.log.Warn("initiateExit: %s trade legs closed but repay pending — will retry on next monitor tick", pos.ID)
+		if pos.PendingRepayRetryAt != nil {
+			e.log.Warn("initiateExit: %s trade legs closed but repay deferred until %s (blackout)",
+				pos.ID, pos.PendingRepayRetryAt.Format(time.RFC3339))
+		} else {
+			e.log.Warn("initiateExit: %s trade legs closed but repay pending — will retry on next monitor tick", pos.ID)
+		}
 		return
 	}
 
@@ -320,6 +326,10 @@ func (e *SpotEngine) persistExitCheckpoint(pos *models.SpotFuturesPosition) erro
 		}
 		if pos.PendingRepay && !p.PendingRepay {
 			p.PendingRepay = true
+			changed = true
+		}
+		if pos.PendingRepayRetryAt != nil && p.PendingRepayRetryAt == nil {
+			p.PendingRepayRetryAt = pos.PendingRepayRetryAt
 			changed = true
 		}
 		return changed

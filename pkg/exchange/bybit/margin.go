@@ -39,8 +39,11 @@ func (a *Adapter) MarginRepay(params exchange.MarginRepayParams) error {
 	totalSec := min*60 + sec
 	// Blackout: 04:00 (240s) through 05:30 (330s) of each hour.
 	if totalSec >= 4*60 && totalSec < 5*60+30 {
-		return fmt.Errorf("bybit MarginRepay: repayment blackout (minute %02d:%02d UTC, retry after %02d:30)",
-			min, sec, 5)
+		retryAfter := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 5, 31, 0, time.UTC)
+		return &exchange.ErrRepayBlackout{
+			RetryAfter: retryAfter,
+			Message:    fmt.Sprintf("bybit MarginRepay: repayment blackout (minute %02d:%02d UTC, retry after %02d:05:31)", min, sec, now.Hour()),
+		}
 	}
 
 	reqParams := map[string]string{
