@@ -201,6 +201,57 @@ func (s *Server) handleSpotManualOpen(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, Response{OK: true})
 }
 
+// handleSpotAutoConfig handles GET and POST for spot-futures auto-entry configuration.
+// GET returns current auto-entry settings; POST updates them and persists to Redis.
+func (s *Server) handleSpotAutoConfig(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		resp := map[string]interface{}{
+			"auto_enabled":      s.cfg.SpotFuturesAutoEnabled,
+			"dry_run":           s.cfg.SpotFuturesDryRun,
+			"persistence_scans": s.cfg.SpotFuturesPersistenceScans,
+		}
+		writeJSON(w, http.StatusOK, Response{OK: true, Data: resp})
+
+	case http.MethodPost:
+		var req struct {
+			Enabled          *bool `json:"enabled"`
+			DryRun           *bool `json:"dry_run"`
+			PersistenceScans *int  `json:"persistence_scans"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, Response{Error: "invalid JSON"})
+			return
+		}
+
+		if req.Enabled != nil {
+			s.cfg.SpotFuturesAutoEnabled = *req.Enabled
+			s.db.SetConfigField("spot_futures_auto_enabled", strconv.FormatBool(*req.Enabled))
+		}
+		if req.DryRun != nil {
+			s.cfg.SpotFuturesDryRun = *req.DryRun
+			s.db.SetConfigField("spot_futures_dry_run", strconv.FormatBool(*req.DryRun))
+		}
+		if req.PersistenceScans != nil && *req.PersistenceScans >= 0 {
+			s.cfg.SpotFuturesPersistenceScans = *req.PersistenceScans
+			s.db.SetConfigField("spot_futures_persistence_scans", strconv.Itoa(*req.PersistenceScans))
+		}
+
+		s.log.Info("spot auto config updated: enabled=%v dry_run=%v persistence_scans=%d",
+			s.cfg.SpotFuturesAutoEnabled, s.cfg.SpotFuturesDryRun, s.cfg.SpotFuturesPersistenceScans)
+
+		resp := map[string]interface{}{
+			"auto_enabled":      s.cfg.SpotFuturesAutoEnabled,
+			"dry_run":           s.cfg.SpotFuturesDryRun,
+			"persistence_scans": s.cfg.SpotFuturesPersistenceScans,
+		}
+		writeJSON(w, http.StatusOK, Response{OK: true, Data: resp})
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 // handleSpotManualClose triggers a manual close of a spot-futures position.
 func (s *Server) handleSpotManualClose(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

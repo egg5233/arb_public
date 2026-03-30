@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.21.8] - 2026-03-30
+
+### Added
+- **Spot-Futures Phase 3b.3 — Risk Gate + Automated Entry with Persistence Filtering**
+  - **Risk gate** (`internal/spotengine/risk_gate.go`): 5 pre-entry checks — dry-run, capacity, duplicate, cooldown, persistence — all must pass before auto-entry proceeds
+  - **Automated entry** (`internal/spotengine/autoentry.go`): sequential entry orchestration from discovery loop, one entry per scan cycle, distributed lock prevents concurrent entries
+  - **Persistence filter**: symbols must appear in N consecutive discovery scans (default: 2) before auto-entry; prevents single-scan spike entries
+  - **Dashboard toggle**: `POST /api/spot/config/auto` with `enabled`, `dry_run`, `persistence_scans` fields; `GET` returns current state
+  - **Config fields**: `SpotFuturesAutoEnabled` (default: false), `SpotFuturesDryRun` (default: true), `SpotFuturesPersistenceScans` (default: 2)
+
+### Changed
+- Discovery loop now updates persistence counts and attempts auto-entries after each scan
+- Files: `internal/spotengine/risk_gate.go` (new), `internal/spotengine/autoentry.go` (new), `internal/spotengine/engine.go`, `internal/config/config.go`, `internal/api/spot_handlers.go`, `internal/api/server.go`
+
+### Safety
+- Double safety default: auto-entry disabled AND dry-run enabled — must explicitly enable both
+- Auto-entry config resets to disabled on process restart (intentional for high-risk feature)
+- Cooldown check enforced: `HasSpotCooldown` now blocks auto re-entry after losses (was set but never checked at entry)
+
 ## [0.21.7] - 2026-03-30
 
 ### Removed

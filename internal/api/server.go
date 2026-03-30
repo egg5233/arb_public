@@ -102,6 +102,7 @@ func (s *Server) Start() {
 	mux.HandleFunc("/api/spot/open", s.cors(s.authMiddleware(s.handleSpotManualOpen)))
 	mux.HandleFunc("/api/spot/close", s.cors(s.authMiddleware(s.handleSpotManualClose)))
 	mux.HandleFunc("GET /api/spot/positions/{id}/health", s.cors(s.authMiddleware(s.handleSpotPositionHealth)))
+	mux.HandleFunc("/api/spot/config/auto", s.cors(s.authMiddleware(s.handleSpotAutoConfig)))
 
 	// System update
 	mux.HandleFunc("/api/check-update", s.cors(s.authMiddleware(s.handleCheckUpdate)))

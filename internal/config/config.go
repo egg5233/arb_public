@@ -160,6 +160,9 @@ type Config struct {
 	SpotFuturesMarginExitPct      float64 // margin utilization % for normal exit (default: 85.0)
 	SpotFuturesMarginEmergencyPct float64 // margin utilization % for emergency exit (default: 95.0)
 	SpotFuturesLossCooldownHours  int     // hours to cool down after a losing trade (default: 4)
+	SpotFuturesAutoEnabled      bool // enable automated spot-futures entry from discovery loop (default: false)
+	SpotFuturesDryRun           bool // if true, log auto-entry decisions but skip execution (default: true)
+	SpotFuturesPersistenceScans int  // consecutive scans a symbol must appear before auto-entry (default: 2)
 }
 
 // ---------- Nested JSON config structs ----------
@@ -199,6 +202,9 @@ type jsonSpotFutures struct {
 	MarginExitPct      *float64 `json:"margin_exit_pct"`
 	MarginEmergencyPct *float64 `json:"margin_emergency_pct"`
 	LossCooldownHours  *int     `json:"loss_cooldown_hours"`
+	AutoEnabled      *bool `json:"auto_enabled"`
+	AutoDryRun       *bool `json:"auto_dry_run"`
+	PersistenceScans *int  `json:"persistence_scans"`
 }
 
 type jsonExchange struct {
@@ -398,6 +404,8 @@ func Load() *Config {
 		SpotFuturesMarginExitPct:      85.0,
 		SpotFuturesMarginEmergencyPct: 95.0,
 		SpotFuturesLossCooldownHours:  4,
+		SpotFuturesDryRun:           true,
+		SpotFuturesPersistenceScans: 2,
 	}
 
 	// Load from JSON file
@@ -812,6 +820,15 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		}
 		if sf.LossCooldownHours != nil {
 			c.SpotFuturesLossCooldownHours = *sf.LossCooldownHours
+		}
+		if sf.AutoEnabled != nil {
+			c.SpotFuturesAutoEnabled = *sf.AutoEnabled
+		}
+		if sf.AutoDryRun != nil {
+			c.SpotFuturesDryRun = *sf.AutoDryRun
+		}
+		if sf.PersistenceScans != nil {
+			c.SpotFuturesPersistenceScans = *sf.PersistenceScans
 		}
 	}
 }

@@ -30,6 +30,10 @@ type SpotEngine struct {
 	// exitMu protects exitState from concurrent access.
 	exitMu    sync.Mutex
 	exitState exitState
+
+	// persistMu protects persistCounts from concurrent access.
+	persistMu     sync.Mutex
+	persistCounts map[string]int // "symbol:exchange" → consecutive scan count
 }
 
 // NewSpotEngine creates a new SpotEngine with all required dependencies.
@@ -48,14 +52,15 @@ func NewSpotEngine(
 	}
 
 	return &SpotEngine{
-		exchanges:  exchanges,
-		spotMargin: sm,
-		db:         db,
-		api:        apiSrv,
-		cfg:        cfg,
-		log:        utils.NewLogger("spot-engine"),
-		stopCh:     make(chan struct{}),
-		exitState:  exitState{exiting: make(map[string]bool)},
+		exchanges:     exchanges,
+		spotMargin:    sm,
+		db:            db,
+		api:           apiSrv,
+		cfg:           cfg,
+		log:           utils.NewLogger("spot-engine"),
+		stopCh:        make(chan struct{}),
+		exitState:     exitState{exiting: make(map[string]bool)},
+		persistCounts: make(map[string]int),
 	}
 }
 
@@ -94,6 +99,8 @@ func (e *SpotEngine) discoveryLoop() {
 	opps := e.runDiscoveryScan()
 	e.logDiscoveryResults(opps)
 	e.pushOppsToAPI(opps)
+	e.updatePersistenceCounts(opps)
+	e.attemptAutoEntries(opps)
 
 	for {
 		select {
@@ -104,6 +111,8 @@ func (e *SpotEngine) discoveryLoop() {
 			opps := e.runDiscoveryScan()
 			e.logDiscoveryResults(opps)
 			e.pushOppsToAPI(opps)
+			e.updatePersistenceCounts(opps)
+			e.attemptAutoEntries(opps)
 		}
 	}
 }
@@ -137,4 +146,32 @@ func (e *SpotEngine) isExiting(posID string) bool {
 	e.exitMu.Lock()
 	defer e.exitMu.Unlock()
 	return e.exitState.exiting[posID]
+}
+
+// updatePersistenceCounts increments the scan count for symbols present in
+// the latest scan and resets counts for symbols that disappeared.
+func (e *SpotEngine) updatePersistenceCounts(opps []SpotArbOpportunity) {
+	e.persistMu.Lock()
+	defer e.persistMu.Unlock()
+
+	seen := make(map[string]bool, len(opps))
+	for _, opp := range opps {
+		key := opp.Symbol + ":" + opp.Exchange
+		seen[key] = true
+		e.persistCounts[key]++
+	}
+
+	// Remove symbols that were not in this scan.
+	for key := range e.persistCounts {
+		if !seen[key] {
+			delete(e.persistCounts, key)
+		}
+	}
+}
+
+// getPersistenceCount returns how many consecutive scans a symbol has appeared in.
+func (e *SpotEngine) getPersistenceCount(symbol, exchName string) int {
+	e.persistMu.Lock()
+	defer e.persistMu.Unlock()
+	return e.persistCounts[symbol+":"+exchName]
 }
