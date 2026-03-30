@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.17] - 2026-03-30
+
+### Fixed
+- **`/api/config` exposes spot-futures settings** — GET response includes full `spot_futures` block (omitted when engine disabled), POST accepts partial updates with validation, all fields persisted to Redis (`handlers.go`)
+
 ## [0.22.16] - 2026-03-30
 
 ### Fixed
