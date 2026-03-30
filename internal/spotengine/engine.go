@@ -163,6 +163,9 @@ func (e *SpotEngine) updatePersistenceCounts(opps []SpotArbOpportunity) {
 	seen := make(map[string]bool, len(opps))
 	for _, opp := range opps {
 		key := opp.Symbol
+		if seen[key] {
+			continue // already incremented this symbol this scan
+		}
 		seen[key] = true
 		if _, err := e.db.IncrSpotPersistence(opp.Symbol); err != nil {
 			e.log.Error("persist incr %s: %v", key, err)

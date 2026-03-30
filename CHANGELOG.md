@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.15] - 2026-03-30
+
+### Fixed
+- **Persistence counter deduplication per scan** — `updatePersistenceCounts` now checks the `seen` map before incrementing, so symbols appearing on N exchanges only increment once per scan instead of N times (`engine.go`)
+
 ## [0.22.14] - 2026-03-30
 
 ### Fixed
