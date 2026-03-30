@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.21] - 2026-03-31
+
+### Fixed
+- **[spot-futures] NegativeYieldSince now starts for zero/negative funding** — removed `fundingAPR > 0` guard from `negativeYield` computation in monitor loop; borrow-cost grace-period timer ([ARB-8](/ARB/issues/ARB-8)) now correctly ages when live funding is zero or negative, matching the [ARB-7](/ARB/issues/ARB-7) monitor spec (`monitor.go`)
+
+### Changed
+- **[spot-futures] Direction B price-spike semantics documented and tested** — added explicit canonical rule to ARCHITECTURE.md and corrected ambiguous wording in DESIGN_SPOT_FUTURES_RISK.md: adverse move for Direction B is price UP (short futures liquidation risk), not down; 9 focused regression tests added covering both directions' normal, emergency, no-trigger, and down-move scenarios (`exit_triggers_test.go`)
+
 ## [0.22.20] - 2026-03-30
 
 ### Fixed
