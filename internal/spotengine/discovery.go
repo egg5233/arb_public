@@ -225,6 +225,23 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 	return opps
 }
 
+// getFreshBorrowRate always fetches a live rate from the exchange and updates the cache.
+// Used by the monitor path where per-tick freshness matters for safety triggers.
+func (e *SpotEngine) getFreshBorrowRate(exchName, coin string, smExch exchange.SpotMarginExchange) (*exchange.MarginInterestRate, error) {
+	rate, err := smExch.GetMarginInterestRate(coin)
+	if err != nil {
+		return nil, fmt.Errorf("GetMarginInterestRate(%s): %w", coin, err)
+	}
+
+	cacheKey := exchName + ":" + coin
+	borrowCache.Store(cacheKey, &borrowRateEntry{
+		rate:      rate,
+		fetchedAt: time.Now(),
+	})
+
+	return rate, nil
+}
+
 // getCachedBorrowRate returns a cached borrow rate or fetches a fresh one.
 func (e *SpotEngine) getCachedBorrowRate(exchName, coin string, smExch exchange.SpotMarginExchange) (*exchange.MarginInterestRate, error) {
 	cacheKey := exchName + ":" + coin

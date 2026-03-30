@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.8] - 2026-03-30
+
+### Fixed
+- **Monitor borrow rate bypasses 5-minute discovery cache** — `updateBorrowCost` now calls `getFreshBorrowRate` which always hits the exchange API instead of `getCachedBorrowRate` with its 5-min TTL; borrow-cost exits and negative-yield detection now react within one monitor tick (60s) instead of lagging up to 5 minutes (`monitor.go`, `discovery.go`)
+
 ## [0.22.7] - 2026-03-30
 
 ### Fixed

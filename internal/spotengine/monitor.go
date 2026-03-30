@@ -131,7 +131,7 @@ func (e *SpotEngine) monitorPosition(pos *models.SpotFuturesPosition) {
 
 // updateBorrowCost refreshes the borrow rate and accrues cost for a Direction A position.
 func (e *SpotEngine) updateBorrowCost(pos *models.SpotFuturesPosition, smExch exchange.SpotMarginExchange) {
-	rate, err := e.getCachedBorrowRate(pos.Exchange, pos.BaseCoin, smExch)
+	rate, err := e.getFreshBorrowRate(pos.Exchange, pos.BaseCoin, smExch)
 	if err != nil {
 		e.log.Warn("monitor: GetMarginInterestRate(%s/%s) failed: %v", pos.Exchange, pos.BaseCoin, err)
 		return
