@@ -296,6 +296,13 @@ func main() {
 
 	_ = db.Close()
 	log.Info("Shutdown complete")
+
+	// If the drift monitor triggered this shutdown, exit non-zero so
+	// systemd Restart=on-failure restarts onto the new binary (ARB-87).
+	if api.DriftRestartRequested() {
+		log.Info("Drift restart requested — exiting with code 1 for supervisor restart")
+		os.Exit(1)
+	}
 }
 
 func newExchange(name string, cfg exchange.ExchangeConfig) (exchange.Exchange, error) {

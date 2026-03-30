@@ -148,6 +148,13 @@ func (s *Server) startBinaryDriftMonitor() {
 	log.Info("binary drift monitor started (exe=%s, started=%s, mode=%s)", exe, processStartTime.Format("15:04:05"), mode)
 }
 
+// DriftRestartRequested returns true if the drift monitor scheduled a restart.
+// Called by cmd/main.go after graceful shutdown to decide the exit code —
+// exit(1) triggers systemd Restart=on-failure, exit(0) does not.
+func DriftRestartRequested() bool {
+	return restartScheduled.Load()
+}
+
 // scheduleDriftRestart schedules a one-shot process exit after a grace period,
 // allowing the supervisor (systemd with Restart=on-failure) to restart onto the
 // new binary. Only fires once per process lifetime.
