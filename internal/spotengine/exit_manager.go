@@ -219,6 +219,22 @@ func (e *SpotEngine) initiateExit(pos *models.SpotFuturesPosition, reason string
 		return
 	}
 
+	// If repay is still pending (e.g. Bybit blackout), keep position in "exiting"
+	// state and let the monitor loop retry repay on next tick.
+	if pos.PendingRepay {
+		if err := e.lockedUpdatePosition(pos.ID, func(p *models.SpotFuturesPosition) bool {
+			p.PendingRepay = true
+			p.FuturesExit = pos.FuturesExit
+			p.SpotExitPrice = pos.SpotExitPrice
+			p.ExitFees = pos.ExitFees
+			return true
+		}); err != nil {
+			e.log.Error("initiateExit: failed to persist PendingRepay for %s: %v", pos.ID, err)
+		}
+		e.log.Warn("initiateExit: %s trade legs closed but repay pending — will retry on next monitor tick", pos.ID)
+		return
+	}
+
 	// Close succeeded — run post-exit cleanup.
 	e.completeExit(pos, reason)
 }
@@ -356,6 +372,9 @@ func (e *SpotEngine) ManualClose(positionID string) error {
 		return fmt.Errorf("failed to verify close result: %w", err)
 	}
 	if updated.Status != models.SpotStatusClosed {
+		if updated.PendingRepay {
+			return fmt.Errorf("trade legs closed but margin repay pending (e.g. Bybit blackout) — will auto-retry on next monitor tick")
+		}
 		return fmt.Errorf("close failed — position %s stuck in status %q, manual intervention required", positionID, updated.Status)
 	}
 

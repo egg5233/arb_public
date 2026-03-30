@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.1] - 2026-03-30
+
+### Fixed
+- **Bybit repay blackout leaves closed positions with outstanding borrow** — when `MarginRepay()` fails (e.g. Bybit 04:00–05:30 UTC blackout), position now stays in `exiting` state with `PendingRepay=true` instead of being marked `closed`; monitor loop retries repay on each tick and completes the exit once repay succeeds; fixes both normal and emergency close paths (`execution.go`, `exit_manager.go`, `monitor.go`, `spot_position.go`)
+
 ## [0.22.0] - 2026-03-30
 
 ### Added

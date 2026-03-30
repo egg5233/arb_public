@@ -566,9 +566,9 @@ func (e *SpotEngine) closeDirectionA(
 		Coin:   pos.BaseCoin,
 		Amount: repayAmount,
 	}); err != nil {
-		e.log.Error("ClosePosition [Dir A] repay FAILED: %v — manual repay needed for %s %s",
+		e.log.Error("ClosePosition [Dir A] repay FAILED: %v — will retry on next monitor tick for %s %s",
 			err, repayAmount, pos.BaseCoin)
-		// Don't return error — position is already closed from trading perspective
+		pos.PendingRepay = true
 	}
 
 	// Record exit fees.
@@ -804,7 +804,8 @@ func (e *SpotEngine) emergencyClose(
 			Coin:   pos.BaseCoin,
 			Amount: repayAmount,
 		}); err != nil {
-			e.log.Error("EMERGENCY: repay FAILED: %v — manual intervention needed", err)
+			e.log.Error("EMERGENCY: repay FAILED: %v — will retry on next monitor tick", err)
+			pos.PendingRepay = true
 		}
 	}
 

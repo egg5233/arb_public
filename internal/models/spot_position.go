@@ -48,6 +48,7 @@ type SpotFuturesPosition struct {
 	ExitCompletedAt      *time.Time `json:"exit_completed_at,omitempty"`
 	PeakPriceMovePct     float64    `json:"peak_price_move_pct"`
 	MarginUtilizationPct float64    `json:"margin_utilization_pct"`
+	PendingRepay         bool       `json:"pending_repay,omitempty"` // true when trade legs closed but margin repay still outstanding
 
 	// Timing
 	CreatedAt time.Time `json:"created_at"`

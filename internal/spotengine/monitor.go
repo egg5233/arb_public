@@ -5,6 +5,7 @@ import (
 
 	"arb/internal/models"
 	"arb/pkg/exchange"
+	"arb/pkg/utils"
 )
 
 // monitorLoop periodically checks all active spot-futures positions:
@@ -44,6 +45,10 @@ func (e *SpotEngine) monitorTick() {
 	}
 
 	for _, pos := range positions {
+		if pos.Status == models.SpotStatusExiting && pos.PendingRepay {
+			e.retryPendingRepay(pos)
+			continue
+		}
 		if pos.Status != models.SpotStatusActive {
 			continue
 		}
@@ -182,6 +187,46 @@ func (e *SpotEngine) updateBorrowCost(pos *models.SpotFuturesPosition, smExch ex
 // broadcastHealth sends a position health update via WebSocket.
 func (e *SpotEngine) broadcastHealth(pos *models.SpotFuturesPosition) {
 	e.api.BroadcastSpotHealth(pos)
+}
+
+// retryPendingRepay retries margin repay for a position whose trade legs are
+// closed but repay failed (e.g. Bybit blackout). On success, completes the
+// exit flow. On failure, logs and waits for the next monitor tick.
+func (e *SpotEngine) retryPendingRepay(pos *models.SpotFuturesPosition) {
+	smExch, ok := e.spotMargin[pos.Exchange]
+	if !ok {
+		e.log.Error("retryPendingRepay: no SpotMarginExchange for %s — cannot retry repay for %s", pos.Exchange, pos.ID)
+		return
+	}
+
+	repayAmount := utils.FormatSize(pos.BorrowAmount, 6)
+	e.log.Info("retryPendingRepay: attempting repay %s %s for %s", repayAmount, pos.BaseCoin, pos.ID)
+
+	if err := smExch.MarginRepay(exchange.MarginRepayParams{
+		Coin:   pos.BaseCoin,
+		Amount: repayAmount,
+	}); err != nil {
+		e.log.Warn("retryPendingRepay: repay still failing for %s: %v — will retry next tick", pos.ID, err)
+		return
+	}
+
+	e.log.Info("retryPendingRepay: repay succeeded for %s — completing exit", pos.ID)
+
+	// Clear PendingRepay flag.
+	if err := e.lockedUpdatePosition(pos.ID, func(p *models.SpotFuturesPosition) bool {
+		p.PendingRepay = false
+		return true
+	}); err != nil {
+		e.log.Error("retryPendingRepay: failed to clear PendingRepay for %s: %v", pos.ID, err)
+	}
+
+	// Re-read position to get latest state for completeExit.
+	updated, err := e.db.GetSpotPosition(pos.ID)
+	if err != nil {
+		e.log.Error("retryPendingRepay: failed to re-read position %s: %v", pos.ID, err)
+		return
+	}
+	e.completeExit(updated, updated.ExitReason)
 }
 
 // lookupCurrentFundingAPR searches the latest discovery scan for the current
