@@ -152,6 +152,13 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		return fmt.Errorf("execution failed: %w", err)
 	}
 
+	// Calculate entry fees (2 legs: spot + futures, taker rate).
+	takerFee := spotFees[exchName]
+	if takerFee == 0 {
+		takerFee = 0.0005 // default 0.05%
+	}
+	entryFees := (spotFilledQty * spotEntryPrice * takerFee) + (futuresFilledQty * futuresEntryPrice * takerFee)
+
 	// ---------------------------------------------------------------
 	// 6. Save position
 	// ---------------------------------------------------------------
@@ -175,6 +182,7 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		FundingAPR:       opp.FundingAPR,
 		CurrentBorrowAPR: opp.BorrowAPR,
 		NotionalUSDT:     notional,
+		EntryFees:        entryFees,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
@@ -251,6 +259,7 @@ func (e *SpotEngine) executeBorrowSellLong(
 		// Rollback: reverse the spot sell by buying back.
 		e.log.Error("ManualOpen [borrow_sell_long] step 3 FAILED: %v — rolling back spot sell", err)
 		e.rollbackSpotOrder(smExch, symbol, exchange.SideBuy, spotFilledStr)
+		e.rollbackBorrow(smExch, baseCoin, sizeStr)
 		return 0, 0, 0, 0, 0, fmt.Errorf("futures long failed: %w", err)
 	}
 	e.log.Info("ManualOpen [borrow_sell_long] step 3: futures order placed: %s", futOrderID)
@@ -260,6 +269,7 @@ func (e *SpotEngine) executeBorrowSellLong(
 	if futFilled <= 0 {
 		e.log.Error("ManualOpen [borrow_sell_long] step 3: futures order got 0 fill — rolling back spot sell")
 		e.rollbackSpotOrder(smExch, symbol, exchange.SideBuy, spotFilledStr)
+		e.rollbackBorrow(smExch, baseCoin, sizeStr)
 		return 0, 0, 0, 0, 0, fmt.Errorf("futures long got 0 fill (order %s)", futOrderID)
 	}
 	e.log.Info("ManualOpen [borrow_sell_long] step 3: futures fill=%.6f avg=%.6f", futFilled, futAvg)
@@ -518,6 +528,12 @@ func (e *SpotEngine) closeDirectionA(
 	if futFilled <= 0 {
 		return fmt.Errorf("futures close got 0 fill (order %s)", futOrderID)
 	}
+	if futAvg <= 0 && futFilled > 0 {
+		if ob, err := futExch.GetOrderbook(pos.Symbol, 5); err == nil && len(ob.Bids) > 0 && len(ob.Asks) > 0 {
+			futAvg = (ob.Bids[0].Price + ob.Asks[0].Price) / 2
+			e.log.Warn("ClosePosition [Dir A]: futures avg price 0, using orderbook mid %.6f", futAvg)
+		}
+	}
 	pos.FuturesExit = futAvg
 	e.log.Info("ClosePosition [Dir A] step 1: futures closed fill=%.6f avg=%.6f", futFilled, futAvg)
 
@@ -535,7 +551,13 @@ func (e *SpotEngine) closeDirectionA(
 	}
 
 	spotFilled, spotAvg := e.confirmSpotFill(futExch, spotOrderID, pos.Symbol)
-	if spotFilled > 0 && spotAvg > 0 {
+	if spotAvg <= 0 && spotFilled > 0 {
+		if ob, err := futExch.GetOrderbook(pos.Symbol, 5); err == nil && len(ob.Bids) > 0 && len(ob.Asks) > 0 {
+			spotAvg = (ob.Bids[0].Price + ob.Asks[0].Price) / 2
+			e.log.Warn("ClosePosition [Dir A]: spot avg price 0, using orderbook mid %.6f", spotAvg)
+		}
+	}
+	if spotAvg > 0 {
 		pos.SpotExitPrice = spotAvg
 	}
 	e.log.Info("ClosePosition [Dir A] step 2: spot buyback fill=%.6f avg=%.6f", spotFilled, spotAvg)
@@ -551,6 +573,20 @@ func (e *SpotEngine) closeDirectionA(
 			err, repayAmount, pos.BaseCoin)
 		// Don't return error — position is already closed from trading perspective
 	}
+
+	// Record exit fees.
+	takerFeeA := spotFees[pos.Exchange]
+	if takerFeeA == 0 {
+		takerFeeA = 0.0005
+	}
+	exitFeesA := 0.0
+	if futFilled > 0 && futAvg > 0 {
+		exitFeesA += futFilled * futAvg * takerFeeA
+	}
+	if spotFilled > 0 && spotAvg > 0 {
+		exitFeesA += spotFilled * spotAvg * takerFeeA
+	}
+	pos.ExitFees = exitFeesA
 
 	return nil
 }
@@ -582,6 +618,12 @@ func (e *SpotEngine) closeDirectionB(
 	if futFilled <= 0 {
 		return fmt.Errorf("futures close got 0 fill (order %s)", futOrderID)
 	}
+	if futAvg <= 0 && futFilled > 0 {
+		if ob, err := futExch.GetOrderbook(pos.Symbol, 5); err == nil && len(ob.Bids) > 0 && len(ob.Asks) > 0 {
+			futAvg = (ob.Bids[0].Price + ob.Asks[0].Price) / 2
+			e.log.Warn("ClosePosition [Dir B]: futures avg price 0, using orderbook mid %.6f", futAvg)
+		}
+	}
 	pos.FuturesExit = futAvg
 	e.log.Info("ClosePosition [Dir B] step 1: futures closed fill=%.6f avg=%.6f", futFilled, futAvg)
 
@@ -599,10 +641,30 @@ func (e *SpotEngine) closeDirectionB(
 	}
 
 	spotFilled, spotAvg := e.confirmSpotFill(futExch, spotOrderID, pos.Symbol)
-	if spotFilled > 0 && spotAvg > 0 {
+	if spotAvg <= 0 && spotFilled > 0 {
+		if ob, err := futExch.GetOrderbook(pos.Symbol, 5); err == nil && len(ob.Bids) > 0 && len(ob.Asks) > 0 {
+			spotAvg = (ob.Bids[0].Price + ob.Asks[0].Price) / 2
+			e.log.Warn("ClosePosition [Dir B]: spot avg price 0, using orderbook mid %.6f", spotAvg)
+		}
+	}
+	if spotAvg > 0 {
 		pos.SpotExitPrice = spotAvg
 	}
 	e.log.Info("ClosePosition [Dir B] step 2: spot sold fill=%.6f avg=%.6f", spotFilled, spotAvg)
+
+	// Record exit fees.
+	takerFeeB := spotFees[pos.Exchange]
+	if takerFeeB == 0 {
+		takerFeeB = 0.0005
+	}
+	exitFeesB := 0.0
+	if futFilled > 0 && futAvg > 0 {
+		exitFeesB += futFilled * futAvg * takerFeeB
+	}
+	if spotFilled > 0 && spotAvg > 0 {
+		exitFeesB += spotFilled * spotAvg * takerFeeB
+	}
+	pos.ExitFees = exitFeesB
 
 	return nil
 }
@@ -678,6 +740,7 @@ func (e *SpotEngine) emergencyClose(
 	// Collect results with 5s timeout
 	timeout := time.After(5 * time.Second)
 	var futErr, spotErr error
+	var futLegClosed, spotLegClosed bool
 	collected := 0
 	for collected < 2 {
 		select {
@@ -693,8 +756,10 @@ func (e *SpotEngine) emergencyClose(
 			} else {
 				if r.leg == "futures" {
 					pos.FuturesExit = r.avg
+					futLegClosed = true
 				} else {
 					pos.SpotExitPrice = r.avg
+					spotLegClosed = true
 				}
 				e.log.Info("EMERGENCY: %s leg closed avg=%.6f", r.leg, r.avg)
 			}
@@ -705,6 +770,33 @@ func (e *SpotEngine) emergencyClose(
 			}
 			return fmt.Errorf("emergency close timed out after 5s (%d/2 legs done)", collected)
 		}
+	}
+
+	// Fallback: if a leg closed but avg price is 0, derive mid-price from orderbook
+	if futLegClosed && pos.FuturesExit <= 0 {
+		if ob, err := futExch.GetOrderbook(pos.Symbol, 5); err == nil && len(ob.Bids) > 0 && len(ob.Asks) > 0 {
+			pos.FuturesExit = (ob.Bids[0].Price + ob.Asks[0].Price) / 2
+			e.log.Warn("EMERGENCY: futures avg price 0, using orderbook mid %.6f", pos.FuturesExit)
+		}
+	}
+	if spotLegClosed && pos.SpotExitPrice <= 0 {
+		if ob, err := futExch.GetOrderbook(pos.Symbol, 5); err == nil && len(ob.Bids) > 0 && len(ob.Asks) > 0 {
+			pos.SpotExitPrice = (ob.Bids[0].Price + ob.Asks[0].Price) / 2
+			e.log.Warn("EMERGENCY: spot avg price 0, using orderbook mid %.6f", pos.SpotExitPrice)
+		}
+	}
+
+	// Calculate exit fees from collected avg prices.
+	takerFeeEmerg := spotFees[pos.Exchange]
+	if takerFeeEmerg == 0 {
+		takerFeeEmerg = 0.0005
+	}
+	pos.ExitFees = 0
+	if pos.FuturesExit > 0 {
+		pos.ExitFees += pos.FuturesSize * pos.FuturesExit * takerFeeEmerg
+	}
+	if pos.SpotExitPrice > 0 {
+		pos.ExitFees += pos.SpotSize * pos.SpotExitPrice * takerFeeEmerg
 	}
 
 	// Repay borrow if Direction A

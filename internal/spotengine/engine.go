@@ -7,6 +7,7 @@ import (
 	"arb/internal/api"
 	"arb/internal/config"
 	"arb/internal/database"
+	"arb/internal/models"
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
@@ -34,6 +35,9 @@ type SpotEngine struct {
 	// persistMu protects persistCounts from concurrent access.
 	persistMu     sync.Mutex
 	persistCounts map[string]int // "symbol:exchange" → consecutive scan count
+
+	// posMu provides per-position locking for read-modify-write operations.
+	posMu sync.Map // posID → *sync.Mutex
 }
 
 // NewSpotEngine creates a new SpotEngine with all required dependencies.
@@ -174,4 +178,20 @@ func (e *SpotEngine) getPersistenceCount(symbol, exchName string) int {
 	e.persistMu.Lock()
 	defer e.persistMu.Unlock()
 	return e.persistCounts[symbol+":"+exchName]
+}
+
+// posLock returns a per-position mutex, creating one if needed.
+func (e *SpotEngine) posLock(posID string) *sync.Mutex {
+	v, _ := e.posMu.LoadOrStore(posID, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
+
+// lockedUpdatePosition wraps db.UpdateSpotPositionFields with per-position
+// locking, preventing lost-update races between concurrent callers (monitor
+// tick and exit goroutine) that operate on the same position.
+func (e *SpotEngine) lockedUpdatePosition(posID string, mutate func(pos *models.SpotFuturesPosition) bool) error {
+	mu := e.posLock(posID)
+	mu.Lock()
+	defer mu.Unlock()
+	return e.db.UpdateSpotPositionFields(posID, mutate)
 }

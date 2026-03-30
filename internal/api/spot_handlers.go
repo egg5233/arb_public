@@ -85,7 +85,7 @@ func (s *Server) handleGetSpotOpportunities(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	opps := s.spotOpps
+	opps, _ := s.spotOpps.Load().([]interface{})
 	if opps == nil {
 		writeJSON(w, http.StatusOK, Response{OK: true, Data: []interface{}{}})
 		return
@@ -112,7 +112,7 @@ func (s *Server) BroadcastSpotHealth(pos *models.SpotFuturesPosition) {
 
 // SetSpotOpportunities updates the cached spot opportunities for the GET endpoint.
 func (s *Server) SetSpotOpportunities(opps []interface{}) {
-	s.spotOpps = opps
+	s.spotOpps.Store(opps)
 }
 
 // handleSpotPositionHealth returns health metrics for a single spot-futures position.

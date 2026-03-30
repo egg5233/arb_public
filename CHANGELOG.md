@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.21.9] - 2026-03-30
+
+### Fixed
+- **P0: Direction B price spike check inverted** — exit trigger was checking for DOWN moves instead of UP; short futures positions now correctly trigger on adverse price increases (`exit_manager.go`)
+- **P0: Incomplete rollback on futures entry failure** — when futures long fails in `executeBorrowSellLong`, borrow is now repaid after spot rollback; prevents orphaned borrows accruing interest (`execution.go`)
+- **P0: Zero exit price propagated to PnL** — `confirmFuturesFill` and `confirmSpotFill` could return avg price 0; close flows now fall back to orderbook mid-price, preventing wildly incorrect PnL calculations (`execution.go`)
+- **P1: TOCTOU race in UpdateSpotPositionFields** — added per-position mutex via `lockedUpdatePosition` to prevent concurrent monitor tick + exit goroutine from losing each other's writes (`engine.go`, `monitor.go`, `exit_manager.go`)
+- **P1: Entry/exit fees never populated** — PnL formula subtracted fees that were always 0; now calculated from fill data using per-exchange taker rates (`execution.go`)
+- **P1: Data race on spotOpps** — `spotOpps` slice read/written from different goroutines without sync; replaced with `atomic.Value` (`server.go`, `spot_handlers.go`)
+
 ## [0.21.8] - 2026-03-30
 
 ### Added

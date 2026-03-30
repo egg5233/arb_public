@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"arb/internal/config"
@@ -27,7 +28,7 @@ type Server struct {
 	logSub        chan utils.LogEntry
 	rejStore      *models.RejectionStore
 	permissions   map[string]exchange.PermissionResult
-	spotOpps          []interface{}
+	spotOpps          atomic.Value // []interface{}
 	spotOpenPosition  func(symbol, exchange, direction string) error
 	spotClosePosition func(positionID string) error
 }

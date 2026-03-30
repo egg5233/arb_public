@@ -86,7 +86,7 @@ func (e *SpotEngine) monitorPosition(pos *models.SpotFuturesPosition) {
 
 	// Persist tracking metrics updated by checkExitTriggers (best-effort).
 	if latest.PeakPriceMovePct > 0 || latest.MarginUtilizationPct > 0 {
-		_ = e.db.UpdateSpotPositionFields(latest.ID, func(p *models.SpotFuturesPosition) bool {
+		_ = e.lockedUpdatePosition(latest.ID, func(p *models.SpotFuturesPosition) bool {
 			changed := false
 			if latest.PeakPriceMovePct > p.PeakPriceMovePct {
 				p.PeakPriceMovePct = latest.PeakPriceMovePct
@@ -144,7 +144,7 @@ func (e *SpotEngine) updateBorrowCost(pos *models.SpotFuturesPosition, smExch ex
 	negativeYield := fundingAPR > 0 && currentAPR > fundingAPR
 
 	// Update position fields atomically.
-	err = e.db.UpdateSpotPositionFields(pos.ID, func(p *models.SpotFuturesPosition) bool {
+	err = e.lockedUpdatePosition(pos.ID, func(p *models.SpotFuturesPosition) bool {
 		p.CurrentBorrowAPR = currentAPR
 		p.LastBorrowRateCheck = now
 		p.BorrowCostAccrued += costDelta

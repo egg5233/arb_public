@@ -106,14 +106,14 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 						return "price_spike_exit", false
 					}
 				} else {
-					// Direction B (short futures, long spot): DOWN move is risky.
-					if -movePct > priceEmergencyPct {
-						e.log.Error("exit trigger: %s EMERGENCY price drop %.1f%% (entry=%.4f now=%.4f)",
+					// Direction B (short futures, long spot): UP move is risky.
+					if movePct > priceEmergencyPct {
+						e.log.Error("exit trigger: %s EMERGENCY price spike +%.1f%% (entry=%.4f now=%.4f)",
 							pos.Symbol, movePct, pos.FuturesEntry, currentPrice)
 						return "emergency_price_spike", true
 					}
-					if -movePct > priceExitPct {
-						e.log.Warn("exit trigger: %s price drop %.1f%% (entry=%.4f now=%.4f)",
+					if movePct > priceExitPct {
+						e.log.Warn("exit trigger: %s price spike +%.1f%% (entry=%.4f now=%.4f)",
 							pos.Symbol, movePct, pos.FuturesEntry, currentPrice)
 						return "price_spike_exit", false
 					}
@@ -194,7 +194,7 @@ func (e *SpotEngine) initiateExit(pos *models.SpotFuturesPosition, reason string
 
 	// Update position status to "exiting".
 	now := time.Now().UTC()
-	err := e.db.UpdateSpotPositionFields(pos.ID, func(p *models.SpotFuturesPosition) bool {
+	err := e.lockedUpdatePosition(pos.ID, func(p *models.SpotFuturesPosition) bool {
 		p.Status = models.SpotStatusExiting
 		p.ExitReason = reason
 		p.ExitTriggeredAt = &now
@@ -251,7 +251,7 @@ func (e *SpotEngine) completeExit(pos *models.SpotFuturesPosition, reason string
 	// Update position to closed — persist exit prices from ClosePosition and
 	// tracking metrics from checkExitTriggers.
 	now := time.Now().UTC()
-	err := e.db.UpdateSpotPositionFields(pos.ID, func(p *models.SpotFuturesPosition) bool {
+	err := e.lockedUpdatePosition(pos.ID, func(p *models.SpotFuturesPosition) bool {
 		p.Status = models.SpotStatusClosed
 		p.RealizedPnL = totalPnL
 		p.ExitCompletedAt = &now
