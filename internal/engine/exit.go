@@ -172,9 +172,6 @@ func (e *Engine) checkExitsV2() {
 						e.log.Error("failed to update reversal count for %s: %v", pos.ID, err)
 					}
 					e.log.Info("exit check: %s — %s (reversal %d/%d, tolerating)", pos.ID, reason, pos.ReversalCount, tolerance)
-					if e.cfg.ReversalPreSettlement {
-						e.schedulePreSettlementCheck(pos)
-					}
 					continue
 				}
 				e.log.Info("exit check: %s — %s (reversal %d, exiting)", pos.ID, reason, pos.ReversalCount+1)
@@ -1174,116 +1171,6 @@ func (e *Engine) checkZeroSpread(pos *models.ArbitragePosition) (bool, string) {
 	}
 
 	return false, ""
-}
-
-// schedulePreSettlementCheck sets a timer to fire 10 seconds before the next
-// funding settlement. If the position still has ReversalCount >= 1 and a negative
-// spread at that moment, it triggers immediate exit to avoid paying another
-// negative funding fee.
-//
-// Uses inline spread calculation instead of checkSpreadReversal because that
-// function has a ±10min settlement guard that would always return false at T-10s.
-func (e *Engine) schedulePreSettlementCheck(pos *models.ArbitragePosition) {
-	if pos.NextFunding.IsZero() {
-		return
-	}
-
-	// Dedup: don't schedule if a timer is already pending for this position.
-	e.preSettleMu.Lock()
-	if e.preSettleActive[pos.ID] {
-		e.preSettleMu.Unlock()
-		return
-	}
-	e.preSettleActive[pos.ID] = true
-	e.preSettleMu.Unlock()
-
-	checkTime := pos.NextFunding.Add(-10 * time.Second)
-	delay := time.Until(checkTime)
-	if delay <= 0 {
-		e.preSettleMu.Lock()
-		delete(e.preSettleActive, pos.ID)
-		e.preSettleMu.Unlock()
-		return
-	}
-
-	go func() {
-		defer func() {
-			e.preSettleMu.Lock()
-			delete(e.preSettleActive, pos.ID)
-			e.preSettleMu.Unlock()
-		}()
-
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-
-		select {
-		case <-timer.C:
-			// Re-check toggle — user may have disabled reversal since scheduling.
-			if !e.cfg.EnableSpreadReversal {
-				return
-			}
-
-			fresh, err := e.db.GetPosition(pos.ID)
-			if err != nil || fresh.Status != models.StatusActive {
-				return
-			}
-
-			e.exitMu.Lock()
-			running := e.exitActive[fresh.ID]
-			e.exitMu.Unlock()
-			if running {
-				return
-			}
-
-			tolerance := e.cfg.SpreadReversalTolerance
-			if tolerance > 0 && fresh.ReversalCount < tolerance {
-				e.log.Info("pre-settlement check: %s — ReversalCount=%d < tolerance=%d, skipping exit", fresh.ID, fresh.ReversalCount, tolerance)
-				return
-			}
-
-			// Inline spread check (bypasses ±10min settlement guard).
-			longExch, ok := e.exchanges[fresh.LongExchange]
-			if !ok {
-				return
-			}
-			shortExch, ok := e.exchanges[fresh.ShortExchange]
-			if !ok {
-				return
-			}
-			longRate, err := longExch.GetFundingRate(fresh.Symbol)
-			if err != nil {
-				return
-			}
-			shortRate, err := shortExch.GetFundingRate(fresh.Symbol)
-			if err != nil {
-				return
-			}
-
-			longIntervalH := longRate.Interval.Hours()
-			if longIntervalH <= 0 {
-				longIntervalH = 8
-			}
-			shortIntervalH := shortRate.Interval.Hours()
-			if shortIntervalH <= 0 {
-				shortIntervalH = 8
-			}
-			longBpsH := longRate.Rate * 10000 / longIntervalH
-			shortBpsH := shortRate.Rate * 10000 / shortIntervalH
-			currentSpreadBpsH := shortBpsH - longBpsH
-
-			if fresh.EntrySpread > 0 && currentSpreadBpsH >= 0 {
-				e.log.Info("pre-settlement check: %s — spread recovered (%.4f bps/h), no action", fresh.ID, currentSpreadBpsH)
-				return
-			}
-
-			reason := fmt.Sprintf("pre-settlement reversal: entry=%.4f bps/h current=%.4f bps/h", fresh.EntrySpread, currentSpreadBpsH)
-			e.log.Info("pre-settlement check: %s — %s (ReversalCount=%d, exiting before settlement)", fresh.ID, reason, fresh.ReversalCount)
-			e.spawnExitGoroutine(fresh, reason)
-
-		case <-e.stopCh:
-			return
-		}
-	}()
 }
 
 // schedulePostSettlementZeroCheck sets a timer to fire 2 minutes after the next
