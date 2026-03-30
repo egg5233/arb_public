@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -1285,7 +1286,7 @@ func (s *Server) handlePostAddresses(w http.ResponseWriter, r *http.Request) {
 
 // handleDiagnose collects error/warn logs + positions, sends to AI for analysis.
 func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -1362,7 +1363,13 @@ func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-API-Key", s.cfg.AIAPIKey)
+	// Set auth header based on provider: Anthropic uses x-api-key, OpenAI uses Bearer token.
+	if strings.Contains(s.cfg.AIEndpoint, "anthropic") {
+		req.Header.Set("x-api-key", s.cfg.AIAPIKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+	} else {
+		req.Header.Set("Authorization", "Bearer "+s.cfg.AIAPIKey)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -1370,6 +1377,18 @@ func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, Response{Error: fmt.Sprintf("read AI response: %v", err)})
+		return
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		s.log.Error("AI API returned status %d: %s", resp.StatusCode, string(body))
+		writeJSON(w, http.StatusBadGateway, Response{Error: fmt.Sprintf("AI API error (HTTP %d): %s", resp.StatusCode, string(body))})
+		return
+	}
 
 	var aiResp struct {
 		Content []struct {
@@ -1382,9 +1401,22 @@ func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		// Error envelope
+		Error *struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&aiResp); err != nil {
+	if err := json.Unmarshal(body, &aiResp); err != nil {
+		s.log.Error("parse AI response: %v, body: %s", err, string(body))
 		writeJSON(w, http.StatusBadGateway, Response{Error: fmt.Sprintf("parse AI response: %v", err)})
+		return
+	}
+
+	// Surface error envelope from AI API.
+	if aiResp.Error != nil && aiResp.Error.Message != "" {
+		s.log.Error("AI API error: [%s] %s", aiResp.Error.Type, aiResp.Error.Message)
+		writeJSON(w, http.StatusBadGateway, Response{Error: fmt.Sprintf("AI API error: %s", aiResp.Error.Message)})
 		return
 	}
 
@@ -1405,6 +1437,7 @@ func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if analysis == "" {
+		s.log.Error("empty AI response, raw body: %s", string(body))
 		writeJSON(w, http.StatusBadGateway, Response{Error: "empty AI response"})
 		return
 	}

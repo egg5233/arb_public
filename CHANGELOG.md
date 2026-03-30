@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.16] - 2026-03-30
+
+### Fixed
+- **`/api/diagnose` accepts GET requests** — Method guard now allows both GET and POST since the endpoint is functionally idempotent (read-only diagnostic) (`handlers.go:1288`)
+- **AI response error handling** — Auth header now auto-detects provider (Anthropic `x-api-key` + `anthropic-version` vs OpenAI `Authorization: Bearer`), checks HTTP status before parsing, surfaces API error envelopes, and logs raw response body on failure (`handlers.go:1365-1420`)
+
 ## [0.22.15] - 2026-03-30
 
 ### Fixed
