@@ -8,6 +8,7 @@ import (
 	"arb/internal/config"
 	"arb/internal/database"
 	"arb/internal/models"
+	"arb/internal/notify"
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
@@ -38,6 +39,9 @@ type SpotEngine struct {
 
 	// posMu provides per-position locking for read-modify-write operations.
 	posMu sync.Map // posID → *sync.Mutex
+
+	// telegram sends trade lifecycle alerts. Nil if unconfigured.
+	telegram *notify.TelegramNotifier
 }
 
 // NewSpotEngine creates a new SpotEngine with all required dependencies.
@@ -65,6 +69,7 @@ func NewSpotEngine(
 		stopCh:        make(chan struct{}),
 		exitState:     exitState{exiting: make(map[string]bool)},
 		persistCounts: make(map[string]int),
+		telegram:      notify.NewTelegram(cfg.TelegramBotToken, cfg.TelegramChatID),
 	}
 }
 
@@ -184,6 +189,49 @@ func (e *SpotEngine) getPersistenceCount(symbol, exchName string) int {
 func (e *SpotEngine) posLock(posID string) *sync.Mutex {
 	v, _ := e.posMu.LoadOrStore(posID, &sync.Mutex{})
 	return v.(*sync.Mutex)
+}
+
+// isSeparateAccount returns true for exchanges with separate spot and futures wallets.
+func isSeparateAccount(exchName string) bool {
+	switch exchName {
+	case "binance", "bitget":
+		return true
+	default:
+		return false
+	}
+}
+
+// capitalForExchange returns the position capital limit appropriate for the
+// exchange's account type. Separate-account exchanges (Binance, Bitget) use a
+// lower default since cross-margin collateral is not shared.
+func (e *SpotEngine) capitalForExchange(exchName string) float64 {
+	if isSeparateAccount(exchName) {
+		cap := e.cfg.SpotFuturesSeparateAcctMaxUSDT
+		if cap <= 0 {
+			cap = 200
+		}
+		return cap
+	}
+	cap := e.cfg.SpotFuturesUnifiedAcctMaxUSDT
+	if cap <= 0 {
+		cap = 500
+	}
+	return cap
+}
+
+// findActivePosition returns the most recently created active position for a
+// symbol+exchange pair, or nil if none exists.
+func (e *SpotEngine) findActivePosition(symbol, exchName string) *models.SpotFuturesPosition {
+	positions, err := e.db.GetActiveSpotPositions()
+	if err != nil {
+		return nil
+	}
+	for _, p := range positions {
+		if p.Symbol == symbol && p.Exchange == exchName && p.Status == models.SpotStatusActive {
+			return p
+		}
+	}
+	return nil
 }
 
 // lockedUpdatePosition wraps db.UpdateSpotPositionFields with per-position

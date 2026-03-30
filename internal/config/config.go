@@ -163,6 +163,15 @@ type Config struct {
 	SpotFuturesAutoEnabled      bool // enable automated spot-futures entry from discovery loop (default: false)
 	SpotFuturesDryRun           bool // if true, log auto-entry decisions but skip execution (default: true)
 	SpotFuturesPersistenceScans int  // consecutive scans a symbol must appear before auto-entry (default: 2)
+
+	// Separate-account exchange support (Binance/Bitget)
+	SpotFuturesProfitTransferEnabled bool    // enable auto profit-to-margin transfers after exit (default: false)
+	SpotFuturesSeparateAcctMaxUSDT   float64 // max capital per position for separate-account exchanges (default: 200)
+	SpotFuturesUnifiedAcctMaxUSDT    float64 // max capital per position for unified-account exchanges (default: 500)
+
+	// Telegram notifications
+	TelegramBotToken string
+	TelegramChatID   string
 }
 
 // ---------- Nested JSON config structs ----------
@@ -178,6 +187,12 @@ type jsonConfig struct {
 	AI        *jsonAI                 `json:"ai"`
 	SpotArb     *jsonSpotArb            `json:"spot_arb"`
 	SpotFutures *jsonSpotFutures        `json:"spot_futures"`
+	Telegram    *jsonTelegram           `json:"telegram"`
+}
+
+type jsonTelegram struct {
+	BotToken string `json:"bot_token"`
+	ChatID   string `json:"chat_id"`
 }
 
 type jsonSpotArb struct {
@@ -205,6 +220,10 @@ type jsonSpotFutures struct {
 	AutoEnabled      *bool `json:"auto_enabled"`
 	AutoDryRun       *bool `json:"auto_dry_run"`
 	PersistenceScans *int  `json:"persistence_scans"`
+
+	ProfitTransferEnabled *bool    `json:"profit_transfer_enabled"`
+	SeparateAcctMaxUSDT   *float64 `json:"separate_acct_max_usdt"`
+	UnifiedAcctMaxUSDT    *float64 `json:"unified_acct_max_usdt"`
 }
 
 type jsonExchange struct {
@@ -404,8 +423,10 @@ func Load() *Config {
 		SpotFuturesMarginExitPct:      85.0,
 		SpotFuturesMarginEmergencyPct: 95.0,
 		SpotFuturesLossCooldownHours:  4,
-		SpotFuturesDryRun:           true,
-		SpotFuturesPersistenceScans: 2,
+		SpotFuturesDryRun:                true,
+		SpotFuturesPersistenceScans:      2,
+		SpotFuturesSeparateAcctMaxUSDT:   200,
+		SpotFuturesUnifiedAcctMaxUSDT:    500,
 	}
 
 	// Load from JSON file
@@ -830,6 +851,25 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if sf.PersistenceScans != nil {
 			c.SpotFuturesPersistenceScans = *sf.PersistenceScans
 		}
+		if sf.ProfitTransferEnabled != nil {
+			c.SpotFuturesProfitTransferEnabled = *sf.ProfitTransferEnabled
+		}
+		if sf.SeparateAcctMaxUSDT != nil {
+			c.SpotFuturesSeparateAcctMaxUSDT = *sf.SeparateAcctMaxUSDT
+		}
+		if sf.UnifiedAcctMaxUSDT != nil {
+			c.SpotFuturesUnifiedAcctMaxUSDT = *sf.UnifiedAcctMaxUSDT
+		}
+	}
+
+	// Telegram
+	if tg := jc.Telegram; tg != nil {
+		if tg.BotToken != "" {
+			c.TelegramBotToken = tg.BotToken
+		}
+		if tg.ChatID != "" {
+			c.TelegramChatID = tg.ChatID
+		}
 	}
 }
 
@@ -1169,6 +1209,14 @@ func (c *Config) loadEnvOverrides() {
 		if i, err := strconv.Atoi(v); err == nil {
 			c.SpotFuturesMonitorIntervalSec = i
 		}
+	}
+
+	// Telegram
+	if v := os.Getenv("TELEGRAM_BOT_TOKEN"); v != "" {
+		c.TelegramBotToken = v
+	}
+	if v := os.Getenv("TELEGRAM_CHAT_ID"); v != "" {
+		c.TelegramChatID = v
 	}
 }
 

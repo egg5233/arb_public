@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.0] - 2026-03-30
+
+### Added
+- **Telegram Alerts** — auto-entry, auto-exit, and emergency close notifications sent via Telegram Bot API; configure with `telegram.bot_token` and `telegram.chat_id` in config.json or `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` env vars (`internal/notify/telegram.go`)
+- **Separate-Account Exchange Support** — Binance and Bitget now supported in spot-futures with per-exchange capital limits; `spot_futures.separate_acct_max_usdt` (default: $200) for separate-account exchanges, `spot_futures.unified_acct_max_usdt` (default: $500) for unified exchanges
+- **Dashboard: Spot-Futures Auto-Mode Toggle** — auto-entry on/off and dry-run toggle visible in main Overview dashboard with real-time status
+- **Dashboard: Position Health Cards** — active spot-futures positions display margin utilization, borrow APR, net yield, borrow cost accrued, peak price move, and exit trigger proximity
+- **Phase 3b Test Suite** — unit tests for capital allocation logic, PnL calculation (both directions), exit reason formatting, and Telegram notifier nil-safety
+
+### Fixed
+- **v0.21.9–v0.21.11 fixes included** — see below for individual entries
+
 ## [0.21.11] - 2026-03-30
 
 ### Fixed

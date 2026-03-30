@@ -91,10 +91,7 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 	// ---------------------------------------------------------------
 	// 3. Position sizing
 	// ---------------------------------------------------------------
-	capital := e.cfg.SpotFuturesCapitalPerPosition
-	if capital <= 0 {
-		capital = 200 // default $200
-	}
+	capital := e.capitalForExchange(exchName)
 	baseCoin := opp.BaseCoin
 	rawSize := capital / midPrice
 

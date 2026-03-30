@@ -53,6 +53,13 @@ func (e *SpotEngine) attemptAutoEntries(opps []SpotArbOpportunity) {
 		}
 
 		e.log.Info("auto-entry: SUCCESS %s on %s (%s)", opp.Symbol, opp.Exchange, opp.Direction)
+
+		// Telegram alert for auto-entry.
+		if e.telegram != nil {
+			if pos := e.findActivePosition(opp.Symbol, opp.Exchange); pos != nil {
+				e.telegram.NotifyAutoEntry(pos, opp.NetAPR)
+			}
+		}
 		// Sequential: only one entry per scan cycle. After success, the next
 		// scan will re-evaluate with updated capacity.
 		return

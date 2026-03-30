@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import type { Position, Opportunity, Stats, Alert, LogEntry, RejectedOpportunity } from '../types.ts';
+import type { Position, Opportunity, Stats, Alert, LogEntry, RejectedOpportunity, SpotPosition } from '../types.ts';
 
 interface WsMessage {
   type: string;
@@ -14,6 +14,7 @@ export function useWebSocket(enabled: boolean) {
   const [stats, setStats] = useState<Stats | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [rejections, setRejections] = useState<RejectedOpportunity[]>([]);
+  const [spotPositions, setSpotPositions] = useState<SpotPosition[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -84,6 +85,22 @@ export function useWebSocket(enabled: boolean) {
             case 'rejection':
               setRejections((prev) => [...prev, msg.data as RejectedOpportunity].slice(-500));
               break;
+            case 'spot_positions':
+              setSpotPositions((msg.data as SpotPosition[]) || []);
+              break;
+            case 'spot_position_update':
+              setSpotPositions((prev) => {
+                const updated = msg.data as SpotPosition;
+                if (!updated || !updated.id) return prev;
+                const idx = prev.findIndex((p) => p.id === updated.id);
+                if (idx >= 0) {
+                  const next = [...prev];
+                  next[idx] = updated;
+                  return next;
+                }
+                return [...prev, updated];
+              });
+              break;
           }
         } catch {
           // ignore parse errors
@@ -106,5 +123,5 @@ export function useWebSocket(enabled: boolean) {
     };
   }, [enabled, connect]);
 
-  return { connected, positions, setPositions, opportunities, setOpportunities, alerts, stats, setStats, logs, setLogs, rejections, setRejections };
+  return { connected, positions, setPositions, opportunities, setOpportunities, alerts, stats, setStats, logs, setLogs, rejections, setRejections, spotPositions, setSpotPositions };
 }

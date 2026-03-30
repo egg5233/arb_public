@@ -112,3 +112,38 @@ export interface TransferRecord {
   status: string;
   created_at: string;
 }
+
+export interface SpotPosition {
+  id: string;
+  symbol: string;
+  exchange: string;
+  direction: string;
+  status: string;
+  spot_size: number;
+  spot_entry_price: number;
+  spot_exit_price: number;
+  futures_size: number;
+  futures_entry: number;
+  futures_exit: number;
+  futures_side: string;
+  borrow_amount: number;
+  current_borrow_apr: number;
+  borrow_cost_accrued: number;
+  funding_apr: number;
+  notional_usdt: number;
+  realized_pnl: number;
+  entry_fees: number;
+  exit_fees: number;
+  exit_reason: string;
+  peak_price_move_pct: number;
+  margin_utilization_pct: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SpotStats {
+  total_pnl: number;
+  win_count: number;
+  loss_count: number;
+  trade_count: number;
+}

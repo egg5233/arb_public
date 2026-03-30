@@ -308,6 +308,22 @@ func (e *SpotEngine) completeExit(pos *models.SpotFuturesPosition, reason string
 	e.log.Info("EXIT COMPLETE: %s %s on %s — reason=%s pnl=%s%.4f USDT (spot=%.4f futures=%.4f borrow=-%.4f fees=-%.4f)",
 		pos.Symbol, pos.ID, pos.Exchange, reason,
 		pnlSign, totalPnL, spotPnL, futuresPnL, pos.BorrowCostAccrued, pos.EntryFees+pos.ExitFees)
+
+	// Telegram alert.
+	if e.telegram != nil && reason != "manual_close" {
+		duration := time.Duration(0)
+		if pos.ExitCompletedAt != nil {
+			duration = pos.ExitCompletedAt.Sub(pos.CreatedAt)
+		} else {
+			duration = now.Sub(pos.CreatedAt)
+		}
+		isEmergency := reason == "emergency_price_spike" || (reason == "margin_health_exit" && pos.MarginUtilizationPct > e.cfg.SpotFuturesMarginEmergencyPct)
+		if isEmergency {
+			e.telegram.NotifyEmergencyClose(pos, reason, totalPnL)
+		} else {
+			e.telegram.NotifyAutoExit(pos, reason, totalPnL, duration)
+		}
+	}
 }
 
 // ManualClose handles a user-initiated position close from the dashboard.
