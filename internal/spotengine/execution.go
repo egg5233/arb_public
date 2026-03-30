@@ -234,7 +234,7 @@ func (e *SpotEngine) executeBorrowSellLong(
 	e.log.Info("ManualOpen [borrow_sell_long] step 2: spot order placed: %s", spotOrderID)
 
 	// Confirm spot fill.
-	spotFilled, spotAvg = e.confirmSpotFill(futExch, spotOrderID, symbol)
+	spotFilled, spotAvg = e.confirmSpotFill(futExch, spotOrderID, symbol, size)
 	if spotFilled <= 0 {
 		e.log.Error("ManualOpen [borrow_sell_long] step 2: spot order got 0 fill — rolling back borrow")
 		e.rollbackBorrow(smExch, baseCoin, sizeStr)
@@ -297,7 +297,7 @@ func (e *SpotEngine) executeBuySpotShort(
 	e.log.Info("ManualOpen [buy_spot_short] step 1: spot order placed: %s", spotOrderID)
 
 	// Confirm spot fill.
-	spotFilled, spotAvg = e.confirmSpotFill(futExch, spotOrderID, symbol)
+	spotFilled, spotAvg = e.confirmSpotFill(futExch, spotOrderID, symbol, size)
 	if spotFilled <= 0 {
 		return 0, 0, 0, 0, fmt.Errorf("spot buy got 0 fill (order %s)", spotOrderID)
 	}
@@ -393,7 +393,7 @@ func (e *SpotEngine) confirmFuturesFill(exch exchange.Exchange, orderID, symbol 
 // not appear in the futures WS private stream, so we wait briefly then fall
 // back to REST via GetOrderFilledQty. We also try GetOrderUpdate in case
 // the exchange routes spot fills through the same WS.
-func (e *SpotEngine) confirmSpotFill(exch exchange.Exchange, orderID, symbol string) (filledQty, avgPrice float64) {
+func (e *SpotEngine) confirmSpotFill(exch exchange.Exchange, orderID, symbol string, expectedQty float64) (filledQty, avgPrice float64) {
 	// Wait a moment for the order to settle.
 	time.Sleep(2 * time.Second)
 
@@ -410,10 +410,10 @@ func (e *SpotEngine) confirmSpotFill(exch exchange.Exchange, orderID, symbol str
 	// This is best-effort for Phase 3a.
 	restFilled, err := exch.GetOrderFilledQty(orderID, symbol)
 	if err != nil {
-		e.log.Warn("confirmSpotFill: REST query %s failed: %v — assuming full fill of market IOC", orderID, err)
+		e.log.Warn("confirmSpotFill: REST query %s failed: %v — assuming full fill of market IOC (qty=%.6f)", orderID, err, expectedQty)
 		// For market IOC, assume full fill if the order was accepted.
 		// We don't have a REST endpoint for spot margin order details in all adapters.
-		return 0, 0
+		return expectedQty, 0
 	}
 	e.log.Info("confirmSpotFill: REST %s filled=%.6f", orderID, restFilled)
 
@@ -583,7 +583,7 @@ func (e *SpotEngine) closeDirectionA(
 			if placeErr != nil {
 				return fmt.Errorf("spot buyback failed: %w", placeErr)
 			}
-			filled, avg := e.confirmSpotFill(futExch, orderID, pos.Symbol)
+			filled, avg := e.confirmSpotFill(futExch, orderID, pos.Symbol, pos.SpotSize)
 			if filled <= 0 {
 				return fmt.Errorf("spot buyback got 0 fill (order %s)", orderID)
 			}
@@ -700,7 +700,7 @@ func (e *SpotEngine) closeDirectionB(
 			if placeErr != nil {
 				return fmt.Errorf("spot sell failed: %w", placeErr)
 			}
-			filled, avg := e.confirmSpotFill(futExch, orderID, pos.Symbol)
+			filled, avg := e.confirmSpotFill(futExch, orderID, pos.Symbol, pos.SpotSize)
 			if filled <= 0 {
 				return fmt.Errorf("spot sell got 0 fill (order %s)", orderID)
 			}
@@ -803,7 +803,7 @@ func (e *SpotEngine) emergencyClose(
 			ch <- result{leg: "spot", err: fmt.Errorf("spot close: %w", err)}
 			return
 		}
-		_, avg := e.confirmSpotFill(futExch, orderID, pos.Symbol)
+		_, avg := e.confirmSpotFill(futExch, orderID, pos.Symbol, pos.SpotSize)
 		ch <- result{leg: "spot", avg: avg}
 	}()
 

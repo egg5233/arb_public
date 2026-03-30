@@ -247,7 +247,7 @@ func (e *SpotEngine) retryPendingRepay(pos *models.SpotFuturesPosition) {
 
 			// Confirm fill via the futures exchange adapter (has WS/REST order tracking).
 			if futExch, fOk := e.exchanges[pos.Exchange]; fOk {
-				filled, _ := e.confirmSpotFill(futExch, orderID, pos.Symbol)
+				filled, _ := e.confirmSpotFill(futExch, orderID, pos.Symbol, deficitWithBuffer)
 				e.log.Info("retryPendingRepay: deficit buy filled %.6f %s for %s", filled, pos.BaseCoin, pos.ID)
 			}
 		}

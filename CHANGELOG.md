@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.9] - 2026-03-30
+
+### Fixed
+- **Spot fill fallback returns expected quantity instead of zero** — `confirmSpotFill` now accepts `expectedQty` parameter and returns it when REST lookup fails (futures-only endpoint), instead of returning `0, 0` which caused false rollbacks on entry and stranded exits after accepted market IOC spot orders (`execution.go`, `monitor.go`)
+
 ## [0.22.8] - 2026-03-30
 
 ### Fixed
