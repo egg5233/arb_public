@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"arb/internal/models"
 )
@@ -104,9 +105,61 @@ func (s *Server) BroadcastSpotPositionUpdate(pos *models.SpotFuturesPosition) {
 	}
 }
 
+// BroadcastSpotHealth sends a position health/monitoring update to all WS clients.
+func (s *Server) BroadcastSpotHealth(pos *models.SpotFuturesPosition) {
+	s.hub.Broadcast("spot_position_health", pos)
+}
+
 // SetSpotOpportunities updates the cached spot opportunities for the GET endpoint.
 func (s *Server) SetSpotOpportunities(opps []interface{}) {
 	s.spotOpps = opps
+}
+
+// handleSpotPositionHealth returns health metrics for a single spot-futures position.
+func (s *Server) handleSpotPositionHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "position id required"})
+		return
+	}
+
+	pos, err := s.db.GetSpotPosition(id)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeJSON(w, http.StatusNotFound, Response{Error: err.Error()})
+		} else {
+			writeJSON(w, http.StatusInternalServerError, Response{Error: "failed to fetch position"})
+		}
+		return
+	}
+
+	hoursOpen := time.Since(pos.CreatedAt).Hours()
+	netYieldAPR := pos.FundingAPR - pos.CurrentBorrowAPR
+	var negativeYieldMin float64
+	if pos.NegativeYieldSince != nil {
+		negativeYieldMin = time.Since(*pos.NegativeYieldSince).Minutes()
+	}
+
+	health := map[string]interface{}{
+		"position_id":        pos.ID,
+		"symbol":             pos.Symbol,
+		"exchange":           pos.Exchange,
+		"direction":          pos.Direction,
+		"current_borrow_apr": pos.CurrentBorrowAPR,
+		"funding_apr":        pos.FundingAPR,
+		"net_yield_apr":      netYieldAPR,
+		"borrow_cost_accrued": pos.BorrowCostAccrued,
+		"hours_open":         hoursOpen,
+		"negative_yield":     pos.NegativeYieldSince != nil,
+		"negative_yield_min": negativeYieldMin,
+	}
+
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: health})
 }
 
 // handleSpotManualOpen triggers a manual spot-futures entry.

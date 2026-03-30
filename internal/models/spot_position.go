@@ -28,6 +28,13 @@ type SpotFuturesPosition struct {
 	BorrowRateHourly float64 `json:"borrow_rate_hourly"`
 	InterestPaid     float64 `json:"interest_paid"`
 
+	// Monitor state (updated by monitorLoop)
+	LastBorrowRateCheck time.Time  `json:"last_borrow_rate_check"`
+	CurrentBorrowAPR    float64    `json:"current_borrow_apr"`
+	BorrowCostAccrued   float64    `json:"borrow_cost_accrued"`
+	NegativeYieldSince  *time.Time `json:"negative_yield_since,omitempty"`
+	FundingAPR          float64    `json:"funding_apr"` // entry-time funding APR for yield comparison
+
 	// P&L tracking
 	FundingCollected float64 `json:"funding_collected"`
 	EntryFees        float64 `json:"entry_fees"`

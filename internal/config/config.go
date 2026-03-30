@@ -376,7 +376,7 @@ func Load() *Config {
 		SpotFuturesMaxPositions:       1,
 		SpotFuturesCapitalPerPosition: 200,
 		SpotFuturesLeverage:           3,
-		SpotFuturesMonitorIntervalSec: 300,
+		SpotFuturesMonitorIntervalSec: 60,
 		SpotFuturesMinNetYieldAPR:     0.10, // 10%
 		SpotFuturesMaxBorrowAPR:       0.50, // 50%
 		SpotFuturesScanIntervalMin:    10,

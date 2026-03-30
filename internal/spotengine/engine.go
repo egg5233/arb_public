@@ -60,8 +60,9 @@ func (e *SpotEngine) Start() {
 		e.cfg.SpotFuturesMonitorIntervalSec, e.cfg.SpotFuturesMaxPositions)
 	e.log.Info("Spot margin exchanges available: %d", len(e.spotMargin))
 
-	e.wg.Add(1)
+	e.wg.Add(2)
 	go e.discoveryLoop()
+	go e.monitorLoop()
 }
 
 // Stop signals all goroutines to exit and waits for them to finish.

@@ -12,6 +12,19 @@ All notable changes to this project will be documented in this file.
 - **Zero-spread post-settlement confirmation**: When zero-spread count reaches tolerance, instead of exiting immediately, schedules a check 2 minutes after next funding settlement. If spread recovered, resets count; if still zero, then exits. Prevents premature exits when rates often diverge after settlement
 - **Zero-spread epsilon consistency**: Post-settlement zero check now uses symmetric `|spread| < epsilon` matching `checkZeroSpread`, so negative non-zero spreads are no longer misclassified as zero
 
+## [0.21.6] - 2026-03-30
+
+### Added
+- **Spot-Futures Phase 3b.1 — Monitor Loop + Borrow Cost Tracking**: Position monitor goroutine runs every `SpotFuturesMonitorIntervalSec` (default now 60s), refreshes borrow rates from exchange via `GetMarginInterestRate`, calculates accrued borrow cost in USDT, tracks negative yield periods (`NegativeYieldSince`), and alerts when borrow APR exceeds `SpotFuturesMaxBorrowAPR`
+- **Position health endpoint** (`GET /api/spot/positions/{id}/health`): Returns current borrow cost, funding income, net yield APR, hours open, and negative yield duration
+- **WebSocket health broadcasts** (`spot_position_health` message type): Real-time position health updates pushed to all connected dashboard clients on each monitor tick
+- **Monitor fields on SpotFuturesPosition**: `LastBorrowRateCheck`, `CurrentBorrowAPR`, `BorrowCostAccrued`, `NegativeYieldSince`, `FundingAPR`
+- **Entry-time rate capture**: `ManualOpen` now records `FundingAPR`, `BorrowRateHourly`, and `CurrentBorrowAPR` from the discovery opportunity at position creation
+
+### Changed
+- `SpotFuturesMonitorIntervalSec` default reduced from 300s to 60s (used by new monitor loop)
+- Files: `internal/spotengine/monitor.go` (new), `internal/spotengine/engine.go`, `internal/spotengine/execution.go`, `internal/models/spot_position.go`, `internal/api/spot_handlers.go`, `internal/api/server.go`, `internal/config/config.go`
+
 ## [0.21.5] - 2026-03-30
 
 ### Added
