@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.14] - 2026-03-30
+
+### Fixed
+- **Bybit MarginRepay checks resultStatus before declaring success** — `MarginRepay` now parses the `resultStatus` field from Bybit's `/v5/account/no-convert-repay` response; returns error for `P` (processing) and `FA` (failed) so the engine correctly sets `PendingRepay=true` and retries (`pkg/exchange/bybit/margin.go`)
+
 ## [0.22.13] - 2026-03-30
 
 ### Fixed

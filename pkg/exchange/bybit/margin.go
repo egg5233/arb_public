@@ -47,11 +47,29 @@ func (a *Adapter) MarginRepay(params exchange.MarginRepayParams) error {
 		"coin":   params.Coin,
 		"amount": params.Amount,
 	}
-	_, err := a.client.Post("/v5/account/no-convert-repay", reqParams)
+	result, err := a.client.Post("/v5/account/no-convert-repay", reqParams)
 	if err != nil {
 		return fmt.Errorf("bybit MarginRepay: %w", err)
 	}
-	return nil
+
+	// Bybit returns retCode=0 even when repay is still processing or failed.
+	// Must check resultStatus to detect non-success outcomes.
+	var repayResp struct {
+		ResultStatus string `json:"resultStatus"`
+	}
+	if err := json.Unmarshal(result, &repayResp); err != nil {
+		return fmt.Errorf("bybit MarginRepay: unmarshal result: %w", err)
+	}
+	switch repayResp.ResultStatus {
+	case "SU":
+		return nil // success
+	case "FA":
+		return fmt.Errorf("bybit MarginRepay: repay failed (resultStatus=FA)")
+	case "P":
+		return fmt.Errorf("bybit MarginRepay: repay still processing (resultStatus=P), will retry")
+	default:
+		return fmt.Errorf("bybit MarginRepay: unknown resultStatus=%q, treating as pending", repayResp.ResultStatus)
+	}
 }
 
 // ---------------------------------------------------------------------------
