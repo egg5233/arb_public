@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.30] - 2026-03-31
+
+### Fixed
+- **[api] Drift monitor now triggers systemd auto-restart after graceful shutdown** — upgraded binary drift monitor from detect-only to detect-and-remediate; in supervised mode (`INVOCATION_ID` set), confirmed drift schedules a graceful shutdown via `syscall.SIGTERM` to self so all engines drain cleanly, then exits non-zero via `DriftRestartRequested()` check in `cmd/main.go` so `Restart=on-failure` fires; `/api/check-update` now returns structured `runtime` provenance (`pid`, `exePath`, `startedAt`, `binaryModTime`, `driftReason`, `restartSupported`) alongside the existing `binaryDrift` bool; manual/unsupervised runs alert-only with `restartSupported: false` (`internal/api/drift_monitor.go`, `internal/api/handlers.go`, `cmd/main.go`) ([ARB-87](/ARB/issues/ARB-87))
+
 ## [0.22.29] - 2026-03-31
 
 ### Fixed
