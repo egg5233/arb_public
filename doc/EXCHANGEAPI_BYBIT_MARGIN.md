@@ -380,6 +380,50 @@ Signature: `HMAC-SHA256(timestamp + api_key + recv_window + payload)` where payl
 
 ---
 
+### Crypto Loan -- Loanable Data
+
+#### Get Loanable Coin Data
+- **Endpoint**: `GET /v5/crypto-loan-common/loanable-data`
+- **Auth**: None (public endpoint)
+- **Notes**: Returns the list of borrowable coins with their flexible/fixed loan parameters. Used by spot-futures engine to discover current borrow interest rates.
+- **Parameters**:
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| currency | string | No | Filter by coin name, uppercase (e.g. BTC, ETH). If omitted, returns all loanable coins |
+
+- **Response Fields**:
+
+| Field | Type | Description |
+|---|---|---|
+| list | array | Array of loanable coin records |
+| > currency | string | Coin name (e.g. BTC, USDT) |
+| > flexibleAnnualizedInterestRate | string | Annualized interest rate for flexible borrowing |
+| > flexibleBorrowable | boolean | Whether flexible borrowing is available for this coin |
+
+- **Response Example**:
+```json
+{
+    "retCode": 0,
+    "retMsg": "OK",
+    "result": {
+        "list": [
+            {
+                "currency": "BTC",
+                "flexibleAnnualizedInterestRate": "0.0365",
+                "flexibleBorrowable": true
+            }
+        ]
+    },
+    "retExtInfo": {},
+    "time": 1711900000000
+}
+```
+
+> **Note**: This endpoint is from Bybit's Crypto Loan API, separate from the UTA spot margin endpoints. Documentation derived from code usage in `pkg/exchange/bybit/margin.go:103-137`. Response fields listed are only those consumed by the adapter; the full response may contain additional fields.
+
+---
+
 ### Spot Margin Trade (UTA) -- Configuration
 
 #### Toggle Margin Trade
