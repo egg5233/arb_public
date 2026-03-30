@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.25] - 2026-03-31
+
+### Fixed
+- **[spot-futures] dry-run scan-stop and risk gate evaluation order** — `autoentry.go` now returns (stops scan) when risk gate reports `dry_run`, matching one-entry-per-scan semantics from live mode; added 5 regression tests verifying gate evaluation order: dry_run is only reported when all other gates pass (`risk_gate_test.go`, `autoentry.go`) ([ARB-74](/ARB/issues/ARB-74))
+
 ## [0.22.24] - 2026-03-31
 
 ### Fixed
