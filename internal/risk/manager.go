@@ -35,6 +35,17 @@ func NewManager(exchanges map[string]exchange.Exchange, db *database.Client, cfg
 
 // Approve runs all pre-trade risk checks and returns an Approval decision.
 func (m *Manager) Approve(opp models.Opportunity) (*models.RiskApproval, error) {
+	return m.approveInternal(opp, nil)
+}
+
+// ApproveWithReserved is like Approve but subtracts already-reserved margin
+// from available balances before checking sufficiency.
+func (m *Manager) ApproveWithReserved(opp models.Opportunity, reserved map[string]float64) (*models.RiskApproval, error) {
+	return m.approveInternal(opp, reserved)
+}
+
+// approveInternal is the shared implementation for Approve and ApproveWithReserved.
+func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]float64) (*models.RiskApproval, error) {
 	// a. Position count check
 	active, err := m.db.GetActivePositions()
 	if err != nil {
@@ -66,16 +77,35 @@ func (m *Manager) Approve(opp models.Opportunity) (*models.RiskApproval, error) 
 
 	needed := m.cfg.CapitalPerLeg
 	if needed > 0 {
-		m.ensureFuturesBalance(opp.LongExchange, longExch, longBal, needed)
-		m.ensureFuturesBalance(opp.ShortExchange, shortExch, shortBal, needed)
-		// Re-fetch after potential transfer
-		longBal, _ = longExch.GetFuturesBalance()
-		shortBal, _ = shortExch.GetFuturesBalance()
+		bufferedNeed := needed * m.cfg.MarginSafetyMultiplier
+		m.ensureFuturesBalance(opp.LongExchange, longExch, longBal, bufferedNeed)
+		m.ensureFuturesBalance(opp.ShortExchange, shortExch, shortBal, bufferedNeed)
+		// Re-fetch after potential transfer; keep old balance on error
+		if lb, err := longExch.GetFuturesBalance(); err == nil {
+			longBal = lb
+		}
+		if sb, err := shortExch.GetFuturesBalance(); err == nil {
+			shortBal = sb
+		}
+	}
+
+	// Subtract already-reserved margin from prior approvals in the same batch.
+	effectiveLongAvail := longBal.Available
+	effectiveShortAvail := shortBal.Available
+	if reserved != nil {
+		effectiveLongAvail -= reserved[opp.LongExchange]
+		effectiveShortAvail -= reserved[opp.ShortExchange]
+		if effectiveLongAvail < 0 {
+			effectiveLongAvail = 0
+		}
+		if effectiveShortAvail < 0 {
+			effectiveShortAvail = 0
+		}
 	}
 
 	balances := map[string]float64{
-		opp.LongExchange:  longBal.Available,
-		opp.ShortExchange: shortBal.Available,
+		opp.LongExchange:  effectiveLongAvail,
+		opp.ShortExchange: effectiveShortAvail,
 	}
 
 	// c. Leverage check
@@ -107,11 +137,11 @@ func (m *Manager) Approve(opp models.Opportunity) (*models.RiskApproval, error) 
 	safetyMultiplier := m.cfg.MarginSafetyMultiplier
 	safetyPct := (safetyMultiplier - 1) * 100
 	requiredWithBuffer := requiredMarginPerLeg * safetyMultiplier
-	if longBal.Available < requiredWithBuffer {
-		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("insufficient margin buffer on %s: need %.2f (including %.0f%% safety buffer), have %.2f", opp.LongExchange, requiredWithBuffer, safetyPct, longBal.Available)}, nil
+	if effectiveLongAvail < requiredWithBuffer {
+		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("insufficient margin buffer on %s: need %.2f (including %.0f%% safety buffer), have %.2f", opp.LongExchange, requiredWithBuffer, safetyPct, effectiveLongAvail)}, nil
 	}
-	if shortBal.Available < requiredWithBuffer {
-		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("insufficient margin buffer on %s: need %.2f (including %.0f%% safety buffer), have %.2f", opp.ShortExchange, requiredWithBuffer, safetyPct, shortBal.Available)}, nil
+	if effectiveShortAvail < requiredWithBuffer {
+		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("insufficient margin buffer on %s: need %.2f (including %.0f%% safety buffer), have %.2f", opp.ShortExchange, requiredWithBuffer, safetyPct, effectiveShortAvail)}, nil
 	}
 
 	// d. Orderbook depth / slippage check on both exchanges
@@ -199,6 +229,7 @@ func (m *Manager) Approve(opp models.Opportunity) (*models.RiskApproval, error) 
 			opp.Symbol, size, adaptedSize, originalNotional, newNotional, m.cfg.SlippageBPS)
 		size = adaptedSize
 		requiredMarginPerLeg = (size * midPrice) / float64(leverage)
+		requiredWithBuffer = requiredMarginPerLeg * safetyMultiplier // recompute after adaptive sizing
 	}
 
 	// e. Cross-exchange price gap check (VWAP across depth for actual trade size)
@@ -285,11 +316,12 @@ func (m *Manager) Approve(opp models.Opportunity) (*models.RiskApproval, error) 
 
 	m.log.Info("approved %s: size=%.6f price=%.2f spread=%.2f bps/h gapBps=%.1f", opp.Symbol, size, midPrice, opp.Spread, gapBps)
 	return &models.RiskApproval{
-		Approved: true,
-		Size:     size,
-		Reason:   "all pre-trade checks passed",
-		Price:    midPrice,
-		GapBPS:   gapBps,
+		Approved:       true,
+		Size:           size,
+		Reason:         "all pre-trade checks passed",
+		Price:          midPrice,
+		GapBPS:         gapBps,
+		RequiredMargin: requiredWithBuffer,
 	}, nil
 }
 

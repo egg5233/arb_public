@@ -720,9 +720,8 @@ func (a *Adapter) getClassicFuturesBalance() (*exchange.Balance, error) {
 	if total < available {
 		total = available
 	}
-	if available <= 0 && total > 0 {
-		available = total
-	}
+	// Do NOT fallback available to total — available=0 is a legitimate state
+	// meaning all margin is frozen. Overwriting it would mask INSUFFICIENT errors.
 
 	// Gate.io doesn't return margin ratio directly; estimate from available/total
 	var marginRatio float64
