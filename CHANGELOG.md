@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.29] - 2026-03-31
+
+### Fixed
+- **[spot-futures] Health and auto-config API responses widened for ops monitoring** — `GET /api/spot/positions/{id}/health` now returns `last_borrow_rate_check` and `negative_yield_since` so ops can confirm monitor freshness; `GET /api/spot/config/auto` now includes `max_positions` and `capital_per_position` guardrail fields so ops can verify the full auto-entry safety envelope without falling back to `GET /api/config` (`internal/api/spot_handlers.go`) ([ARB-85](/ARB/issues/ARB-85))
+
 ## [0.22.28] - 2026-03-31
 
 ### Fixed
