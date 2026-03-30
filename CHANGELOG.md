@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.2] - 2026-03-30
+
+### Fixed
+- **Direction B positions missing margin-health exit** — `checkExitTriggers` now checks futures-side margin ratio via `GetFuturesBalance()` for Direction B (`buy_spot_short`) positions; previously only Direction A had margin-health monitoring, leaving Direction B reliant on price-spike triggers alone (`exit_manager.go`)
+
 ## [0.22.1] - 2026-03-30
 
 ### Fixed

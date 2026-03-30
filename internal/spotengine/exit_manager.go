@@ -125,18 +125,20 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 	}
 
 	// ---------------------------------------------------------------
-	// 4. Margin Health (Direction A only)
+	// 4. Margin Health
+	//    Direction A: spot-margin borrow utilization
+	//    Direction B: futures margin ratio from GetFuturesBalance
 	// ---------------------------------------------------------------
-	if isDirA {
-		marginExitPct := e.cfg.SpotFuturesMarginExitPct
-		if marginExitPct <= 0 {
-			marginExitPct = 85.0
-		}
-		marginEmergencyPct := e.cfg.SpotFuturesMarginEmergencyPct
-		if marginEmergencyPct <= 0 {
-			marginEmergencyPct = 95.0
-		}
+	marginExitPct := e.cfg.SpotFuturesMarginExitPct
+	if marginExitPct <= 0 {
+		marginExitPct = 85.0
+	}
+	marginEmergencyPct := e.cfg.SpotFuturesMarginEmergencyPct
+	if marginEmergencyPct <= 0 {
+		marginEmergencyPct = 95.0
+	}
 
+	if isDirA {
 		smExch, ok := e.spotMargin[pos.Exchange]
 		if ok && pos.BorrowAmount > 0 {
 			mb, err := smExch.GetMarginBalance(pos.BaseCoin)
@@ -168,6 +170,29 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 				}
 			} else {
 				e.log.Warn("exit check: %s GetMarginBalance(%s) failed: %v", pos.Symbol, pos.BaseCoin, err)
+			}
+		}
+	} else {
+		// Direction B: check futures-side margin ratio.
+		futExch, ok := e.exchanges[pos.Exchange]
+		if ok {
+			bal, err := futExch.GetFuturesBalance()
+			if err == nil && bal.MarginRatio > 0 {
+				utilPct := bal.MarginRatio * 100
+				pos.MarginUtilizationPct = utilPct
+
+				if utilPct > marginEmergencyPct {
+					e.log.Error("exit trigger: %s EMERGENCY futures margin ratio %.1f%% > %.1f%%",
+						pos.Symbol, utilPct, marginEmergencyPct)
+					return "margin_health_exit", true
+				}
+				if utilPct > marginExitPct {
+					e.log.Warn("exit trigger: %s futures margin ratio %.1f%% > %.1f%%",
+						pos.Symbol, utilPct, marginExitPct)
+					return "margin_health_exit", false
+				}
+			} else if err != nil {
+				e.log.Warn("exit check: %s GetFuturesBalance failed: %v", pos.Symbol, err)
 			}
 		}
 	}
