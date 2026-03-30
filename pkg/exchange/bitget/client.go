@@ -92,6 +92,7 @@ func (c *Client) doRequest(method, path string, queryParams, bodyParams map[stri
 	var requestPath string
 	var bodyStr string
 	var reqBody io.Reader
+	var err error
 
 	if method == "GET" {
 		qs := buildQueryString(queryParams)
@@ -104,7 +105,8 @@ func (c *Client) doRequest(method, path string, queryParams, bodyParams map[stri
 	} else {
 		requestPath = path
 		if len(bodyParams) > 0 {
-			b, err := json.Marshal(bodyParams)
+			var b []byte
+			b, err = json.Marshal(bodyParams)
 			if err != nil {
 				return "", fmt.Errorf("marshal body: %w", err)
 			}
@@ -115,16 +117,24 @@ func (c *Client) doRequest(method, path string, queryParams, bodyParams map[stri
 
 	signature := c.sign(timestamp, method, requestPath, bodyStr)
 
-	fullURL := c.baseURL + requestPath
+	var req *http.Request
 	if method == "GET" {
-		// requestPath already includes query string
-		fullURL = c.baseURL + requestPath
-		reqBody = nil
-	}
-
-	req, err := http.NewRequest(method, fullURL, reqBody)
-	if err != nil {
-		return "", err
+		// Build request with base path only, then set RawQuery directly
+		// to avoid http.NewRequest re-encoding percent-escaped non-ASCII
+		// characters (e.g. Chinese symbols like 龙虾USDT).
+		req, err = http.NewRequest(method, c.baseURL+path, nil)
+		if err != nil {
+			return "", err
+		}
+		qs := buildQueryString(queryParams)
+		if qs != "" {
+			req.URL.RawQuery = qs
+		}
+	} else {
+		req, err = http.NewRequest(method, c.baseURL+path, reqBody)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	req.Header.Set("Content-Type", "application/json")
