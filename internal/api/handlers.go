@@ -1637,21 +1637,15 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 
 	hasUpdate := latestVersion != currentVersion
 
-	// Check for binary drift: on-disk binary newer than running process.
-	binaryDrift := false
-	if exe, err := os.Executable(); err == nil {
-		if info, err := os.Stat(exe); err != nil {
-			binaryDrift = true // binary deleted — stale process
-		} else {
-			binaryDrift = info.ModTime().After(processStartTime)
-		}
-	}
+	// Structured runtime drift assessment (ARB-87).
+	prov := runtimeProvenance()
 
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: map[string]interface{}{
 		"currentVersion": currentVersion,
 		"latestVersion":  latestVersion,
 		"hasUpdate":      hasUpdate,
-		"binaryDrift":    binaryDrift,
+		"binaryDrift":    prov.DriftDetected,
+		"runtime":        prov,
 		"changelog":      changelog,
 	}})
 }
