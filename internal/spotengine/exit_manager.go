@@ -266,6 +266,15 @@ func (e *SpotEngine) initiateExit(pos *models.SpotFuturesPosition, reason string
 
 	// Execute the close — this is synchronous and handles all trade legs.
 	if err := e.ClosePosition(pos, reason, isEmergency); err != nil {
+		// Fallback: persist any partial exit progress before returning.
+		// The close methods checkpoint each leg individually, but this
+		// catches any edge case where in-memory state advanced without
+		// a prior checkpoint write.
+		if pos.FuturesExit > 0 || pos.SpotExitPrice > 0 {
+			if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
+				e.log.Error("initiateExit: fallback checkpoint failed for %s: %v", pos.ID, cpErr)
+			}
+		}
 		e.log.Error("CRITICAL: ClosePosition failed for %s (%s): %v — position stuck in 'exiting', manual intervention required",
 			pos.ID, pos.Symbol, err)
 		return
@@ -289,6 +298,32 @@ func (e *SpotEngine) initiateExit(pos *models.SpotFuturesPosition, reason string
 
 	// Close succeeded — run post-exit cleanup.
 	e.completeExit(pos, reason)
+}
+
+// persistExitCheckpoint durably persists exit-leg progress to Redis so that
+// monitor retries skip already-closed legs. Only writes fields that have
+// progressed beyond what Redis already holds.
+func (e *SpotEngine) persistExitCheckpoint(pos *models.SpotFuturesPosition) error {
+	return e.lockedUpdatePosition(pos.ID, func(p *models.SpotFuturesPosition) bool {
+		changed := false
+		if pos.FuturesExit > 0 && p.FuturesExit == 0 {
+			p.FuturesExit = pos.FuturesExit
+			changed = true
+		}
+		if pos.SpotExitPrice > 0 && p.SpotExitPrice == 0 {
+			p.SpotExitPrice = pos.SpotExitPrice
+			changed = true
+		}
+		if pos.ExitFees > 0 {
+			p.ExitFees = pos.ExitFees
+			changed = true
+		}
+		if pos.PendingRepay && !p.PendingRepay {
+			p.PendingRepay = true
+			changed = true
+		}
+		return changed
+	})
 }
 
 // completeExit performs post-exit cleanup: PnL calculation, status update,

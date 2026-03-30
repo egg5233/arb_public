@@ -565,6 +565,12 @@ func (e *SpotEngine) closeDirectionA(
 		}
 		pos.FuturesExit = futAvg
 		e.log.Info("ClosePosition [Dir A] step 1: futures closed fill=%.6f avg=%.6f", futFilled, futAvg)
+		// Checkpoint: persist FuturesExit immediately after confirmed fill.
+		if futAvg > 0 {
+			if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
+				e.log.Error("ClosePosition [Dir A]: failed to checkpoint futures exit: %v", cpErr)
+			}
+		}
 	}
 
 	// Step 2: Buy back spot (to return borrowed coin) — with retry
@@ -604,6 +610,12 @@ func (e *SpotEngine) closeDirectionA(
 			pos.SpotExitPrice = spotAvg
 		}
 		e.log.Info("ClosePosition [Dir A] step 2: spot buyback fill=%.6f avg=%.6f", spotFilled, spotAvg)
+		// Checkpoint: persist SpotExitPrice immediately after confirmed fill.
+		if spotAvg > 0 {
+			if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
+				e.log.Error("ClosePosition [Dir A]: failed to checkpoint spot exit: %v", cpErr)
+			}
+		}
 	}
 
 	// Step 3: Repay borrow
@@ -682,6 +694,12 @@ func (e *SpotEngine) closeDirectionB(
 		}
 		pos.FuturesExit = futAvg
 		e.log.Info("ClosePosition [Dir B] step 1: futures closed fill=%.6f avg=%.6f", futFilled, futAvg)
+		// Checkpoint: persist FuturesExit immediately after confirmed fill.
+		if futAvg > 0 {
+			if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
+				e.log.Error("ClosePosition [Dir B]: failed to checkpoint futures exit: %v", cpErr)
+			}
+		}
 	}
 
 	// Step 2: Sell spot — with retry
@@ -721,6 +739,12 @@ func (e *SpotEngine) closeDirectionB(
 			pos.SpotExitPrice = spotAvg
 		}
 		e.log.Info("ClosePosition [Dir B] step 2: spot sold fill=%.6f avg=%.6f", spotFilled, spotAvg)
+		// Checkpoint: persist SpotExitPrice immediately after confirmed fill.
+		if spotAvg > 0 {
+			if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
+				e.log.Error("ClosePosition [Dir B]: failed to checkpoint spot exit: %v", cpErr)
+			}
+		}
 	}
 
 	// Record exit fees using position exit prices.
@@ -880,6 +904,13 @@ func (e *SpotEngine) emergencyClose(
 		}); err != nil {
 			e.log.Error("EMERGENCY: repay FAILED: %v — will retry on next monitor tick", err)
 			pos.PendingRepay = true
+		}
+	}
+
+	// Checkpoint: persist whatever legs succeeded plus fees and repay state.
+	if pos.FuturesExit > 0 || pos.SpotExitPrice > 0 {
+		if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
+			e.log.Error("EMERGENCY: failed to checkpoint exit progress: %v", cpErr)
 		}
 	}
 

@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.22] - 2026-03-31
+
+### Fixed
+- **[spot-futures] Exit retry now preserves partial close state** — added `persistExitCheckpoint()` helper using `lockedUpdatePosition()` that durably persists `FuturesExit`, `SpotExitPrice`, `ExitFees`, and `PendingRepay` to Redis immediately after each confirmed leg fill in `closeDirectionA()`, `closeDirectionB()`, and `emergencyClose()`. Added fallback checkpoint in `initiateExit()` on error return. Prevents monitor retry from re-closing an already-flat leg after process restart or transient error ([ARB-66](/ARB/issues/ARB-66))
+
 ## [0.22.21] - 2026-03-31
 
 ### Fixed
