@@ -26,8 +26,9 @@ func (e *SpotEngine) attemptAutoEntries(opps []SpotArbOpportunity) {
 			if result.Reason != "dry_run" {
 				e.log.Info("auto-entry: BLOCKED %s on %s — %s", opp.Symbol, opp.Exchange, result.Reason)
 			}
-			// If at capacity or db error, stop evaluating further opportunities.
-			if strings.HasPrefix(result.Reason, "at_capacity") || result.Reason == "db_error" {
+			// Stop scan on: capacity exhausted, db error, or dry-run
+			// (one-entry-per-scan: dry-run stops after first eligible candidate).
+			if strings.HasPrefix(result.Reason, "at_capacity") || result.Reason == "db_error" || result.Reason == "dry_run" {
 				return
 			}
 			continue
