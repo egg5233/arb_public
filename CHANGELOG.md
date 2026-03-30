@@ -130,11 +130,6 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - **v0.21.9–v0.21.11 fixes included** — see below for individual entries
 
-## [0.21.11] - 2026-03-30
-
-### Fixed
-- **Gate.io EnsureOneWayMode missing dual_mode param** — Gate.io expects `dual_mode` as a query parameter, not JSON body; changed from `POST /futures/usdt/dual_mode` with body `{"dual_mode":false}` to query param `?dual_mode=false` (`gateio/adapter.go`)
-
 ## [0.21.11] - 2026-03-31
 
 ### Fixed
@@ -145,13 +140,12 @@ All notable changes to this project will be documented in this file.
 - **Adaptive sizing stale reservation** — `requiredWithBuffer` now recomputed after slippage-adaptive size reduction (`manager.go`)
 - **Balance re-fetch nil dereference** — post-transfer balance refresh now keeps old balance on error instead of panicking (`manager.go`)
 - **History exit_reason truncation** — narrowed max-width for better table display (`History.tsx`)
+- **Gate.io EnsureOneWayMode missing dual_mode param** — Gate.io expects `dual_mode` as a query parameter, not JSON body; changed from `POST /futures/usdt/dual_mode` with body `{"dual_mode":false}` to query param `?dual_mode=false` (`gateio/adapter.go`)
 
 ## [0.21.10] - 2026-03-30
 
 ### Fixed
-- **Bitget rebalancer zero-amount transfer** — skip spot→futures transfer when amount < $1 instead of calling API with 0.0000 USDT; eliminates hourly `code=40020` errors (`engine.go`)## [0.21.10] - 2026-03-30
-
-### Fixed
+- **Bitget rebalancer zero-amount transfer** — skip spot→futures transfer when amount < $1 instead of calling API with 0.0000 USDT; eliminates hourly `code=40020` errors (`engine.go`)
 - **Bitget API signature failure for non-ASCII symbols** — Chinese character symbols (e.g. 龙虾USDT) caused HMAC signature mismatch due to `http.NewRequest` re-encoding percent-escaped UTF-8 bytes; fixed by setting `req.URL.RawQuery` directly to preserve exact query string used for signing (`client.go`)
 ## [0.21.9] - 2026-03-30
 
