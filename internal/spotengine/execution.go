@@ -71,7 +71,7 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 	}
 
 	// 1f. Dry run check.
-	if e.cfg.DryRun {
+	if e.cfg.SpotFuturesDryRun {
 		return fmt.Errorf("dry run mode — trade not executed")
 	}
 

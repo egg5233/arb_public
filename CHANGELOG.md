@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.10] - 2026-03-30
+
+### Fixed
+- **Manual open honors spot-futures dry-run toggle** — `ManualOpen` now checks `SpotFuturesDryRun` instead of the global `DryRun` flag, consistent with auto-entry risk gate (`execution.go`)
+
 ## [0.22.9] - 2026-03-30
 
 ### Fixed
