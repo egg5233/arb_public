@@ -9,7 +9,7 @@ interface OverviewProps {
   exchanges: ExchangeInfo[];
   onDiagnose?: () => Promise<{ analysis: string }>;
   spotPositions?: SpotPosition[];
-  getSpotAutoConfig?: () => Promise<{ auto_enabled: boolean; dry_run: boolean; persistence_scans: number }>;
+  getSpotAutoConfig?: () => Promise<{ auto_enabled: boolean; dry_run: boolean; persistence_scans: number; max_positions: number; capital_per_position: number; separate_acct_max_usdt: number; unified_acct_max_usdt: number }>;
   updateSpotAutoConfig?: (data: { enabled?: boolean; dry_run?: boolean }) => Promise<unknown>;
 }
 

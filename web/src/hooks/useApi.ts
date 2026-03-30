@@ -188,11 +188,11 @@ export function useApi() {
   }, []);
 
   const getSpotAutoConfig = useCallback(() => {
-    return request<{ auto_enabled: boolean; dry_run: boolean; persistence_scans: number }>('/api/spot/config/auto');
+    return request<{ auto_enabled: boolean; dry_run: boolean; persistence_scans: number; max_positions: number; capital_per_position: number; separate_acct_max_usdt: number; unified_acct_max_usdt: number }>('/api/spot/config/auto');
   }, []);
 
   const updateSpotAutoConfig = useCallback((data: { enabled?: boolean; dry_run?: boolean }) => {
-    return request<{ auto_enabled: boolean; dry_run: boolean; persistence_scans: number }>('/api/spot/config/auto', {
+    return request<{ auto_enabled: boolean; dry_run: boolean; persistence_scans: number; max_positions: number; capital_per_position: number; separate_acct_max_usdt: number; unified_acct_max_usdt: number }>('/api/spot/config/auto', {
       method: 'POST',
       body: JSON.stringify(data),
     });

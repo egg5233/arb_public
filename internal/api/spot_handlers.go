@@ -151,23 +151,31 @@ func (s *Server) handleSpotPositionHealth(w http.ResponseWriter, r *http.Request
 		negativeYieldMin = time.Since(*pos.NegativeYieldSince).Minutes()
 	}
 
+	// Expose null instead of year-zero for unset borrow rate check.
+	var lastBorrowRateCheck interface{}
+	if !pos.LastBorrowRateCheck.IsZero() {
+		lastBorrowRateCheck = pos.LastBorrowRateCheck
+	}
+
 	health := map[string]interface{}{
-		"position_id":           pos.ID,
-		"symbol":                pos.Symbol,
-		"exchange":              pos.Exchange,
-		"direction":             pos.Direction,
-		"current_borrow_apr":    pos.CurrentBorrowAPR,
-		"funding_apr":           pos.FundingAPR,
-		"fee_apr":               pos.FeeAPR,
-		"current_funding_apr":   pos.CurrentFundingAPR,
-		"current_fee_apr":       pos.CurrentFeeAPR,
-		"current_net_yield_apr": pos.CurrentNetYieldAPR,
-		"yield_data_source":     pos.YieldDataSource,
-		"yield_snapshot_at":     pos.YieldSnapshotAt,
-		"borrow_cost_accrued":   pos.BorrowCostAccrued,
-		"hours_open":            hoursOpen,
-		"negative_yield":        pos.NegativeYieldSince != nil,
-		"negative_yield_min":    negativeYieldMin,
+		"position_id":            pos.ID,
+		"symbol":                 pos.Symbol,
+		"exchange":               pos.Exchange,
+		"direction":              pos.Direction,
+		"current_borrow_apr":     pos.CurrentBorrowAPR,
+		"funding_apr":            pos.FundingAPR,
+		"fee_apr":                pos.FeeAPR,
+		"current_funding_apr":    pos.CurrentFundingAPR,
+		"current_fee_apr":        pos.CurrentFeeAPR,
+		"current_net_yield_apr":  pos.CurrentNetYieldAPR,
+		"yield_data_source":      pos.YieldDataSource,
+		"yield_snapshot_at":      pos.YieldSnapshotAt,
+		"borrow_cost_accrued":    pos.BorrowCostAccrued,
+		"hours_open":             hoursOpen,
+		"negative_yield":         pos.NegativeYieldSince != nil,
+		"negative_yield_min":     negativeYieldMin,
+		"last_borrow_rate_check": lastBorrowRateCheck,
+		"negative_yield_since":   pos.NegativeYieldSince,
 	}
 
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: health})
@@ -217,12 +225,7 @@ func (s *Server) handleSpotManualOpen(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSpotAutoConfig(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		resp := map[string]interface{}{
-			"auto_enabled":      s.cfg.SpotFuturesAutoEnabled,
-			"dry_run":           s.cfg.SpotFuturesDryRun,
-			"persistence_scans": s.cfg.SpotFuturesPersistenceScans,
-		}
-		writeJSON(w, http.StatusOK, Response{OK: true, Data: resp})
+		writeJSON(w, http.StatusOK, Response{OK: true, Data: s.spotAutoConfigResponse()})
 
 	case http.MethodPost:
 		var req struct {
@@ -251,12 +254,7 @@ func (s *Server) handleSpotAutoConfig(w http.ResponseWriter, r *http.Request) {
 		s.log.Info("spot auto config updated: enabled=%v dry_run=%v persistence_scans=%d",
 			s.cfg.SpotFuturesAutoEnabled, s.cfg.SpotFuturesDryRun, s.cfg.SpotFuturesPersistenceScans)
 
-		resp := map[string]interface{}{
-			"auto_enabled":      s.cfg.SpotFuturesAutoEnabled,
-			"dry_run":           s.cfg.SpotFuturesDryRun,
-			"persistence_scans": s.cfg.SpotFuturesPersistenceScans,
-		}
-		writeJSON(w, http.StatusOK, Response{OK: true, Data: resp})
+		writeJSON(w, http.StatusOK, Response{OK: true, Data: s.spotAutoConfigResponse()})
 
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -296,4 +294,17 @@ func (s *Server) handleSpotManualClose(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, Response{OK: true})
+}
+
+// spotAutoConfigResponse builds the shared response for GET and POST /api/spot/config/auto.
+func (s *Server) spotAutoConfigResponse() map[string]interface{} {
+	return map[string]interface{}{
+		"auto_enabled":           s.cfg.SpotFuturesAutoEnabled,
+		"dry_run":                s.cfg.SpotFuturesDryRun,
+		"persistence_scans":      s.cfg.SpotFuturesPersistenceScans,
+		"max_positions":          s.cfg.SpotFuturesMaxPositions,
+		"capital_per_position":   s.cfg.SpotFuturesCapitalPerPosition,
+		"separate_acct_max_usdt": s.cfg.SpotFuturesSeparateAcctMaxUSDT,
+		"unified_acct_max_usdt":  s.cfg.SpotFuturesUnifiedAcctMaxUSDT,
+	}
 }
