@@ -200,3 +200,38 @@ func (s *Server) handleSpotManualOpen(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, Response{OK: true})
 }
+
+// handleSpotManualClose triggers a manual close of a spot-futures position.
+func (s *Server) handleSpotManualClose(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		PositionID string `json:"position_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.PositionID == "" {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "position_id required"})
+		return
+	}
+
+	if s.spotClosePosition == nil {
+		writeJSON(w, http.StatusServiceUnavailable, Response{Error: "spot engine not available"})
+		return
+	}
+
+	if err := s.spotClosePosition(req.PositionID); err != nil {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "not found") {
+			writeJSON(w, http.StatusNotFound, Response{Error: errMsg})
+		} else if strings.Contains(errMsg, "not active") || strings.Contains(errMsg, "already exiting") {
+			writeJSON(w, http.StatusConflict, Response{Error: errMsg})
+		} else {
+			writeJSON(w, http.StatusInternalServerError, Response{Error: errMsg})
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, Response{OK: true})
+}

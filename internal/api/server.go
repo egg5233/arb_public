@@ -29,6 +29,7 @@ type Server struct {
 	permissions   map[string]exchange.PermissionResult
 	spotOpps          []interface{}
 	spotOpenPosition  func(symbol, exchange, direction string) error
+	spotClosePosition func(positionID string) error
 }
 
 // NewServer creates a new Dashboard server.
@@ -99,6 +100,7 @@ func (s *Server) Start() {
 	mux.HandleFunc("/api/spot/stats", s.cors(s.authMiddleware(s.handleGetSpotStats)))
 	mux.HandleFunc("/api/spot/opportunities", s.cors(s.authMiddleware(s.handleGetSpotOpportunities)))
 	mux.HandleFunc("/api/spot/open", s.cors(s.authMiddleware(s.handleSpotManualOpen)))
+	mux.HandleFunc("/api/spot/close", s.cors(s.authMiddleware(s.handleSpotManualClose)))
 	mux.HandleFunc("GET /api/spot/positions/{id}/health", s.cors(s.authMiddleware(s.handleSpotPositionHealth)))
 
 	// System update
@@ -236,6 +238,11 @@ func (s *Server) SetOpportunities(opps []models.Opportunity) {
 // SetSpotOpenHandler registers the spot-futures engine's manual open callback.
 func (s *Server) SetSpotOpenHandler(fn func(symbol, exchange, direction string) error) {
 	s.spotOpenPosition = fn
+}
+
+// SetSpotCloseHandler registers the spot-futures engine's manual close callback.
+func (s *Server) SetSpotCloseHandler(fn func(positionID string) error) {
+	s.spotClosePosition = fn
 }
 
 // SetPermissions stores the startup permission check results.

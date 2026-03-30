@@ -185,3 +185,25 @@ func (c *Client) UpdateSpotPositionFields(id string, mutate func(pos *models.Spo
 	pos.UpdatedAt = time.Now().UTC()
 	return c.SaveSpotPosition(pos)
 }
+
+// SetSpotCooldown sets a per-symbol cooldown preventing re-entry for the given
+// number of hours. The cooldown is stored as a Redis key with TTL.
+func (c *Client) SetSpotCooldown(symbol string, hours int) error {
+	if hours <= 0 {
+		return nil
+	}
+	ctx := context.Background()
+	key := "arb:spot_cooldown:" + symbol
+	return c.rdb.Set(ctx, key, "1", time.Duration(hours)*time.Hour).Err()
+}
+
+// HasSpotCooldown checks whether a cooldown is active for the given symbol.
+func (c *Client) HasSpotCooldown(symbol string) (bool, error) {
+	ctx := context.Background()
+	key := "arb:spot_cooldown:" + symbol
+	n, err := c.rdb.Exists(ctx, key).Result()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}

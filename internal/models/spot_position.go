@@ -42,10 +42,16 @@ type SpotFuturesPosition struct {
 	RealizedPnL      float64 `json:"realized_pnl"`
 	NotionalUSDT     float64 `json:"notional_usdt"`
 
+	// Exit tracking
+	ExitReason           string     `json:"exit_reason,omitempty"`
+	ExitTriggeredAt      *time.Time `json:"exit_triggered_at,omitempty"`
+	ExitCompletedAt      *time.Time `json:"exit_completed_at,omitempty"`
+	PeakPriceMovePct     float64    `json:"peak_price_move_pct"`
+	MarginUtilizationPct float64    `json:"margin_utilization_pct"`
+
 	// Timing
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
-	ExitReason string    `json:"exit_reason,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // SpotFutures position status constants.

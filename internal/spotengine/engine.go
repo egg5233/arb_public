@@ -26,6 +26,10 @@ type SpotEngine struct {
 	// latestOpps caches the most recent discovery scan results for ManualOpen lookups.
 	oppsMu     sync.RWMutex
 	latestOpps []SpotArbOpportunity
+
+	// exitMu protects exitState from concurrent access.
+	exitMu    sync.Mutex
+	exitState exitState
 }
 
 // NewSpotEngine creates a new SpotEngine with all required dependencies.
@@ -51,6 +55,7 @@ func NewSpotEngine(
 		cfg:        cfg,
 		log:        utils.NewLogger("spot-engine"),
 		stopCh:     make(chan struct{}),
+		exitState:  exitState{exiting: make(map[string]bool)},
 	}
 }
 
@@ -125,4 +130,11 @@ func (e *SpotEngine) getLatestOpps() []SpotArbOpportunity {
 	out := make([]SpotArbOpportunity, len(e.latestOpps))
 	copy(out, e.latestOpps)
 	return out
+}
+
+// isExiting returns true if the given position is currently being exited.
+func (e *SpotEngine) isExiting(posID string) bool {
+	e.exitMu.Lock()
+	defer e.exitMu.Unlock()
+	return e.exitState.exiting[posID]
 }

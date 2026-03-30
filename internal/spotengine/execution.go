@@ -450,3 +450,277 @@ func (e *SpotEngine) rollbackSpotOrder(smExch exchange.SpotMarginExchange, symbo
 		e.log.Info("ROLLBACK: spot reverse order placed: %s", oid)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Position close (exit execution)
+// ---------------------------------------------------------------------------
+
+// ClosePosition closes an active spot-futures position by unwinding both legs.
+// For Direction A (borrow_sell_long): close futures long → buy back spot → repay borrow.
+// For Direction B (buy_spot_short): close futures short → sell spot.
+// In emergency mode, both legs are closed in parallel with market IOC orders
+// and a 5-second hard timeout.
+// The method updates pos.SpotExitPrice and pos.FuturesExit in place on success.
+func (e *SpotEngine) ClosePosition(pos *models.SpotFuturesPosition, reason string, isEmergency bool) error {
+	e.log.Info("ClosePosition: %s on %s reason=%s emergency=%v", pos.Symbol, pos.Exchange, reason, isEmergency)
+
+	futExch, ok := e.exchanges[pos.Exchange]
+	if !ok {
+		return fmt.Errorf("exchange %s not found", pos.Exchange)
+	}
+	smExch, ok := e.spotMargin[pos.Exchange]
+	if !ok {
+		return fmt.Errorf("exchange %s does not support spot margin", pos.Exchange)
+	}
+
+	sizeStr := utils.FormatSize(pos.FuturesSize, 6)
+	spotSizeStr := utils.FormatSize(pos.SpotSize, 6)
+
+	if isEmergency {
+		return e.emergencyClose(pos, futExch, smExch, sizeStr, spotSizeStr)
+	}
+
+	switch pos.Direction {
+	case "borrow_sell_long":
+		return e.closeDirectionA(pos, futExch, smExch, sizeStr, spotSizeStr)
+	case "buy_spot_short":
+		return e.closeDirectionB(pos, futExch, smExch, sizeStr, spotSizeStr)
+	default:
+		return fmt.Errorf("unknown direction %q", pos.Direction)
+	}
+}
+
+// closeDirectionA closes a borrow-sell-long position:
+// 1. Close futures long (sell)
+// 2. Buy back spot
+// 3. Repay borrow
+func (e *SpotEngine) closeDirectionA(
+	pos *models.SpotFuturesPosition,
+	futExch exchange.Exchange,
+	smExch exchange.SpotMarginExchange,
+	futSizeStr, spotSizeStr string,
+) error {
+	// Step 1: Close futures long (sell to close)
+	e.log.Info("ClosePosition [Dir A] step 1: close futures SELL %s %s", pos.Symbol, futSizeStr)
+	futOrderID, err := futExch.PlaceOrder(exchange.PlaceOrderParams{
+		Symbol:     pos.Symbol,
+		Side:       exchange.SideSell,
+		OrderType:  "market",
+		Size:       futSizeStr,
+		Force:      "ioc",
+		ReduceOnly: true,
+	})
+	if err != nil {
+		return fmt.Errorf("close futures long failed: %w", err)
+	}
+
+	futFilled, futAvg := e.confirmFuturesFill(futExch, futOrderID, pos.Symbol)
+	if futFilled <= 0 {
+		return fmt.Errorf("futures close got 0 fill (order %s)", futOrderID)
+	}
+	pos.FuturesExit = futAvg
+	e.log.Info("ClosePosition [Dir A] step 1: futures closed fill=%.6f avg=%.6f", futFilled, futAvg)
+
+	// Step 2: Buy back spot (to return borrowed coin)
+	e.log.Info("ClosePosition [Dir A] step 2: buy back spot BUY %s %s", pos.Symbol, spotSizeStr)
+	spotOrderID, err := smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
+		Symbol:    pos.Symbol,
+		Side:      exchange.SideBuy,
+		OrderType: "market",
+		Size:      spotSizeStr,
+		Force:     "ioc",
+	})
+	if err != nil {
+		return fmt.Errorf("spot buyback failed (futures already closed): %w", err)
+	}
+
+	spotFilled, spotAvg := e.confirmSpotFill(futExch, spotOrderID, pos.Symbol)
+	if spotFilled > 0 && spotAvg > 0 {
+		pos.SpotExitPrice = spotAvg
+	}
+	e.log.Info("ClosePosition [Dir A] step 2: spot buyback fill=%.6f avg=%.6f", spotFilled, spotAvg)
+
+	// Step 3: Repay borrow
+	repayAmount := utils.FormatSize(pos.BorrowAmount, 6)
+	e.log.Info("ClosePosition [Dir A] step 3: repay borrow %s %s", repayAmount, pos.BaseCoin)
+	if err := smExch.MarginRepay(exchange.MarginRepayParams{
+		Coin:   pos.BaseCoin,
+		Amount: repayAmount,
+	}); err != nil {
+		e.log.Error("ClosePosition [Dir A] repay FAILED: %v — manual repay needed for %s %s",
+			err, repayAmount, pos.BaseCoin)
+		// Don't return error — position is already closed from trading perspective
+	}
+
+	return nil
+}
+
+// closeDirectionB closes a buy-spot-short position:
+// 1. Close futures short (buy to close)
+// 2. Sell spot
+func (e *SpotEngine) closeDirectionB(
+	pos *models.SpotFuturesPosition,
+	futExch exchange.Exchange,
+	smExch exchange.SpotMarginExchange,
+	futSizeStr, spotSizeStr string,
+) error {
+	// Step 1: Close futures short (buy to close)
+	e.log.Info("ClosePosition [Dir B] step 1: close futures BUY %s %s", pos.Symbol, futSizeStr)
+	futOrderID, err := futExch.PlaceOrder(exchange.PlaceOrderParams{
+		Symbol:     pos.Symbol,
+		Side:       exchange.SideBuy,
+		OrderType:  "market",
+		Size:       futSizeStr,
+		Force:      "ioc",
+		ReduceOnly: true,
+	})
+	if err != nil {
+		return fmt.Errorf("close futures short failed: %w", err)
+	}
+
+	futFilled, futAvg := e.confirmFuturesFill(futExch, futOrderID, pos.Symbol)
+	if futFilled <= 0 {
+		return fmt.Errorf("futures close got 0 fill (order %s)", futOrderID)
+	}
+	pos.FuturesExit = futAvg
+	e.log.Info("ClosePosition [Dir B] step 1: futures closed fill=%.6f avg=%.6f", futFilled, futAvg)
+
+	// Step 2: Sell spot
+	e.log.Info("ClosePosition [Dir B] step 2: sell spot SELL %s %s", pos.Symbol, spotSizeStr)
+	spotOrderID, err := smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
+		Symbol:    pos.Symbol,
+		Side:      exchange.SideSell,
+		OrderType: "market",
+		Size:      spotSizeStr,
+		Force:     "ioc",
+	})
+	if err != nil {
+		return fmt.Errorf("spot sell failed (futures already closed): %w", err)
+	}
+
+	spotFilled, spotAvg := e.confirmSpotFill(futExch, spotOrderID, pos.Symbol)
+	if spotFilled > 0 && spotAvg > 0 {
+		pos.SpotExitPrice = spotAvg
+	}
+	e.log.Info("ClosePosition [Dir B] step 2: spot sold fill=%.6f avg=%.6f", spotFilled, spotAvg)
+
+	return nil
+}
+
+// emergencyClose closes both legs in PARALLEL with a 5-second hard timeout.
+// Used for emergency exits (price spike >30%, margin >95%).
+func (e *SpotEngine) emergencyClose(
+	pos *models.SpotFuturesPosition,
+	futExch exchange.Exchange,
+	smExch exchange.SpotMarginExchange,
+	futSizeStr, spotSizeStr string,
+) error {
+	e.log.Warn("EMERGENCY CLOSE: %s on %s — closing both legs in parallel", pos.Symbol, pos.Exchange)
+
+	type result struct {
+		leg string
+		avg float64
+		err error
+	}
+	ch := make(chan result, 2)
+
+	// Determine futures close side
+	var futSide exchange.Side
+	if pos.FuturesSide == "long" {
+		futSide = exchange.SideSell
+	} else {
+		futSide = exchange.SideBuy
+	}
+
+	// Determine spot close side
+	var spotSide exchange.Side
+	if pos.Direction == "borrow_sell_long" {
+		spotSide = exchange.SideBuy // buy back borrowed coin
+	} else {
+		spotSide = exchange.SideSell // sell held spot
+	}
+
+	// Close futures leg in parallel
+	go func() {
+		orderID, err := futExch.PlaceOrder(exchange.PlaceOrderParams{
+			Symbol:     pos.Symbol,
+			Side:       futSide,
+			OrderType:  "market",
+			Size:       futSizeStr,
+			Force:      "ioc",
+			ReduceOnly: true,
+		})
+		if err != nil {
+			ch <- result{leg: "futures", err: fmt.Errorf("futures close: %w", err)}
+			return
+		}
+		_, avg := e.confirmFuturesFill(futExch, orderID, pos.Symbol)
+		ch <- result{leg: "futures", avg: avg}
+	}()
+
+	// Close spot leg in parallel
+	go func() {
+		orderID, err := smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
+			Symbol:    pos.Symbol,
+			Side:      spotSide,
+			OrderType: "market",
+			Size:      spotSizeStr,
+			Force:     "ioc",
+		})
+		if err != nil {
+			ch <- result{leg: "spot", err: fmt.Errorf("spot close: %w", err)}
+			return
+		}
+		_, avg := e.confirmSpotFill(futExch, orderID, pos.Symbol)
+		ch <- result{leg: "spot", avg: avg}
+	}()
+
+	// Collect results with 5s timeout
+	timeout := time.After(5 * time.Second)
+	var futErr, spotErr error
+	collected := 0
+	for collected < 2 {
+		select {
+		case r := <-ch:
+			collected++
+			if r.err != nil {
+				if r.leg == "futures" {
+					futErr = r.err
+				} else {
+					spotErr = r.err
+				}
+				e.log.Error("EMERGENCY: %s leg failed: %v", r.leg, r.err)
+			} else {
+				if r.leg == "futures" {
+					pos.FuturesExit = r.avg
+				} else {
+					pos.SpotExitPrice = r.avg
+				}
+				e.log.Info("EMERGENCY: %s leg closed avg=%.6f", r.leg, r.avg)
+			}
+		case <-timeout:
+			e.log.Error("EMERGENCY CLOSE TIMEOUT: %s — %d/2 legs completed", pos.Symbol, collected)
+			if futErr != nil || spotErr != nil {
+				return fmt.Errorf("emergency close timed out with errors: futures=%v spot=%v", futErr, spotErr)
+			}
+			return fmt.Errorf("emergency close timed out after 5s (%d/2 legs done)", collected)
+		}
+	}
+
+	// Repay borrow if Direction A
+	if pos.Direction == "borrow_sell_long" && pos.BorrowAmount > 0 {
+		repayAmount := utils.FormatSize(pos.BorrowAmount, 6)
+		e.log.Info("EMERGENCY: repaying borrow %s %s", repayAmount, pos.BaseCoin)
+		if err := smExch.MarginRepay(exchange.MarginRepayParams{
+			Coin:   pos.BaseCoin,
+			Amount: repayAmount,
+		}); err != nil {
+			e.log.Error("EMERGENCY: repay FAILED: %v — manual intervention needed", err)
+		}
+	}
+
+	if futErr != nil {
+		return futErr
+	}
+	return spotErr
+}

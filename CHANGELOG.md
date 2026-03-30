@@ -12,6 +12,23 @@ All notable changes to this project will be documented in this file.
 - **Zero-spread post-settlement confirmation**: When zero-spread count reaches tolerance, instead of exiting immediately, schedules a check 2 minutes after next funding settlement. If spread recovered, resets count; if still zero, then exits. Prevents premature exits when rates often diverge after settlement
 - **Zero-spread epsilon consistency**: Post-settlement zero check now uses symmetric `|spread| < epsilon` matching `checkZeroSpread`, so negative non-zero spreads are no longer misclassified as zero
 
+### Added
+- **Spot-Futures Phase 3b.2 — Automated Exit System**: 5 exit triggers evaluated on each monitor tick + emergency close with parallel leg closure
+  - **Borrow Cost Drift** (Dir A): exits when borrow APR exceeds max or negative yield persists beyond grace period (`SpotFuturesBorrowGraceMin`, default 30m)
+  - **Funding Rate Drop** (both dirs): exits when net yield drops below `SpotFuturesMinNetYieldAPR`; falls back to entry-time funding APR when symbol drops from scan
+  - **Price Spike** (both dirs): normal exit at `SpotFuturesPriceExitPct` (20%), emergency at `SpotFuturesPriceEmergencyPct` (30%); tracks `PeakPriceMovePct`
+  - **Margin Health** (Dir A): exits at `SpotFuturesMarginExitPct` (85%), emergency at `SpotFuturesMarginEmergencyPct` (95%); tracks `MarginUtilizationPct`
+  - **Manual Close**: `POST /api/spot/close` endpoint for dashboard-triggered position close
+- **Emergency Close**: parallel leg closure with 5-second hard timeout, market IOC only, accepts any slippage
+- **Post-Exit Processing**: direction-aware PnL calculation, per-symbol loss cooldown (`SpotFuturesLossCooldownHours`, default 4h), history recording, stats update
+- **Exit tracking fields**: `ExitTriggeredAt`, `ExitCompletedAt`, `PeakPriceMovePct`, `MarginUtilizationPct` on SpotFuturesPosition
+- **Redis cooldown keys**: `arb:spot_cooldown:{symbol}` with TTL for re-entry prevention after losses
+
+### Changed
+- Monitor loop now checks exit triggers for both Direction A and B positions (previously only updated borrow costs for Dir A)
+- Borrow cost tracking extracted to `updateBorrowCost()` helper for cleaner separation
+- Files: `internal/spotengine/exit_manager.go` (new), `internal/spotengine/monitor.go`, `internal/spotengine/engine.go`, `internal/spotengine/execution.go`, `internal/models/spot_position.go`, `internal/database/spot_state.go`, `internal/config/config.go`, `internal/api/spot_handlers.go`, `internal/api/server.go`, `cmd/main.go`
+
 ## [0.21.6] - 2026-03-30
 
 ### Added

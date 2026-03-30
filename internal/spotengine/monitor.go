@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"arb/internal/models"
+	"arb/pkg/exchange"
 )
 
 // monitorLoop periodically checks all active spot-futures positions:
@@ -50,25 +51,67 @@ func (e *SpotEngine) monitorTick() {
 	}
 }
 
-// monitorPosition refreshes borrow rate and updates accrued cost for one position.
+// monitorPosition refreshes borrow rate, updates accrued cost, checks exit
+// triggers, and broadcasts health for one position. Both Direction A and B
+// are evaluated for exit triggers; only Direction A updates borrow rates.
 func (e *SpotEngine) monitorPosition(pos *models.SpotFuturesPosition) {
-	// Direction B (buy_spot_short) has no borrow costs — just broadcast health.
-	if pos.Direction != "borrow_sell_long" {
-		e.broadcastHealth(pos)
-		return
+	isDirA := pos.Direction == "borrow_sell_long"
+
+	// ---------------------------------------------------------------
+	// Direction A: update borrow rates and accrued cost.
+	// ---------------------------------------------------------------
+	if isDirA {
+		smExch, ok := e.spotMargin[pos.Exchange]
+		if !ok {
+			e.log.Warn("monitor: no SpotMarginExchange for %s — skipping borrow update for %s", pos.Exchange, pos.ID)
+		} else {
+			e.updateBorrowCost(pos, smExch)
+		}
 	}
 
-	smExch, ok := e.spotMargin[pos.Exchange]
-	if !ok {
-		e.log.Warn("monitor: no SpotMarginExchange for %s — skipping %s", pos.Exchange, pos.ID)
-		return
+	// Re-read position to get latest state after borrow update.
+	latest, err := e.db.GetSpotPosition(pos.ID)
+	if err != nil {
+		e.log.Error("monitor: failed to re-read position %s: %v", pos.ID, err)
+		latest = pos // fall back to original
 	}
 
-	// Refresh borrow rate using the shared cache from discovery.go.
+	// Broadcast health for all directions.
+	e.broadcastHealth(latest)
+
+	// ---------------------------------------------------------------
+	// Check exit triggers for all directions.
+	// ---------------------------------------------------------------
+	reason, isEmergency := e.checkExitTriggers(latest)
+
+	// Persist tracking metrics updated by checkExitTriggers (best-effort).
+	if latest.PeakPriceMovePct > 0 || latest.MarginUtilizationPct > 0 {
+		_ = e.db.UpdateSpotPositionFields(latest.ID, func(p *models.SpotFuturesPosition) bool {
+			changed := false
+			if latest.PeakPriceMovePct > p.PeakPriceMovePct {
+				p.PeakPriceMovePct = latest.PeakPriceMovePct
+				changed = true
+			}
+			if latest.MarginUtilizationPct != p.MarginUtilizationPct {
+				p.MarginUtilizationPct = latest.MarginUtilizationPct
+				changed = true
+			}
+			return changed
+		})
+	}
+
+	if reason != "" {
+		if !e.isExiting(latest.ID) {
+			go e.initiateExit(latest, reason, isEmergency)
+		}
+	}
+}
+
+// updateBorrowCost refreshes the borrow rate and accrues cost for a Direction A position.
+func (e *SpotEngine) updateBorrowCost(pos *models.SpotFuturesPosition, smExch exchange.SpotMarginExchange) {
 	rate, err := e.getCachedBorrowRate(pos.Exchange, pos.BaseCoin, smExch)
 	if err != nil {
 		e.log.Warn("monitor: GetMarginInterestRate(%s/%s) failed: %v", pos.Exchange, pos.BaseCoin, err)
-		e.broadcastHealth(pos)
 		return
 	}
 
@@ -133,12 +176,6 @@ func (e *SpotEngine) monitorPosition(pos *models.SpotFuturesPosition) {
 	if maxAPR > 0 && currentAPR > maxAPR {
 		e.log.Warn("ALERT: %s borrow APR %.2f%% exceeds max %.2f%% — exit recommended",
 			pos.Symbol, currentAPR*100, maxAPR*100)
-	}
-
-	// Re-read updated position for broadcast.
-	updated, err := e.db.GetSpotPosition(pos.ID)
-	if err == nil {
-		e.broadcastHealth(updated)
 	}
 }
 

@@ -154,6 +154,12 @@ type Config struct {
 	SpotFuturesMaxBorrowAPR      float64  // maximum borrow APR for Direction A (decimal, e.g. 0.50 = 50%)
 	SpotFuturesExchanges         []string // exchanges to consider (empty = all SpotMargin-capable)
 	SpotFuturesScanIntervalMin   int      // discovery scan interval in minutes
+	SpotFuturesBorrowGraceMin     int     // minutes of negative yield before exit (default: 30)
+	SpotFuturesPriceExitPct       float64 // price move % to trigger normal exit (default: 20.0)
+	SpotFuturesPriceEmergencyPct  float64 // price move % to trigger emergency exit (default: 30.0)
+	SpotFuturesMarginExitPct      float64 // margin utilization % for normal exit (default: 85.0)
+	SpotFuturesMarginEmergencyPct float64 // margin utilization % for emergency exit (default: 95.0)
+	SpotFuturesLossCooldownHours  int     // hours to cool down after a losing trade (default: 4)
 }
 
 // ---------- Nested JSON config structs ----------
@@ -187,6 +193,12 @@ type jsonSpotFutures struct {
 	MaxBorrowAPR       *float64 `json:"max_borrow_apr"`
 	Exchanges          []string `json:"exchanges"`
 	ScanIntervalMin    *int     `json:"scan_interval_min"`
+	BorrowGraceMin     *int     `json:"borrow_grace_min"`
+	PriceExitPct       *float64 `json:"price_exit_pct"`
+	PriceEmergencyPct  *float64 `json:"price_emergency_pct"`
+	MarginExitPct      *float64 `json:"margin_exit_pct"`
+	MarginEmergencyPct *float64 `json:"margin_emergency_pct"`
+	LossCooldownHours  *int     `json:"loss_cooldown_hours"`
 }
 
 type jsonExchange struct {
@@ -380,6 +392,12 @@ func Load() *Config {
 		SpotFuturesMinNetYieldAPR:     0.10, // 10%
 		SpotFuturesMaxBorrowAPR:       0.50, // 50%
 		SpotFuturesScanIntervalMin:    10,
+		SpotFuturesBorrowGraceMin:     30,
+		SpotFuturesPriceExitPct:       20.0,
+		SpotFuturesPriceEmergencyPct:  30.0,
+		SpotFuturesMarginExitPct:      85.0,
+		SpotFuturesMarginEmergencyPct: 95.0,
+		SpotFuturesLossCooldownHours:  4,
 	}
 
 	// Load from JSON file
@@ -776,6 +794,24 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		}
 		if sf.ScanIntervalMin != nil {
 			c.SpotFuturesScanIntervalMin = *sf.ScanIntervalMin
+		}
+		if sf.BorrowGraceMin != nil {
+			c.SpotFuturesBorrowGraceMin = *sf.BorrowGraceMin
+		}
+		if sf.PriceExitPct != nil {
+			c.SpotFuturesPriceExitPct = *sf.PriceExitPct
+		}
+		if sf.PriceEmergencyPct != nil {
+			c.SpotFuturesPriceEmergencyPct = *sf.PriceEmergencyPct
+		}
+		if sf.MarginExitPct != nil {
+			c.SpotFuturesMarginExitPct = *sf.MarginExitPct
+		}
+		if sf.MarginEmergencyPct != nil {
+			c.SpotFuturesMarginEmergencyPct = *sf.MarginEmergencyPct
+		}
+		if sf.LossCooldownHours != nil {
+			c.SpotFuturesLossCooldownHours = *sf.LossCooldownHours
 		}
 	}
 }
