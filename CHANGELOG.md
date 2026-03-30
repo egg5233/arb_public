@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.13] - 2026-03-30
+
+### Fixed
+- **Stuck exit emergency escalation fires on retry 5 not retry 6** — `isEmergency` check now uses post-increment value (`ExitRetryCount+1 >= 5`) instead of stale pre-increment struct (`monitor.go`)
+
 ## [0.22.12] - 2026-03-30
 
 ### Fixed

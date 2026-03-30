@@ -59,7 +59,7 @@ func (e *SpotEngine) monitorTick() {
 					p.ExitRetryCount++
 					return true
 				})
-				isEmergency := pos.ExitRetryCount >= 5
+				isEmergency := pos.ExitRetryCount+1 >= 5
 				e.log.Warn("monitor: retrying stuck exit for %s (retry #%d, emergency=%v)",
 					pos.ID, pos.ExitRetryCount+1, isEmergency)
 				go e.initiateExit(pos, pos.ExitReason, isEmergency)
