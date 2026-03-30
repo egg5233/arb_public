@@ -834,6 +834,12 @@ monitorTick (every monitor_interval_sec):
   └── status=active → checkExitTriggers (spread, yield, price spike, margin health)
 ```
 
+**Price-spike triggers (canonical rule):**
+- **Direction A** (`borrow_sell_long`): adverse move is price **UP** — long futures profits but borrowed-and-sold spot must be bought back at a higher price; also increases margin utilization on the borrow.
+- **Direction B** (`buy_spot_short`): adverse move is price **UP** — short futures faces liquidation risk on a squeeze. The spot holding (long) is safe but cannot offset fast enough if the short is liquidated. Down moves are profitable for the futures short and do **not** trigger price-spike exits.
+
+Both directions use the same check: `movePct = (currentPrice − futuresEntry) / futuresEntry × 100`; exit fires when `movePct > price_exit_pct` (default 20%), emergency when `movePct > price_emergency_pct` (default 30%).
+
 **Margin health triggers:**
 - **Direction A**: `borrowed/available * 100 > margin_exit_pct` (spot margin utilization)
 - **Direction B**: `GetFuturesBalance().MarginRatio * 100 > margin_exit_pct` (futures account margin ratio)

@@ -1,11 +1,87 @@
 package spotengine
 
 import (
+	"sync"
 	"testing"
+	"time"
 
 	"arb/internal/config"
 	"arb/internal/models"
+	"arb/pkg/exchange"
+	"arb/pkg/utils"
 )
+
+// priceStubExchange is a minimal exchange.Exchange that returns a fixed orderbook price.
+type priceStubExchange struct{ price float64 }
+
+func (s priceStubExchange) Name() string { return "stub" }
+func (s priceStubExchange) GetOrderbook(string, int) (*exchange.Orderbook, error) {
+	return &exchange.Orderbook{
+		Bids: []exchange.PriceLevel{{Price: s.price, Quantity: 1}},
+		Asks: []exchange.PriceLevel{{Price: s.price, Quantity: 1}},
+	}, nil
+}
+func (s priceStubExchange) PlaceOrder(exchange.PlaceOrderParams) (string, error) { return "", nil }
+func (s priceStubExchange) CancelOrder(string, string) error                     { return nil }
+func (s priceStubExchange) GetPendingOrders(string) ([]exchange.Order, error)    { return nil, nil }
+func (s priceStubExchange) GetOrderFilledQty(string, string) (float64, error)    { return 0, nil }
+func (s priceStubExchange) GetPosition(string) ([]exchange.Position, error)      { return nil, nil }
+func (s priceStubExchange) GetAllPositions() ([]exchange.Position, error)        { return nil, nil }
+func (s priceStubExchange) SetLeverage(string, string, string) error             { return nil }
+func (s priceStubExchange) SetMarginMode(string, string) error                   { return nil }
+func (s priceStubExchange) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
+	return nil, nil
+}
+func (s priceStubExchange) GetFundingRate(string) (*exchange.FundingRate, error) { return nil, nil }
+func (s priceStubExchange) GetFundingInterval(string) (time.Duration, error)     { return 0, nil }
+func (s priceStubExchange) GetFuturesBalance() (*exchange.Balance, error) {
+	return &exchange.Balance{}, nil
+}
+func (s priceStubExchange) GetSpotBalance() (*exchange.Balance, error)           { return nil, nil }
+func (s priceStubExchange) Withdraw(exchange.WithdrawParams) (*exchange.WithdrawResult, error) {
+	return nil, nil
+}
+func (s priceStubExchange) TransferToSpot(string, string) error    { return nil }
+func (s priceStubExchange) TransferToFutures(string, string) error { return nil }
+func (s priceStubExchange) StartPriceStream([]string)              {}
+func (s priceStubExchange) SubscribeSymbol(string) bool            { return false }
+func (s priceStubExchange) GetBBO(string) (exchange.BBO, bool)     { return exchange.BBO{}, false }
+func (s priceStubExchange) GetPriceStore() *sync.Map               { return nil }
+func (s priceStubExchange) SubscribeDepth(string) bool             { return false }
+func (s priceStubExchange) UnsubscribeDepth(string) bool           { return false }
+func (s priceStubExchange) GetDepth(string) (*exchange.Orderbook, bool) { return nil, false }
+func (s priceStubExchange) StartPrivateStream()                         {}
+func (s priceStubExchange) GetOrderUpdate(string) (exchange.OrderUpdate, bool) {
+	return exchange.OrderUpdate{}, false
+}
+func (s priceStubExchange) SetOrderCallback(func(exchange.OrderUpdate))           {}
+func (s priceStubExchange) PlaceStopLoss(exchange.StopLossParams) (string, error) { return "", nil }
+func (s priceStubExchange) CancelStopLoss(string, string) error                   { return nil }
+func (s priceStubExchange) GetUserTrades(string, time.Time, int) ([]exchange.Trade, error) {
+	return nil, nil
+}
+func (s priceStubExchange) GetFundingFees(string, time.Time) ([]exchange.FundingPayment, error) {
+	return nil, nil
+}
+func (s priceStubExchange) GetClosePnL(string, time.Time) ([]exchange.ClosePnL, error) {
+	return nil, nil
+}
+func (s priceStubExchange) EnsureOneWayMode() error { return nil }
+func (s priceStubExchange) Close()                  {}
+
+// newPriceSpikeEngine creates a SpotEngine wired to return a fixed current price.
+func newPriceSpikeEngine(currentPrice float64) *SpotEngine {
+	return &SpotEngine{
+		cfg: &config.Config{
+			SpotFuturesPriceExitPct:      20.0,
+			SpotFuturesPriceEmergencyPct: 30.0,
+		},
+		exchanges: map[string]exchange.Exchange{
+			"testexch": priceStubExchange{price: currentPrice},
+		},
+		log: utils.NewLogger("test"),
+	}
+}
 
 // TestCapitalForExchange verifies that separate-account exchanges get lower
 // capital limits than unified-account exchanges.
@@ -167,6 +243,106 @@ func TestPnLCalculation(t *testing.T) {
 
 			if diff := totalPnL - tc.wantPnL; diff > 0.001 || diff < -0.001 {
 				t.Errorf("PnL = %.4f, want %.4f (spot=%.4f futures=%.4f)", totalPnL, tc.wantPnL, spotPnL, futuresPnL)
+			}
+		})
+	}
+}
+
+// TestPriceSpikeTriggers verifies that price-spike exits fire on the correct
+// direction for both Direction A and Direction B.
+//
+// Canonical rule: UP moves are adverse for BOTH directions.
+//   - Direction A: long futures, short spot — UP move increases borrow buy-back cost.
+//   - Direction B: short futures, long spot — UP move risks futures liquidation.
+//   - DOWN moves do NOT trigger price-spike exits for either direction.
+func TestPriceSpikeTriggers(t *testing.T) {
+	const entry = 100.0
+
+	tests := []struct {
+		name          string
+		direction     string
+		currentPrice  float64
+		wantReason    string
+		wantEmergency bool
+	}{
+		// Direction A — UP triggers
+		{
+			name:         "DirA: +25% triggers normal price_spike_exit",
+			direction:    "borrow_sell_long",
+			currentPrice: 125.0, // +25% > 20% threshold
+			wantReason:   "price_spike_exit",
+		},
+		{
+			name:          "DirA: +35% triggers emergency_price_spike",
+			direction:     "borrow_sell_long",
+			currentPrice:  135.0, // +35% > 30% threshold
+			wantReason:    "emergency_price_spike",
+			wantEmergency: true,
+		},
+		{
+			name:         "DirA: +15% no trigger (below threshold)",
+			direction:    "borrow_sell_long",
+			currentPrice: 115.0, // +15% < 20% threshold
+			wantReason:   "",
+		},
+		{
+			name:         "DirA: -25% down move does NOT trigger",
+			direction:    "borrow_sell_long",
+			currentPrice: 75.0, // -25%
+			wantReason:   "",
+		},
+
+		// Direction B — UP triggers (the key invariant)
+		{
+			name:         "DirB: +25% triggers normal price_spike_exit",
+			direction:    "buy_spot_short",
+			currentPrice: 125.0, // +25% > 20% threshold
+			wantReason:   "price_spike_exit",
+		},
+		{
+			name:          "DirB: +35% triggers emergency_price_spike",
+			direction:     "buy_spot_short",
+			currentPrice:  135.0, // +35% > 30% threshold
+			wantReason:    "emergency_price_spike",
+			wantEmergency: true,
+		},
+		{
+			name:         "DirB: +15% no trigger (below threshold)",
+			direction:    "buy_spot_short",
+			currentPrice: 115.0, // +15% < 20% threshold
+			wantReason:   "",
+		},
+		{
+			name:         "DirB: -25% down move does NOT trigger (critical invariant)",
+			direction:    "buy_spot_short",
+			currentPrice: 75.0, // -25% — profitable for short futures, must NOT exit
+			wantReason:   "",
+		},
+		{
+			name:         "DirB: -50% crash does NOT trigger (Direction B is safe in crashes)",
+			direction:    "buy_spot_short",
+			currentPrice: 50.0, // -50% — big crash, short futures profits massively
+			wantReason:   "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newPriceSpikeEngine(tc.currentPrice)
+			pos := &models.SpotFuturesPosition{
+				Symbol:       "TESTUSDT",
+				Exchange:     "testexch",
+				Direction:    tc.direction,
+				FuturesEntry: entry,
+				Status:       "active",
+			}
+
+			reason, emergency := e.checkExitTriggers(pos)
+			if reason != tc.wantReason {
+				t.Errorf("reason = %q, want %q", reason, tc.wantReason)
+			}
+			if emergency != tc.wantEmergency {
+				t.Errorf("emergency = %v, want %v", emergency, tc.wantEmergency)
 			}
 		})
 	}
