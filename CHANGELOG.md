@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.27] - 2026-03-31
+
+### Fixed
+- **[spot-futures] Persistence counters no longer falsely satisfy consecutive-scan gate after restart** — `discoveryLoop` now seeds `lastSeen` from existing Redis persistence keys before the first scan; symbols absent during downtime are correctly purged on restart instead of having their stale counters incremented on reappearance (`internal/database/spot_state.go`, `internal/spotengine/engine.go`) ([ARB-80](/ARB/issues/ARB-80))
+
 ## [0.22.26] - 2026-03-31
 
 ### Fixed
