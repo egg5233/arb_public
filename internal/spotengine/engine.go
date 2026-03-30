@@ -103,6 +103,17 @@ func (e *SpotEngine) discoveryLoop() {
 	ticker := time.NewTicker(scanInterval)
 	defer ticker.Stop()
 
+	// Seed lastSeen from Redis so the first scan correctly cleans up
+	// persistence counters for symbols that disappeared during downtime.
+	if syms, err := e.db.ListSpotPersistenceSymbols(); err != nil {
+		e.log.Error("failed to seed lastSeen from Redis: %v", err)
+	} else if len(syms) > 0 {
+		for _, s := range syms {
+			e.lastSeen[s] = true
+		}
+		e.log.Info("seeded lastSeen with %d symbols from Redis persistence keys", len(syms))
+	}
+
 	// Initial scan on startup.
 	e.log.Info("spot-futures discovery scan (interval: %s)", scanInterval)
 	opps := e.runDiscoveryScan()

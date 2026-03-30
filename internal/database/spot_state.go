@@ -249,3 +249,30 @@ func (c *Client) DeleteSpotPersistence(symbol string) error {
 	key := keySpotPersistPrefix + symbol
 	return c.rdb.Del(ctx, key).Err()
 }
+
+// ListSpotPersistenceSymbols returns all symbols that currently have a
+// persistence counter in Redis. Used on startup to seed the lastSeen map
+// so that counters for absent symbols are correctly cleaned up after restart.
+func (c *Client) ListSpotPersistenceSymbols() ([]string, error) {
+	ctx := context.Background()
+	pattern := keySpotPersistPrefix + "*"
+	prefixLen := len(keySpotPersistPrefix)
+	var symbols []string
+	var cursor uint64
+	for {
+		keys, next, err := c.rdb.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return nil, err
+		}
+		for _, k := range keys {
+			if len(k) > prefixLen {
+				symbols = append(symbols, k[prefixLen:])
+			}
+		}
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+	return symbols, nil
+}
