@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.12] - 2026-03-30
+
+### Fixed
+- **Direction A margin utilization formula** — changed from `borrowed/(borrowed+available)` to `borrowed/available`, fixing 5.67x–19x delay on 85%/95% safety triggers; added zero-available emergency exit (`exit_manager.go`)
+
 ## [0.22.11] - 2026-03-30
 
 ### Fixed

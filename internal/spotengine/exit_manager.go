@@ -143,7 +143,7 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 		if ok && pos.BorrowAmount > 0 {
 			mb, err := smExch.GetMarginBalance(pos.BaseCoin)
 			if err == nil {
-				// utilization = borrowed value / (borrowed value + available value) * 100
+				// utilization = borrowed value / available value * 100
 				price := pos.SpotEntryPrice
 				if price <= 0 {
 					price = pos.FuturesEntry
@@ -151,9 +151,15 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 				if price > 0 {
 					borrowedValue := pos.BorrowAmount * price
 					availableValue := mb.Available * price
-					totalValue := borrowedValue + availableValue
-					if totalValue > 0 {
-						utilPct := borrowedValue / totalValue * 100
+					if availableValue <= 0 && borrowedValue > 0 {
+						// No available collateral with outstanding borrow = immediate emergency
+						pos.MarginUtilizationPct = 999.0
+						e.log.Error("exit trigger: %s EMERGENCY no available collateral for borrow (%.4f borrowed)",
+							pos.Symbol, pos.BorrowAmount)
+						return "margin_health_exit", true
+					}
+					if availableValue > 0 {
+						utilPct := borrowedValue / availableValue * 100
 						pos.MarginUtilizationPct = utilPct
 
 						if utilPct > marginEmergencyPct {
