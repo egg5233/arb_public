@@ -2,7 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.21.6] - 2026-03-30
+## [0.21.7] - 2026-03-30
+
+### Removed
+- **Pre-settlement T-10s API check**: Removed `schedulePreSettlementCheck` and `ReversalPreSettlement` config toggle — rates are too volatile near settlement boundaries for reliable decisions
 
 ### Fixed
 - **Pre-settlement reversal respects tolerance**: Pre-settlement check now compares `ReversalCount` against `SpreadReversalTolerance` (e.g. tolerance=3 means skip exit when count < 3). Previously exited on any count >= 1
