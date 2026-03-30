@@ -1,6 +1,7 @@
 package spotengine
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -628,6 +629,10 @@ func (e *SpotEngine) closeDirectionA(
 		e.log.Error("ClosePosition [Dir A] repay FAILED: %v — will retry on next monitor tick for %s %s",
 			err, repayAmount, pos.BaseCoin)
 		pos.PendingRepay = true
+		var blackout *exchange.ErrRepayBlackout
+		if errors.As(err, &blackout) {
+			pos.PendingRepayRetryAt = &blackout.RetryAfter
+		}
 	}
 
 	// Record exit fees using position exit prices.
@@ -904,6 +909,10 @@ func (e *SpotEngine) emergencyClose(
 		}); err != nil {
 			e.log.Error("EMERGENCY: repay FAILED: %v — will retry on next monitor tick", err)
 			pos.PendingRepay = true
+			var blackout *exchange.ErrRepayBlackout
+			if errors.As(err, &blackout) {
+				pos.PendingRepayRetryAt = &blackout.RetryAfter
+			}
 		}
 	}
 

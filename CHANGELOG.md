@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.25] - 2026-03-31
+
+### Fixed
+- **[spot-futures] dry-run scan-stop and risk gate evaluation order** — `autoentry.go` now returns (stops scan) when risk gate reports `dry_run`, matching one-entry-per-scan semantics from live mode; added 5 regression tests verifying gate evaluation order: dry_run is only reported when all other gates pass (`risk_gate_test.go`, `autoentry.go`) ([ARB-74](/ARB/issues/ARB-74))
+
+## [0.22.24] - 2026-03-31
+
+### Fixed
+- **[spot-futures] Bybit repay retry now respects blackout window** — added `ErrRepayBlackout` structured error type with `RetryAfter` metadata (`pkg/exchange/types.go`); Bybit `MarginRepay` returns it instead of a plain error during the :04–:05:30 blackout window (`bybit/margin.go`); added `PendingRepayRetryAt` field to `SpotFuturesPosition` model; monitor loop short-circuits the entire pending-repay workflow (balance query, deficit buy, repay call) when `now < PendingRepayRetryAt`; both normal and emergency close paths persist the retry boundary on initial blackout failure; field is cleared on successful repay and survives process restarts via Redis persistence ([ARB-75](/ARB/issues/ARB-75))
+
 ## [0.22.23] - 2026-03-31
 
 ### Fixed
