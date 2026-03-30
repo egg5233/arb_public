@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.21.11] - 2026-03-30
+
+### Fixed
+- **Gate.io EnsureOneWayMode missing dual_mode param** — Gate.io expects `dual_mode` as a query parameter, not JSON body; changed from `POST /futures/usdt/dual_mode` with body `{"dual_mode":false}` to query param `?dual_mode=false` (`gateio/adapter.go`)
+
 ## [0.21.10] - 2026-03-30
 
 ### Fixed
