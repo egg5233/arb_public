@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.18] - 2026-03-30
+
+### Fixed
+- **Spot-futures config persists to config.json on restart** — `SaveJSON()` now writes all 21 spot-futures fields to `config.json`, preventing silent revert of API-set values on service restart (`config.go`)
+- **`spot_futures_exchanges` added to Redis persistence** — the `Exchanges` slice was missing from the Redis hash write; now persisted as comma-separated string (`handlers.go`)
+
 ## [0.22.17] - 2026-03-30
 
 ### Fixed

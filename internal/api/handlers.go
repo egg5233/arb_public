@@ -1148,6 +1148,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		fields["spot_futures_monitor_interval_sec"] = strconv.Itoa(sf.MonitorIntervalSec)
 		fields["spot_futures_min_net_yield_apr"] = strconv.FormatFloat(sf.MinNetYieldAPR, 'f', -1, 64)
 		fields["spot_futures_max_borrow_apr"] = strconv.FormatFloat(sf.MaxBorrowAPR, 'f', -1, 64)
+		fields["spot_futures_exchanges"] = strings.Join(sf.Exchanges, ",")
 		fields["spot_futures_scan_interval_min"] = strconv.Itoa(sf.ScanIntervalMin)
 		fields["spot_futures_borrow_grace_min"] = strconv.Itoa(sf.BorrowGraceMin)
 		fields["spot_futures_price_exit_pct"] = strconv.FormatFloat(sf.PriceExitPct, 'f', -1, 64)
