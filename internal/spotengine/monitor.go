@@ -163,7 +163,7 @@ func (e *SpotEngine) updateBorrowCost(pos *models.SpotFuturesPosition, smExch ex
 	if opp, found := e.lookupCurrentOpp(pos.Symbol, pos.Exchange, pos.Direction); found {
 		fundingAPR = opp.FundingAPR
 	}
-	negativeYield := fundingAPR > 0 && currentAPR > fundingAPR
+	negativeYield := currentAPR > fundingAPR
 
 	// Update position fields atomically.
 	err = e.lockedUpdatePosition(pos.ID, func(p *models.SpotFuturesPosition) bool {

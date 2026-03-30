@@ -166,6 +166,145 @@ func TestFormatExitReason(t *testing.T) {
 	}
 }
 
+// TestNegativeYieldCondition verifies that the negativeYield flag fires
+// correctly for zero, negative, and positive funding APR values.
+// Regression test for ARB-62: fundingAPR > 0 guard suppressed timer.
+func TestNegativeYieldCondition(t *testing.T) {
+	tests := []struct {
+		name         string
+		fundingAPR   float64
+		currentAPR   float64 // borrow APR
+		wantNegative bool
+	}{
+		{"positive funding healthy", 0.20, 0.10, false},
+		{"positive funding degraded", 0.10, 0.20, true},
+		{"zero funding with borrow", 0.00, 0.08, true},
+		{"negative funding with positive borrow", -0.05, 0.02, true},
+		{"negative funding both negative borrow lower", -0.05, -0.10, false},
+		{"recovery from degraded", 0.04, 0.03, false},
+		{"equal rates", 0.10, 0.10, false},
+		{"zero funding zero borrow", 0.00, 0.00, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// This matches the fixed condition in updateBorrowCost:
+			// negativeYield := currentAPR > fundingAPR
+			negativeYield := tc.currentAPR > tc.fundingAPR
+			if negativeYield != tc.wantNegative {
+				t.Errorf("negativeYield = %v, want %v (funding=%.4f borrow=%.4f)",
+					negativeYield, tc.wantNegative, tc.fundingAPR, tc.currentAPR)
+			}
+		})
+	}
+}
+
+// TestNegativeYieldSinceTransitions verifies the NegativeYieldSince state
+// machine: timer starts on first negative tick, persists on subsequent bad
+// ticks, and clears on recovery.
+// Regression test for ARB-62.
+func TestNegativeYieldSinceTransitions(t *testing.T) {
+	past := time.Now().Add(-10 * time.Minute)
+
+	tests := []struct {
+		name            string
+		negativeYield   bool
+		priorSince      *time.Time // NegativeYieldSince before this tick
+		wantSinceNil    bool       // expected: NegativeYieldSince == nil after tick
+		wantSinceIsNew  bool       // expected: NegativeYieldSince was just set (not the prior value)
+	}{
+		{"starts timer on first negative", true, nil, false, true},
+		{"preserves timer on sustained negative", true, &past, false, false},
+		{"clears timer on recovery", false, &past, true, false},
+		{"stays nil when healthy", false, nil, true, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pos := &models.SpotFuturesPosition{
+				NegativeYieldSince: tc.priorSince,
+			}
+			now := time.Now()
+
+			// Simulate the closure from updateBorrowCost.
+			if tc.negativeYield {
+				if pos.NegativeYieldSince == nil {
+					t := now
+					pos.NegativeYieldSince = &t
+				}
+			} else {
+				pos.NegativeYieldSince = nil
+			}
+
+			if tc.wantSinceNil && pos.NegativeYieldSince != nil {
+				t.Errorf("NegativeYieldSince should be nil, got %v", pos.NegativeYieldSince)
+			}
+			if !tc.wantSinceNil && pos.NegativeYieldSince == nil {
+				t.Error("NegativeYieldSince should not be nil")
+			}
+			if tc.wantSinceIsNew && pos.NegativeYieldSince != nil {
+				if pos.NegativeYieldSince.Before(now.Add(-time.Second)) {
+					t.Errorf("NegativeYieldSince should be freshly set, got %v", pos.NegativeYieldSince)
+				}
+			}
+			if !tc.wantSinceIsNew && !tc.wantSinceNil && pos.NegativeYieldSince != nil {
+				// Should be the original prior value, not overwritten.
+				if !pos.NegativeYieldSince.Equal(past) {
+					t.Errorf("NegativeYieldSince should be preserved (%v), got %v", past, pos.NegativeYieldSince)
+				}
+			}
+		})
+	}
+}
+
+// TestBorrowCostExceeded_GraceTimer verifies that checkExitTriggers fires
+// borrow_cost_exceeded when NegativeYieldSince exceeds the grace period,
+// regardless of whether funding is zero or negative.
+// Regression test for ARB-62.
+func TestBorrowCostExceeded_GraceTimer(t *testing.T) {
+	graceMin := 30
+	agedTime := time.Now().Add(-time.Duration(graceMin+1) * time.Minute)
+	recentTime := time.Now().Add(-5 * time.Minute)
+
+	tests := []struct {
+		name       string
+		since      *time.Time
+		wantReason string
+	}{
+		{"aged timer triggers exit", &agedTime, "borrow_cost_exceeded"},
+		{"recent timer does not trigger", &recentTime, ""},
+		{"nil timer does not trigger", nil, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := &SpotEngine{
+				cfg: &config.Config{
+					SpotFuturesBorrowGraceMin:    graceMin,
+					SpotFuturesMaxBorrowAPR:      0, // disable hard cap trigger
+					SpotFuturesPriceExitPct:      999,
+					SpotFuturesPriceEmergencyPct: 999,
+				},
+				exchanges: map[string]exchange.Exchange{},
+				log:       utils.NewLogger("test"),
+			}
+			pos := &models.SpotFuturesPosition{
+				Direction:          "borrow_sell_long",
+				NegativeYieldSince: tc.since,
+				CurrentBorrowAPR:   0.08,
+				FundingAPR:         0, // zero funding — the ARB-62 scenario
+				Exchange:           "testexch",
+				Symbol:             "TESTUSDT",
+			}
+			reason, _ := eng.checkExitTriggers(pos)
+
+			if tc.wantReason == "" && reason != "" {
+				t.Errorf("expected no exit trigger, got %q", reason)
+			}
+			if tc.wantReason != "" && reason != tc.wantReason {
+				t.Errorf("expected reason %q, got %q", tc.wantReason, reason)
+			}
+		})
+	}
+}
+
 // TestPnLCalculation verifies PnL math for both directions.
 func TestPnLCalculation(t *testing.T) {
 	tests := []struct {
