@@ -49,13 +49,16 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 	// 2. Funding Rate Drop
 	// ---------------------------------------------------------------
 	var currentFundingAPR, feeAPR float64
+	var hasFundingData bool
 	if opp, found := e.lookupCurrentOpp(pos.Symbol, pos.Exchange, pos.Direction); found {
 		currentFundingAPR = opp.FundingAPR
 		feeAPR = opp.FeeAPR
+		hasFundingData = true
 	} else {
 		// Symbol not in latest scan — fall back to entry-time data.
 		currentFundingAPR = pos.FundingAPR
 		feeAPR = pos.FeeAPR
+		hasFundingData = currentFundingAPR > 0
 	}
 	// Last-resort feeAPR: calculate from spotFees if position predates FeeAPR field.
 	if feeAPR == 0 {
@@ -65,7 +68,7 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 		}
 		feeAPR = takerFee * 4 * (365.0 / assumedHoldDays)
 	}
-	if currentFundingAPR > 0 {
+	if hasFundingData {
 		borrowAPR := pos.CurrentBorrowAPR
 		if !isDirA {
 			borrowAPR = 0 // Direction B has no borrow

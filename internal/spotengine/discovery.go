@@ -106,6 +106,8 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 		for _, p := range activePositions {
 			activeKeys[p.Symbol+":"+p.Exchange+":"+p.Direction] = true
 		}
+	} else {
+		e.log.Warn("spot discovery: GetActiveSpotPositions failed, active-position bypass disabled: %v", err)
 	}
 
 	now := time.Now().UTC()
@@ -238,13 +240,6 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 		topN = 5
 	}
 	if len(opps) > topN {
-		activeKeys := make(map[string]bool)
-		if activePositions, err := e.db.GetActiveSpotPositions(); err == nil {
-			for _, p := range activePositions {
-				activeKeys[p.Symbol+":"+p.Exchange+":"+p.Direction] = true
-			}
-		}
-
 		kept := make([]SpotArbOpportunity, 0, topN+len(activeKeys))
 		kept = append(kept, opps[:topN]...)
 		for _, opp := range opps[topN:] {

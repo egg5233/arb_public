@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.20] - 2026-03-30
+
+### Fixed
+- **yield_below_minimum exit fires when funding drops to zero** — replaced `currentFundingAPR > 0` guard with `hasFundingData` bool so the yield check runs for zero/negative funding when live data is available from `lookupCurrentOpp` (`exit_manager.go`)
+- **Discovery logs warning on GetActiveSpotPositions error** — previously silent failure degraded to old broken filter behavior (`discovery.go`)
+- **Deduplicated GetActiveSpotPositions call in discovery** — reuses the activeKeys map built for filter bypass instead of calling Redis twice per scan (`discovery.go`)
+
 ## [0.22.19] - 2026-03-30
 
 ### Fixed
