@@ -17,6 +17,9 @@ import (
 	"arb/pkg/utils"
 )
 
+// processStartTime records when the process started, used to detect binary drift.
+var processStartTime = time.Now()
+
 // Response is the standard JSON response wrapper.
 type Response struct {
 	OK    bool        `json:"ok"`
@@ -1633,10 +1636,22 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hasUpdate := latestVersion != currentVersion
+
+	// Check for binary drift: on-disk binary newer than running process.
+	binaryDrift := false
+	if exe, err := os.Executable(); err == nil {
+		if info, err := os.Stat(exe); err != nil {
+			binaryDrift = true // binary deleted — stale process
+		} else {
+			binaryDrift = info.ModTime().After(processStartTime)
+		}
+	}
+
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: map[string]interface{}{
 		"currentVersion": currentVersion,
 		"latestVersion":  latestVersion,
 		"hasUpdate":      hasUpdate,
+		"binaryDrift":    binaryDrift,
 		"changelog":      changelog,
 	}})
 }
