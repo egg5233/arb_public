@@ -99,6 +99,17 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 		}
 	}
 
+	// Build active-position keys so rate/yield filters don't drop symbols
+	// that already have open positions (monitor/exit still needs fresh data).
+	activeKeys := make(map[string]bool)
+	if activePositions, err := e.db.GetActiveSpotPositions(); err == nil {
+		for _, p := range activePositions {
+			activeKeys[p.Symbol+":"+p.Exchange+":"+p.Direction] = true
+		}
+	} else {
+		e.log.Warn("spot discovery: GetActiveSpotPositions failed, active-position bypass disabled: %v", err)
+	}
+
 	now := time.Now().UTC()
 	var opps []SpotArbOpportunity
 
@@ -130,6 +141,7 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 		}
 
 		spotSymbol := normalizeSymbol(item.Symbol)
+		isActive := activeKeys[spotSymbol+":"+exchName+":"+direction]
 
 		// For Direction A (borrow-sell), verify spot margin supports this coin.
 		// For Direction B (buy spot), we don't use spot margin — skip margin check.
@@ -145,9 +157,11 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 
 		// Parse funding APR from the APR field (e.g. "43.21%").
 		fundingAPR := parsePercent(item.APR)
-		if fundingAPR <= 0 {
+		if fundingAPR <= 0 && !isActive {
 			e.log.Info("spot discovery: FILTERED %s on %s — invalid funding APR: %q", spotSymbol, exchName, item.APR)
 			continue
+		} else if fundingAPR <= 0 && isActive {
+			e.log.Info("spot discovery: BYPASSED filter for active position %s on %s — funding APR: %q", spotSymbol, exchName, item.APR)
 		}
 
 		// Calculate borrow APR (Direction A only).
@@ -161,10 +175,13 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 			borrowAPR = rate.HourlyRate * 24 * 365
 
 			// Filter: borrow too expensive.
-			if borrowAPR > e.cfg.SpotFuturesMaxBorrowAPR {
+			if borrowAPR > e.cfg.SpotFuturesMaxBorrowAPR && !isActive {
 				e.log.Info("spot discovery: FILTERED %s on %s — interest APR %.1f%% > max %.1f%%",
 					spotSymbol, exchName, borrowAPR*100, e.cfg.SpotFuturesMaxBorrowAPR*100)
 				continue
+			} else if borrowAPR > e.cfg.SpotFuturesMaxBorrowAPR && isActive {
+				e.log.Info("spot discovery: BYPASSED borrow filter for active position %s on %s — interest APR %.1f%% > max %.1f%%",
+					spotSymbol, exchName, borrowAPR*100, e.cfg.SpotFuturesMaxBorrowAPR*100)
 			}
 
 			// Verify coin is actually borrowable (interest rate API may return rates
@@ -187,11 +204,14 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 		netAPR := fundingAPR - borrowAPR - feeAPR
 
 		// Filter: net yield too low.
-		if netAPR < e.cfg.SpotFuturesMinNetYieldAPR {
+		if netAPR < e.cfg.SpotFuturesMinNetYieldAPR && !isActive {
 			e.log.Info("spot discovery: FILTERED %s on %s — net APR %.1f%% < min %.1f%% (funding=%.1f%% borrow=%.1f%% fees=%.1f%%)",
 				item.Symbol, exchName, netAPR*100, e.cfg.SpotFuturesMinNetYieldAPR*100,
 				fundingAPR*100, borrowAPR*100, feeAPR*100)
 			continue
+		} else if netAPR < e.cfg.SpotFuturesMinNetYieldAPR && isActive {
+			e.log.Info("spot discovery: BYPASSED yield filter for active position %s on %s — net APR %.1f%% < min %.1f%%",
+				spotSymbol, exchName, netAPR*100, e.cfg.SpotFuturesMinNetYieldAPR*100)
 		}
 
 		opps = append(opps, SpotArbOpportunity{
@@ -213,16 +233,41 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 		return opps[i].NetAPR > opps[j].NetAPR
 	})
 
-	// Limit to top N.
+	// Limit to top N, but always keep entries that match active positions
+	// so that monitor/exit logic never falls back to stale entry-time data.
 	topN := e.cfg.SpotFuturesMaxPositions * 3 // show 3x max positions
 	if topN < 5 {
 		topN = 5
 	}
 	if len(opps) > topN {
-		opps = opps[:topN]
+		kept := make([]SpotArbOpportunity, 0, topN+len(activeKeys))
+		kept = append(kept, opps[:topN]...)
+		for _, opp := range opps[topN:] {
+			if activeKeys[opp.Symbol+":"+opp.Exchange+":"+opp.Direction] {
+				kept = append(kept, opp)
+			}
+		}
+		opps = kept
 	}
 
 	return opps
+}
+
+// getFreshBorrowRate always fetches a live rate from the exchange and updates the cache.
+// Used by the monitor path where per-tick freshness matters for safety triggers.
+func (e *SpotEngine) getFreshBorrowRate(exchName, coin string, smExch exchange.SpotMarginExchange) (*exchange.MarginInterestRate, error) {
+	rate, err := smExch.GetMarginInterestRate(coin)
+	if err != nil {
+		return nil, fmt.Errorf("GetMarginInterestRate(%s): %w", coin, err)
+	}
+
+	cacheKey := exchName + ":" + coin
+	borrowCache.Store(cacheKey, &borrowRateEntry{
+		rate:      rate,
+		fetchedAt: time.Now(),
+	})
+
+	return rate, nil
 }
 
 // getCachedBorrowRate returns a cached borrow rate or fetches a fresh one.

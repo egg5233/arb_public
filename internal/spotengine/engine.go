@@ -8,6 +8,7 @@ import (
 	"arb/internal/config"
 	"arb/internal/database"
 	"arb/internal/models"
+	"arb/internal/notify"
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
@@ -32,12 +33,15 @@ type SpotEngine struct {
 	exitMu    sync.Mutex
 	exitState exitState
 
-	// persistMu protects persistCounts from concurrent access.
-	persistMu     sync.Mutex
-	persistCounts map[string]int // "symbol:exchange" → consecutive scan count
+	// lastSeen tracks which symbols were present in the previous scan
+	// so we can delete Redis persistence counters for symbols that disappeared.
+	lastSeen map[string]bool
 
 	// posMu provides per-position locking for read-modify-write operations.
 	posMu sync.Map // posID → *sync.Mutex
+
+	// telegram sends trade lifecycle alerts. Nil if unconfigured.
+	telegram *notify.TelegramNotifier
 }
 
 // NewSpotEngine creates a new SpotEngine with all required dependencies.
@@ -63,8 +67,9 @@ func NewSpotEngine(
 		cfg:           cfg,
 		log:           utils.NewLogger("spot-engine"),
 		stopCh:        make(chan struct{}),
-		exitState:     exitState{exiting: make(map[string]bool)},
-		persistCounts: make(map[string]int),
+		exitState: exitState{exiting: make(map[string]bool)},
+		lastSeen:  make(map[string]bool),
+		telegram:  notify.NewTelegram(cfg.TelegramBotToken, cfg.TelegramChatID),
 	}
 }
 
@@ -152,38 +157,90 @@ func (e *SpotEngine) isExiting(posID string) bool {
 	return e.exitState.exiting[posID]
 }
 
-// updatePersistenceCounts increments the scan count for symbols present in
-// the latest scan and resets counts for symbols that disappeared.
+// updatePersistenceCounts increments Redis persistence counters for symbols
+// present in the latest scan and deletes counters for symbols that disappeared.
 func (e *SpotEngine) updatePersistenceCounts(opps []SpotArbOpportunity) {
-	e.persistMu.Lock()
-	defer e.persistMu.Unlock()
-
 	seen := make(map[string]bool, len(opps))
 	for _, opp := range opps {
-		key := opp.Symbol + ":" + opp.Exchange
+		key := opp.Symbol
+		if seen[key] {
+			continue // already incremented this symbol this scan
+		}
 		seen[key] = true
-		e.persistCounts[key]++
-	}
-
-	// Remove symbols that were not in this scan.
-	for key := range e.persistCounts {
-		if !seen[key] {
-			delete(e.persistCounts, key)
+		if _, err := e.db.IncrSpotPersistence(opp.Symbol); err != nil {
+			e.log.Error("persist incr %s: %v", key, err)
 		}
 	}
+
+	// Delete counters for symbols that disappeared since last scan.
+	for key := range e.lastSeen {
+		if !seen[key] {
+			if err := e.db.DeleteSpotPersistence(key); err != nil {
+				e.log.Error("persist del %s: %v", key, err)
+			}
+		}
+	}
+	e.lastSeen = seen
 }
 
 // getPersistenceCount returns how many consecutive scans a symbol has appeared in.
-func (e *SpotEngine) getPersistenceCount(symbol, exchName string) int {
-	e.persistMu.Lock()
-	defer e.persistMu.Unlock()
-	return e.persistCounts[symbol+":"+exchName]
+// Returns 0 on Redis error (fail-closed: denies entry if Redis is down).
+func (e *SpotEngine) getPersistenceCount(symbol string) int {
+	count, err := e.db.GetSpotPersistence(symbol)
+	if err != nil {
+		e.log.Error("persist get %s: %v", symbol, err)
+		return 0
+	}
+	return count
 }
 
 // posLock returns a per-position mutex, creating one if needed.
 func (e *SpotEngine) posLock(posID string) *sync.Mutex {
 	v, _ := e.posMu.LoadOrStore(posID, &sync.Mutex{})
 	return v.(*sync.Mutex)
+}
+
+// isSeparateAccount returns true for exchanges with separate spot and futures wallets.
+func isSeparateAccount(exchName string) bool {
+	switch exchName {
+	case "binance", "bitget":
+		return true
+	default:
+		return false
+	}
+}
+
+// capitalForExchange returns the position capital limit appropriate for the
+// exchange's account type. Separate-account exchanges (Binance, Bitget) use a
+// lower default since cross-margin collateral is not shared.
+func (e *SpotEngine) capitalForExchange(exchName string) float64 {
+	if isSeparateAccount(exchName) {
+		cap := e.cfg.SpotFuturesSeparateAcctMaxUSDT
+		if cap <= 0 {
+			cap = 200
+		}
+		return cap
+	}
+	cap := e.cfg.SpotFuturesUnifiedAcctMaxUSDT
+	if cap <= 0 {
+		cap = 500
+	}
+	return cap
+}
+
+// findActivePosition returns the most recently created active position for a
+// symbol+exchange pair, or nil if none exists.
+func (e *SpotEngine) findActivePosition(symbol, exchName string) *models.SpotFuturesPosition {
+	positions, err := e.db.GetActiveSpotPositions()
+	if err != nil {
+		return nil
+	}
+	for _, p := range positions {
+		if p.Symbol == symbol && p.Exchange == exchName && p.Status == models.SpotStatusActive {
+			return p
+		}
+	}
+	return nil
 }
 
 // lockedUpdatePosition wraps db.UpdateSpotPositionFields with per-position

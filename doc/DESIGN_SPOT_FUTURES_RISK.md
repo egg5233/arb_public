@@ -58,9 +58,13 @@ priceChangePercent = (currentPrice - entryPrice) / entryPrice * 100
 | >30% in 1h | Emergency | Market-close both legs NOW (skip depth fill) |
 | >50% in 1h | Panic | Same + halt all new entries for this coin |
 
-For Direction A (borrow-sell), upward moves are dangerous.
-For Direction B (buy-spot + short), downward moves are dangerous... but also upward moves
-can liquidate the short futures if the short squeeze is extreme.
+For Direction A (borrow-sell), upward moves are dangerous — the borrowed-and-sold
+spot must be bought back at a higher price, and margin utilization increases.
+
+For Direction B (buy-spot + short), upward moves are dangerous — the short futures
+position faces liquidation risk on a squeeze. Down moves are actually profitable
+for the futures short and do NOT trigger price-spike exits. (The spot long is safe;
+you own the coin outright with no leverage.)
 
 ### Tier 2: Margin Health Monitoring
 

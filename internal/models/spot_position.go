@@ -34,6 +34,14 @@ type SpotFuturesPosition struct {
 	BorrowCostAccrued   float64    `json:"borrow_cost_accrued"`
 	NegativeYieldSince  *time.Time `json:"negative_yield_since,omitempty"`
 	FundingAPR          float64    `json:"funding_apr"` // entry-time funding APR for yield comparison
+	FeeAPR              float64    `json:"fee_apr"`     // entry-time annualized fee cost for yield comparison
+
+	// Live economics snapshot (updated by monitorLoop each tick)
+	CurrentFundingAPR   float64    `json:"current_funding_apr"`
+	CurrentFeeAPR       float64    `json:"current_fee_apr"`
+	CurrentNetYieldAPR  float64    `json:"current_net_yield_apr"`
+	YieldDataSource     string     `json:"yield_data_source"`      // "live_scan" or "entry_fallback"
+	YieldSnapshotAt     *time.Time `json:"yield_snapshot_at,omitempty"`
 
 	// P&L tracking
 	FundingCollected float64 `json:"funding_collected"`
@@ -48,6 +56,8 @@ type SpotFuturesPosition struct {
 	ExitCompletedAt      *time.Time `json:"exit_completed_at,omitempty"`
 	PeakPriceMovePct     float64    `json:"peak_price_move_pct"`
 	MarginUtilizationPct float64    `json:"margin_utilization_pct"`
+	PendingRepay         bool       `json:"pending_repay,omitempty"`  // true when trade legs closed but margin repay still outstanding
+	ExitRetryCount       int        `json:"exit_retry_count,omitempty"` // number of monitor-initiated exit retries
 
 	// Timing
 	CreatedAt time.Time `json:"created_at"`

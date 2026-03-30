@@ -31,3 +31,6 @@ coh
 validate-docs
 .codex-session
 spotarb
+paperclip*
+.agents/skills/*
+doc/exchange

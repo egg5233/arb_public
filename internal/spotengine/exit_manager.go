@@ -48,21 +48,37 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 	// ---------------------------------------------------------------
 	// 2. Funding Rate Drop
 	// ---------------------------------------------------------------
-	currentFundingAPR := e.lookupCurrentFundingAPR(pos.Symbol, pos.Exchange, pos.Direction)
-	if currentFundingAPR <= 0 {
-		// Symbol not in latest scan — fall back to entry-time APR.
+	var currentFundingAPR, feeAPR float64
+	var hasFundingData bool
+	if opp, found := e.lookupCurrentOpp(pos.Symbol, pos.Exchange, pos.Direction); found {
+		currentFundingAPR = opp.FundingAPR
+		feeAPR = opp.FeeAPR
+		hasFundingData = true
+	} else {
+		// Symbol not in latest scan — fall back to entry-time data.
 		currentFundingAPR = pos.FundingAPR
+		feeAPR = pos.FeeAPR
+		hasFundingData = currentFundingAPR > 0
 	}
-	if currentFundingAPR > 0 {
+	// Last-resort feeAPR: calculate from spotFees if position predates FeeAPR field.
+	if feeAPR == 0 {
+		takerFee := spotFees[pos.Exchange]
+		if takerFee == 0 {
+			takerFee = 0.0005
+		}
+		feeAPR = takerFee * 4 * (365.0 / assumedHoldDays)
+	}
+	if hasFundingData {
 		borrowAPR := pos.CurrentBorrowAPR
 		if !isDirA {
 			borrowAPR = 0 // Direction B has no borrow
 		}
 		minNet := e.cfg.SpotFuturesMinNetYieldAPR
-		if currentFundingAPR-borrowAPR < minNet {
-			e.log.Warn("exit trigger: %s net yield %.2f%% < min %.2f%% (funding=%.2f%% borrow=%.2f%%)",
-				pos.Symbol, (currentFundingAPR-borrowAPR)*100, minNet*100,
-				currentFundingAPR*100, borrowAPR*100)
+		netYield := currentFundingAPR - borrowAPR - feeAPR
+		if netYield < minNet {
+			e.log.Warn("exit trigger: %s net yield %.2f%% < min %.2f%% (funding=%.2f%% borrow=%.2f%% fees=%.2f%%)",
+				pos.Symbol, netYield*100, minNet*100,
+				currentFundingAPR*100, borrowAPR*100, feeAPR*100)
 			return "yield_below_minimum", false
 		}
 	}
@@ -125,23 +141,25 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 	}
 
 	// ---------------------------------------------------------------
-	// 4. Margin Health (Direction A only)
+	// 4. Margin Health
+	//    Direction A: spot-margin borrow utilization
+	//    Direction B: futures margin ratio from GetFuturesBalance
 	// ---------------------------------------------------------------
-	if isDirA {
-		marginExitPct := e.cfg.SpotFuturesMarginExitPct
-		if marginExitPct <= 0 {
-			marginExitPct = 85.0
-		}
-		marginEmergencyPct := e.cfg.SpotFuturesMarginEmergencyPct
-		if marginEmergencyPct <= 0 {
-			marginEmergencyPct = 95.0
-		}
+	marginExitPct := e.cfg.SpotFuturesMarginExitPct
+	if marginExitPct <= 0 {
+		marginExitPct = 85.0
+	}
+	marginEmergencyPct := e.cfg.SpotFuturesMarginEmergencyPct
+	if marginEmergencyPct <= 0 {
+		marginEmergencyPct = 95.0
+	}
 
+	if isDirA {
 		smExch, ok := e.spotMargin[pos.Exchange]
 		if ok && pos.BorrowAmount > 0 {
 			mb, err := smExch.GetMarginBalance(pos.BaseCoin)
 			if err == nil {
-				// utilization = borrowed value / (borrowed value + available value) * 100
+				// utilization = borrowed value / available value * 100
 				price := pos.SpotEntryPrice
 				if price <= 0 {
 					price = pos.FuturesEntry
@@ -149,9 +167,15 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 				if price > 0 {
 					borrowedValue := pos.BorrowAmount * price
 					availableValue := mb.Available * price
-					totalValue := borrowedValue + availableValue
-					if totalValue > 0 {
-						utilPct := borrowedValue / totalValue * 100
+					if availableValue <= 0 && borrowedValue > 0 {
+						// No available collateral with outstanding borrow = immediate emergency
+						pos.MarginUtilizationPct = 999.0
+						e.log.Error("exit trigger: %s EMERGENCY no available collateral for borrow (%.4f borrowed)",
+							pos.Symbol, pos.BorrowAmount)
+						return "margin_health_exit", true
+					}
+					if availableValue > 0 {
+						utilPct := borrowedValue / availableValue * 100
 						pos.MarginUtilizationPct = utilPct
 
 						if utilPct > marginEmergencyPct {
@@ -168,6 +192,29 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 				}
 			} else {
 				e.log.Warn("exit check: %s GetMarginBalance(%s) failed: %v", pos.Symbol, pos.BaseCoin, err)
+			}
+		}
+	} else {
+		// Direction B: check futures-side margin ratio.
+		futExch, ok := e.exchanges[pos.Exchange]
+		if ok {
+			bal, err := futExch.GetFuturesBalance()
+			if err == nil && bal.MarginRatio > 0 {
+				utilPct := bal.MarginRatio * 100
+				pos.MarginUtilizationPct = utilPct
+
+				if utilPct > marginEmergencyPct {
+					e.log.Error("exit trigger: %s EMERGENCY futures margin ratio %.1f%% > %.1f%%",
+						pos.Symbol, utilPct, marginEmergencyPct)
+					return "margin_health_exit", true
+				}
+				if utilPct > marginExitPct {
+					e.log.Warn("exit trigger: %s futures margin ratio %.1f%% > %.1f%%",
+						pos.Symbol, utilPct, marginExitPct)
+					return "margin_health_exit", false
+				}
+			} else if err != nil {
+				e.log.Warn("exit check: %s GetFuturesBalance failed: %v", pos.Symbol, err)
 			}
 		}
 	}
@@ -193,11 +240,16 @@ func (e *SpotEngine) initiateExit(pos *models.SpotFuturesPosition, reason string
 	}()
 
 	// Update position status to "exiting".
+	// Only reset ExitRetryCount on fresh exits (not monitor retries).
 	now := time.Now().UTC()
+	isFreshExit := pos.Status != models.SpotStatusExiting
 	err := e.lockedUpdatePosition(pos.ID, func(p *models.SpotFuturesPosition) bool {
 		p.Status = models.SpotStatusExiting
 		p.ExitReason = reason
 		p.ExitTriggeredAt = &now
+		if isFreshExit {
+			p.ExitRetryCount = 0
+		}
 		return true
 	})
 	if err != nil {
@@ -214,13 +266,64 @@ func (e *SpotEngine) initiateExit(pos *models.SpotFuturesPosition, reason string
 
 	// Execute the close — this is synchronous and handles all trade legs.
 	if err := e.ClosePosition(pos, reason, isEmergency); err != nil {
+		// Fallback: persist any partial exit progress before returning.
+		// The close methods checkpoint each leg individually, but this
+		// catches any edge case where in-memory state advanced without
+		// a prior checkpoint write.
+		if pos.FuturesExit > 0 || pos.SpotExitPrice > 0 {
+			if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
+				e.log.Error("initiateExit: fallback checkpoint failed for %s: %v", pos.ID, cpErr)
+			}
+		}
 		e.log.Error("CRITICAL: ClosePosition failed for %s (%s): %v — position stuck in 'exiting', manual intervention required",
 			pos.ID, pos.Symbol, err)
 		return
 	}
 
+	// If repay is still pending (e.g. Bybit blackout), keep position in "exiting"
+	// state and let the monitor loop retry repay on next tick.
+	if pos.PendingRepay {
+		if err := e.lockedUpdatePosition(pos.ID, func(p *models.SpotFuturesPosition) bool {
+			p.PendingRepay = true
+			p.FuturesExit = pos.FuturesExit
+			p.SpotExitPrice = pos.SpotExitPrice
+			p.ExitFees = pos.ExitFees
+			return true
+		}); err != nil {
+			e.log.Error("initiateExit: failed to persist PendingRepay for %s: %v", pos.ID, err)
+		}
+		e.log.Warn("initiateExit: %s trade legs closed but repay pending — will retry on next monitor tick", pos.ID)
+		return
+	}
+
 	// Close succeeded — run post-exit cleanup.
 	e.completeExit(pos, reason)
+}
+
+// persistExitCheckpoint durably persists exit-leg progress to Redis so that
+// monitor retries skip already-closed legs. Only writes fields that have
+// progressed beyond what Redis already holds.
+func (e *SpotEngine) persistExitCheckpoint(pos *models.SpotFuturesPosition) error {
+	return e.lockedUpdatePosition(pos.ID, func(p *models.SpotFuturesPosition) bool {
+		changed := false
+		if pos.FuturesExit > 0 && p.FuturesExit == 0 {
+			p.FuturesExit = pos.FuturesExit
+			changed = true
+		}
+		if pos.SpotExitPrice > 0 && p.SpotExitPrice == 0 {
+			p.SpotExitPrice = pos.SpotExitPrice
+			changed = true
+		}
+		if pos.ExitFees > 0 {
+			p.ExitFees = pos.ExitFees
+			changed = true
+		}
+		if pos.PendingRepay && !p.PendingRepay {
+			p.PendingRepay = true
+			changed = true
+		}
+		return changed
+	})
 }
 
 // completeExit performs post-exit cleanup: PnL calculation, status update,
@@ -308,6 +411,22 @@ func (e *SpotEngine) completeExit(pos *models.SpotFuturesPosition, reason string
 	e.log.Info("EXIT COMPLETE: %s %s on %s — reason=%s pnl=%s%.4f USDT (spot=%.4f futures=%.4f borrow=-%.4f fees=-%.4f)",
 		pos.Symbol, pos.ID, pos.Exchange, reason,
 		pnlSign, totalPnL, spotPnL, futuresPnL, pos.BorrowCostAccrued, pos.EntryFees+pos.ExitFees)
+
+	// Telegram alert.
+	if e.telegram != nil && reason != "manual_close" {
+		duration := time.Duration(0)
+		if pos.ExitCompletedAt != nil {
+			duration = pos.ExitCompletedAt.Sub(pos.CreatedAt)
+		} else {
+			duration = now.Sub(pos.CreatedAt)
+		}
+		isEmergency := reason == "emergency_price_spike" || (reason == "margin_health_exit" && pos.MarginUtilizationPct > e.cfg.SpotFuturesMarginEmergencyPct)
+		if isEmergency {
+			e.telegram.NotifyEmergencyClose(pos, reason, totalPnL)
+		} else {
+			e.telegram.NotifyAutoExit(pos, reason, totalPnL, duration)
+		}
+	}
 }
 
 // ManualClose handles a user-initiated position close from the dashboard.
@@ -340,6 +459,9 @@ func (e *SpotEngine) ManualClose(positionID string) error {
 		return fmt.Errorf("failed to verify close result: %w", err)
 	}
 	if updated.Status != models.SpotStatusClosed {
+		if updated.PendingRepay {
+			return fmt.Errorf("trade legs closed but margin repay pending (e.g. Bybit blackout) — will auto-retry on next monitor tick")
+		}
 		return fmt.Errorf("close failed — position %s stuck in status %q, manual intervention required", positionID, updated.Status)
 	}
 

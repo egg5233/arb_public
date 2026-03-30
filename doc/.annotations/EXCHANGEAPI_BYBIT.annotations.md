@@ -163,3 +163,6 @@ Doc shows `availableToWithdraw` but doesn't mention it returns `""` (empty strin
 
 ### 6. tickers: `fundingCap` and `fundingIntervalHour` available
 These fields are available in the tickers response and could be used instead of making a separate instruments-info call. Currently adapter makes an extra API call to instruments-info for rate caps — could be optimized.
+
+### 7. crypto-loan-common/loanable-data: Undocumented in main Bybit API docs site
+`GET /v5/crypto-loan-common/loanable-data` is a public endpoint (no auth) used by the spot-futures borrow-rate adapter. It returns flexible/fixed loan parameters per coin. This endpoint is from Bybit's Crypto Loan product API, separate from the UTA spot margin endpoints. The response fields documented in `EXCHANGEAPI_BYBIT_MARGIN.md` are based on code usage — the full response may contain additional fields not yet documented. Needs live-validation scrape to confirm complete schema.

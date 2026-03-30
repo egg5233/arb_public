@@ -732,10 +732,15 @@ A separate engine (`internal/spotengine/`) that runs **alongside** the perp-perp
 
 | Package | Purpose |
 |---------|---------|
-| `internal/spotengine/engine.go` | `SpotEngine` struct, lifecycle (`Start`/`Stop`), discovery loop goroutine |
-| `internal/spotengine/discovery.go` | Reads CoinGlass spot arb data from Redis, queries live borrow rates, scores opportunities by net APR |
-| `internal/models/spot_position.go` | `SpotFuturesPosition` data model — spot leg, futures leg, borrow tracking, P&L |
-| `internal/database/spot_state.go` | Redis CRUD — separate keys (`arb:spot_positions`, `arb:spot_history`, `arb:spot_stats`) |
+| `internal/spotengine/engine.go` | `SpotEngine` struct, lifecycle (`Start`/`Stop`), discovery loop, Redis persistence counters, per-exchange capital limits |
+| `internal/spotengine/discovery.go` | Reads CoinGlass spot arb data from Redis, queries live borrow rates, scores opportunities, preserves active positions in top-N |
+| `internal/spotengine/execution.go` | Trade entry/exit with per-leg retry (`retryLeg`), idempotency guards (`FuturesExit > 0`), emergency escalation |
+| `internal/spotengine/exit_manager.go` | Exit triggers (spread, yield, price spike, margin health for Dir A + Dir B), `initiateExit`, `completeExit` |
+| `internal/spotengine/monitor.go` | Per-tick monitoring: stuck exit retry, `retryPendingRepay` for Bybit blackout, fresh borrow rate fetch |
+| `internal/spotengine/risk_gate.go` | Pre-entry risk gate: capacity, cooldown, duplicate (per-symbol), persistence filter |
+| `internal/models/spot_position.go` | `SpotFuturesPosition` data model — spot leg, futures leg, borrow tracking, P&L, `PendingRepay`, `ExitRetryCount` |
+| `internal/database/spot_state.go` | Redis CRUD — positions, history, stats, cooldown, Redis-backed persistence counters with 20-min TTL |
+| `internal/notify/telegram.go` | `TelegramNotifier` — auto-entry, auto-exit, emergency close, manual close alerts via Telegram Bot API |
 | `internal/api/spot_handlers.go` | Dashboard REST endpoints + WebSocket broadcasts for spot positions |
 | `doc/DESIGN_SPOT_FUTURES_RISK.md` | Extreme condition & risk design (10x squeeze, liquidation cascades) |
 
@@ -756,8 +761,9 @@ SpotEngine.discoveryLoop (every scan_interval_min minutes)
      f. Calculate fee APR: 4 taker legs × (365 / 30-day assumed hold)
      g. Net APR = fundingAPR − borrowAPR − feeAPR
      h. Filter by min_net_yield_apr
-  4. Rank by net APR descending, limit to top N
-  5. Push results to API server (GET /api/spot/opportunities)
+  4. Rank by net APR descending, limit to top N (always preserving entries for active positions)
+  5. Update Redis persistence counters (per-symbol, 20-min TTL)
+  6. Push results to API server (GET /api/spot/opportunities)
 ```
 
 ### 3.4 Configuration
@@ -768,15 +774,28 @@ JSON `config.json` → `spot_futures` section:
 |-------|---------|-------------|
 | `enabled` | false | Enable the spot-futures engine |
 | `max_positions` | 1 | Maximum concurrent spot-futures positions |
-| `capital_per_position` | 200 | USDT capital per position |
+| `separate_acct_max_usdt` | 200 | Capital per position for separate-account exchanges (Binance, Bitget) |
+| `unified_acct_max_usdt` | 500 | Capital per position for unified-account exchanges (Bybit, OKX, Gate.io) |
 | `leverage` | 3 | Futures leg leverage |
 | `monitor_interval_sec` | 300 | Position monitoring interval |
 | `min_net_yield_apr` | 0.10 | Minimum net APR after costs (10%) |
 | `max_borrow_apr` | 0.50 | Maximum borrow APR for Direction A (50%) |
+| `margin_exit_pct` | 85.0 | Margin utilization % that triggers normal exit |
+| `margin_emergency_pct` | 95.0 | Margin utilization % that triggers emergency exit |
 | `exchanges` | [] | Exchanges to consider (empty = all SpotMargin-capable) |
 | `scan_interval_min` | 10 | Discovery scan interval in minutes |
+| `persistence_scans` | 2 | Consecutive scans a symbol must appear before auto-entry |
+| `auto_enabled` | false | Enable automated entry from discovery loop |
+| `auto_dry_run` | true | Log auto-entry decisions without executing |
 
-Env overrides: `SPOT_FUTURES_ENABLED`, `SPOT_FUTURES_MAX_POSITIONS`, `SPOT_FUTURES_CAPITAL_PER_POSITION`, `SPOT_FUTURES_LEVERAGE`, `SPOT_FUTURES_MONITOR_INTERVAL`.
+JSON `config.json` → `telegram` section:
+
+| Field | Description |
+|-------|-------------|
+| `bot_token` | Telegram Bot API token |
+| `chat_id` | Target chat/channel ID for alerts |
+
+Env overrides: `SPOT_FUTURES_ENABLED`, `SPOT_FUTURES_MAX_POSITIONS`, `SPOT_FUTURES_LEVERAGE`, `SPOT_FUTURES_MONITOR_INTERVAL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
 
 ### 3.5 Dashboard API
 
@@ -789,7 +808,43 @@ Env overrides: `SPOT_FUTURES_ENABLED`, `SPOT_FUTURES_MAX_POSITIONS`, `SPOT_FUTUR
 
 WebSocket event: `spot_position_update` (single position), `spot_positions` (full active list).
 
-### 3.6 Integration with Perp-Perp Engine
+### 3.6 Exit Flow
+
+```
+initiateExit(pos, reason, isEmergency)
+  ├── markExiting(pos.ID)                 // prevent concurrent exits
+  ├── lockedUpdatePosition → status=exiting, ExitRetryCount=0 (fresh) or keep (retry)
+  ├── ClosePosition
+  │     ├── closeDirectionA:
+  │     │     step 1: retryLeg("futures-close", 3, 2s) → confirmFuturesFill
+  │     │     step 2: retryLeg("spot-buyback", 3, 2s) → confirmSpotFill(expectedQty)
+  │     │     step 3: MarginRepay → on failure: pos.PendingRepay=true
+  │     │     [retry exhausted] → emergencyClose (concurrent legs)
+  │     └── closeDirectionB:
+  │           step 1: retryLeg("futures-close", 3, 2s)
+  │           step 2: retryLeg("spot-sell", 3, 2s)
+  │           [retry exhausted] → emergencyClose (concurrent legs)
+  ├── if pos.PendingRepay: persist flag, return (monitor retries repay)
+  └── completeExit → record PnL, close Redis position, Telegram alert
+
+monitorTick (every monitor_interval_sec):
+  ├── PendingRepay=true  → retryPendingRepay (GetMarginBalance → buy deficit → MarginRepay)
+  ├── status=exiting (>2min, no goroutine) → increment ExitRetryCount, re-trigger initiateExit
+  │     ExitRetryCount+1 >= 5 → isEmergency=true
+  └── status=active → checkExitTriggers (spread, yield, price spike, margin health)
+```
+
+**Price-spike triggers (canonical rule):**
+- **Direction A** (`borrow_sell_long`): adverse move is price **UP** — long futures profits but borrowed-and-sold spot must be bought back at a higher price; also increases margin utilization on the borrow.
+- **Direction B** (`buy_spot_short`): adverse move is price **UP** — short futures faces liquidation risk on a squeeze. The spot holding (long) is safe but cannot offset fast enough if the short is liquidated. Down moves are profitable for the futures short and do **not** trigger price-spike exits.
+
+Both directions use the same check: `movePct = (currentPrice − futuresEntry) / futuresEntry × 100`; exit fires when `movePct > price_exit_pct` (default 20%), emergency when `movePct > price_emergency_pct` (default 30%).
+
+**Margin health triggers:**
+- **Direction A**: `borrowed/available * 100 > margin_exit_pct` (spot margin utilization)
+- **Direction B**: `GetFuturesBalance().MarginRatio * 100 > margin_exit_pct` (futures account margin ratio)
+
+### 3.7 Integration with Perp-Perp Engine
 
 The spot-futures engine is **fully independent** — separate goroutines, separate Redis keys, separate API routes. It shares:
 - Exchange adapter instances (via `exchange.SpotMarginExchange` interface)

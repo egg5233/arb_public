@@ -299,12 +299,37 @@ func (s *Server) handleGetStats(w http.ResponseWriter, r *http.Request) {
 // ---------- Nested config API response structs ----------
 
 type configResponse struct {
-	DryRun    bool                                `json:"dry_run"`
-	Strategy  configStrategyResponse              `json:"strategy"`
-	Fund      configFundResponse                  `json:"fund"`
-	Risk      configRiskResponse                  `json:"risk"`
-	AI        configAIResponse                    `json:"ai"`
-	Exchanges map[string]configExchangeResponse   `json:"exchanges"`
+	DryRun      bool                              `json:"dry_run"`
+	Strategy    configStrategyResponse            `json:"strategy"`
+	Fund        configFundResponse                `json:"fund"`
+	Risk        configRiskResponse                `json:"risk"`
+	AI          configAIResponse                  `json:"ai"`
+	Exchanges   map[string]configExchangeResponse `json:"exchanges"`
+	SpotFutures *configSpotFuturesResponse        `json:"spot_futures,omitempty"`
+}
+
+type configSpotFuturesResponse struct {
+	Enabled               bool     `json:"enabled"`
+	MaxPositions          int      `json:"max_positions"`
+	CapitalPerPosition    float64  `json:"capital_per_position"`
+	Leverage              int      `json:"leverage"`
+	MonitorIntervalSec    int      `json:"monitor_interval_sec"`
+	MinNetYieldAPR        float64  `json:"min_net_yield_apr"`
+	MaxBorrowAPR          float64  `json:"max_borrow_apr"`
+	Exchanges             []string `json:"exchanges"`
+	ScanIntervalMin       int      `json:"scan_interval_min"`
+	BorrowGraceMin        int      `json:"borrow_grace_min"`
+	PriceExitPct          float64  `json:"price_exit_pct"`
+	PriceEmergencyPct     float64  `json:"price_emergency_pct"`
+	MarginExitPct         float64  `json:"margin_exit_pct"`
+	MarginEmergencyPct    float64  `json:"margin_emergency_pct"`
+	LossCooldownHours     int      `json:"loss_cooldown_hours"`
+	AutoEnabled           bool     `json:"auto_enabled"`
+	DryRun                bool     `json:"dry_run"`
+	PersistenceScans      int      `json:"persistence_scans"`
+	ProfitTransferEnabled bool     `json:"profit_transfer_enabled"`
+	SeparateAcctMaxUSDT   float64  `json:"separate_acct_max_usdt"`
+	UnifiedAcctMaxUSDT    float64  `json:"unified_acct_max_usdt"`
 }
 
 type configExchangeResponse struct {
@@ -435,7 +460,7 @@ func buildExchangeInfo(apiKey, secretKey, passphrase string, hasPassphraseField 
 }
 
 func (s *Server) buildConfigResponse() configResponse {
-	return configResponse{
+	resp := configResponse{
 		DryRun: s.cfg.DryRun,
 		Strategy: configStrategyResponse{
 			TopOpportunities:    s.cfg.TopOpportunities,
@@ -514,6 +539,32 @@ func (s *Server) buildConfigResponse() configResponse {
 		},
 		Exchanges: s.buildExchangesResponse(),
 	}
+	if s.cfg.SpotFuturesEnabled {
+		resp.SpotFutures = &configSpotFuturesResponse{
+			Enabled:               s.cfg.SpotFuturesEnabled,
+			MaxPositions:          s.cfg.SpotFuturesMaxPositions,
+			CapitalPerPosition:    s.cfg.SpotFuturesCapitalPerPosition,
+			Leverage:              s.cfg.SpotFuturesLeverage,
+			MonitorIntervalSec:    s.cfg.SpotFuturesMonitorIntervalSec,
+			MinNetYieldAPR:        s.cfg.SpotFuturesMinNetYieldAPR,
+			MaxBorrowAPR:          s.cfg.SpotFuturesMaxBorrowAPR,
+			Exchanges:             s.cfg.SpotFuturesExchanges,
+			ScanIntervalMin:       s.cfg.SpotFuturesScanIntervalMin,
+			BorrowGraceMin:        s.cfg.SpotFuturesBorrowGraceMin,
+			PriceExitPct:          s.cfg.SpotFuturesPriceExitPct,
+			PriceEmergencyPct:     s.cfg.SpotFuturesPriceEmergencyPct,
+			MarginExitPct:         s.cfg.SpotFuturesMarginExitPct,
+			MarginEmergencyPct:    s.cfg.SpotFuturesMarginEmergencyPct,
+			LossCooldownHours:     s.cfg.SpotFuturesLossCooldownHours,
+			AutoEnabled:           s.cfg.SpotFuturesAutoEnabled,
+			DryRun:                s.cfg.SpotFuturesDryRun,
+			PersistenceScans:      s.cfg.SpotFuturesPersistenceScans,
+			ProfitTransferEnabled: s.cfg.SpotFuturesProfitTransferEnabled,
+			SeparateAcctMaxUSDT:   s.cfg.SpotFuturesSeparateAcctMaxUSDT,
+			UnifiedAcctMaxUSDT:    s.cfg.SpotFuturesUnifiedAcctMaxUSDT,
+		}
+	}
+	return resp
 }
 
 func (s *Server) buildExchangesResponse() map[string]configExchangeResponse {
@@ -541,12 +592,37 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 // ---------- Nested config update structs (pointer fields to detect presence) ----------
 
 type configUpdate struct {
-	DryRun    *bool                        `json:"dry_run"`
-	Strategy  *strategyUpdate              `json:"strategy"`
-	Fund      *fundUpdate                  `json:"fund"`
-	Risk      *riskUpdate                  `json:"risk"`
-	AI        *aiUpdate                    `json:"ai"`
-	Exchanges map[string]*exchangeUpdate   `json:"exchanges"`
+	DryRun      *bool                      `json:"dry_run"`
+	Strategy    *strategyUpdate            `json:"strategy"`
+	Fund        *fundUpdate                `json:"fund"`
+	Risk        *riskUpdate                `json:"risk"`
+	AI          *aiUpdate                  `json:"ai"`
+	Exchanges   map[string]*exchangeUpdate `json:"exchanges"`
+	SpotFutures *spotFuturesUpdate         `json:"spot_futures"`
+}
+
+type spotFuturesUpdate struct {
+	Enabled               *bool    `json:"enabled"`
+	MaxPositions          *int     `json:"max_positions"`
+	CapitalPerPosition    *float64 `json:"capital_per_position"`
+	Leverage              *int     `json:"leverage"`
+	MonitorIntervalSec    *int     `json:"monitor_interval_sec"`
+	MinNetYieldAPR        *float64 `json:"min_net_yield_apr"`
+	MaxBorrowAPR          *float64 `json:"max_borrow_apr"`
+	Exchanges             []string `json:"exchanges"`
+	ScanIntervalMin       *int     `json:"scan_interval_min"`
+	BorrowGraceMin        *int     `json:"borrow_grace_min"`
+	PriceExitPct          *float64 `json:"price_exit_pct"`
+	PriceEmergencyPct     *float64 `json:"price_emergency_pct"`
+	MarginExitPct         *float64 `json:"margin_exit_pct"`
+	MarginEmergencyPct    *float64 `json:"margin_emergency_pct"`
+	LossCooldownHours     *int     `json:"loss_cooldown_hours"`
+	AutoEnabled           *bool    `json:"auto_enabled"`
+	DryRun                *bool    `json:"dry_run"`
+	PersistenceScans      *int     `json:"persistence_scans"`
+	ProfitTransferEnabled *bool    `json:"profit_transfer_enabled"`
+	SeparateAcctMaxUSDT   *float64 `json:"separate_acct_max_usdt"`
+	UnifiedAcctMaxUSDT    *float64 `json:"unified_acct_max_usdt"`
 }
 
 type exchangeUpdate struct {
@@ -941,6 +1017,72 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if sf := upd.SpotFutures; sf != nil {
+		if sf.Enabled != nil {
+			s.cfg.SpotFuturesEnabled = *sf.Enabled
+		}
+		if sf.MaxPositions != nil && *sf.MaxPositions > 0 {
+			s.cfg.SpotFuturesMaxPositions = *sf.MaxPositions
+		}
+		if sf.CapitalPerPosition != nil && *sf.CapitalPerPosition > 0 {
+			s.cfg.SpotFuturesCapitalPerPosition = *sf.CapitalPerPosition
+		}
+		if sf.Leverage != nil && *sf.Leverage > 0 {
+			s.cfg.SpotFuturesLeverage = *sf.Leverage
+		}
+		if sf.MonitorIntervalSec != nil && *sf.MonitorIntervalSec > 0 {
+			s.cfg.SpotFuturesMonitorIntervalSec = *sf.MonitorIntervalSec
+		}
+		if sf.MinNetYieldAPR != nil && *sf.MinNetYieldAPR >= 0 {
+			s.cfg.SpotFuturesMinNetYieldAPR = *sf.MinNetYieldAPR
+		}
+		if sf.MaxBorrowAPR != nil && *sf.MaxBorrowAPR >= 0 {
+			s.cfg.SpotFuturesMaxBorrowAPR = *sf.MaxBorrowAPR
+		}
+		if sf.Exchanges != nil {
+			s.cfg.SpotFuturesExchanges = sf.Exchanges
+		}
+		if sf.ScanIntervalMin != nil && *sf.ScanIntervalMin > 0 {
+			s.cfg.SpotFuturesScanIntervalMin = *sf.ScanIntervalMin
+		}
+		if sf.BorrowGraceMin != nil && *sf.BorrowGraceMin >= 0 {
+			s.cfg.SpotFuturesBorrowGraceMin = *sf.BorrowGraceMin
+		}
+		if sf.PriceExitPct != nil && *sf.PriceExitPct > 0 {
+			s.cfg.SpotFuturesPriceExitPct = *sf.PriceExitPct
+		}
+		if sf.PriceEmergencyPct != nil && *sf.PriceEmergencyPct > 0 {
+			s.cfg.SpotFuturesPriceEmergencyPct = *sf.PriceEmergencyPct
+		}
+		if sf.MarginExitPct != nil && *sf.MarginExitPct > 0 && *sf.MarginExitPct <= 100 {
+			s.cfg.SpotFuturesMarginExitPct = *sf.MarginExitPct
+		}
+		if sf.MarginEmergencyPct != nil && *sf.MarginEmergencyPct > 0 && *sf.MarginEmergencyPct <= 100 {
+			s.cfg.SpotFuturesMarginEmergencyPct = *sf.MarginEmergencyPct
+		}
+		if sf.LossCooldownHours != nil && *sf.LossCooldownHours >= 0 {
+			s.cfg.SpotFuturesLossCooldownHours = *sf.LossCooldownHours
+		}
+		if sf.AutoEnabled != nil {
+			s.cfg.SpotFuturesAutoEnabled = *sf.AutoEnabled
+		}
+		if sf.DryRun != nil {
+			s.cfg.SpotFuturesDryRun = *sf.DryRun
+		}
+		if sf.PersistenceScans != nil && *sf.PersistenceScans >= 0 {
+			s.cfg.SpotFuturesPersistenceScans = *sf.PersistenceScans
+		}
+		if sf.ProfitTransferEnabled != nil {
+			s.cfg.SpotFuturesProfitTransferEnabled = *sf.ProfitTransferEnabled
+		}
+		if sf.SeparateAcctMaxUSDT != nil && *sf.SeparateAcctMaxUSDT > 0 {
+			s.cfg.SpotFuturesSeparateAcctMaxUSDT = *sf.SeparateAcctMaxUSDT
+		}
+		if sf.UnifiedAcctMaxUSDT != nil && *sf.UnifiedAcctMaxUSDT > 0 {
+			s.cfg.SpotFuturesUnifiedAcctMaxUSDT = *sf.UnifiedAcctMaxUSDT
+		}
+	}
+
 	// Persist config fields to Redis HASH (arb:config) using flat keys.
 	snapshot := s.buildConfigResponse()
 
@@ -996,6 +1138,30 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"re_enter_cooldown_hours":       strconv.FormatFloat(snapshot.Strategy.Entry.ReEnterCooldownHours, 'f', -1, 64),
 		"backtest_days":                 strconv.Itoa(snapshot.Strategy.Entry.BacktestDays),
 		"backtest_min_profit":           strconv.FormatFloat(snapshot.Strategy.Entry.BacktestMinProfit, 'f', -1, 64),
+	}
+
+	if sf := snapshot.SpotFutures; sf != nil {
+		fields["spot_futures_enabled"] = strconv.FormatBool(sf.Enabled)
+		fields["spot_futures_max_positions"] = strconv.Itoa(sf.MaxPositions)
+		fields["spot_futures_capital_per_position"] = strconv.FormatFloat(sf.CapitalPerPosition, 'f', -1, 64)
+		fields["spot_futures_leverage"] = strconv.Itoa(sf.Leverage)
+		fields["spot_futures_monitor_interval_sec"] = strconv.Itoa(sf.MonitorIntervalSec)
+		fields["spot_futures_min_net_yield_apr"] = strconv.FormatFloat(sf.MinNetYieldAPR, 'f', -1, 64)
+		fields["spot_futures_max_borrow_apr"] = strconv.FormatFloat(sf.MaxBorrowAPR, 'f', -1, 64)
+		fields["spot_futures_exchanges"] = strings.Join(sf.Exchanges, ",")
+		fields["spot_futures_scan_interval_min"] = strconv.Itoa(sf.ScanIntervalMin)
+		fields["spot_futures_borrow_grace_min"] = strconv.Itoa(sf.BorrowGraceMin)
+		fields["spot_futures_price_exit_pct"] = strconv.FormatFloat(sf.PriceExitPct, 'f', -1, 64)
+		fields["spot_futures_price_emergency_pct"] = strconv.FormatFloat(sf.PriceEmergencyPct, 'f', -1, 64)
+		fields["spot_futures_margin_exit_pct"] = strconv.FormatFloat(sf.MarginExitPct, 'f', -1, 64)
+		fields["spot_futures_margin_emergency_pct"] = strconv.FormatFloat(sf.MarginEmergencyPct, 'f', -1, 64)
+		fields["spot_futures_loss_cooldown_hours"] = strconv.Itoa(sf.LossCooldownHours)
+		fields["spot_futures_auto_enabled"] = strconv.FormatBool(sf.AutoEnabled)
+		fields["spot_futures_dry_run"] = strconv.FormatBool(sf.DryRun)
+		fields["spot_futures_persistence_scans"] = strconv.Itoa(sf.PersistenceScans)
+		fields["spot_futures_profit_transfer_enabled"] = strconv.FormatBool(sf.ProfitTransferEnabled)
+		fields["spot_futures_separate_acct_max_usdt"] = strconv.FormatFloat(sf.SeparateAcctMaxUSDT, 'f', -1, 64)
+		fields["spot_futures_unified_acct_max_usdt"] = strconv.FormatFloat(sf.UnifiedAcctMaxUSDT, 'f', -1, 64)
 	}
 
 	if err := s.db.SetConfigFields(fields); err != nil {

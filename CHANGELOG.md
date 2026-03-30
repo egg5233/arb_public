@@ -2,6 +2,134 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.23] - 2026-03-31
+
+### Fixed
+- **[spot-futures] Health API and dashboard now show live net yield** — added live economics snapshot fields (`CurrentFundingAPR`, `CurrentFeeAPR`, `CurrentNetYieldAPR`, `YieldDataSource`, `YieldSnapshotAt`) to position model, persisted by monitor each tick via `updateLiveEconomics()`. Health endpoint returns live fields instead of stale entry-time funding. Dashboard uses `current_net_yield_apr` from backend instead of local recomputation. Frontend now handles `spot_position_health` WS messages for real-time updates. Fallback to entry-time data is explicitly labeled ([ARB-69](/ARB/issues/ARB-69))
+
+## [0.22.22] - 2026-03-31
+
+### Fixed
+- **[spot-futures] Exit retry now preserves partial close state** — added `persistExitCheckpoint()` helper using `lockedUpdatePosition()` that durably persists `FuturesExit`, `SpotExitPrice`, `ExitFees`, and `PendingRepay` to Redis immediately after each confirmed leg fill in `closeDirectionA()`, `closeDirectionB()`, and `emergencyClose()`. Added fallback checkpoint in `initiateExit()` on error return. Prevents monitor retry from re-closing an already-flat leg after process restart or transient error ([ARB-66](/ARB/issues/ARB-66))
+
+## [0.22.21] - 2026-03-31
+
+### Fixed
+- **[spot-futures] NegativeYieldSince now starts for zero/negative funding** — removed `fundingAPR > 0` guard from `negativeYield` computation in monitor loop; borrow-cost grace-period timer ([ARB-8](/ARB/issues/ARB-8)) now correctly ages when live funding is zero or negative, matching the [ARB-7](/ARB/issues/ARB-7) monitor spec (`monitor.go`)
+
+### Changed
+- **[spot-futures] Direction B price-spike semantics documented and tested** — added explicit canonical rule to ARCHITECTURE.md and corrected ambiguous wording in DESIGN_SPOT_FUTURES_RISK.md: adverse move for Direction B is price UP (short futures liquidation risk), not down; 9 focused regression tests added covering both directions' normal, emergency, no-trigger, and down-move scenarios (`exit_triggers_test.go`)
+
+## [0.22.20] - 2026-03-30
+
+### Fixed
+- **yield_below_minimum exit fires when funding drops to zero** — replaced `currentFundingAPR > 0` guard with `hasFundingData` bool so the yield check runs for zero/negative funding when live data is available from `lookupCurrentOpp` (`exit_manager.go`)
+- **Discovery logs warning on GetActiveSpotPositions error** — previously silent failure degraded to old broken filter behavior (`discovery.go`)
+- **Deduplicated GetActiveSpotPositions call in discovery** — reuses the activeKeys map built for filter bypass instead of calling Redis twice per scan (`discovery.go`)
+
+## [0.22.19] - 2026-03-30
+
+### Fixed
+- **Yield-below-minimum exit now fires correctly** — three combined bugs suppressed the exit trigger: (1) discovery filters dropped active positions whose rates degraded, starving monitor of fresh data; (2) `lookupCurrentFundingAPR` ignored zero/negative funding rates; (3) exit threshold omitted fee costs. Fixed by adding active-position bypass to 3 discovery filter gates, replacing `lookupCurrentFundingAPR` with `lookupCurrentOpp` returning the full opportunity, and including `feeAPR` in the yield threshold calculation (`discovery.go`, `monitor.go`, `exit_manager.go`, `spot_position.go`, `execution.go`)
+
+## [0.22.18] - 2026-03-30
+
+### Fixed
+- **Spot-futures config persists to config.json on restart** — `SaveJSON()` now writes all 21 spot-futures fields to `config.json`, preventing silent revert of API-set values on service restart (`config.go`)
+- **`spot_futures_exchanges` added to Redis persistence** — the `Exchanges` slice was missing from the Redis hash write; now persisted as comma-separated string (`handlers.go`)
+
+## [0.22.17] - 2026-03-30
+
+### Fixed
+- **`/api/config` exposes spot-futures settings** — GET response includes full `spot_futures` block (omitted when engine disabled), POST accepts partial updates with validation, all fields persisted to Redis (`handlers.go`)
+
+## [0.22.15] - 2026-03-30
+
+### Fixed
+- **Persistence counter deduplication per scan** — `updatePersistenceCounts` now checks the `seen` map before incrementing, so symbols appearing on N exchanges only increment once per scan instead of N times (`engine.go`)
+
+## [0.22.14] - 2026-03-30
+
+### Fixed
+- **Bybit MarginRepay checks resultStatus before declaring success** — `MarginRepay` now parses the `resultStatus` field from Bybit's `/v5/account/no-convert-repay` response; returns error for `P` (processing) and `FA` (failed) so the engine correctly sets `PendingRepay=true` and retries (`pkg/exchange/bybit/margin.go`)
+
+## [0.22.13] - 2026-03-30
+
+### Fixed
+- **Stuck exit emergency escalation fires on retry 5 not retry 6** — `isEmergency` check now uses post-increment value (`ExitRetryCount+1 >= 5`) instead of stale pre-increment struct (`monitor.go`)
+
+## [0.22.12] - 2026-03-30
+
+### Fixed
+- **Direction A margin utilization formula** — changed from `borrowed/(borrowed+available)` to `borrowed/available`, fixing 5.67x–19x delay on 85%/95% safety triggers; added zero-available emergency exit (`exit_manager.go`)
+
+## [0.22.11] - 2026-03-30
+
+### Fixed
+- **Funding-drop and negative-yield exits now see all active positions** — discovery scan top-N truncation now preserves entries that match active positions, so `lookupCurrentFundingAPR` never falls back to stale entry-time funding data for open trades (`discovery.go`)
+
+## [0.22.10] - 2026-03-30
+
+### Fixed
+- **Manual open honors spot-futures dry-run toggle** — `ManualOpen` now checks `SpotFuturesDryRun` instead of the global `DryRun` flag, consistent with auto-entry risk gate (`execution.go`)
+
+## [0.22.9] - 2026-03-30
+
+### Fixed
+- **Spot fill fallback returns expected quantity instead of zero** — `confirmSpotFill` now accepts `expectedQty` parameter and returns it when REST lookup fails (futures-only endpoint), instead of returning `0, 0` which caused false rollbacks on entry and stranded exits after accepted market IOC spot orders (`execution.go`, `monitor.go`)
+
+## [0.22.8] - 2026-03-30
+
+### Fixed
+- **Monitor borrow rate bypasses 5-minute discovery cache** — `updateBorrowCost` now calls `getFreshBorrowRate` which always hits the exchange API instead of `getCachedBorrowRate` with its 5-min TTL; borrow-cost exits and negative-yield detection now react within one monitor tick (60s) instead of lagging up to 5 minutes (`monitor.go`, `discovery.go`)
+
+## [0.22.7] - 2026-03-30
+
+### Fixed
+- **Direction A repay stall after partial buyback or accrued interest** — `retryPendingRepay` now queries `GetMarginBalance` for actual liability (principal + interest) and available balance; if the account is short, it buys the deficit via market IOC before retrying repay, preventing infinite retry loops with accruing interest (`monitor.go`)
+
+## [0.22.6] - 2026-03-30
+
+### Fixed
+- **Spot-futures persistence filter keyed per symbol instead of per exchange** — changed Redis key from `arb:spot_persistence:{symbol}:{exchange}` to `arb:spot_persistence:{symbol}` so persistence counter no longer resets when the qualifying exchange rotates between scans; old composite keys auto-expire via 20-min TTL (`spot_state.go`, `engine.go`, `risk_gate.go`)
+
+## [0.22.5] - 2026-03-30
+
+### Fixed
+- **Exit retry/fallback for spot-futures ClosePosition** — three-layer retry architecture prevents positions from being stranded in `exiting` status: (1) `retryLeg()` wrapper retries each close leg 3× with 2s delay, escalating to emergency market close on futures exhaustion; (2) monitor detects stuck exits after 2min and re-triggers `initiateExit`, promoting to emergency after 5 retries; (3) already-closed legs are skipped on retry to avoid double-closing (`execution.go`, `monitor.go`, `exit_manager.go`, `spot_position.go`)
+
+## [0.22.4] - 2026-03-30
+
+### Fixed
+- **Spot-futures persistence filter now Redis-backed instead of process-local** — `updatePersistenceCounts` and `getPersistenceCount` use Redis keys (`arb:spot_persistence:{symbol}:{exchange}`) with 20-minute TTL instead of in-memory `map[string]int`; persistence history survives process restarts and is shared across runtimes as specified in ARB-9 (`engine.go`, `spot_state.go`)
+
+## [0.22.3] - 2026-03-30
+
+### Fixed
+- **Spot-futures duplicate guard blocks per-symbol across all exchanges** — `checkRiskGate` and `ManualOpen` duplicate-position checks now compare symbol only (not symbol+exchange), preventing concurrent positions on the same asset across different exchanges as documented in ARCHITECTURE.md (`risk_gate.go`, `execution.go`)
+
+## [0.22.2] - 2026-03-30
+
+### Fixed
+- **Direction B positions missing margin-health exit** — `checkExitTriggers` now checks futures-side margin ratio via `GetFuturesBalance()` for Direction B (`buy_spot_short`) positions; previously only Direction A had margin-health monitoring, leaving Direction B reliant on price-spike triggers alone (`exit_manager.go`)
+
+## [0.22.1] - 2026-03-30
+
+### Fixed
+- **Bybit repay blackout leaves closed positions with outstanding borrow** — when `MarginRepay()` fails (e.g. Bybit 04:00–05:30 UTC blackout), position now stays in `exiting` state with `PendingRepay=true` instead of being marked `closed`; monitor loop retries repay on each tick and completes the exit once repay succeeds; fixes both normal and emergency close paths (`execution.go`, `exit_manager.go`, `monitor.go`, `spot_position.go`)
+
+## [0.22.0] - 2026-03-30
+
+### Added
+- **Telegram Alerts** — auto-entry, auto-exit, and emergency close notifications sent via Telegram Bot API; configure with `telegram.bot_token` and `telegram.chat_id` in config.json or `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` env vars (`internal/notify/telegram.go`)
+- **Separate-Account Exchange Support** — Binance and Bitget now supported in spot-futures with per-exchange capital limits; `spot_futures.separate_acct_max_usdt` (default: $200) for separate-account exchanges, `spot_futures.unified_acct_max_usdt` (default: $500) for unified exchanges
+- **Dashboard: Spot-Futures Auto-Mode Toggle** — auto-entry on/off and dry-run toggle visible in main Overview dashboard with real-time status
+- **Dashboard: Position Health Cards** — active spot-futures positions display margin utilization, borrow APR, net yield, borrow cost accrued, peak price move, and exit trigger proximity
+- **Phase 3b Test Suite** — unit tests for capital allocation logic, PnL calculation (both directions), exit reason formatting, and Telegram notifier nil-safety
+
+### Fixed
+- **v0.21.9–v0.21.11 fixes included** — see below for individual entries
+
 ## [0.21.11] - 2026-03-31
 
 ### Fixed
@@ -12,12 +140,13 @@ All notable changes to this project will be documented in this file.
 - **Adaptive sizing stale reservation** — `requiredWithBuffer` now recomputed after slippage-adaptive size reduction (`manager.go`)
 - **Balance re-fetch nil dereference** — post-transfer balance refresh now keeps old balance on error instead of panicking (`manager.go`)
 - **History exit_reason truncation** — narrowed max-width for better table display (`History.tsx`)
+- **Gate.io EnsureOneWayMode missing dual_mode param** — Gate.io expects `dual_mode` as a query parameter, not JSON body; changed from `POST /futures/usdt/dual_mode` with body `{"dual_mode":false}` to query param `?dual_mode=false` (`gateio/adapter.go`)
 
 ## [0.21.10] - 2026-03-30
 
 ### Fixed
+- **Bitget rebalancer zero-amount transfer** — skip spot→futures transfer when amount < $1 instead of calling API with 0.0000 USDT; eliminates hourly `code=40020` errors (`engine.go`)
 - **Bitget API signature failure for non-ASCII symbols** — Chinese character symbols (e.g. 龙虾USDT) caused HMAC signature mismatch due to `http.NewRequest` re-encoding percent-escaped UTF-8 bytes; fixed by setting `req.URL.RawQuery` directly to preserve exact query string used for signing (`client.go`)
-
 ## [0.21.9] - 2026-03-30
 
 ### Fixed

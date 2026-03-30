@@ -139,24 +139,28 @@ func (s *Server) handleSpotPositionHealth(w http.ResponseWriter, r *http.Request
 	}
 
 	hoursOpen := time.Since(pos.CreatedAt).Hours()
-	netYieldAPR := pos.FundingAPR - pos.CurrentBorrowAPR
 	var negativeYieldMin float64
 	if pos.NegativeYieldSince != nil {
 		negativeYieldMin = time.Since(*pos.NegativeYieldSince).Minutes()
 	}
 
 	health := map[string]interface{}{
-		"position_id":        pos.ID,
-		"symbol":             pos.Symbol,
-		"exchange":           pos.Exchange,
-		"direction":          pos.Direction,
-		"current_borrow_apr": pos.CurrentBorrowAPR,
-		"funding_apr":        pos.FundingAPR,
-		"net_yield_apr":      netYieldAPR,
-		"borrow_cost_accrued": pos.BorrowCostAccrued,
-		"hours_open":         hoursOpen,
-		"negative_yield":     pos.NegativeYieldSince != nil,
-		"negative_yield_min": negativeYieldMin,
+		"position_id":           pos.ID,
+		"symbol":                pos.Symbol,
+		"exchange":              pos.Exchange,
+		"direction":             pos.Direction,
+		"current_borrow_apr":    pos.CurrentBorrowAPR,
+		"funding_apr":           pos.FundingAPR,
+		"fee_apr":               pos.FeeAPR,
+		"current_funding_apr":   pos.CurrentFundingAPR,
+		"current_fee_apr":       pos.CurrentFeeAPR,
+		"current_net_yield_apr": pos.CurrentNetYieldAPR,
+		"yield_data_source":     pos.YieldDataSource,
+		"yield_snapshot_at":     pos.YieldSnapshotAt,
+		"borrow_cost_accrued":   pos.BorrowCostAccrued,
+		"hours_open":            hoursOpen,
+		"negative_yield":        pos.NegativeYieldSince != nil,
+		"negative_yield_min":    negativeYieldMin,
 	}
 
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: health})

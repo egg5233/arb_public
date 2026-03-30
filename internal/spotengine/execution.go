@@ -54,14 +54,14 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		return fmt.Errorf("exchange %s not found", exchName)
 	}
 
-	// 1d. Check no duplicate symbol already open.
+	// 1d. Check no duplicate symbol already open (any exchange).
 	active, err := e.db.GetActiveSpotPositions()
 	if err != nil {
 		return fmt.Errorf("failed to check active positions: %w", err)
 	}
 	for _, pos := range active {
-		if pos.Symbol == symbol && pos.Exchange == exchName {
-			return fmt.Errorf("position for %s on %s already open", symbol, exchName)
+		if pos.Symbol == symbol {
+			return fmt.Errorf("position for %s already open on %s", symbol, pos.Exchange)
 		}
 	}
 
@@ -71,7 +71,7 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 	}
 
 	// 1f. Dry run check.
-	if e.cfg.DryRun {
+	if e.cfg.SpotFuturesDryRun {
 		return fmt.Errorf("dry run mode — trade not executed")
 	}
 
@@ -91,10 +91,7 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 	// ---------------------------------------------------------------
 	// 3. Position sizing
 	// ---------------------------------------------------------------
-	capital := e.cfg.SpotFuturesCapitalPerPosition
-	if capital <= 0 {
-		capital = 200 // default $200
-	}
+	capital := e.capitalForExchange(exchName)
 	baseCoin := opp.BaseCoin
 	rawSize := capital / midPrice
 
@@ -180,6 +177,7 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		BorrowAmount:     borrowAmount,
 		BorrowRateHourly: opp.BorrowAPR / 8760,
 		FundingAPR:       opp.FundingAPR,
+		FeeAPR:           opp.FeeAPR,
 		CurrentBorrowAPR: opp.BorrowAPR,
 		NotionalUSDT:     notional,
 		EntryFees:        entryFees,
@@ -237,7 +235,7 @@ func (e *SpotEngine) executeBorrowSellLong(
 	e.log.Info("ManualOpen [borrow_sell_long] step 2: spot order placed: %s", spotOrderID)
 
 	// Confirm spot fill.
-	spotFilled, spotAvg = e.confirmSpotFill(futExch, spotOrderID, symbol)
+	spotFilled, spotAvg = e.confirmSpotFill(futExch, spotOrderID, symbol, size)
 	if spotFilled <= 0 {
 		e.log.Error("ManualOpen [borrow_sell_long] step 2: spot order got 0 fill — rolling back borrow")
 		e.rollbackBorrow(smExch, baseCoin, sizeStr)
@@ -300,7 +298,7 @@ func (e *SpotEngine) executeBuySpotShort(
 	e.log.Info("ManualOpen [buy_spot_short] step 1: spot order placed: %s", spotOrderID)
 
 	// Confirm spot fill.
-	spotFilled, spotAvg = e.confirmSpotFill(futExch, spotOrderID, symbol)
+	spotFilled, spotAvg = e.confirmSpotFill(futExch, spotOrderID, symbol, size)
 	if spotFilled <= 0 {
 		return 0, 0, 0, 0, fmt.Errorf("spot buy got 0 fill (order %s)", spotOrderID)
 	}
@@ -396,7 +394,7 @@ func (e *SpotEngine) confirmFuturesFill(exch exchange.Exchange, orderID, symbol 
 // not appear in the futures WS private stream, so we wait briefly then fall
 // back to REST via GetOrderFilledQty. We also try GetOrderUpdate in case
 // the exchange routes spot fills through the same WS.
-func (e *SpotEngine) confirmSpotFill(exch exchange.Exchange, orderID, symbol string) (filledQty, avgPrice float64) {
+func (e *SpotEngine) confirmSpotFill(exch exchange.Exchange, orderID, symbol string, expectedQty float64) (filledQty, avgPrice float64) {
 	// Wait a moment for the order to settle.
 	time.Sleep(2 * time.Second)
 
@@ -413,10 +411,10 @@ func (e *SpotEngine) confirmSpotFill(exch exchange.Exchange, orderID, symbol str
 	// This is best-effort for Phase 3a.
 	restFilled, err := exch.GetOrderFilledQty(orderID, symbol)
 	if err != nil {
-		e.log.Warn("confirmSpotFill: REST query %s failed: %v — assuming full fill of market IOC", orderID, err)
+		e.log.Warn("confirmSpotFill: REST query %s failed: %v — assuming full fill of market IOC (qty=%.6f)", orderID, err, expectedQty)
 		// For market IOC, assume full fill if the order was accepted.
 		// We don't have a REST endpoint for spot margin order details in all adapters.
-		return 0, 0
+		return expectedQty, 0
 	}
 	e.log.Info("confirmSpotFill: REST %s filled=%.6f", orderID, restFilled)
 
@@ -465,6 +463,25 @@ func (e *SpotEngine) rollbackSpotOrder(smExch exchange.SpotMarginExchange, symbo
 // Position close (exit execution)
 // ---------------------------------------------------------------------------
 
+// retryLeg retries a close leg function up to maxRetries times with the given
+// delay between attempts. Returns nil on the first successful attempt, or the
+// last error after exhaustion.
+func (e *SpotEngine) retryLeg(name string, maxRetries int, delay time.Duration, fn func() error) error {
+	var lastErr error
+	for i := 0; i < maxRetries; i++ {
+		if err := fn(); err != nil {
+			lastErr = err
+			e.log.Warn("retryLeg %s attempt %d/%d failed: %v", name, i+1, maxRetries, err)
+			if i < maxRetries-1 {
+				time.Sleep(delay)
+			}
+			continue
+		}
+		return nil
+	}
+	return fmt.Errorf("%s failed after %d attempts: %w", name, maxRetries, lastErr)
+}
+
 // ClosePosition closes an active spot-futures position by unwinding both legs.
 // For Direction A (borrow_sell_long): close futures long → buy back spot → repay borrow.
 // For Direction B (buy_spot_short): close futures short → sell spot.
@@ -510,57 +527,96 @@ func (e *SpotEngine) closeDirectionA(
 	smExch exchange.SpotMarginExchange,
 	futSizeStr, spotSizeStr string,
 ) error {
-	// Step 1: Close futures long (sell to close)
-	e.log.Info("ClosePosition [Dir A] step 1: close futures SELL %s %s", pos.Symbol, futSizeStr)
-	futOrderID, err := futExch.PlaceOrder(exchange.PlaceOrderParams{
-		Symbol:     pos.Symbol,
-		Side:       exchange.SideSell,
-		OrderType:  "market",
-		Size:       futSizeStr,
-		Force:      "ioc",
-		ReduceOnly: true,
-	})
-	if err != nil {
-		return fmt.Errorf("close futures long failed: %w", err)
-	}
-
-	futFilled, futAvg := e.confirmFuturesFill(futExch, futOrderID, pos.Symbol)
-	if futFilled <= 0 {
-		return fmt.Errorf("futures close got 0 fill (order %s)", futOrderID)
-	}
-	if futAvg <= 0 && futFilled > 0 {
-		if ob, err := futExch.GetOrderbook(pos.Symbol, 5); err == nil && len(ob.Bids) > 0 && len(ob.Asks) > 0 {
-			futAvg = (ob.Bids[0].Price + ob.Asks[0].Price) / 2
-			e.log.Warn("ClosePosition [Dir A]: futures avg price 0, using orderbook mid %.6f", futAvg)
+	// Step 1: Close futures long (sell to close) — with retry
+	if pos.FuturesExit > 0 {
+		e.log.Info("ClosePosition [Dir A] step 1: futures already closed (exit=%.6f), skipping", pos.FuturesExit)
+	} else {
+		e.log.Info("ClosePosition [Dir A] step 1: close futures SELL %s %s", pos.Symbol, futSizeStr)
+		var futFilled, futAvg float64
+		err := e.retryLeg("dirA-futures-close", 3, 2*time.Second, func() error {
+			orderID, placeErr := futExch.PlaceOrder(exchange.PlaceOrderParams{
+				Symbol:     pos.Symbol,
+				Side:       exchange.SideSell,
+				OrderType:  "market",
+				Size:       futSizeStr,
+				Force:      "ioc",
+				ReduceOnly: true,
+			})
+			if placeErr != nil {
+				return fmt.Errorf("close futures long failed: %w", placeErr)
+			}
+			filled, avg := e.confirmFuturesFill(futExch, orderID, pos.Symbol)
+			if filled <= 0 {
+				return fmt.Errorf("futures close got 0 fill (order %s)", orderID)
+			}
+			futFilled, futAvg = filled, avg
+			return nil
+		})
+		if err != nil {
+			// Exhausted retries — escalate to emergency market close for this leg
+			e.log.Error("ClosePosition [Dir A]: futures retry exhausted, escalating to emergency: %v", err)
+			return e.emergencyClose(pos, futExch, smExch, futSizeStr, spotSizeStr)
+		}
+		if futAvg <= 0 && futFilled > 0 {
+			if ob, obErr := futExch.GetOrderbook(pos.Symbol, 5); obErr == nil && len(ob.Bids) > 0 && len(ob.Asks) > 0 {
+				futAvg = (ob.Bids[0].Price + ob.Asks[0].Price) / 2
+				e.log.Warn("ClosePosition [Dir A]: futures avg price 0, using orderbook mid %.6f", futAvg)
+			}
+		}
+		pos.FuturesExit = futAvg
+		e.log.Info("ClosePosition [Dir A] step 1: futures closed fill=%.6f avg=%.6f", futFilled, futAvg)
+		// Checkpoint: persist FuturesExit immediately after confirmed fill.
+		if futAvg > 0 {
+			if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
+				e.log.Error("ClosePosition [Dir A]: failed to checkpoint futures exit: %v", cpErr)
+			}
 		}
 	}
-	pos.FuturesExit = futAvg
-	e.log.Info("ClosePosition [Dir A] step 1: futures closed fill=%.6f avg=%.6f", futFilled, futAvg)
 
-	// Step 2: Buy back spot (to return borrowed coin)
-	e.log.Info("ClosePosition [Dir A] step 2: buy back spot BUY %s %s", pos.Symbol, spotSizeStr)
-	spotOrderID, err := smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
-		Symbol:    pos.Symbol,
-		Side:      exchange.SideBuy,
-		OrderType: "market",
-		Size:      spotSizeStr,
-		Force:     "ioc",
-	})
-	if err != nil {
-		return fmt.Errorf("spot buyback failed (futures already closed): %w", err)
-	}
-
-	spotFilled, spotAvg := e.confirmSpotFill(futExch, spotOrderID, pos.Symbol)
-	if spotAvg <= 0 && spotFilled > 0 {
-		if ob, err := futExch.GetOrderbook(pos.Symbol, 5); err == nil && len(ob.Bids) > 0 && len(ob.Asks) > 0 {
-			spotAvg = (ob.Bids[0].Price + ob.Asks[0].Price) / 2
-			e.log.Warn("ClosePosition [Dir A]: spot avg price 0, using orderbook mid %.6f", spotAvg)
+	// Step 2: Buy back spot (to return borrowed coin) — with retry
+	if pos.SpotExitPrice > 0 {
+		e.log.Info("ClosePosition [Dir A] step 2: spot already closed (exit=%.6f), skipping", pos.SpotExitPrice)
+	} else {
+		e.log.Info("ClosePosition [Dir A] step 2: buy back spot BUY %s %s", pos.Symbol, spotSizeStr)
+		var spotFilled, spotAvg float64
+		err := e.retryLeg("dirA-spot-buyback", 3, 2*time.Second, func() error {
+			orderID, placeErr := smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
+				Symbol:    pos.Symbol,
+				Side:      exchange.SideBuy,
+				OrderType: "market",
+				Size:      spotSizeStr,
+				Force:     "ioc",
+			})
+			if placeErr != nil {
+				return fmt.Errorf("spot buyback failed: %w", placeErr)
+			}
+			filled, avg := e.confirmSpotFill(futExch, orderID, pos.Symbol, pos.SpotSize)
+			if filled <= 0 {
+				return fmt.Errorf("spot buyback got 0 fill (order %s)", orderID)
+			}
+			spotFilled, spotAvg = filled, avg
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("spot buyback failed (futures already closed): %w", err)
+		}
+		if spotAvg <= 0 && spotFilled > 0 {
+			if ob, obErr := futExch.GetOrderbook(pos.Symbol, 5); obErr == nil && len(ob.Bids) > 0 && len(ob.Asks) > 0 {
+				spotAvg = (ob.Bids[0].Price + ob.Asks[0].Price) / 2
+				e.log.Warn("ClosePosition [Dir A]: spot avg price 0, using orderbook mid %.6f", spotAvg)
+			}
+		}
+		if spotAvg > 0 {
+			pos.SpotExitPrice = spotAvg
+		}
+		e.log.Info("ClosePosition [Dir A] step 2: spot buyback fill=%.6f avg=%.6f", spotFilled, spotAvg)
+		// Checkpoint: persist SpotExitPrice immediately after confirmed fill.
+		if spotAvg > 0 {
+			if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
+				e.log.Error("ClosePosition [Dir A]: failed to checkpoint spot exit: %v", cpErr)
+			}
 		}
 	}
-	if spotAvg > 0 {
-		pos.SpotExitPrice = spotAvg
-	}
-	e.log.Info("ClosePosition [Dir A] step 2: spot buyback fill=%.6f avg=%.6f", spotFilled, spotAvg)
 
 	// Step 3: Repay borrow
 	repayAmount := utils.FormatSize(pos.BorrowAmount, 6)
@@ -569,22 +625,22 @@ func (e *SpotEngine) closeDirectionA(
 		Coin:   pos.BaseCoin,
 		Amount: repayAmount,
 	}); err != nil {
-		e.log.Error("ClosePosition [Dir A] repay FAILED: %v — manual repay needed for %s %s",
+		e.log.Error("ClosePosition [Dir A] repay FAILED: %v — will retry on next monitor tick for %s %s",
 			err, repayAmount, pos.BaseCoin)
-		// Don't return error — position is already closed from trading perspective
+		pos.PendingRepay = true
 	}
 
-	// Record exit fees.
+	// Record exit fees using position exit prices.
 	takerFeeA := spotFees[pos.Exchange]
 	if takerFeeA == 0 {
 		takerFeeA = 0.0005
 	}
 	exitFeesA := 0.0
-	if futFilled > 0 && futAvg > 0 {
-		exitFeesA += futFilled * futAvg * takerFeeA
+	if pos.FuturesExit > 0 {
+		exitFeesA += pos.FuturesSize * pos.FuturesExit * takerFeeA
 	}
-	if spotFilled > 0 && spotAvg > 0 {
-		exitFeesA += spotFilled * spotAvg * takerFeeA
+	if pos.SpotExitPrice > 0 {
+		exitFeesA += pos.SpotSize * pos.SpotExitPrice * takerFeeA
 	}
 	pos.ExitFees = exitFeesA
 
@@ -600,69 +656,108 @@ func (e *SpotEngine) closeDirectionB(
 	smExch exchange.SpotMarginExchange,
 	futSizeStr, spotSizeStr string,
 ) error {
-	// Step 1: Close futures short (buy to close)
-	e.log.Info("ClosePosition [Dir B] step 1: close futures BUY %s %s", pos.Symbol, futSizeStr)
-	futOrderID, err := futExch.PlaceOrder(exchange.PlaceOrderParams{
-		Symbol:     pos.Symbol,
-		Side:       exchange.SideBuy,
-		OrderType:  "market",
-		Size:       futSizeStr,
-		Force:      "ioc",
-		ReduceOnly: true,
-	})
-	if err != nil {
-		return fmt.Errorf("close futures short failed: %w", err)
-	}
-
-	futFilled, futAvg := e.confirmFuturesFill(futExch, futOrderID, pos.Symbol)
-	if futFilled <= 0 {
-		return fmt.Errorf("futures close got 0 fill (order %s)", futOrderID)
-	}
-	if futAvg <= 0 && futFilled > 0 {
-		if ob, err := futExch.GetOrderbook(pos.Symbol, 5); err == nil && len(ob.Bids) > 0 && len(ob.Asks) > 0 {
-			futAvg = (ob.Bids[0].Price + ob.Asks[0].Price) / 2
-			e.log.Warn("ClosePosition [Dir B]: futures avg price 0, using orderbook mid %.6f", futAvg)
+	// Step 1: Close futures short (buy to close) — with retry
+	if pos.FuturesExit > 0 {
+		e.log.Info("ClosePosition [Dir B] step 1: futures already closed (exit=%.6f), skipping", pos.FuturesExit)
+	} else {
+		e.log.Info("ClosePosition [Dir B] step 1: close futures BUY %s %s", pos.Symbol, futSizeStr)
+		var futFilled, futAvg float64
+		err := e.retryLeg("dirB-futures-close", 3, 2*time.Second, func() error {
+			orderID, placeErr := futExch.PlaceOrder(exchange.PlaceOrderParams{
+				Symbol:     pos.Symbol,
+				Side:       exchange.SideBuy,
+				OrderType:  "market",
+				Size:       futSizeStr,
+				Force:      "ioc",
+				ReduceOnly: true,
+			})
+			if placeErr != nil {
+				return fmt.Errorf("close futures short failed: %w", placeErr)
+			}
+			filled, avg := e.confirmFuturesFill(futExch, orderID, pos.Symbol)
+			if filled <= 0 {
+				return fmt.Errorf("futures close got 0 fill (order %s)", orderID)
+			}
+			futFilled, futAvg = filled, avg
+			return nil
+		})
+		if err != nil {
+			// Exhausted retries — escalate to emergency market close for this leg
+			e.log.Error("ClosePosition [Dir B]: futures retry exhausted, escalating to emergency: %v", err)
+			return e.emergencyClose(pos, futExch, smExch, futSizeStr, spotSizeStr)
+		}
+		if futAvg <= 0 && futFilled > 0 {
+			if ob, obErr := futExch.GetOrderbook(pos.Symbol, 5); obErr == nil && len(ob.Bids) > 0 && len(ob.Asks) > 0 {
+				futAvg = (ob.Bids[0].Price + ob.Asks[0].Price) / 2
+				e.log.Warn("ClosePosition [Dir B]: futures avg price 0, using orderbook mid %.6f", futAvg)
+			}
+		}
+		pos.FuturesExit = futAvg
+		e.log.Info("ClosePosition [Dir B] step 1: futures closed fill=%.6f avg=%.6f", futFilled, futAvg)
+		// Checkpoint: persist FuturesExit immediately after confirmed fill.
+		if futAvg > 0 {
+			if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
+				e.log.Error("ClosePosition [Dir B]: failed to checkpoint futures exit: %v", cpErr)
+			}
 		}
 	}
-	pos.FuturesExit = futAvg
-	e.log.Info("ClosePosition [Dir B] step 1: futures closed fill=%.6f avg=%.6f", futFilled, futAvg)
 
-	// Step 2: Sell spot
-	e.log.Info("ClosePosition [Dir B] step 2: sell spot SELL %s %s", pos.Symbol, spotSizeStr)
-	spotOrderID, err := smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
-		Symbol:    pos.Symbol,
-		Side:      exchange.SideSell,
-		OrderType: "market",
-		Size:      spotSizeStr,
-		Force:     "ioc",
-	})
-	if err != nil {
-		return fmt.Errorf("spot sell failed (futures already closed): %w", err)
-	}
-
-	spotFilled, spotAvg := e.confirmSpotFill(futExch, spotOrderID, pos.Symbol)
-	if spotAvg <= 0 && spotFilled > 0 {
-		if ob, err := futExch.GetOrderbook(pos.Symbol, 5); err == nil && len(ob.Bids) > 0 && len(ob.Asks) > 0 {
-			spotAvg = (ob.Bids[0].Price + ob.Asks[0].Price) / 2
-			e.log.Warn("ClosePosition [Dir B]: spot avg price 0, using orderbook mid %.6f", spotAvg)
+	// Step 2: Sell spot — with retry
+	if pos.SpotExitPrice > 0 {
+		e.log.Info("ClosePosition [Dir B] step 2: spot already closed (exit=%.6f), skipping", pos.SpotExitPrice)
+	} else {
+		e.log.Info("ClosePosition [Dir B] step 2: sell spot SELL %s %s", pos.Symbol, spotSizeStr)
+		var spotFilled, spotAvg float64
+		err := e.retryLeg("dirB-spot-sell", 3, 2*time.Second, func() error {
+			orderID, placeErr := smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
+				Symbol:    pos.Symbol,
+				Side:      exchange.SideSell,
+				OrderType: "market",
+				Size:      spotSizeStr,
+				Force:     "ioc",
+			})
+			if placeErr != nil {
+				return fmt.Errorf("spot sell failed: %w", placeErr)
+			}
+			filled, avg := e.confirmSpotFill(futExch, orderID, pos.Symbol, pos.SpotSize)
+			if filled <= 0 {
+				return fmt.Errorf("spot sell got 0 fill (order %s)", orderID)
+			}
+			spotFilled, spotAvg = filled, avg
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("spot sell failed (futures already closed): %w", err)
+		}
+		if spotAvg <= 0 && spotFilled > 0 {
+			if ob, obErr := futExch.GetOrderbook(pos.Symbol, 5); obErr == nil && len(ob.Bids) > 0 && len(ob.Asks) > 0 {
+				spotAvg = (ob.Bids[0].Price + ob.Asks[0].Price) / 2
+				e.log.Warn("ClosePosition [Dir B]: spot avg price 0, using orderbook mid %.6f", spotAvg)
+			}
+		}
+		if spotAvg > 0 {
+			pos.SpotExitPrice = spotAvg
+		}
+		e.log.Info("ClosePosition [Dir B] step 2: spot sold fill=%.6f avg=%.6f", spotFilled, spotAvg)
+		// Checkpoint: persist SpotExitPrice immediately after confirmed fill.
+		if spotAvg > 0 {
+			if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
+				e.log.Error("ClosePosition [Dir B]: failed to checkpoint spot exit: %v", cpErr)
+			}
 		}
 	}
-	if spotAvg > 0 {
-		pos.SpotExitPrice = spotAvg
-	}
-	e.log.Info("ClosePosition [Dir B] step 2: spot sold fill=%.6f avg=%.6f", spotFilled, spotAvg)
 
-	// Record exit fees.
+	// Record exit fees using position exit prices.
 	takerFeeB := spotFees[pos.Exchange]
 	if takerFeeB == 0 {
 		takerFeeB = 0.0005
 	}
 	exitFeesB := 0.0
-	if futFilled > 0 && futAvg > 0 {
-		exitFeesB += futFilled * futAvg * takerFeeB
+	if pos.FuturesExit > 0 {
+		exitFeesB += pos.FuturesSize * pos.FuturesExit * takerFeeB
 	}
-	if spotFilled > 0 && spotAvg > 0 {
-		exitFeesB += spotFilled * spotAvg * takerFeeB
+	if pos.SpotExitPrice > 0 {
+		exitFeesB += pos.SpotSize * pos.SpotExitPrice * takerFeeB
 	}
 	pos.ExitFees = exitFeesB
 
@@ -733,7 +828,7 @@ func (e *SpotEngine) emergencyClose(
 			ch <- result{leg: "spot", err: fmt.Errorf("spot close: %w", err)}
 			return
 		}
-		_, avg := e.confirmSpotFill(futExch, orderID, pos.Symbol)
+		_, avg := e.confirmSpotFill(futExch, orderID, pos.Symbol, pos.SpotSize)
 		ch <- result{leg: "spot", avg: avg}
 	}()
 
@@ -807,7 +902,15 @@ func (e *SpotEngine) emergencyClose(
 			Coin:   pos.BaseCoin,
 			Amount: repayAmount,
 		}); err != nil {
-			e.log.Error("EMERGENCY: repay FAILED: %v — manual intervention needed", err)
+			e.log.Error("EMERGENCY: repay FAILED: %v — will retry on next monitor tick", err)
+			pos.PendingRepay = true
+		}
+	}
+
+	// Checkpoint: persist whatever legs succeeded plus fees and repay state.
+	if pos.FuturesExit > 0 || pos.SpotExitPrice > 0 {
+		if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
+			e.log.Error("EMERGENCY: failed to checkpoint exit progress: %v", cpErr)
 		}
 	}
 

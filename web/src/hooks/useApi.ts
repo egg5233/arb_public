@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import type { Position, Opportunity, Stats, ExchangeInfo, TransferRecord, LogEntry, RejectedOpportunity, FundingEvent } from '../types.ts';
+import type { Position, Opportunity, Stats, ExchangeInfo, TransferRecord, LogEntry, RejectedOpportunity, FundingEvent, SpotPosition, SpotStats } from '../types.ts';
 
 const TOKEN_KEY = 'arb_token';
 
@@ -182,6 +182,26 @@ export function useApi() {
     return request<{ output: string }>('/api/update', { method: 'POST' });
   }, []);
 
+  // Spot-futures API
+  const getSpotPositions = useCallback(() => {
+    return request<SpotPosition[]>('/api/spot/positions');
+  }, []);
+
+  const getSpotAutoConfig = useCallback(() => {
+    return request<{ auto_enabled: boolean; dry_run: boolean; persistence_scans: number }>('/api/spot/config/auto');
+  }, []);
+
+  const updateSpotAutoConfig = useCallback((data: { enabled?: boolean; dry_run?: boolean }) => {
+    return request<{ auto_enabled: boolean; dry_run: boolean; persistence_scans: number }>('/api/spot/config/auto', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }, []);
+
+  const getSpotStats = useCallback(() => {
+    return request<SpotStats>('/api/spot/stats');
+  }, []);
+
   const logout = useCallback(() => {
     clearToken();
     _setToken(null);
@@ -211,5 +231,9 @@ export function useApi() {
     getPermissions,
     checkUpdate,
     performUpdate,
+    getSpotPositions,
+    getSpotAutoConfig,
+    updateSpotAutoConfig,
+    getSpotStats,
   };
 }
