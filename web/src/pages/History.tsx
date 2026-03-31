@@ -25,6 +25,7 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
   const [trades, setTrades] = useState<Position[]>([]);
   const [limit, setLimit] = useState(50);
   const [loading, setLoading] = useState(false);
+  const [expandedRow, setExpandedRow] = useState<string | null>(null);
 
   const load = useCallback(async (n: number) => {
     setLoading(true);
@@ -101,8 +102,15 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
                 <td className="py-2 text-right font-mono text-gray-500">
                   {(tr.rotation_count ?? 0) > 0 ? tr.rotation_count : '-'}
                 </td>
-                <td className="py-2 text-gray-400 text-xs max-w-[120px] truncate" title={tr.exit_reason ?? ''}>
-                  {tr.exit_reason || '-'}
+                <td
+                  className="py-2 text-gray-400 text-xs max-w-[200px] cursor-pointer"
+                  onClick={() => setExpandedRow(expandedRow === tr.id ? null : tr.id)}
+                >
+                  {expandedRow === tr.id ? (
+                    <span className="whitespace-normal break-words">{tr.exit_reason || '-'}</span>
+                  ) : (
+                    <span className="block truncate">{tr.exit_reason || '-'}</span>
+                  )}
                 </td>
               </tr>
             ))}

@@ -437,15 +437,17 @@ func (e *Engine) rebalanceFunds() {
 		surplus[name] = total - needs[name]
 	}
 
+	// Phase 2a: Execute all withdrawals and track pending deposits per recipient.
+	pendingDeposits := map[string]float64{} // recipient exchange → total amount pending
+	pendingStartBal := map[string]float64{} // recipient exchange → spot balance before deposits
+
 	for _, def := range crossDeficits {
-		// Find best donor: highest surplus, margin healthy (below L3), not the recipient.
 		var bestDonor string
 		var bestSurplus float64
 		for name, s := range surplus {
 			if name == def.exchange || s <= def.amount {
 				continue
 			}
-			// Only withdraw from L0/L1/L2 exchanges (marginRatio below L3 threshold).
 			if balances[name].marginRatio >= e.cfg.MarginL3Threshold {
 				e.log.Info("rebalance: skipping donor %s (marginRatio=%.4f >= L3=%.4f)",
 					name, balances[name].marginRatio, e.cfg.MarginL3Threshold)
@@ -462,7 +464,6 @@ func (e *Engine) rebalanceFunds() {
 			continue
 		}
 
-		// Find shared chain (prefer APT, fallback BEP20).
 		recipientAddrs := e.cfg.ExchangeAddresses[def.exchange]
 		if len(recipientAddrs) == 0 {
 			e.log.Warn("rebalance: no deposit addresses for %s", def.exchange)
@@ -482,7 +483,7 @@ func (e *Engine) rebalanceFunds() {
 			continue
 		}
 
-		amount := def.amount * 1.05 // 5% buffer for fees
+		amount := def.amount * 1.05
 		amtStr := fmt.Sprintf("%.4f", amount)
 
 		e.log.Info("rebalance: cross-exchange %s→%s %.2f USDT via %s",
@@ -494,11 +495,9 @@ func (e *Engine) rebalanceFunds() {
 			continue
 		}
 
-		// Step 1: Donor futures→spot (if needed)
 		donorBal := balances[bestDonor]
 		if donorBal.spot < amount {
 			moveAmt := amount - donorBal.spot
-			// Cap to what's actually available in futures (leave needs covered)
 			maxMove := donorBal.futures - needs[bestDonor]
 			if moveAmt > maxMove && maxMove > 0 {
 				moveAmt = maxMove
@@ -516,7 +515,6 @@ func (e *Engine) rebalanceFunds() {
 			e.recordTransfer(bestDonor, bestDonor+" spot", "USDT", "internal", moveStr, "0", "", "completed", "rebalance-prep")
 		}
 
-		// Verify donor spot balance before withdrawing
 		donorSpotBal, err := e.exchanges[bestDonor].GetSpotBalance()
 		if err != nil {
 			e.log.Error("rebalance: %s get spot balance failed: %v", bestDonor, err)
@@ -532,7 +530,6 @@ func (e *Engine) rebalanceFunds() {
 		}
 		amtStr = fmt.Sprintf("%.4f", withdrawAmt)
 
-		// Step 2: Withdraw from donor
 		result, err := e.exchanges[bestDonor].Withdraw(exchange.WithdrawParams{
 			Coin:    "USDT",
 			Chain:   chain,
@@ -543,44 +540,63 @@ func (e *Engine) rebalanceFunds() {
 			e.log.Error("rebalance: withdraw from %s failed: %v", bestDonor, err)
 			continue
 		}
-		e.log.Info("rebalance: withdraw from %s txid=%s (%.2f USDT), waiting for deposit on %s...",
+		e.log.Info("rebalance: withdraw from %s txid=%s (%.2f USDT) → %s",
 			bestDonor, result.TxID, withdrawAmt, def.exchange)
 		e.recordTransfer(bestDonor, def.exchange, "USDT", chain, amtStr, result.Fee, result.TxID, "completed", "rebalance")
 
-		// Step 3: Poll recipient spot balance for arrival (up to 3min).
-		recipientExch := e.exchanges[def.exchange]
-		startBal := balances[def.exchange].spot
+		if _, exists := pendingStartBal[def.exchange]; !exists {
+			pendingStartBal[def.exchange] = balances[def.exchange].spot
+		}
+		pendingDeposits[def.exchange] += withdrawAmt
+		surplus[bestDonor] -= amount
+	}
+
+	// Phase 2b: Poll for ALL pending deposits, then sweep entire spot into futures.
+	for recipient, totalPending := range pendingDeposits {
+		if totalPending <= 0 {
+			continue
+		}
+		recipientExch := e.exchanges[recipient]
+		startBal := pendingStartBal[recipient]
+		e.log.Info("rebalance: waiting for %.2f USDT total deposits on %s (startBal=%.2f)...",
+			totalPending, recipient, startBal)
+
 		arrived := false
-		pollDeadline := time.Now().Add(3 * time.Minute)
+		pollDeadline := time.Now().Add(5 * time.Minute)
 		for time.Now().Before(pollDeadline) {
 			time.Sleep(5 * time.Second)
 			spotBal, err := recipientExch.GetSpotBalance()
 			if err != nil {
 				continue
 			}
-			if spotBal.Available >= startBal+withdrawAmt*0.9 {
+			if spotBal.Available >= startBal+totalPending*0.9 {
 				arrived = true
-				e.log.Info("rebalance: deposit confirmed on %s (spot=%.2f)", def.exchange, spotBal.Available)
+				e.log.Info("rebalance: all deposits confirmed on %s (spot=%.2f)", recipient, spotBal.Available)
 				break
 			}
 		}
 
-		if !arrived {
-			e.log.Warn("rebalance: deposit on %s not confirmed within 3min, skipping spot→futures", def.exchange)
+		// Sweep ALL spot balance into futures (catches prior leftover too)
+		spotBal, err := recipientExch.GetSpotBalance()
+		if err != nil {
+			e.log.Error("rebalance: %s get spot balance for sweep failed: %v", recipient, err)
+			continue
+		}
+		sweepAmt := spotBal.Available
+		if sweepAmt < 1.0 {
+			if !arrived {
+				e.log.Warn("rebalance: deposits on %s not confirmed within 5min and no spot balance to sweep", recipient)
+			}
 			continue
 		}
 
-		// Step 4: Recipient spot→futures (only if deposit confirmed)
-		transferStr := fmt.Sprintf("%.4f", withdrawAmt)
-		if err := recipientExch.TransferToFutures("USDT", transferStr); err != nil {
-			e.log.Error("rebalance: %s spot→futures failed: %v", def.exchange, err)
+		sweepStr := fmt.Sprintf("%.4f", sweepAmt)
+		if err := recipientExch.TransferToFutures("USDT", sweepStr); err != nil {
+			e.log.Error("rebalance: %s spot→futures sweep failed: %v", recipient, err)
 		} else {
-			e.log.Info("rebalance: %s spot→futures %s USDT complete", def.exchange, transferStr)
-			e.recordTransfer(def.exchange+" spot", def.exchange, "USDT", "internal", transferStr, "0", "", "completed", "rebalance-recv")
+			e.log.Info("rebalance: %s spot→futures %s USDT (sweep all after deposits)", recipient, sweepStr)
+			e.recordTransfer(recipient+" spot", recipient, "USDT", "internal", sweepStr, "0", "", "completed", "rebalance-recv")
 		}
-
-		// Reduce donor surplus
-		surplus[bestDonor] -= amount
 	}
 
 	e.log.Info("rebalance: complete")

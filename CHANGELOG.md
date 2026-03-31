@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.26] - 2026-03-31
+
+### Fixed
+- **Cross-exchange rebalance deposit sweep** — withdrawals now batch per recipient, poll once for all deposits (5min), then sweep entire spot balance into futures instead of per-transfer amounts (`engine.go`)
+- **History exit_reason display** — click to expand/collapse long exit reasons (`History.tsx`)
+
 ## [0.22.25] - 2026-03-31
 
 ### Fixed
