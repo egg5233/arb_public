@@ -783,8 +783,9 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 		verified = intervalOK
 	}
 
-	// 6. Filter to only opportunities with imminent funding (entry + rebalance scans).
-	if scanType == EntryScan || scanType == RebalanceScan {
+	// 6. Filter to only opportunities with imminent funding (entry scans only).
+	// Rebalance skips this filter — it needs to prepare funds BEFORE funding window opens.
+	if scanType == EntryScan {
 		maxFundingWindow := time.Duration(s.cfg.FundingWindowMin) * time.Minute
 		var imminent []models.Opportunity
 		for _, opp := range verified {
