@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.28] - 2026-03-31
+
+### Added
+- **RebalanceAfterExit toggle** — new config option to run fund rebalancing on exit scan (:30) instead of standalone rebalance scan (:10), preparing funds closer to entry time. Default off. Dashboard toggle in Schedule tab (`config.go`, `handlers.go`, `engine.go`, `Config.tsx`)
+- **ExitScan entry filters** — ExitScan now applies 5 entry filters (persistence, volatility, cooldown, interval, backtest) excluding funding window, enabling accurate rebalance when bound to exit scan (`scanner.go`)
+- **ToggleField UI component** — reusable boolean toggle for dashboard config page (`Config.tsx`)
+
 ## [0.22.27] - 2026-03-31
 
 ### Fixed

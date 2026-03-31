@@ -705,8 +705,8 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 	// 5b. Record all verified opportunities in scan history (every scan, not just :35)
 	s.recordScanHistory(verified)
 
-	// 5c. Apply persistence filter (entry + rebalance scans)
-	if scanType == EntryScan || scanType == RebalanceScan {
+	// 5c. Apply persistence filter (entry + rebalance + exit scans)
+	if scanType == EntryScan || scanType == RebalanceScan || scanType == ExitScan {
 		var persistent []models.Opportunity
 		for _, opp := range verified {
 			if reason := s.isPersistent(opp); reason == "" {
@@ -725,8 +725,8 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 		verified = persistent
 	}
 
-	// 5d. Apply spread volatility filter (entry + rebalance scans)
-	if scanType == EntryScan || scanType == RebalanceScan {
+	// 5d. Apply spread volatility filter (entry + rebalance + exit scans)
+	if scanType == EntryScan || scanType == RebalanceScan || scanType == ExitScan {
 		var stable []models.Opportunity
 		for _, opp := range verified {
 			if reason := s.isSpreadVolatile(opp); reason == "" {
@@ -745,8 +745,8 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 		verified = stable
 	}
 
-	// 5e. Apply symbol cooldown filter (entry + rebalance scans)
-	if scanType == EntryScan || scanType == RebalanceScan {
+	// 5e. Apply symbol cooldown filter (entry + rebalance + exit scans)
+	if scanType == EntryScan || scanType == RebalanceScan || scanType == ExitScan {
 		var notCooling []models.Opportunity
 		for _, opp := range verified {
 			if reason := s.isSymbolCoolingDown(opp.Symbol); reason == "" {
@@ -765,14 +765,16 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 		verified = notCooling
 	}
 
-	// 5f. Filter by max funding interval hours (entry + rebalance scans)
-	if (scanType == EntryScan || scanType == RebalanceScan) && s.cfg.MaxIntervalHours > 0 {
+	// 5f. Filter by max funding interval hours (entry + rebalance + exit scans)
+	if (scanType == EntryScan || scanType == RebalanceScan || scanType == ExitScan) && s.cfg.MaxIntervalHours > 0 {
 		var intervalOK []models.Opportunity
 		for _, opp := range verified {
 			if opp.IntervalHours > 0 && opp.IntervalHours > s.cfg.MaxIntervalHours {
 				reason := fmt.Sprintf("interval %.0fh exceeds max %.0fh", opp.IntervalHours, s.cfg.MaxIntervalHours)
-				s.log.Info("filtering %s (%s/%s): %s", opp.Symbol, opp.LongExchange, opp.ShortExchange, reason)
-				if s.rejStore != nil {
+				if scanType == EntryScan {
+					s.log.Info("filtering %s (%s/%s): %s", opp.Symbol, opp.LongExchange, opp.ShortExchange, reason)
+				}
+				if s.rejStore != nil && scanType == EntryScan {
 					s.rejStore.AddOpp(opp, "scanner", reason)
 				}
 				continue
@@ -783,7 +785,10 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 		verified = intervalOK
 	}
 
-	// 6. Filter to only opportunities with imminent funding (entry + rebalance scans).
+	// 6. Filter to only opportunities with imminent funding.
+	// ExitScan skips this — when RebalanceAfterExit is on, rebalance needs to
+	// prepare funds BEFORE the funding window opens. RebalanceScan keeps the
+	// filter so its standalone behavior is unchanged.
 	if scanType == EntryScan || scanType == RebalanceScan {
 		maxFundingWindow := time.Duration(s.cfg.FundingWindowMin) * time.Minute
 		var imminent []models.Opportunity
@@ -804,16 +809,18 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 		verified = imminent
 	}
 
-	// 7. Apply historical backtest filter (entry + rebalance scans).
-	if (scanType == EntryScan || scanType == RebalanceScan) && s.cfg.BacktestDays > 0 {
+	// 7. Apply historical backtest filter (entry + rebalance + exit scans).
+	if (scanType == EntryScan || scanType == RebalanceScan || scanType == ExitScan) && s.cfg.BacktestDays > 0 {
 		var backtested []models.Opportunity
 		for _, opp := range verified {
 			if pass, reason := s.backtestFundingHistory(opp); pass {
 				backtested = append(backtested, opp)
 			} else {
-				s.log.Info("filtering %s (%s/%s): %s",
-					opp.Symbol, opp.LongExchange, opp.ShortExchange, reason)
-				if s.rejStore != nil {
+				if scanType == EntryScan {
+					s.log.Info("filtering %s (%s/%s): %s",
+						opp.Symbol, opp.LongExchange, opp.ShortExchange, reason)
+				}
+				if s.rejStore != nil && scanType == EntryScan {
 					s.rejStore.AddOpp(opp, "scanner", reason)
 				}
 			}

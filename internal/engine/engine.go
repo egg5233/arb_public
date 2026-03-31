@@ -690,9 +690,20 @@ func (e *Engine) run() {
 
 			switch result.Type {
 			case discovery.RebalanceScan:
-				e.rebalanceFunds()
+				if e.cfg.RebalanceAfterExit {
+					e.log.Info("rebalance: skipped (RebalanceAfterExit enabled, will run after exit)")
+				} else {
+					e.rebalanceFunds()
+				}
 				e.log.Info("run loop: rebalanceScan handler done")
 			case discovery.ExitScan:
+				// When RebalanceAfterExit is enabled, run rebalance BEFORE exit checks.
+				// This ensures rebalance sees the current slot count and balances
+				// without interference from exit goroutines still in flight.
+				if e.cfg.RebalanceAfterExit {
+					e.log.Info("rebalance: running on exit scan (before exit checks)")
+					e.rebalanceFunds()
+				}
 				e.checkIntervalChanges()
 				e.checkExitsV2()
 				e.log.Info("run loop: exitScan handler done")

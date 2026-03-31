@@ -355,6 +355,7 @@ type configStrategyResponse struct {
 	ExitScanMinute      int                     `json:"exit_scan_minute"`
 	RotateScanMinute    int                     `json:"rotate_scan_minute"`
 	RebalanceScanMinute int                     `json:"rebalance_scan_minute"`
+	RebalanceAfterExit  bool                    `json:"rebalance_after_exit"`
 	Discovery           configDiscoveryResponse `json:"discovery"`
 	Entry               configEntryResponse     `json:"entry"`
 	Exit                configExitResponse      `json:"exit"`
@@ -469,6 +470,7 @@ func (s *Server) buildConfigResponse() configResponse {
 			ExitScanMinute:      s.cfg.ExitScanMinute,
 			RotateScanMinute:    s.cfg.RotateScanMinute,
 			RebalanceScanMinute: s.cfg.RebalanceScanMinute,
+			RebalanceAfterExit:  s.cfg.RebalanceAfterExit,
 			Discovery: configDiscoveryResponse{
 				MinHoldTimeHours:        int(s.cfg.MinHoldTime.Hours()),
 				MaxCostRatio:            s.cfg.MaxCostRatio,
@@ -647,6 +649,7 @@ type strategyUpdate struct {
 	ExitScanMinute      *int             `json:"exit_scan_minute"`
 	RotateScanMinute    *int             `json:"rotate_scan_minute"`
 	RebalanceScanMinute *int             `json:"rebalance_scan_minute"`
+	RebalanceAfterExit  *bool            `json:"rebalance_after_exit"`
 	Discovery           *discoveryUpdate `json:"discovery"`
 	Entry               *entryUpdate     `json:"entry"`
 	Exit                *exitUpdate      `json:"exit"`
@@ -751,6 +754,9 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if st.RebalanceScanMinute != nil && *st.RebalanceScanMinute >= 0 && *st.RebalanceScanMinute < 60 {
 			s.cfg.RebalanceScanMinute = *st.RebalanceScanMinute
+		}
+		if st.RebalanceAfterExit != nil {
+			s.cfg.RebalanceAfterExit = *st.RebalanceAfterExit
 		}
 		if st.TopOpportunities != nil && *st.TopOpportunities > 0 {
 			s.cfg.TopOpportunities = *st.TopOpportunities
@@ -1093,6 +1099,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"leverage":                      strconv.Itoa(snapshot.Fund.Leverage),
 		"slippage_limit_bps":            strconv.FormatFloat(snapshot.Strategy.Entry.SlippageLimitBPS, 'f', -1, 64),
 		"rebalance_scan_minute":         strconv.Itoa(snapshot.Strategy.RebalanceScanMinute),
+		"rebalance_after_exit":          strconv.FormatBool(snapshot.Strategy.RebalanceAfterExit),
 		"top_opportunities":             strconv.Itoa(snapshot.Strategy.TopOpportunities),
 		"entry_scan_minute":             strconv.Itoa(snapshot.Strategy.EntryScanMinute),
 		"exit_scan_minute":              strconv.Itoa(snapshot.Strategy.ExitScanMinute),
