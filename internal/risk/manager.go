@@ -21,16 +21,18 @@ type Manager struct {
 	db              *database.Client
 	cfg             *config.Config
 	log             *utils.Logger
+	allocator       *CapitalAllocator
 	spreadStability *SpreadStabilityChecker
 }
 
 // NewManager creates a new risk Manager.
-func NewManager(exchanges map[string]exchange.Exchange, db *database.Client, cfg *config.Config) *Manager {
+func NewManager(exchanges map[string]exchange.Exchange, db *database.Client, cfg *config.Config, allocator *CapitalAllocator) *Manager {
 	return &Manager{
 		exchanges:       exchanges,
 		db:              db,
 		cfg:             cfg,
 		log:             utils.NewLogger("risk"),
+		allocator:       allocator,
 		spreadStability: NewSpreadStabilityChecker(db, cfg),
 	}
 }
@@ -276,40 +278,39 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		return &models.RiskApproval{Approved: false, Reason: reason}, nil
 	}
 
-	// g. Per-exchange capital exposure cap
-	// Ensure that the proposed position doesn't push any single exchange
-	// beyond 60% of total capital deployed across all exchanges.
-	// NOTE: totalCapital is intentionally the sum of only the two candidate
-	// exchanges (longBal + shortBal), not the full portfolio across all 6
-	// exchanges. This is more conservative — it limits exposure relative to
-	// the capital actually at risk in this pair, preventing over-concentration
-	// even when other exchanges have large idle balances.
-	totalCapital := longBal.Total + shortBal.Total
-	if totalCapital > 0 {
-		// Sum existing notional exposure per exchange from active positions.
-		longExposure := requiredMarginPerLeg
-		shortExposure := requiredMarginPerLeg
-		for _, pos := range active {
-			if pos.LongExchange == opp.LongExchange {
-				longExposure += (pos.LongSize * pos.LongEntry) / float64(leverage)
+	// g. Per-exchange capital exposure cap.
+	// When the cross-strategy allocator is enabled, entry budgeting is enforced
+	// centrally at reservation time, so the legacy pair-local cap is skipped.
+	if m.allocator == nil || !m.allocator.Enabled() {
+		// Ensure that the proposed position doesn't push any single exchange
+		// beyond 60% of total capital deployed across the candidate pair.
+		totalCapital := longBal.Total + shortBal.Total
+		if totalCapital > 0 {
+			// Sum existing notional exposure per exchange from active positions.
+			longExposure := requiredMarginPerLeg
+			shortExposure := requiredMarginPerLeg
+			for _, pos := range active {
+				if pos.LongExchange == opp.LongExchange {
+					longExposure += (pos.LongSize * pos.LongEntry) / float64(leverage)
+				}
+				if pos.ShortExchange == opp.LongExchange {
+					longExposure += (pos.ShortSize * pos.ShortEntry) / float64(leverage)
+				}
+				if pos.LongExchange == opp.ShortExchange {
+					shortExposure += (pos.LongSize * pos.LongEntry) / float64(leverage)
+				}
+				if pos.ShortExchange == opp.ShortExchange {
+					shortExposure += (pos.ShortSize * pos.ShortEntry) / float64(leverage)
+				}
 			}
-			if pos.ShortExchange == opp.LongExchange {
-				longExposure += (pos.ShortSize * pos.ShortEntry) / float64(leverage)
-			}
-			if pos.LongExchange == opp.ShortExchange {
-				shortExposure += (pos.LongSize * pos.LongEntry) / float64(leverage)
-			}
-			if pos.ShortExchange == opp.ShortExchange {
-				shortExposure += (pos.ShortSize * pos.ShortEntry) / float64(leverage)
-			}
-		}
 
-		maxExposure := MaxExposurePerExchange(totalCapital)
-		if longExposure > maxExposure {
-			return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("would exceed %.0f%% capital cap on %s: exposure=%.2f cap=%.2f", maxExposurePct*100, opp.LongExchange, longExposure, maxExposure)}, nil
-		}
-		if shortExposure > maxExposure {
-			return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("would exceed %.0f%% capital cap on %s: exposure=%.2f cap=%.2f", maxExposurePct*100, opp.ShortExchange, shortExposure, maxExposure)}, nil
+			maxExposure := MaxExposurePerExchange(totalCapital)
+			if longExposure > maxExposure {
+				return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("would exceed %.0f%% capital cap on %s: exposure=%.2f cap=%.2f", maxExposurePct*100, opp.LongExchange, longExposure, maxExposure)}, nil
+			}
+			if shortExposure > maxExposure {
+				return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("would exceed %.0f%% capital cap on %s: exposure=%.2f cap=%.2f", maxExposurePct*100, opp.ShortExchange, shortExposure, maxExposure)}, nil
+			}
 		}
 	}
 
