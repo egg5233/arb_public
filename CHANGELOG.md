@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.35] - 2026-03-31
+
+### Added
+- **[risk] Cross-strategy capital allocator** — new `CapitalAllocator` module enforces shared USDT budgets across perp-perp and spot-futures strategies via Redis-backed reservations and committed positions; supports per-strategy caps (`max_perp_perp_pct`, `max_spot_futures_pct`) and per-exchange caps (`max_per_exchange_pct`); reservation TTL auto-expires stale pending entries; disabled by default (`enable_capital_allocator: false`) so production can stage safely (`internal/risk/allocator.go`, `internal/engine/capital.go`, `internal/spotengine/capital.go`)
+- **[dashboard] Capital allocator config section** — Config page Risk tab exposes toggle + 5 allocator fields (`max_total_exposure_usdt`, per-strategy and per-exchange share sliders, reservation TTL); i18n for en + zh-TW (`Config.tsx`, `en.ts`, `zh-TW.ts`)
+
+### Changed
+- **[risk] Legacy per-exchange cap bypassed when allocator enabled** — `risk.Manager` injects `CapitalAllocator`; the prior pair-local 60% exchange cap is skipped when the allocator is active since central budgeting supersedes it (`internal/risk/manager.go`)
+- **[engine] Perp-perp engine wired to allocator** — `NewEngine` accepts `*CapitalAllocator`; reserve/commit/release helpers added to `engine.go`; allocation is a no-op when allocator is disabled (`internal/engine/engine.go`, `cmd/main.go`, `cmd/simtrade/main.go`)
+
+### Fixed
+- **[spot-futures] Capital released on position close** — `completeExit` now calls `releaseSpotPosition` so closed spot-futures positions free their allocator budget (`internal/spotengine/exit_manager.go`)
+- **[spot-futures] ManualOpen wires capital reservation** — entry reserves spot capital before setup and releases on failure; `NotionalUSDT` now records actual fill notional instead of planned (`internal/spotengine/execution.go`)
+
 ## [0.22.34] - 2026-03-31
 
 ### Added
