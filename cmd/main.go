@@ -147,6 +147,7 @@ func main() {
 		}()
 	}
 	riskMgr := risk.NewManager(exchanges, db, cfg, allocator)
+	riskMgr.SetSpreadHistoryProvider(scanner.GetSpreadHistorySnapshot)
 	riskMon := risk.NewMonitor(exchanges, db, cfg)
 	healthMon := risk.NewHealthMonitor(exchanges, db, cfg)
 	apiSrv := api.NewServer(db, cfg, exchanges)

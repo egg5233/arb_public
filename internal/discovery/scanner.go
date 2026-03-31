@@ -240,6 +240,32 @@ func (s *Scanner) GetOpportunities() []models.Opportunity {
 	return out
 }
 
+// GetSpreadHistorySnapshot returns recent in-memory spread observations for one opportunity.
+func (s *Scanner) GetSpreadHistorySnapshot(opp models.Opportunity, limit int, lookback time.Duration) []database.SpreadHistoryPoint {
+	s.scanHistoryMu.Lock()
+	defer s.scanHistoryMu.Unlock()
+
+	if limit <= 0 {
+		limit = 200
+	}
+	cutoff := time.Now().Add(-lookback)
+	records := s.scanHistory[oppKey(opp)]
+	points := make([]database.SpreadHistoryPoint, 0, len(records))
+	for _, record := range records {
+		if record.Time.Before(cutoff) {
+			continue
+		}
+		points = append(points, database.SpreadHistoryPoint{
+			Timestamp: record.Time.UTC(),
+			Spread:    record.Spread,
+		})
+	}
+	if len(points) > limit {
+		points = points[len(points)-limit:]
+	}
+	return points
+}
+
 // OpportunityChan returns a read-only channel that receives ScanResult
 // each time a polling cycle completes successfully.
 func (s *Scanner) OpportunityChan() <-chan ScanResult {

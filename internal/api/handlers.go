@@ -390,6 +390,7 @@ type configPersistenceResponse struct {
 	SpreadStabilityRatio8h  float64 `json:"spread_stability_ratio_8h"`
 	SpreadStabilityOIRank8h int     `json:"spread_stability_oi_rank_8h"`
 
+	EnableSpreadStabilityGate       bool    `json:"enable_spread_stability_gate"`
 	SpreadVolatilityMaxCV           float64 `json:"spread_volatility_max_cv"`
 	SpreadVolatilityMinSamples      int     `json:"spread_volatility_min_samples"`
 	SpreadStabilityStricterForAuto  bool    `json:"spread_stability_stricter_for_auto"`
@@ -503,6 +504,7 @@ func (s *Server) buildConfigResponse() configResponse {
 					SpreadStabilityRatio8h:  s.cfg.SpreadStabilityRatio8h,
 					SpreadStabilityOIRank8h: s.cfg.SpreadStabilityOIRank8h,
 
+					EnableSpreadStabilityGate:       s.cfg.EnableSpreadStabilityGate,
 					SpreadVolatilityMaxCV:           s.cfg.SpreadVolatilityMaxCV,
 					SpreadVolatilityMinSamples:      s.cfg.SpreadVolatilityMinSamples,
 					SpreadStabilityStricterForAuto:  s.cfg.SpreadStabilityStricterForAuto,
@@ -696,6 +698,7 @@ type persistenceUpdate struct {
 	SpreadStabilityRatio8h  *float64 `json:"spread_stability_ratio_8h"`
 	SpreadStabilityOIRank8h *int     `json:"spread_stability_oi_rank_8h"`
 
+	EnableSpreadStabilityGate       *bool    `json:"enable_spread_stability_gate"`
 	SpreadVolatilityMaxCV           *float64 `json:"spread_volatility_max_cv"`
 	SpreadVolatilityMinSamples      *int     `json:"spread_volatility_min_samples"`
 	SpreadStabilityStricterForAuto  *bool    `json:"spread_stability_stricter_for_auto"`
@@ -840,6 +843,9 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 				}
 				if p.SpreadStabilityOIRank8h != nil && *p.SpreadStabilityOIRank8h >= 0 {
 					s.cfg.SpreadStabilityOIRank8h = *p.SpreadStabilityOIRank8h
+				}
+				if p.EnableSpreadStabilityGate != nil {
+					s.cfg.EnableSpreadStabilityGate = *p.EnableSpreadStabilityGate
 				}
 				if p.SpreadVolatilityMaxCV != nil && *p.SpreadVolatilityMaxCV >= 0 {
 					s.cfg.SpreadVolatilityMaxCV = *p.SpreadVolatilityMaxCV
@@ -1186,6 +1192,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"spread_stability_oi_rank_4h":         strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadStabilityOIRank4h),
 		"spread_stability_ratio_8h":           strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadStabilityRatio8h, 'f', -1, 64),
 		"spread_stability_oi_rank_8h":         strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadStabilityOIRank8h),
+		"enable_spread_stability_gate":        strconv.FormatBool(snapshot.Strategy.Discovery.Persistence.EnableSpreadStabilityGate),
 		"spread_volatility_max_cv":            strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadVolatilityMaxCV, 'f', -1, 64),
 		"spread_volatility_min_samples":       strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadVolatilityMinSamples),
 		"spread_stability_stricter_for_auto":  strconv.FormatBool(snapshot.Strategy.Discovery.Persistence.SpreadStabilityStricterForAuto),

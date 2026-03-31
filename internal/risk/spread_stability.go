@@ -14,8 +14,9 @@ const spreadHistoryRiskLimit = 200
 
 // SpreadStabilityChecker enforces a Redis-backed spread CV gate at entry time.
 type SpreadStabilityChecker struct {
-	db  *database.Client
-	cfg *config.Config
+	db              *database.Client
+	cfg             *config.Config
+	historyProvider func(models.Opportunity, int, time.Duration) []database.SpreadHistoryPoint
 }
 
 func NewSpreadStabilityChecker(db *database.Client, cfg *config.Config) *SpreadStabilityChecker {
@@ -25,9 +26,19 @@ func NewSpreadStabilityChecker(db *database.Client, cfg *config.Config) *SpreadS
 	}
 }
 
-// Check returns a rejection reason when spread history is too sparse or too volatile.
+func (c *SpreadStabilityChecker) SetHistoryProvider(provider func(models.Opportunity, int, time.Duration) []database.SpreadHistoryPoint) {
+	if c == nil {
+		return
+	}
+	c.historyProvider = provider
+}
+
+// Check returns a rejection reason when spread history is too volatile.
 func (c *SpreadStabilityChecker) Check(opp models.Opportunity, automated bool) (string, error) {
 	if c == nil || c.db == nil || c.cfg == nil {
+		return "", nil
+	}
+	if !c.cfg.EnableSpreadStabilityGate {
 		return "", nil
 	}
 	if c.cfg.SpreadVolatilityMaxCV <= 0 {
@@ -45,16 +56,16 @@ func (c *SpreadStabilityChecker) Check(opp models.Opportunity, automated bool) (
 	}
 
 	lookback := c.lookbackForInterval(opp.IntervalHours)
-	cutoff := time.Now().Add(-lookback)
-	spreads := make([]float64, 0, len(history))
-	for _, point := range history {
-		if !point.Timestamp.Before(cutoff) {
-			spreads = append(spreads, point.Spread)
+	spreads := spreadsWithinLookback(history, lookback)
+	if len(spreads) < minSamples && c.historyProvider != nil {
+		fallback := spreadsWithinLookback(c.historyProvider(opp, spreadHistoryRiskLimit, lookback), lookback)
+		if len(fallback) > len(spreads) {
+			spreads = fallback
 		}
 	}
 
 	if len(spreads) < minSamples {
-		return fmt.Sprintf("spread stability rejected: insufficient history (%d/%d samples in %v)", len(spreads), minSamples, lookback), nil
+		return "", nil
 	}
 
 	var sum float64
@@ -77,10 +88,7 @@ func (c *SpreadStabilityChecker) Check(opp models.Opportunity, automated bool) (
 	threshold := c.cfg.SpreadVolatilityMaxCV
 	tag := ""
 	if automated && c.cfg.SpreadStabilityStricterForAuto {
-		multiplier := c.cfg.SpreadStabilityAutoCVMultiplier
-		if multiplier > 0 {
-			threshold *= multiplier
-		}
+		threshold *= c.cfg.SpreadStabilityAutoCVMultiplier
 		tag = ", auto"
 	}
 
@@ -89,6 +97,17 @@ func (c *SpreadStabilityChecker) Check(opp models.Opportunity, automated bool) (
 	}
 
 	return "", nil
+}
+
+func spreadsWithinLookback(history []database.SpreadHistoryPoint, lookback time.Duration) []float64 {
+	cutoff := time.Now().Add(-lookback)
+	spreads := make([]float64, 0, len(history))
+	for _, point := range history {
+		if !point.Timestamp.Before(cutoff) {
+			spreads = append(spreads, point.Spread)
+		}
+	}
+	return spreads
 }
 
 func (c *SpreadStabilityChecker) lookbackForInterval(intervalHours float64) time.Duration {

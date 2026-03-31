@@ -3,6 +3,7 @@ package risk
 import (
 	"fmt"
 	"math"
+	"time"
 
 	"arb/internal/config"
 	"arb/internal/database"
@@ -35,6 +36,13 @@ func NewManager(exchanges map[string]exchange.Exchange, db *database.Client, cfg
 		allocator:       allocator,
 		spreadStability: NewSpreadStabilityChecker(db, cfg),
 	}
+}
+
+func (m *Manager) SetSpreadHistoryProvider(provider func(models.Opportunity, int, time.Duration) []database.SpreadHistoryPoint) {
+	if m == nil || m.spreadStability == nil {
+		return
+	}
+	m.spreadStability.SetHistoryProvider(provider)
 }
 
 // Approve runs all pre-trade risk checks and returns an Approval decision.

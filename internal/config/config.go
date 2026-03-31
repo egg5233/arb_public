@@ -88,6 +88,7 @@ type Config struct {
 	ZeroSpreadTolerance     int  // exit after N consecutive checks where both legs have equal funding rate (0=disabled)
 
 	// Anti-spike filters
+	EnableSpreadStabilityGate       bool    // enable spread stability pre-trade gate (default false)
 	SpreadVolatilityMaxCV           float64 // max stddev/mean for spread across scans (default 0.5, 0=disabled)
 	SpreadVolatilityMinSamples      int     // min scan records to evaluate CV (default 3)
 	SpreadStabilityStricterForAuto  bool    // apply tighter spread CV threshold for automated entries (default true)
@@ -302,6 +303,7 @@ type jsonPersistence struct {
 	SpreadStabilityRatio8h  *float64 `json:"spread_stability_ratio_8h"`
 	SpreadStabilityOIRank8h *int     `json:"spread_stability_oi_rank_8h"`
 
+	EnableSpreadStabilityGate       *bool    `json:"enable_spread_stability_gate"`
 	SpreadVolatilityMaxCV           *float64 `json:"spread_volatility_max_cv"`
 	SpreadVolatilityMinSamples      *int     `json:"spread_volatility_min_samples"`
 	SpreadStabilityStricterForAuto  *bool    `json:"spread_stability_stricter_for_auto"`
@@ -408,6 +410,7 @@ func Load() *Config {
 		PersistMinCount8h:               1,
 		SpreadStabilityRatio1h:          0.5,
 		SpreadStabilityOIRank1h:         0,
+		EnableSpreadStabilityGate:       false,
 		SpreadVolatilityMaxCV:           0,
 		SpreadVolatilityMinSamples:      10,
 		SpreadStabilityStricterForAuto:  true,
@@ -607,6 +610,9 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 				}
 				if p.SpreadStabilityOIRank8h != nil {
 					c.SpreadStabilityOIRank8h = *p.SpreadStabilityOIRank8h
+				}
+				if p.EnableSpreadStabilityGate != nil {
+					c.EnableSpreadStabilityGate = *p.EnableSpreadStabilityGate
 				}
 				if p.SpreadVolatilityMaxCV != nil {
 					c.SpreadVolatilityMaxCV = *p.SpreadVolatilityMaxCV
@@ -993,6 +999,7 @@ func (c *Config) SaveJSON() error {
 	persist["spread_stability_oi_rank_4h"] = c.SpreadStabilityOIRank4h
 	persist["spread_stability_ratio_8h"] = c.SpreadStabilityRatio8h
 	persist["spread_stability_oi_rank_8h"] = c.SpreadStabilityOIRank8h
+	persist["enable_spread_stability_gate"] = c.EnableSpreadStabilityGate
 	persist["spread_volatility_max_cv"] = c.SpreadVolatilityMaxCV
 	persist["spread_volatility_min_samples"] = c.SpreadVolatilityMinSamples
 	persist["spread_stability_stricter_for_auto"] = c.SpreadStabilityStricterForAuto
