@@ -111,14 +111,16 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 				}
 
 				if isDirA {
-					// Direction A (long futures, short spot): UP move is risky.
-					if movePct > priceEmergencyPct {
-						e.log.Error("exit trigger: %s EMERGENCY price spike +%.1f%% (entry=%.4f now=%.4f)",
+					// Direction A (long futures, short spot):
+					//   UP move -> borrow buy-back cost risk
+					//   DOWN move -> long futures liquidation risk
+					if movePct > priceEmergencyPct || movePct < -priceEmergencyPct {
+						e.log.Error("exit trigger: %s EMERGENCY price move %.1f%% (entry=%.4f now=%.4f)",
 							pos.Symbol, movePct, pos.FuturesEntry, currentPrice)
 						return "emergency_price_spike", true
 					}
-					if movePct > priceExitPct {
-						e.log.Warn("exit trigger: %s price spike +%.1f%% (entry=%.4f now=%.4f)",
+					if movePct > priceExitPct || movePct < -priceExitPct {
+						e.log.Warn("exit trigger: %s price move %.1f%% (entry=%.4f now=%.4f)",
 							pos.Symbol, movePct, pos.FuturesEntry, currentPrice)
 						return "price_spike_exit", false
 					}
@@ -193,6 +195,31 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 				}
 			} else {
 				e.log.Warn("exit check: %s GetMarginBalance(%s) failed: %v", pos.Symbol, pos.BaseCoin, err)
+			}
+		}
+
+		// Also check futures margin for Direction A (long futures can be liquidated).
+		futExch, futOk := e.exchanges[pos.Exchange]
+		if futOk {
+			bal, err := futExch.GetFuturesBalance()
+			if err == nil && bal.MarginRatio > 0 {
+				futUtilPct := bal.MarginRatio * 100
+				if futUtilPct > pos.MarginUtilizationPct {
+					pos.MarginUtilizationPct = futUtilPct
+				}
+
+				if futUtilPct > marginEmergencyPct {
+					e.log.Error("exit trigger: %s EMERGENCY futures margin ratio %.1f%% > %.1f%%",
+						pos.Symbol, futUtilPct, marginEmergencyPct)
+					return "margin_health_exit", true
+				}
+				if futUtilPct > marginExitPct {
+					e.log.Warn("exit trigger: %s futures margin ratio %.1f%% > %.1f%%",
+						pos.Symbol, futUtilPct, marginExitPct)
+					return "margin_health_exit", false
+				}
+			} else if err != nil {
+				e.log.Warn("exit check: %s GetFuturesBalance failed: %v", pos.Symbol, err)
 			}
 		}
 	} else {
