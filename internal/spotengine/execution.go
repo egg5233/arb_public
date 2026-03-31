@@ -412,10 +412,8 @@ func (e *SpotEngine) confirmSpotFill(exch exchange.Exchange, orderID, symbol str
 	// This is best-effort for Phase 3a.
 	restFilled, err := exch.GetOrderFilledQty(orderID, symbol)
 	if err != nil {
-		e.log.Warn("confirmSpotFill: REST query %s failed: %v — assuming full fill of market IOC (qty=%.6f)", orderID, err, expectedQty)
-		// For market IOC, assume full fill if the order was accepted.
-		// We don't have a REST endpoint for spot margin order details in all adapters.
-		return expectedQty, 0
+		e.log.Warn("confirmSpotFill: REST query %s failed: %v — returning 0 (unconfirmed)", orderID, err)
+		return 0, 0
 	}
 	e.log.Info("confirmSpotFill: REST %s filled=%.6f", orderID, restFilled)
 
@@ -833,7 +831,11 @@ func (e *SpotEngine) emergencyClose(
 			ch <- result{leg: "spot", err: fmt.Errorf("spot close: %w", err)}
 			return
 		}
-		_, avg := e.confirmSpotFill(futExch, orderID, pos.Symbol, pos.SpotSize)
+		filled, avg := e.confirmSpotFill(futExch, orderID, pos.Symbol, pos.SpotSize)
+		if filled <= 0 {
+			ch <- result{leg: "spot", err: fmt.Errorf("spot close got 0 fill (order %s)", orderID)}
+			return
+		}
 		ch <- result{leg: "spot", avg: avg}
 	}()
 

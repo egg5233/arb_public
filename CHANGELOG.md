@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.32] - 2026-03-31
+
+### Fixed
+- **[spot-futures] confirmSpotFill no longer assumes full fill when REST confirmation fails** — removed unsafe fallback that returned `expectedQty` on REST error, now returns `0, 0` (consistent with `confirmFuturesFill`); entry paths abort/rollback instead of over-hedging, exit retry paths retry instead of falsely checkpointing; emergency close now checks `filledQty > 0` instead of ignoring fill quantity (`internal/spotengine/execution.go`) ([ARB-93](/ARB/issues/ARB-93))
+
 ## [0.22.31] - 2026-03-31
 
 ### Fixed
