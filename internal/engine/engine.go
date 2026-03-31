@@ -330,24 +330,58 @@ func (e *Engine) rebalanceFunds() {
 		return
 	}
 
-	// Determine capital needs per exchange, capped to what we can actually
-	// open (max_positions × capital_per_leg). Without the cap, 5 discovered
-	// opportunities using the same exchange would request 5× the capital,
-	// triggering unnecessary cross-exchange transfers.
+	// Determine capital needs per exchange by simulating which opportunities
+	// would actually be opened (same logic as executeArbitrage: skip occupied
+	// symbols, respect remaining slot count). This avoids over-estimating
+	// when many opportunities share the same exchange.
 	margin := e.cfg.CapitalPerLeg
 	if margin <= 0 {
 		margin = 50 // fallback
 	}
 	margin *= e.cfg.MarginSafetyMultiplier // buffer need with safety multiplier
-	maxTotal := float64(e.cfg.MaxPositions) * margin
+
+	active, err := e.db.GetActivePositions()
+	if err != nil {
+		e.log.Error("rebalance: failed to get active positions: %v", err)
+		return
+	}
+	remainingSlots := e.cfg.MaxPositions - len(active)
+	if remainingSlots <= 0 {
+		e.log.Info("rebalance: at max capacity (%d/%d), skipping", len(active), e.cfg.MaxPositions)
+		return
+	}
+
+	// Build occupied symbols set (same logic as executeArbitrage)
+	activeSymbols := make(map[string]bool)
+	for _, p := range active {
+		if p.Status != models.StatusClosed {
+			activeSymbols[p.Symbol] = true
+		}
+	}
+
+	// Simulate entry: pick eligible opportunities up to remainingSlots.
+	// Take up to 2x slots to account for some being rejected by risk/lock,
+	// then cap each exchange's need to what it can actually fund.
 	needs := map[string]float64{}
+	selected := 0
+	candidateLimit := remainingSlots * 2 // over-select to cover rejections
 	for _, opp := range opps {
+		if selected >= candidateLimit {
+			break
+		}
+		if activeSymbols[opp.Symbol] {
+			continue
+		}
 		needs[opp.LongExchange] += margin
 		needs[opp.ShortExchange] += margin
+		selected++
 	}
+	// Cap each exchange's need: cannot exceed remainingSlots × margin
+	// (even with 2x over-selection, one exchange won't serve all slots)
+	maxPerExchange := float64(remainingSlots) * margin
 	for name := range needs {
-		if needs[name] > maxTotal {
-			needs[name] = maxTotal
+		if needs[name] > maxPerExchange {
+			needs[name] = maxPerExchange
 		}
 	}
 

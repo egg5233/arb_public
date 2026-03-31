@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.27] - 2026-03-31
+
+### Fixed
+- **Rebalance need over-estimation** — need calculation now simulates entry selection (ranked opps, skip occupied symbols, cap to remainingSlots × margin per exchange) instead of summing all opportunities (`engine.go`)
+- **Rebalance filter parity** — rebalanceScan now applies same 6 entry filters (persistence, volatility, cooldown, interval, funding window, backtest) to prevent funding wrong exchanges (`scanner.go`)
+- **BingX rate limit** — risk-monitor now prefetches GetAllPositions() once per exchange per cycle instead of GetPosition() per symbol per check function, reducing 12+ API calls to 1 per exchange (`monitor.go`)
+
 ## [0.22.26] - 2026-03-31
 
 ### Fixed
