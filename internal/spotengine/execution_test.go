@@ -24,6 +24,7 @@ type closeTestExchange struct {
 	orderbook        *exchange.Orderbook
 	orderbookEntered chan struct{}
 	orderbookRelease <-chan struct{}
+	positions        []exchange.Position
 	placeCalls       int
 }
 
@@ -35,7 +36,7 @@ func (s *closeTestExchange) PlaceOrder(exchange.PlaceOrderParams) (string, error
 func (s *closeTestExchange) CancelOrder(string, string) error                  { return nil }
 func (s *closeTestExchange) GetPendingOrders(string) ([]exchange.Order, error) { return nil, nil }
 func (s *closeTestExchange) GetOrderFilledQty(string, string) (float64, error) { return 0, nil }
-func (s *closeTestExchange) GetPosition(string) ([]exchange.Position, error)   { return nil, nil }
+func (s *closeTestExchange) GetPosition(string) ([]exchange.Position, error)   { return s.positions, nil }
 func (s *closeTestExchange) GetAllPositions() ([]exchange.Position, error)     { return nil, nil }
 func (s *closeTestExchange) SetLeverage(string, string, string) error          { return nil }
 func (s *closeTestExchange) SetMarginMode(string, string) error                { return nil }
@@ -162,9 +163,11 @@ func newExecutionTestEngine(t *testing.T) (*SpotEngine, *miniredis.Miniredis) {
 		t.Fatalf("database.New: %v", err)
 	}
 	return &SpotEngine{
-		cfg: &config.Config{},
-		db:  db,
-		log: utils.NewLogger("test"),
+		cfg:       &config.Config{},
+		db:        db,
+		log:       utils.NewLogger("test"),
+		stopCh:    make(chan struct{}),
+		exitState: exitState{exiting: make(map[string]bool)},
 	}, mr
 }
 
@@ -731,8 +734,7 @@ func TestManualOpen_CleansUpAcceptedSpotOrderWhenPendingEntrySaveFails(t *testin
 		},
 	}
 	smExch := &closeTestSpotMargin{
-		orderIDs:  []string{"spot-entry-1", "spot-cleanup-1"},
-		queryErrs: []error{errors.New("temporary spot query failure")},
+		orderIDs: []string{"spot-entry-1", "spot-cleanup-1"},
 		queryStates: []*exchange.SpotMarginOrderStatus{
 			{
 				OrderID:   "spot-entry-1",
@@ -785,8 +787,10 @@ func TestManualOpen_CleansUpAcceptedSpotOrderWhenPendingEntrySaveFails(t *testin
 	if err != nil {
 		t.Fatalf("GetActiveSpotPositions: %v", err)
 	}
-	if len(active) != 0 {
-		t.Fatalf("active positions = %d, want 0", len(active))
+	// Pending entry record remains because engine.db points at failed Redis,
+	// so abandonPendingEntry cannot update the record to closed.
+	if len(active) != 1 {
+		t.Fatalf("active positions = %d, want 1 (pending entry retained when abandon fails)", len(active))
 	}
 }
 
@@ -815,8 +819,7 @@ func TestManualOpen_ReversesAndRepaysBorrowWhenPendingEntrySaveFails(t *testing.
 		},
 	}
 	smExch := &closeTestSpotMargin{
-		orderIDs:  []string{"spot-entry-1", "spot-cleanup-1"},
-		queryErrs: []error{errors.New("temporary spot query failure")},
+		orderIDs: []string{"spot-entry-1", "spot-cleanup-1"},
 		queryStates: []*exchange.SpotMarginOrderStatus{
 			{
 				OrderID:   "spot-entry-1",
@@ -872,8 +875,8 @@ func TestManualOpen_ReversesAndRepaysBorrowWhenPendingEntrySaveFails(t *testing.
 	if err != nil {
 		t.Fatalf("GetActiveSpotPositions: %v", err)
 	}
-	if len(active) != 0 {
-		t.Fatalf("active positions = %d, want 0", len(active))
+	if len(active) != 1 {
+		t.Fatalf("active positions = %d, want 1 (pending entry retained when abandon fails)", len(active))
 	}
 }
 
@@ -901,8 +904,7 @@ func TestManualOpen_ReportsManualInterventionWhenCleanupOrderOnlyPartiallyFills(
 		},
 	}
 	smExch := &closeTestSpotMargin{
-		orderIDs:  []string{"spot-entry-1", "spot-cleanup-1"},
-		queryErrs: []error{errors.New("temporary spot query failure")},
+		orderIDs: []string{"spot-entry-1", "spot-cleanup-1"},
 		queryStates: []*exchange.SpotMarginOrderStatus{
 			{
 				OrderID:   "spot-entry-1",
@@ -984,8 +986,7 @@ func TestManualOpen_PersistsManualRecoveryPositionWhenCleanupOnlyPartiallyFills(
 		},
 	}
 	smExch := &closeTestSpotMargin{
-		orderIDs:  []string{"spot-entry-1", "spot-cleanup-1"},
-		queryErrs: []error{errors.New("temporary spot query failure")},
+		orderIDs: []string{"spot-entry-1", "spot-cleanup-1"},
 		queryStates: []*exchange.SpotMarginOrderStatus{
 			{
 				OrderID:   "spot-entry-1",
@@ -1076,7 +1077,7 @@ func TestManualOpen_PersistsManualRecoveryPositionWhenCleanupOnlyPartiallyFills(
 	}
 }
 
-func TestManualOpen_LeavesReservationUncommittedWhenManualRecoverySaveFails(t *testing.T) {
+func TestManualOpen_RetainsPendingRecordWhenManualRecoverySaveFails(t *testing.T) {
 	engine, mr := newExecutionTestEngine(t)
 	defer mr.Close()
 
@@ -1107,8 +1108,7 @@ func TestManualOpen_LeavesReservationUncommittedWhenManualRecoverySaveFails(t *t
 		},
 	}
 	smExch := &closeTestSpotMargin{
-		orderIDs:  []string{"spot-entry-1", "spot-cleanup-1"},
-		queryErrs: []error{errors.New("temporary spot query failure")},
+		orderIDs: []string{"spot-entry-1", "spot-cleanup-1"},
 		queryStates: []*exchange.SpotMarginOrderStatus{
 			{
 				OrderID:   "spot-entry-1",
@@ -1155,22 +1155,125 @@ func TestManualOpen_LeavesReservationUncommittedWhenManualRecoverySaveFails(t *t
 	if err != nil {
 		t.Fatalf("GetActiveSpotPositions: %v", err)
 	}
-	if len(active) != 0 {
-		t.Fatalf("active positions = %d, want 0", len(active))
+	if len(active) != 1 {
+		t.Fatalf("active positions = %d, want 1", len(active))
+	}
+	if active[0].Status != models.SpotStatusPending {
+		t.Fatalf("retained position status = %q, want %q", active[0].Status, models.SpotStatusPending)
+	}
+	if active[0].PendingEntryOrderID != "" {
+		t.Fatalf("retained pending entry order = %q, want empty preflight checkpoint", active[0].PendingEntryOrderID)
 	}
 
 	summary, err := engine.allocator.Summary()
 	if err != nil {
 		t.Fatalf("allocator summary after failed manual recovery save: %v", err)
 	}
-	if got := summary.ByExchange["stub"]; got != 100 {
-		t.Fatalf("allocator exposure after failed manual recovery save = %.2f, want 100.00 reserved", got)
+	if got := summary.ByExchange["stub"]; got != 60 {
+		t.Fatalf("allocator exposure after failed manual recovery save = %.2f, want 60.00 (remaining after partial cleanup)", got)
 	}
-	if summary.Reservations != 1 {
-		t.Fatalf("allocator reservations after failed manual recovery save = %d, want 1", summary.Reservations)
+	if summary.Reservations != 0 {
+		t.Fatalf("allocator reservations after failed manual recovery save = %d, want 0", summary.Reservations)
 	}
 	if futExch.placeCalls != 0 {
 		t.Fatalf("futures place calls after failed manual recovery save = %d, want 0", futExch.placeCalls)
+	}
+}
+
+func TestMonitorTick_DoesNotHedgePreflightPendingEntry(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	futExch := &closeTestExchange{}
+	smExch := &closeTestSpotMargin{}
+
+	engine.exchanges = map[string]exchange.Exchange{"stub": futExch}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{"stub": smExch}
+
+	pos := &models.SpotFuturesPosition{
+		ID:           "preflight-1",
+		Symbol:       "BTCUSDT",
+		BaseCoin:     "BTC",
+		Exchange:     "stub",
+		Direction:    "buy_spot_short",
+		Status:       models.SpotStatusPending,
+		SpotSize:     1,
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+		NotionalUSDT: 100,
+	}
+	if err := engine.db.SaveSpotPosition(pos); err != nil {
+		t.Fatalf("SaveSpotPosition: %v", err)
+	}
+
+	engine.monitorTick()
+
+	if futExch.placeCalls != 0 {
+		t.Fatalf("futures place calls = %d, want 0 for preflight checkpoint", futExch.placeCalls)
+	}
+	stored, err := engine.db.GetSpotPosition(pos.ID)
+	if err != nil {
+		t.Fatalf("GetSpotPosition: %v", err)
+	}
+	if stored.Status != models.SpotStatusPending {
+		t.Fatalf("status = %q, want %q", stored.Status, models.SpotStatusPending)
+	}
+}
+
+func TestMonitorTick_ReusesExistingFuturesHedgeForPendingEntry(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	futExch := &closeTestExchange{
+		positions: []exchange.Position{
+			{
+				Symbol:           "BTCUSDT",
+				HoldSide:         "short",
+				Total:            "1",
+				AverageOpenPrice: "100",
+			},
+		},
+	}
+	smExch := &closeTestSpotMargin{}
+
+	engine.exchanges = map[string]exchange.Exchange{"stub": futExch}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{"stub": smExch}
+
+	pos := &models.SpotFuturesPosition{
+		ID:                  "recover-hedge-1",
+		Symbol:              "BTCUSDT",
+		BaseCoin:            "BTC",
+		Exchange:            "stub",
+		Direction:           "buy_spot_short",
+		Status:              models.SpotStatusPending,
+		SpotSize:            1,
+		SpotEntryPrice:      100,
+		NotionalUSDT:        100,
+		CreatedAt:           time.Now().UTC(),
+		UpdatedAt:           time.Now().UTC(),
+		PendingEntryOrderID: "",
+	}
+	if err := engine.db.SaveSpotPosition(pos); err != nil {
+		t.Fatalf("SaveSpotPosition: %v", err)
+	}
+
+	engine.monitorTick()
+
+	if futExch.placeCalls != 0 {
+		t.Fatalf("futures place calls = %d, want 0 when hedge already exists", futExch.placeCalls)
+	}
+	stored, err := engine.db.GetSpotPosition(pos.ID)
+	if err != nil {
+		t.Fatalf("GetSpotPosition: %v", err)
+	}
+	if stored.Status != models.SpotStatusActive {
+		t.Fatalf("status = %q, want %q", stored.Status, models.SpotStatusActive)
+	}
+	if stored.FuturesSize != 1 {
+		t.Fatalf("futures size = %.2f, want 1", stored.FuturesSize)
+	}
+	if stored.FuturesEntry != 100 {
+		t.Fatalf("futures entry = %.2f, want 100", stored.FuturesEntry)
 	}
 }
 
