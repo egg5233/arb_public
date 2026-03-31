@@ -13,9 +13,9 @@ import (
 	"arb/internal/config"
 	"arb/internal/database"
 	"arb/internal/discovery"
-	"arb/pkg/exchange"
 	"arb/internal/models"
 	"arb/internal/risk"
+	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
 
@@ -37,6 +37,7 @@ type Engine struct {
 	risk          *risk.Manager
 	monitor       *risk.Monitor
 	healthMonitor *risk.HealthMonitor
+	allocator     *risk.CapitalAllocator
 	db            *database.Client
 	api           *api.Server
 	cfg           *config.Config
@@ -47,7 +48,7 @@ type Engine struct {
 	exitMu      sync.Mutex
 	exitCancels map[string]context.CancelFunc // posID → cancel running exit goroutine
 	exitActive  map[string]bool               // posID → true while exit goroutine is running
-	exitDone    map[string]chan struct{}       // posID → signalled when exit goroutine finishes
+	exitDone    map[string]chan struct{}      // posID → signalled when exit goroutine finishes
 
 	// Pre-settlement timer dedup.
 	preSettleMu     sync.Mutex
@@ -93,25 +94,27 @@ func NewEngine(
 	db *database.Client,
 	apiSrv *api.Server,
 	cfg *config.Config,
+	allocator *risk.CapitalAllocator,
 ) *Engine {
 	e := &Engine{
-		exchanges:     exchanges,
-		discovery:     disc,
-		risk:          riskMgr,
-		monitor:       riskMon,
-		healthMonitor: healthMon,
-		db:            db,
-		api:           apiSrv,
-		cfg:           cfg,
-		log:           utils.NewLogger("engine"),
-		stopCh:        make(chan struct{}),
-		exitCancels:   make(map[string]context.CancelFunc),
-		exitActive:    make(map[string]bool),
+		exchanges:       exchanges,
+		discovery:       disc,
+		risk:            riskMgr,
+		monitor:         riskMon,
+		healthMonitor:   healthMon,
+		allocator:       allocator,
+		db:              db,
+		api:             apiSrv,
+		cfg:             cfg,
+		log:             utils.NewLogger("engine"),
+		stopCh:          make(chan struct{}),
+		exitCancels:     make(map[string]context.CancelFunc),
+		exitActive:      make(map[string]bool),
 		exitDone:        make(map[string]chan struct{}),
 		preSettleActive: make(map[string]bool),
 		entryActive:     make(map[string]string),
-		slIndex:       make(map[string]slEntry),
-		slFillCh:      make(chan slFillEvent, 64),
+		slIndex:         make(map[string]slEntry),
+		slFillCh:        make(chan slFillEvent, 64),
 	}
 	return e
 }
@@ -225,25 +228,19 @@ func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bo
 		return fmt.Errorf("dry run mode — trade not executed")
 	}
 
+	reservation, err := e.reservePerpCapital(*opp, approval)
+	if err != nil {
+		e.capacityMu.Unlock()
+		_ = e.db.ReleaseLock(lockResource)
+		return fmt.Errorf("capital allocator rejected: %v", err)
+	}
+
 	// 7. Reserve a slot by persisting a pending position *after* risk approval
 	//    but *before* releasing the capacity mutex, so concurrent requests
 	//    see the occupied slot without the reservation self-rejecting.
-	now := time.Now().UTC()
-	posID := utils.GenerateID(symbol, now.UnixMilli())
-	nextFunding := e.computeNextFunding(symbol, longExchange, shortExchange)
-	pendingPos := &models.ArbitragePosition{
-		ID:            posID,
-		Symbol:        symbol,
-		LongExchange:  longExchange,
-		ShortExchange: shortExchange,
-		Status:        models.StatusPending,
-		EntrySpread:   opp.Spread,
-		AllExchanges:  []string{longExchange, shortExchange},
-		NextFunding:   nextFunding,
-		CreatedAt:     now,
-		UpdatedAt:     now,
-	}
+	pendingPos := e.createPendingPosition(*opp)
 	if err := e.db.SavePosition(pendingPos); err != nil {
+		e.releasePerpReservation(reservation)
 		e.capacityMu.Unlock()
 		_ = e.db.ReleaseLock(lockResource)
 		return fmt.Errorf("failed to reserve position slot: %v", err)
@@ -259,8 +256,13 @@ func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bo
 	go func() {
 		defer func() { _ = e.db.ReleaseLock(lockResource) }()
 		if err := e.executeTradeV2WithPos(*opp, pendingPos, approval.Size, approval.Price, approval.GapBPS); err != nil {
+			e.releasePerpReservation(reservation)
 			e.log.Error("manual open: trade execution failed for %s: %v", symbol, err)
 			e.removePendingPosition(pendingPos)
+			return
+		}
+		if err := e.commitPerpCapital(reservation, pendingPos.ID); err != nil {
+			e.log.Error("manual open: capital commit failed for %s: %v", symbol, err)
 		}
 	}()
 	return nil
@@ -853,9 +855,9 @@ func (e *Engine) unregisterSLOrders(pos *models.ArbitragePosition) {
 
 // handleSLFill processes an SL fill event from the slFillCh channel.
 // Two detection methods:
-// 1. slIndex lookup — matches plan/algo order IDs (may miss if exchange issues new ID on trigger)
-// 2. ReduceOnly detection — if a close fill arrives for a symbol we hold, and we didn't initiate it,
-//    verify the leg is actually gone on the exchange before triggering emergency close.
+//  1. slIndex lookup — matches plan/algo order IDs (may miss if exchange issues new ID on trigger)
+//  2. ReduceOnly detection — if a close fill arrives for a symbol we hold, and we didn't initiate it,
+//     verify the leg is actually gone on the exchange before triggering emergency close.
 func (e *Engine) handleSLFill(exchName string, upd exchange.OrderUpdate) {
 	// Method 1: Try slIndex match (original approach).
 	key := exchName + ":" + upd.OrderID
@@ -1306,11 +1308,13 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 
 	// Phase 1: Sequential pre-filter — approve up to `slots` candidates.
 	type candidate struct {
-		opp     models.Opportunity
-		size    float64
-		price   float64
-		gapBPS  float64
-		lockKey string
+		opp         models.Opportunity
+		size        float64
+		price       float64
+		gapBPS      float64
+		lockKey     string
+		pos         *models.ArbitragePosition
+		reservation *risk.CapitalReservation
 	}
 	var candidates []candidate
 	newSlotCandidates := 0
@@ -1361,7 +1365,34 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 			continue
 		}
 
-		candidates = append(candidates, candidate{opp, approval.Size, approval.Price, approval.GapBPS, lockResource})
+		reservation, err := e.reservePerpCapital(opp, approval)
+		if err != nil {
+			e.log.Info("capital allocator rejected %s: %v", opp.Symbol, err)
+			if e.rejStore != nil {
+				e.rejStore.AddOpp(opp, "risk", fmt.Sprintf("capital allocator: %v", err))
+			}
+			_ = e.db.ReleaseLock(lockResource)
+			continue
+		}
+
+		pendingPos := e.createPendingPosition(opp)
+		if err := e.db.SavePosition(pendingPos); err != nil {
+			e.releasePerpReservation(reservation)
+			e.log.Error("failed to save pending position for %s: %v", opp.Symbol, err)
+			_ = e.db.ReleaseLock(lockResource)
+			continue
+		}
+		e.api.BroadcastPositionUpdate(pendingPos)
+
+		candidates = append(candidates, candidate{
+			opp:         opp,
+			size:        approval.Size,
+			price:       approval.Price,
+			gapBPS:      approval.GapBPS,
+			lockKey:     lockResource,
+			pos:         pendingPos,
+			reservation: reservation,
+		})
 		reserved[opp.LongExchange] += approval.RequiredMargin
 		reserved[opp.ShortExchange] += approval.RequiredMargin
 		newSlotCandidates++
@@ -1387,9 +1418,14 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 			defer func() { _ = e.db.ReleaseLock(c.lockKey) }()
 
 			e.log.Info("executing trade for %s: size=%.6f price=%.5f gapBPS=%.1f", c.opp.Symbol, c.size, c.price, c.gapBPS)
-			if err := e.executeTradeV2(c.opp, c.size, c.price, c.gapBPS); err != nil {
+			if err := e.executeTradeV2WithPos(c.opp, c.pos, c.size, c.price, c.gapBPS); err != nil {
+				e.releasePerpReservation(c.reservation)
 				e.log.Error("trade execution failed for %s: %v", c.opp.Symbol, err)
 				e.cleanupFailedPosition(c.opp.Symbol)
+				return
+			}
+			if err := e.commitPerpCapital(c.reservation, c.pos.ID); err != nil {
+				e.log.Error("capital commit failed for %s: %v", c.opp.Symbol, err)
 			}
 		}(c)
 	}

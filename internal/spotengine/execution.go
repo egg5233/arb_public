@@ -139,9 +139,18 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		return fmt.Errorf("computed size is 0 for %s (capital=%.2f price=%.6f)", symbol, capital, midPrice)
 	}
 	sizeStr := utils.FormatSize(size, 6)
-	notional := size * midPrice
-	e.log.Info("ManualOpen: %s size=%.6f (%s) notional=%.2f USDT", symbol, size, sizeStr, notional)
+	plannedNotional := size * midPrice
+	e.log.Info("ManualOpen: %s size=%.6f (%s) notional=%.2f USDT", symbol, size, sizeStr, plannedNotional)
+
+	if err := requireEntryLock("capital reservation"); err != nil {
+		return err
+	}
+	reservation, err := e.reserveSpotCapital(exchName, plannedNotional)
+	if err != nil {
+		return fmt.Errorf("capital allocator rejected: %w", err)
+	}
 	if err := requireEntryLock("leverage setup"); err != nil {
+		e.releaseSpotReservation(reservation)
 		return err
 	}
 
@@ -176,8 +185,11 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 	}
 
 	if err != nil {
+		e.releaseSpotReservation(reservation)
 		return fmt.Errorf("execution failed: %w", err)
 	}
+
+	actualNotional := spotFilledQty * spotEntryPrice
 
 	// Calculate entry fees (2 legs: spot + futures, taker rate).
 	takerFee := spotFees[exchName]
@@ -209,20 +221,24 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		FundingAPR:       opp.FundingAPR,
 		FeeAPR:           opp.FeeAPR,
 		CurrentBorrowAPR: opp.BorrowAPR,
-		NotionalUSDT:     notional,
+		NotionalUSDT:     actualNotional,
 		EntryFees:        entryFees,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
 
 	if err := e.db.SaveSpotPosition(pos); err != nil {
+		e.releaseSpotReservation(reservation)
 		e.log.Error("ManualOpen: failed to save position: %v", err)
 		return fmt.Errorf("position executed but failed to save: %w", err)
+	}
+	if err := e.commitSpotCapital(reservation, posID, actualNotional); err != nil {
+		e.log.Error("ManualOpen: capital commit failed: %v", err)
 	}
 
 	e.api.BroadcastSpotPositionUpdate(pos)
 	e.log.Info("ManualOpen: SUCCESS — %s on %s [%s] spot=%.6f@%.6f futures=%.6f@%.6f notional=%.2f",
-		symbol, exchName, direction, spotFilledQty, spotEntryPrice, futuresFilledQty, futuresEntryPrice, notional)
+		symbol, exchName, direction, spotFilledQty, spotEntryPrice, futuresFilledQty, futuresEntryPrice, actualNotional)
 
 	return nil
 }

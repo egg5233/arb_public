@@ -9,6 +9,7 @@ import (
 	"arb/internal/database"
 	"arb/internal/models"
 	"arb/internal/notify"
+	"arb/internal/risk"
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
@@ -21,6 +22,7 @@ type SpotEngine struct {
 	db         *database.Client
 	api        *api.Server
 	cfg        *config.Config
+	allocator  *risk.CapitalAllocator
 	log        *utils.Logger
 	stopCh     chan struct{}
 	wg         sync.WaitGroup
@@ -52,6 +54,7 @@ func NewSpotEngine(
 	db *database.Client,
 	apiSrv *api.Server,
 	cfg *config.Config,
+	allocator *risk.CapitalAllocator,
 ) *SpotEngine {
 	sm := make(map[string]exchange.SpotMarginExchange)
 	for name, exc := range exchanges {
@@ -61,16 +64,17 @@ func NewSpotEngine(
 	}
 
 	return &SpotEngine{
-		exchanges:     exchanges,
-		spotMargin:    sm,
-		db:            db,
-		api:           apiSrv,
-		cfg:           cfg,
-		log:           utils.NewLogger("spot-engine"),
-		stopCh:        make(chan struct{}),
-		exitState: exitState{exiting: make(map[string]bool)},
-		lastSeen:  make(map[string]bool),
-		telegram:  notify.NewTelegram(cfg.TelegramBotToken, cfg.TelegramChatID),
+		exchanges:  exchanges,
+		spotMargin: sm,
+		db:         db,
+		api:        apiSrv,
+		cfg:        cfg,
+		allocator:  allocator,
+		log:        utils.NewLogger("spot-engine"),
+		stopCh:     make(chan struct{}),
+		exitState:  exitState{exiting: make(map[string]bool)},
+		lastSeen:   make(map[string]bool),
+		telegram:   notify.NewTelegram(cfg.TelegramBotToken, cfg.TelegramChatID),
 	}
 }
 

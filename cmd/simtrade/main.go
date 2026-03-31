@@ -24,14 +24,14 @@ import (
 	"arb/internal/database"
 	"arb/internal/discovery"
 	"arb/internal/engine"
+	"arb/internal/models"
+	"arb/internal/risk"
 	"arb/pkg/exchange"
 	"arb/pkg/exchange/binance"
 	"arb/pkg/exchange/bitget"
 	"arb/pkg/exchange/bybit"
 	"arb/pkg/exchange/gateio"
 	"arb/pkg/exchange/okx"
-	"arb/internal/models"
-	"arb/internal/risk"
 	"arb/pkg/utils"
 )
 
@@ -189,7 +189,8 @@ func main() {
 
 	// Risk approval
 	var tradeSize, tradePrice float64
-	riskMgr := risk.NewManager(exchanges, db, cfg)
+	allocator := risk.NewCapitalAllocator(db, cfg)
+	riskMgr := risk.NewManager(exchanges, db, cfg, allocator)
 
 	if *skipRisk {
 		price := getPrice(exchanges, opp)
@@ -301,7 +302,7 @@ func main() {
 	apiSrv := api.NewServer(db, cfg, exchanges)
 	riskMon := risk.NewMonitor(exchanges, db, cfg)
 	healthMon := risk.NewHealthMonitor(exchanges, db, cfg)
-	eng := engine.NewEngine(exchanges, nil, riskMgr, riskMon, healthMon, db, apiSrv, cfg)
+	eng := engine.NewEngine(exchanges, nil, riskMgr, riskMon, healthMon, db, apiSrv, cfg, allocator)
 	eng.SetContracts(allContracts)
 
 	err = eng.SimExecuteTradeV2(opp, tradeSize, tradePrice, 0)

@@ -440,6 +440,7 @@ func (e *SpotEngine) completeExit(pos *models.SpotFuturesPosition, reason string
 	if err := e.db.UpdateSpotStats(totalPnL, totalPnL >= 0); err != nil {
 		e.log.Error("completeExit: failed to update stats for %s: %v", pos.ID, err)
 	}
+	e.releaseSpotPosition(pos.ID)
 
 	// Set cooldown on loss.
 	if totalPnL < 0 {

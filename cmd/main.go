@@ -12,17 +12,17 @@ import (
 	"arb/internal/database"
 	"arb/internal/discovery"
 	"arb/internal/engine"
+	"arb/internal/models"
+	"arb/internal/risk"
 	"arb/internal/scraper"
 	"arb/internal/spotengine"
 	"arb/pkg/exchange"
 	"arb/pkg/exchange/binance"
+	"arb/pkg/exchange/bingx"
 	"arb/pkg/exchange/bitget"
 	"arb/pkg/exchange/bybit"
 	"arb/pkg/exchange/gateio"
-	"arb/pkg/exchange/bingx"
 	"arb/pkg/exchange/okx"
-	"arb/internal/models"
-	"arb/internal/risk"
 	"arb/pkg/utils"
 )
 
@@ -131,12 +131,27 @@ func main() {
 	// Initialize components
 	scanner := discovery.NewScanner(exchanges, db, cfg)
 	scanner.SetContracts(allContracts)
-	riskMgr := risk.NewManager(exchanges, db, cfg)
+	allocator := risk.NewCapitalAllocator(db, cfg)
+	if err := allocator.Reconcile(); err != nil {
+		log.Warn("capital allocator reconcile failed: %v", err)
+	}
+	if allocator.Enabled() {
+		go func() {
+			ticker := time.NewTicker(5 * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				if err := allocator.Reconcile(); err != nil {
+					log.Warn("capital allocator periodic reconcile failed: %v", err)
+				}
+			}
+		}()
+	}
+	riskMgr := risk.NewManager(exchanges, db, cfg, allocator)
 	riskMon := risk.NewMonitor(exchanges, db, cfg)
 	healthMon := risk.NewHealthMonitor(exchanges, db, cfg)
 	apiSrv := api.NewServer(db, cfg, exchanges)
 	apiSrv.SetPermissions(permResults)
-	eng := engine.NewEngine(exchanges, scanner, riskMgr, riskMon, healthMon, db, apiSrv, cfg)
+	eng := engine.NewEngine(exchanges, scanner, riskMgr, riskMon, healthMon, db, apiSrv, cfg, allocator)
 	eng.SetContracts(allContracts)
 
 	// Ensure all exchanges are in cross-margin one-way mode.
@@ -195,7 +210,7 @@ func main() {
 					log.Warn("balance refresh %s: %v", name, err)
 					continue
 				}
-					// Save Total (equity) so dashboard shows full account value
+				// Save Total (equity) so dashboard shows full account value
 				// including margin locked in positions, not just free margin.
 				amount := bal.Total
 				spotBal, err := exc.GetSpotBalance()
@@ -251,7 +266,7 @@ func main() {
 	// Start spot-futures arbitrage engine if enabled.
 	var spotEng *spotengine.SpotEngine
 	if cfg.SpotFuturesEnabled {
-		spotEng = spotengine.NewSpotEngine(exchanges, db, apiSrv, cfg)
+		spotEng = spotengine.NewSpotEngine(exchanges, db, apiSrv, cfg, allocator)
 		apiSrv.SetSpotOpenHandler(spotEng.ManualOpen)
 		apiSrv.SetSpotCloseHandler(spotEng.ManualClose)
 		spotEng.Start()

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"arb/pkg/exchange"
 	"arb/internal/models"
+	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
 
@@ -413,6 +413,7 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 	if err := e.db.UpdateStats(realizedPnL, won); err != nil {
 		e.log.Error("consolidate: failed to update stats for %s: %v", pos.ID, err)
 	}
+	e.releasePerpPosition(pos.ID)
 	e.api.BroadcastPositionUpdate(pos)
 	e.log.Info("consolidate: closed %s (%s) pnl=%.4f (long=%.4f short=%.4f funding=%.4f)",
 		pos.ID, reason, realizedPnL, longPnL, shortPnL, pos.FundingCollected)
