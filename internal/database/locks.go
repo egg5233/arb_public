@@ -12,6 +12,12 @@ import (
 )
 
 var (
+	checkLockScript = redis.NewScript(`
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+	return 1
+end
+return 0
+`)
 	refreshLockScript = redis.NewScript(`
 if redis.call("GET", KEYS[1]) == ARGV[1] then
 	return redis.call("PEXPIRE", KEYS[1], ARGV[2])
@@ -40,6 +46,9 @@ type OwnedLock struct {
 
 	stopRenew chan struct{}
 	renewDone chan struct{}
+
+	healthMu  sync.RWMutex
+	healthErr error
 
 	releaseOnce sync.Once
 	releaseErr  error
@@ -98,7 +107,12 @@ func (l *OwnedLock) renewLoop() {
 		select {
 		case <-ticker.C:
 			ok, err := l.refresh()
-			if err != nil || !ok {
+			if err != nil {
+				l.setHealthErr(err)
+				return
+			}
+			if !ok {
+				l.setHealthErr(fmt.Errorf("lock %s no longer owned", l.resource))
 				return
 			}
 		case <-l.stopRenew:
@@ -114,6 +128,46 @@ func (l *OwnedLock) refresh() (bool, error) {
 		return false, fmt.Errorf("refresh lock %s: %w", l.resource, err)
 	}
 	return result == 1, nil
+}
+
+func (l *OwnedLock) setHealthErr(err error) {
+	if err == nil {
+		return
+	}
+
+	l.healthMu.Lock()
+	if l.healthErr == nil {
+		l.healthErr = err
+	}
+	l.healthMu.Unlock()
+}
+
+func (l *OwnedLock) getHealthErr() error {
+	l.healthMu.RLock()
+	defer l.healthMu.RUnlock()
+	return l.healthErr
+}
+
+// Check verifies that this caller still owns the lock. Any refresh miss,
+// Redis error, or lost ownership is latched and returned on later checks.
+func (l *OwnedLock) Check() error {
+	if err := l.getHealthErr(); err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	result, err := checkLockScript.Run(ctx, l.client.rdb, []string{lockKey(l.resource)}, l.token).Int()
+	if err != nil && err != redis.Nil {
+		err = fmt.Errorf("check lock %s: %w", l.resource, err)
+		l.setHealthErr(err)
+		return err
+	}
+	if result != 1 {
+		err = fmt.Errorf("lock %s no longer owned", l.resource)
+		l.setHealthErr(err)
+		return err
+	}
+	return nil
 }
 
 // Release stops TTL renewal and deletes the Redis key only if this caller

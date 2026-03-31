@@ -320,3 +320,95 @@ func TestManualOpen_RejectsConcurrentEntry(t *testing.T) {
 		t.Fatalf("spot place calls = %d, want 1", smExch.placeCalls)
 	}
 }
+
+func TestManualOpen_FailsClosedWhenEntryLockIsLost(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	prevTTL := spotEntryLockTTL
+	spotEntryLockTTL = 150 * time.Millisecond
+	t.Cleanup(func() {
+		spotEntryLockTTL = prevTTL
+	})
+
+	engine.cfg = &config.Config{
+		SpotFuturesMaxPositions:       1,
+		SpotFuturesLeverage:           3,
+		SpotFuturesUnifiedAcctMaxUSDT: 100,
+	}
+	engine.api = api.NewServer(engine.db, engine.cfg, nil)
+
+	orderbookEntered := make(chan struct{}, 1)
+	orderbookRelease := make(chan struct{})
+	futExch := &closeTestExchange{
+		orderbook: &exchange.Orderbook{
+			Bids: []exchange.PriceLevel{{Price: 99, Quantity: 1}},
+			Asks: []exchange.PriceLevel{{Price: 101, Quantity: 1}},
+		},
+		orderbookEntered: orderbookEntered,
+		orderbookRelease: orderbookRelease,
+	}
+	smExch := &closeTestSpotMargin{}
+
+	engine.exchanges = map[string]exchange.Exchange{"stub": futExch}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{"stub": smExch}
+	engine.latestOpps = []SpotArbOpportunity{
+		{
+			Symbol:    "BTCUSDT",
+			BaseCoin:  "BTC",
+			Exchange:  "stub",
+			Direction: "buy_spot_short",
+		},
+	}
+
+	firstErrCh := make(chan error, 1)
+	go func() {
+		firstErrCh <- engine.ManualOpen("BTCUSDT", "stub", "buy_spot_short")
+	}()
+
+	select {
+	case <-orderbookEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first ManualOpen did not reach orderbook in time")
+	}
+
+	mr.FastForward(spotEntryLockTTL + 10*time.Millisecond)
+
+	secondLock, ok, err := engine.db.AcquireOwnedLock(spotEntryLockKey, spotEntryLockTTL)
+	if err != nil {
+		t.Fatalf("AcquireOwnedLock second: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected second lock acquisition after first lease expired")
+	}
+	defer func() {
+		if err := secondLock.Release(); err != nil {
+			t.Fatalf("second Release: %v", err)
+		}
+	}()
+
+	close(orderbookRelease)
+
+	err = <-firstErrCh
+	if err == nil {
+		t.Fatal("expected first ManualOpen to fail after losing the entry lock")
+	}
+	if !strings.Contains(err.Error(), "spot entry lock lost") {
+		t.Fatalf("first ManualOpen error = %v, want lock-loss failure", err)
+	}
+
+	if futExch.placeCalls != 0 {
+		t.Fatalf("futures place calls = %d, want 0", futExch.placeCalls)
+	}
+	if smExch.placeCalls != 0 {
+		t.Fatalf("spot place calls = %d, want 0", smExch.placeCalls)
+	}
+
+	active, err := engine.db.GetActiveSpotPositions()
+	if err != nil {
+		t.Fatalf("GetActiveSpotPositions: %v", err)
+	}
+	if len(active) != 0 {
+		t.Fatalf("active positions = %d, want 0", len(active))
+	}
+}

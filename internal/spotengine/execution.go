@@ -15,6 +15,8 @@ import (
 
 const spotEntryLockKey = "spot_entry"
 
+var spotEntryLockTTL = 5 * time.Minute
+
 // ManualOpen executes a spot-futures arbitrage entry for the given symbol,
 // exchange, and direction. It runs synchronously (blocking) and returns an
 // error if any pre-check or execution step fails.
@@ -23,7 +25,7 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 	exchName = strings.ToLower(strings.TrimSpace(exchName))
 	direction = strings.TrimSpace(direction)
 
-	lock, acquired, err := e.db.AcquireOwnedLock(spotEntryLockKey, 5*time.Minute)
+	lock, acquired, err := e.db.AcquireOwnedLock(spotEntryLockKey, spotEntryLockTTL)
 	if err != nil {
 		return fmt.Errorf("failed to acquire spot entry lock: %w", err)
 	}
@@ -35,6 +37,12 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 			e.log.Warn("ManualOpen: release entry lock: %v", err)
 		}
 	}()
+	requireEntryLock := func(action string) error {
+		if err := lock.Check(); err != nil {
+			return fmt.Errorf("spot entry lock lost before %s: %w", action, err)
+		}
+		return nil
+	}
 
 	e.log.Info("ManualOpen: %s on %s direction=%s", symbol, exchName, direction)
 
@@ -90,6 +98,9 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 	if e.cfg.SpotFuturesDryRun {
 		return fmt.Errorf("dry run mode — trade not executed")
 	}
+	if err := requireEntryLock("orderbook lookup"); err != nil {
+		return err
+	}
 
 	// ---------------------------------------------------------------
 	// 2. Get spot price via orderbook
@@ -130,6 +141,9 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 	sizeStr := utils.FormatSize(size, 6)
 	notional := size * midPrice
 	e.log.Info("ManualOpen: %s size=%.6f (%s) notional=%.2f USDT", symbol, size, sizeStr, notional)
+	if err := requireEntryLock("leverage setup"); err != nil {
+		return err
+	}
 
 	// ---------------------------------------------------------------
 	// 4. Set leverage on futures
@@ -154,10 +168,10 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 
 	switch direction {
 	case "borrow_sell_long":
-		spotEntryPrice, futuresEntryPrice, spotFilledQty, futuresFilledQty, borrowAmount, err = e.executeBorrowSellLong(smExch, futExch, symbol, baseCoin, sizeStr, size)
+		spotEntryPrice, futuresEntryPrice, spotFilledQty, futuresFilledQty, borrowAmount, err = e.executeBorrowSellLong(smExch, futExch, symbol, baseCoin, sizeStr, size, requireEntryLock)
 		futuresSide = "long"
 	case "buy_spot_short":
-		spotEntryPrice, futuresEntryPrice, spotFilledQty, futuresFilledQty, err = e.executeBuySpotShort(smExch, futExch, symbol, sizeStr, size)
+		spotEntryPrice, futuresEntryPrice, spotFilledQty, futuresFilledQty, err = e.executeBuySpotShort(smExch, futExch, symbol, sizeStr, size, requireEntryLock)
 		futuresSide = "short"
 	}
 
@@ -219,9 +233,13 @@ func (e *SpotEngine) executeBorrowSellLong(
 	futExch exchange.Exchange,
 	symbol, baseCoin, sizeStr string,
 	size float64,
+	requireEntryLock func(string) error,
 ) (spotAvg, futAvg, spotFilled, futFilled, borrowAmt float64, err error) {
 
 	// Step 1: Borrow
+	if err := requireEntryLock("margin borrow"); err != nil {
+		return 0, 0, 0, 0, 0, err
+	}
 	e.log.Info("ManualOpen [borrow_sell_long] step 1: MarginBorrow %s %s", baseCoin, sizeStr)
 	err = smExch.MarginBorrow(exchange.MarginBorrowParams{
 		Coin:   baseCoin,
@@ -234,6 +252,10 @@ func (e *SpotEngine) executeBorrowSellLong(
 	e.log.Info("ManualOpen [borrow_sell_long] step 1: borrowed %s %s", sizeStr, baseCoin)
 
 	// Step 2: Sell spot (margin order)
+	if err := requireEntryLock("spot sell"); err != nil {
+		e.rollbackBorrow(smExch, baseCoin, sizeStr)
+		return 0, 0, 0, 0, 0, err
+	}
 	e.log.Info("ManualOpen [borrow_sell_long] step 2: PlaceSpotMarginOrder SELL %s %s", symbol, sizeStr)
 	spotOrderID, err := smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
 		Symbol:    symbol,
@@ -264,6 +286,11 @@ func (e *SpotEngine) executeBorrowSellLong(
 
 	// Step 3: Long futures
 	spotFilledStr := utils.FormatSize(spotFilled, 6)
+	if err := requireEntryLock("futures long"); err != nil {
+		e.rollbackSpotOrder(smExch, symbol, exchange.SideBuy, spotFilledStr)
+		e.rollbackBorrow(smExch, baseCoin, sizeStr)
+		return 0, 0, 0, 0, 0, err
+	}
 	e.log.Info("ManualOpen [borrow_sell_long] step 3: PlaceOrder futures BUY %s %s", symbol, spotFilledStr)
 	futOrderID, err := futExch.PlaceOrder(exchange.PlaceOrderParams{
 		Symbol:    symbol,
@@ -300,9 +327,13 @@ func (e *SpotEngine) executeBuySpotShort(
 	futExch exchange.Exchange,
 	symbol, sizeStr string,
 	size float64,
+	requireEntryLock func(string) error,
 ) (spotAvg, futAvg, spotFilled, futFilled float64, err error) {
 
 	// Step 1: Buy spot (margin order)
+	if err := requireEntryLock("spot buy"); err != nil {
+		return 0, 0, 0, 0, err
+	}
 	e.log.Info("ManualOpen [buy_spot_short] step 1: PlaceSpotMarginOrder BUY %s %s", symbol, sizeStr)
 	spotOrderID, err := smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
 		Symbol:    symbol,
@@ -328,6 +359,10 @@ func (e *SpotEngine) executeBuySpotShort(
 
 	// Step 2: Short futures
 	spotFilledStr := utils.FormatSize(spotFilled, 6)
+	if err := requireEntryLock("futures short"); err != nil {
+		e.rollbackSpotOrder(smExch, symbol, exchange.SideSell, spotFilledStr)
+		return 0, 0, 0, 0, err
+	}
 	e.log.Info("ManualOpen [buy_spot_short] step 2: PlaceOrder futures SELL %s %s", symbol, spotFilledStr)
 	futOrderID, err := futExch.PlaceOrder(exchange.PlaceOrderParams{
 		Symbol:    symbol,
