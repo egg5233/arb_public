@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.46] - 2026-04-01
+
+### Changed
+- **Rebalance v2: sequential per-opportunity allocation** — replaces batch-upfront need calculation; processes ranked opportunities one-by-one, allocating funds per-leg with atomic two-leg validation (`engine.go`)
+- **Transfer merging** — same donor→recipient→chain transfers merged into single withdrawal to save fees (`engine.go`)
+- **Route-aware fee planning** — findBestDonor skips fee for already-planned routes (merged transfers); donor excludes opposite leg and keeps margin reserve (`engine.go`)
+- **RebalanceAfterExit no longer replaces :10** — both :10 rebalanceScan and :30 exitScan run rebalance independently when toggle is on (`engine.go`)
+- **ExitScan 6-filter parity** — ExitScan now applies all 6 entry filters including funding window (`scanner.go`)
+- **Dashboard version display** — sidebar shows current version next to connection status (`Sidebar.tsx`, `App.tsx`)
+- **i18n update** — RebalanceAfterExit description corrected to "additional" not "replace" (`en.ts`, `zh-TW.ts`)
+
+### Fixed
+- **Gate.io unified double-count** — spot→futures sweep skips unified/no-op exchanges to prevent overstated available balance (`engine.go`)
+
 ## [0.22.45] - 2026-03-31
 
 ### Added

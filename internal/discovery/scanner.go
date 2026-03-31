@@ -819,9 +819,9 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 
 	// 6. Filter to only opportunities with imminent funding.
 	// ExitScan skips this — when RebalanceAfterExit is on, rebalance needs to
-	// prepare funds BEFORE the funding window opens. RebalanceScan keeps the
-	// filter so its standalone behavior is unchanged.
-	if scanType == EntryScan || scanType == RebalanceScan {
+	// All entry-related scans (entry, rebalance, exit with RebalanceAfterExit)
+	// must use the same funding window filter for consistency.
+	if scanType == EntryScan || scanType == RebalanceScan || scanType == ExitScan {
 		maxFundingWindow := time.Duration(s.cfg.FundingWindowMin) * time.Minute
 		var imminent []models.Opportunity
 		for _, opp := range verified {

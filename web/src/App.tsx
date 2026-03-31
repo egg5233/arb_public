@@ -27,7 +27,8 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const ws = useWebSocket(!!api.token);
 
-  // Update state
+  // Version & update state
+  const [currentVersion, setCurrentVersion] = useState('');
   const [updateInfo, setUpdateInfo] = useState<{ latestVersion: string; changelog: string } | null>(null);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [updateOutput, setUpdateOutput] = useState('');
@@ -52,6 +53,7 @@ function App() {
   const silentCheckUpdate = useCallback(async () => {
     try {
       const data = await api.checkUpdate();
+      if (data.currentVersion) setCurrentVersion(data.currentVersion);
       if (data.hasUpdate) {
         // Check if user dismissed this version in the last 24h.
         const dismissed = localStorage.getItem(UPDATE_DISMISS_KEY);
@@ -201,6 +203,7 @@ function App() {
           onLogout={handleLogout}
           mobileOpen={sidebarOpen}
           onMobileClose={() => setSidebarOpen(false)}
+          version={currentVersion}
         />
 
         <div className="flex-1 flex flex-col overflow-auto">

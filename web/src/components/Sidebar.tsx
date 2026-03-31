@@ -8,6 +8,7 @@ interface SidebarProps {
   onLogout: () => void;
   mobileOpen?: boolean;
   onMobileClose?: () => void;
+  version?: string;
 }
 
 const navItems: { id: string; labelKey: TranslationKey; icon: string }[] = [
@@ -29,7 +30,7 @@ const LOCALES: { value: Locale; label: string }[] = [
   { value: 'en', label: 'EN' },
 ];
 
-const Sidebar: FC<SidebarProps> = ({ page, onNavigate, connected, onLogout, mobileOpen, onMobileClose }) => {
+const Sidebar: FC<SidebarProps> = ({ page, onNavigate, connected, onLogout, mobileOpen, onMobileClose, version }) => {
   const { locale, setLocale, t } = useLocale();
 
   const handleNavigate = (p: string) => {
@@ -48,6 +49,7 @@ const Sidebar: FC<SidebarProps> = ({ page, onNavigate, connected, onLogout, mobi
             }`}
           />
           {connected ? t('sidebar.connected') : t('sidebar.disconnected')}
+          {version && <span className="ml-auto text-xs text-gray-500">v{version}</span>}
         </div>
       </div>
       <nav className="flex-1 p-2">
