@@ -239,10 +239,12 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 			if recoverySaveFailed {
 				return fmt.Errorf("%w (manual recovery position %s could not be persisted; existing pending record retained)", err, pendingErr.posID)
 			}
+			e.log.Error("ManualOpen: %s on %s — pending entry error: %v", symbol, exchName, err)
 			return err
 		}
 		e.abandonPendingEntry(entryPos, "entry_failed")
 		e.releaseSpotReservation(reservation)
+		e.log.Error("ManualOpen: %s on %s — execution failed: %v", symbol, exchName, err)
 		return fmt.Errorf("execution failed: %w", err)
 	}
 

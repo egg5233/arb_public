@@ -163,17 +163,20 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 			filterStatus = fmt.Sprintf("funding %.1f%% <= 0", fundingAPR*100)
 		}
 
-		if direction == "borrow_sell_long" {
-			smExch := e.spotMargin[exchName]
-
-			// Check spot margin availability.
+		// Check spot margin availability for all directions — ensures the
+		// symbol actually exists on the exchange's cross-margin market.
+		// For borrow_sell_long, also check borrowability and borrow rate.
+		smExch := e.spotMargin[exchName]
+		if filterStatus == "" {
 			spotBal, err := smExch.GetMarginBalance(baseCoin)
 			if err != nil {
 				filterStatus = "margin unavailable"
-			} else if spotBal.MaxBorrowable <= 0 {
+			} else if direction == "borrow_sell_long" && spotBal.MaxBorrowable <= 0 {
 				filterStatus = "not borrowable"
 			}
+		}
 
+		if direction == "borrow_sell_long" {
 			// Fetch borrow rate.
 			if filterStatus == "" {
 				rate, err := e.getCachedBorrowRate(exchName, baseCoin, smExch)
