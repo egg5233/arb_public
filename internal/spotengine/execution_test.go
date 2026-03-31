@@ -95,19 +95,29 @@ func (s *closeTestExchange) EnsureOneWayMode() error { return nil }
 func (s *closeTestExchange) Close()                  {}
 
 type closeTestSpotMargin struct {
-	placeCalls  int
-	placeSizes  []string
-	orderIDs    []string
-	queryCalls  int
-	queryErrs   []error
-	queryStates []*exchange.SpotMarginOrderStatus
+	placeCalls   int
+	placeSizes   []string
+	orderIDs     []string
+	queryCalls   int
+	queryErrs    []error
+	queryStates  []*exchange.SpotMarginOrderStatus
+	repayCalls   int
+	repayAmounts []string
+	onPlace      func(call int, params exchange.SpotMarginOrderParams)
 }
 
 func (s *closeTestSpotMargin) MarginBorrow(exchange.MarginBorrowParams) error { return nil }
-func (s *closeTestSpotMargin) MarginRepay(exchange.MarginRepayParams) error   { return nil }
+func (s *closeTestSpotMargin) MarginRepay(params exchange.MarginRepayParams) error {
+	s.repayCalls++
+	s.repayAmounts = append(s.repayAmounts, params.Amount)
+	return nil
+}
 func (s *closeTestSpotMargin) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (string, error) {
 	s.placeCalls++
 	s.placeSizes = append(s.placeSizes, params.Size)
+	if s.onPlace != nil {
+		s.onPlace(s.placeCalls, params)
+	}
 	if len(s.orderIDs) > 0 {
 		orderID := s.orderIDs[0]
 		s.orderIDs = s.orderIDs[1:]
@@ -119,7 +129,7 @@ func (s *closeTestSpotMargin) GetMarginInterestRate(string) (*exchange.MarginInt
 	return nil, nil
 }
 func (s *closeTestSpotMargin) GetMarginBalance(string) (*exchange.MarginBalance, error) {
-	return nil, nil
+	return &exchange.MarginBalance{}, nil
 }
 func (s *closeTestSpotMargin) TransferToMargin(string, string) error   { return nil }
 func (s *closeTestSpotMargin) TransferFromMargin(string, string) error { return nil }
@@ -689,6 +699,161 @@ func TestManualOpen_PendingEntryReconcilesAllocatorExposureToActualNotional(t *t
 	}
 	if got := summary.ByExchange["stub"]; got != 50 {
 		t.Fatalf("allocator exposure after recovery = %.2f, want 50", got)
+	}
+}
+
+func TestManualOpen_CleansUpAcceptedSpotOrderWhenPendingEntrySaveFails(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	workingDB := engine.db
+	failRedis := miniredis.RunT(t)
+	failingDB, err := database.New(failRedis.Addr(), "", 0)
+	if err != nil {
+		t.Fatalf("database.New failingDB: %v", err)
+	}
+	failRedis.Close()
+
+	engine.cfg = &config.Config{
+		SpotFuturesMaxPositions:       1,
+		SpotFuturesLeverage:           3,
+		SpotFuturesUnifiedAcctMaxUSDT: 100,
+	}
+
+	futExch := &closeTestExchange{
+		orderbook: &exchange.Orderbook{
+			Bids: []exchange.PriceLevel{{Price: 99, Quantity: 1}},
+			Asks: []exchange.PriceLevel{{Price: 101, Quantity: 1}},
+		},
+	}
+	smExch := &closeTestSpotMargin{
+		queryErrs: []error{errors.New("temporary spot query failure")},
+		queryStates: []*exchange.SpotMarginOrderStatus{
+			{
+				OrderID:   "spot-close-1",
+				Symbol:    "BTCUSDT",
+				Status:    "filled",
+				FilledQty: 1,
+				AvgPrice:  100,
+			},
+		},
+		onPlace: func(call int, _ exchange.SpotMarginOrderParams) {
+			if call == 1 {
+				engine.db = failingDB
+			}
+		},
+	}
+
+	engine.exchanges = map[string]exchange.Exchange{"stub": futExch}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{"stub": smExch}
+	engine.latestOpps = []SpotArbOpportunity{
+		{
+			Symbol:    "BTCUSDT",
+			BaseCoin:  "BTC",
+			Exchange:  "stub",
+			Direction: "buy_spot_short",
+		},
+	}
+
+	err = engine.ManualOpen("BTCUSDT", "stub", "buy_spot_short")
+	if err == nil {
+		t.Fatal("expected ManualOpen to fail when pending entry save fails")
+	}
+	if !strings.Contains(err.Error(), "pending entry save failed") {
+		t.Fatalf("ManualOpen error = %v, want pending entry save failure", err)
+	}
+	if futExch.placeCalls != 0 {
+		t.Fatalf("futures place calls = %d, want 0", futExch.placeCalls)
+	}
+	if smExch.placeCalls != 2 {
+		t.Fatalf("spot place calls = %d, want 2 (entry + cleanup)", smExch.placeCalls)
+	}
+
+	active, err := workingDB.GetActiveSpotPositions()
+	if err != nil {
+		t.Fatalf("GetActiveSpotPositions: %v", err)
+	}
+	if len(active) != 0 {
+		t.Fatalf("active positions = %d, want 0", len(active))
+	}
+}
+
+func TestManualOpen_ReversesAndRepaysBorrowWhenPendingEntrySaveFails(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	workingDB := engine.db
+	failRedis := miniredis.RunT(t)
+	failingDB, err := database.New(failRedis.Addr(), "", 0)
+	if err != nil {
+		t.Fatalf("database.New failingDB: %v", err)
+	}
+	failRedis.Close()
+
+	engine.cfg = &config.Config{
+		SpotFuturesMaxPositions:       1,
+		SpotFuturesLeverage:           3,
+		SpotFuturesUnifiedAcctMaxUSDT: 100,
+	}
+
+	futExch := &closeTestExchange{
+		orderbook: &exchange.Orderbook{
+			Bids: []exchange.PriceLevel{{Price: 99, Quantity: 1}},
+			Asks: []exchange.PriceLevel{{Price: 101, Quantity: 1}},
+		},
+	}
+	smExch := &closeTestSpotMargin{
+		queryErrs: []error{errors.New("temporary spot query failure")},
+		queryStates: []*exchange.SpotMarginOrderStatus{
+			{
+				OrderID:   "spot-close-1",
+				Symbol:    "BTCUSDT",
+				Status:    "filled",
+				FilledQty: 1,
+				AvgPrice:  100,
+			},
+		},
+		onPlace: func(call int, _ exchange.SpotMarginOrderParams) {
+			if call == 1 {
+				engine.db = failingDB
+			}
+		},
+	}
+
+	engine.exchanges = map[string]exchange.Exchange{"stub": futExch}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{"stub": smExch}
+	engine.latestOpps = []SpotArbOpportunity{
+		{
+			Symbol:    "BTCUSDT",
+			BaseCoin:  "BTC",
+			Exchange:  "stub",
+			Direction: "borrow_sell_long",
+		},
+	}
+
+	err = engine.ManualOpen("BTCUSDT", "stub", "borrow_sell_long")
+	if err == nil {
+		t.Fatal("expected ManualOpen to fail when pending entry save fails")
+	}
+	if !strings.Contains(err.Error(), "pending entry save failed") {
+		t.Fatalf("ManualOpen error = %v, want pending entry save failure", err)
+	}
+	if futExch.placeCalls != 0 {
+		t.Fatalf("futures place calls = %d, want 0", futExch.placeCalls)
+	}
+	if smExch.placeCalls != 2 {
+		t.Fatalf("spot place calls = %d, want 2 (entry + cleanup)", smExch.placeCalls)
+	}
+	if smExch.repayCalls != 1 {
+		t.Fatalf("repay calls = %d, want 1", smExch.repayCalls)
+	}
+
+	active, err := workingDB.GetActiveSpotPositions()
+	if err != nil {
+		t.Fatalf("GetActiveSpotPositions: %v", err)
+	}
+	if len(active) != 0 {
+		t.Fatalf("active positions = %d, want 0", len(active))
 	}
 }
 

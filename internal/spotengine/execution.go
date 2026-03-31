@@ -316,7 +316,7 @@ func (e *SpotEngine) executeBorrowSellLong(
 	spotFilled, spotAvg, confirmed, confErr := e.confirmSpotFill(smExch, futExch, spotOrderID, symbol, size)
 	if !confirmed {
 		if cpErr := e.persistPendingEntry(pos, spotOrderID); cpErr != nil {
-			return 0, 0, 0, 0, 0, fmt.Errorf("spot sell confirmation failed after order %s was accepted and pending entry save failed: %w", spotOrderID, cpErr)
+			return 0, 0, 0, 0, 0, e.abortAcceptedSpotEntry(smExch, futExch, pos, spotOrderID, symbol, size, cpErr)
 		}
 		return 0, 0, 0, 0, 0, &pendingSpotEntryError{posID: pos.ID, orderID: spotOrderID, err: confErr}
 	}
@@ -395,7 +395,7 @@ func (e *SpotEngine) executeBuySpotShort(
 	spotFilled, spotAvg, confirmed, confErr := e.confirmSpotFill(smExch, futExch, spotOrderID, symbol, size)
 	if !confirmed {
 		if cpErr := e.persistPendingEntry(pos, spotOrderID); cpErr != nil {
-			return 0, 0, 0, 0, fmt.Errorf("spot buy confirmation failed after order %s was accepted and pending entry save failed: %w", spotOrderID, cpErr)
+			return 0, 0, 0, 0, e.abortAcceptedSpotEntry(smExch, futExch, pos, spotOrderID, symbol, size, cpErr)
 		}
 		return 0, 0, 0, 0, &pendingSpotEntryError{posID: pos.ID, orderID: spotOrderID, err: confErr}
 	}
@@ -519,6 +519,64 @@ func (e *pendingSpotEntryError) Error() string {
 		return fmt.Sprintf("spot entry pending confirmation on order %s", e.orderID)
 	}
 	return fmt.Sprintf("spot entry pending confirmation on order %s: %v", e.orderID, e.err)
+}
+
+// Without a durable pending-entry checkpoint, immediately unwind the accepted
+// spot leg so restart recovery never depends on a record that was not saved.
+func (e *SpotEngine) abortAcceptedSpotEntry(
+	smExch exchange.SpotMarginExchange,
+	futExch exchange.Exchange,
+	pos *models.SpotFuturesPosition,
+	orderID, symbol string,
+	expectedQty float64,
+	persistErr error,
+) error {
+	filledQty, _, confirmed, confErr := e.confirmSpotFill(smExch, futExch, orderID, symbol, expectedQty)
+	if !confirmed {
+		return fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (cleanup could not reconcile order state: %v)",
+			orderID, persistErr, confErr)
+	}
+
+	if filledQty > 0 {
+		reverseSide := exchange.SideSell
+		action := "sell spot"
+		if pos.Direction == "borrow_sell_long" {
+			reverseSide = exchange.SideBuy
+			action = "buy back spot"
+		}
+		reverseQty := utils.FormatSize(filledQty, 6)
+		reverseOrderID, err := smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
+			Symbol:    symbol,
+			Side:      reverseSide,
+			OrderType: "market",
+			Size:      reverseQty,
+			Force:     "ioc",
+		})
+		if err != nil {
+			return fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (cleanup could not %s %.6f: %v)",
+				orderID, persistErr, action, filledQty, err)
+		}
+		e.log.Warn("ManualOpen: pending entry save failed after accepted spot order %s; cleanup %s order placed: %s qty=%.6f",
+			orderID, action, reverseOrderID, filledQty)
+	}
+
+	if pos.Direction == "borrow_sell_long" && pos.BorrowAmount > 0 {
+		repayAmount := utils.FormatSize(pos.BorrowAmount, 6)
+		if err := smExch.MarginRepay(exchange.MarginRepayParams{
+			Coin:   pos.BaseCoin,
+			Amount: repayAmount,
+		}); err != nil {
+			return fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (cleanup repay %s %s failed: %v)",
+				orderID, persistErr, repayAmount, pos.BaseCoin, err)
+		}
+	}
+
+	if filledQty > 0 {
+		return fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (cleaned up %.6f spot fill before aborting entry)",
+			orderID, persistErr, filledQty)
+	}
+	return fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (order reconciled unfilled and entry was aborted)",
+		orderID, persistErr)
 }
 
 func spotQtyComplete(filled, target float64) bool {
