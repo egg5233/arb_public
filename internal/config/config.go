@@ -951,20 +951,36 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 	}
 }
 
-// SaveJSON writes the current runtime config back to config.json,
-// preserving credentials and structure from the original file.
+// ExchangeSecretOverride contains explicit secret replacements to persist.
+// Fields left empty preserve the current on-disk values.
+type ExchangeSecretOverride struct {
+	APIKey     string
+	SecretKey  string
+	Passphrase string
+}
+
+// SaveJSON writes the current runtime config back to config.json while
+// preserving exchange secrets from the original file.
 func (c *Config) SaveJSON() error {
+	return c.SaveJSONWithExchangeSecretOverrides(nil)
+}
+
+// SaveJSONWithExchangeSecretOverrides writes the current runtime config back to
+// config.json and applies only the explicitly supplied exchange secret updates.
+func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]ExchangeSecretOverride) error {
 	// Find the config file path
 	paths := []string{"config.json", "/var/solana/data/arb/config.json"}
 	if p := os.Getenv("CONFIG_FILE"); p != "" {
 		paths = []string{p}
 	}
 	var filePath string
+	var originalData []byte
 	var raw map[string]interface{}
 	for _, path := range paths {
 		data, err := os.ReadFile(path)
 		if err == nil {
 			filePath = path
+			originalData = data
 			json.Unmarshal(data, &raw)
 			break
 		}
@@ -1105,14 +1121,16 @@ func (c *Config) SaveJSON() error {
 	}
 	for _, ed := range exchDefs {
 		exMap := getMap(exchanges, ed.name)
-		if ed.apiKey != "" {
-			exMap["api_key"] = ed.apiKey
-		}
-		if ed.secretKey != "" {
-			exMap["secret_key"] = ed.secretKey
-		}
-		if ed.hasPass && ed.passphrase != "" {
-			exMap["passphrase"] = ed.passphrase
+		if override, ok := overrides[ed.name]; ok {
+			if override.APIKey != "" {
+				exMap["api_key"] = override.APIKey
+			}
+			if override.SecretKey != "" {
+				exMap["secret_key"] = override.SecretKey
+			}
+			if ed.hasPass && override.Passphrase != "" {
+				exMap["passphrase"] = override.Passphrase
+			}
 		}
 		if ed.enabled != nil {
 			exMap["enabled"] = *ed.enabled
@@ -1155,10 +1173,9 @@ func (c *Config) SaveJSON() error {
 	}
 	out = append(out, '\n')
 
-	if _, err := os.Stat(filePath); err == nil {
-		backupData, _ := os.ReadFile(filePath)
-		if len(backupData) > 0 {
-			_ = os.WriteFile(filePath+".bak", backupData, 0644)
+	if len(originalData) > 0 {
+		if err := os.WriteFile(filePath+".bak", originalData, 0644); err != nil {
+			return fmt.Errorf("write backup config: %w", err)
 		}
 	}
 

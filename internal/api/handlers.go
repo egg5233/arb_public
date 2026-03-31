@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"arb/internal/config"
 	"arb/internal/database"
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
@@ -994,6 +995,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Exchanges
+	exchangeSecretOverrides := make(map[string]config.ExchangeSecretOverride)
 	if upd.Exchanges != nil {
 		for name, eu := range upd.Exchanges {
 			if eu == nil {
@@ -1019,55 +1021,73 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 			// Only update secret fields when the user actually typed a new value.
 			// Empty strings are ignored to prevent accidental key wipe from
 			// dashboard saves that don't include secret fields.
+			var override config.ExchangeSecretOverride
 			switch name {
 			case "binance":
 				if eu.APIKey != nil && *eu.APIKey != "" {
 					s.cfg.BinanceAPIKey = *eu.APIKey
+					override.APIKey = *eu.APIKey
 				}
 				if eu.SecretKey != nil && *eu.SecretKey != "" {
 					s.cfg.BinanceSecretKey = *eu.SecretKey
+					override.SecretKey = *eu.SecretKey
 				}
 			case "bybit":
 				if eu.APIKey != nil && *eu.APIKey != "" {
 					s.cfg.BybitAPIKey = *eu.APIKey
+					override.APIKey = *eu.APIKey
 				}
 				if eu.SecretKey != nil && *eu.SecretKey != "" {
 					s.cfg.BybitSecretKey = *eu.SecretKey
+					override.SecretKey = *eu.SecretKey
 				}
 			case "gateio":
 				if eu.APIKey != nil && *eu.APIKey != "" {
 					s.cfg.GateioAPIKey = *eu.APIKey
+					override.APIKey = *eu.APIKey
 				}
 				if eu.SecretKey != nil && *eu.SecretKey != "" {
 					s.cfg.GateioSecretKey = *eu.SecretKey
+					override.SecretKey = *eu.SecretKey
 				}
 			case "bitget":
 				if eu.APIKey != nil && *eu.APIKey != "" {
 					s.cfg.BitgetAPIKey = *eu.APIKey
+					override.APIKey = *eu.APIKey
 				}
 				if eu.SecretKey != nil && *eu.SecretKey != "" {
 					s.cfg.BitgetSecretKey = *eu.SecretKey
+					override.SecretKey = *eu.SecretKey
 				}
 				if eu.Passphrase != nil && *eu.Passphrase != "" {
 					s.cfg.BitgetPassphrase = *eu.Passphrase
+					override.Passphrase = *eu.Passphrase
 				}
 			case "okx":
 				if eu.APIKey != nil && *eu.APIKey != "" {
 					s.cfg.OKXAPIKey = *eu.APIKey
+					override.APIKey = *eu.APIKey
 				}
 				if eu.SecretKey != nil && *eu.SecretKey != "" {
 					s.cfg.OKXSecretKey = *eu.SecretKey
+					override.SecretKey = *eu.SecretKey
 				}
 				if eu.Passphrase != nil && *eu.Passphrase != "" {
 					s.cfg.OKXPassphrase = *eu.Passphrase
+					override.Passphrase = *eu.Passphrase
 				}
 			case "bingx":
 				if eu.APIKey != nil && *eu.APIKey != "" {
 					s.cfg.BingXAPIKey = *eu.APIKey
+					override.APIKey = *eu.APIKey
 				}
 				if eu.SecretKey != nil && *eu.SecretKey != "" {
 					s.cfg.BingXSecretKey = *eu.SecretKey
+					override.SecretKey = *eu.SecretKey
 				}
+			}
+			if override.APIKey != "" || override.SecretKey != "" || override.Passphrase != "" {
+				exchangeSecretOverrides[name] = override
 			}
 			// Update addresses
 			if eu.Address != nil {
@@ -1269,7 +1289,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Also persist to config.json so changes survive fresh installs.
-	if err := s.cfg.SaveJSON(); err != nil {
+	if err := s.cfg.SaveJSONWithExchangeSecretOverrides(exchangeSecretOverrides); err != nil {
 		s.log.Warn("save config.json: %v (Redis saved OK)", err)
 	}
 

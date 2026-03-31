@@ -323,14 +323,76 @@ func TestHandlePostConfig_IgnoresEmptyExchangeCredentialUpdates(t *testing.T) {
 	if !ok {
 		t.Fatalf("binance missing or wrong type: %#v", exchanges["binance"])
 	}
-	if got := binance["api_key"]; got != "runtime-key" {
-		t.Fatalf("expected config api_key to remain non-empty, got %#v", got)
+	if got := binance["api_key"]; got != "file-key" {
+		t.Fatalf("expected config api_key to preserve file value, got %#v", got)
 	}
-	if got := binance["secret_key"]; got != "runtime-secret" {
-		t.Fatalf("expected config secret_key to remain non-empty, got %#v", got)
+	if got := binance["secret_key"]; got != "file-secret" {
+		t.Fatalf("expected config secret_key to preserve file value, got %#v", got)
 	}
 
 	if _, err := os.Stat(configPath + ".bak"); err != nil {
 		t.Fatalf("expected backup config to be created: %v", err)
+	}
+}
+
+func TestHandlePostConfig_PersistsExplicitExchangeCredentialUpdates(t *testing.T) {
+	s, mr := newTestServer(t)
+	defer mr.Close()
+
+	s.cfg.BinanceAPIKey = "runtime-old-key"
+	s.cfg.BinanceSecretKey = "runtime-old-secret"
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	initialConfig := `{
+  "exchanges": {
+    "binance": {
+      "api_key": "file-old-key",
+      "secret_key": "file-old-secret",
+      "enabled": true
+    }
+  }
+}`
+	if err := os.WriteFile(configPath, []byte(initialConfig), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("CONFIG_FILE", configPath)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"exchanges":{"binance":{"api_key":"new-key","secret_key":"new-secret"}}}`))
+	w := httptest.NewRecorder()
+	s.handlePostConfig(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if s.cfg.BinanceAPIKey != "new-key" {
+		t.Fatalf("expected in-memory api key update, got %q", s.cfg.BinanceAPIKey)
+	}
+	if s.cfg.BinanceSecretKey != "new-secret" {
+		t.Fatalf("expected in-memory secret key update, got %q", s.cfg.BinanceSecretKey)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+
+	var saved map[string]interface{}
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+
+	exchanges, ok := saved["exchanges"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("exchanges missing or wrong type: %#v", saved["exchanges"])
+	}
+	binance, ok := exchanges["binance"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("binance missing or wrong type: %#v", exchanges["binance"])
+	}
+	if got := binance["api_key"]; got != "new-key" {
+		t.Fatalf("expected config api_key update, got %#v", got)
+	}
+	if got := binance["secret_key"]; got != "new-secret" {
+		t.Fatalf("expected config secret_key update, got %#v", got)
 	}
 }

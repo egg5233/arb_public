@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.41] - 2026-03-31
+
+### Fixed
+- **[config] Preserve newer on-disk exchange credentials on unrelated saves** — `/api/config` now only persists exchange secrets when a non-empty replacement was explicitly submitted; unrelated config/address saves preserve the existing `config.json` exchange secrets even when runtime memory is stale, and `SaveJSON()` now fails closed if `config.json.bak` cannot be written (`internal/api/handlers.go`, `internal/api/config_handlers_test.go`, `internal/config/config.go`, `internal/config/config_test.go`)
+
 ## [0.22.40] - 2026-03-31
 
 ### Fixed
