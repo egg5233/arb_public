@@ -122,6 +122,11 @@ func (s *Server) SetSpotOpportunities(opps []interface{}) {
 	s.spotOpps.Store(opps)
 }
 
+// BroadcastSpotOpportunities sends spot-futures opportunities to all WS clients.
+func (s *Server) BroadcastSpotOpportunities(opps []interface{}) {
+	s.hub.Broadcast("spot_opportunities", opps)
+}
+
 // handleSpotPositionHealth returns health metrics for a single spot-futures position.
 func (s *Server) handleSpotPositionHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

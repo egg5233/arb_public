@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.33] - 2026-03-31
+
+### Added
+- **[spot-futures] Dashboard now displays spot-futures opportunities with filter status** — discovery scan returns all opportunities (not just survivors); filtered ones carry a `filter_status` reason string so the dashboard table shows actionable vs informational rows; passed opportunities sort first with colored APR values and Open button, filtered rows are dimmed with reason text; WebSocket `spot_opportunities` broadcast added for real-time updates; `max_borrow_apr: 0` now disables the borrow rate cap filter (`discovery.go`, `engine.go`, `spot_handlers.go`, `Overview.tsx`, `useApi.ts`, `useWebSocket.ts`, `types.ts`, `App.tsx`)
+
 ## [0.22.32] - 2026-03-31
 
 ### Fixed

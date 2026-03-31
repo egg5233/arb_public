@@ -1,5 +1,5 @@
 import { useState, useEffect, type FC } from 'react';
-import type { Position, Stats, ExchangeInfo, SpotPosition } from '../types.ts';
+import type { Position, Stats, ExchangeInfo, SpotPosition, SpotOpportunity } from '../types.ts';
 import StatusBadge from '../components/StatusBadge.tsx';
 import { useLocale } from '../i18n/index.ts';
 
@@ -9,6 +9,8 @@ interface OverviewProps {
   exchanges: ExchangeInfo[];
   onDiagnose?: () => Promise<{ analysis: string }>;
   spotPositions?: SpotPosition[];
+  spotOpportunities?: SpotOpportunity[];
+  onSpotOpen?: (symbol: string, exchange: string, direction: string) => Promise<void>;
   getSpotAutoConfig?: () => Promise<{ auto_enabled: boolean; dry_run: boolean; persistence_scans: number; max_positions: number; capital_per_position: number; separate_acct_max_usdt: number; unified_acct_max_usdt: number }>;
   updateSpotAutoConfig?: (data: { enabled?: boolean; dry_run?: boolean }) => Promise<unknown>;
 }
@@ -25,7 +27,7 @@ function formatFundingCountdown(next: string | undefined): string {
   return `${hours}h ${mins % 60}m`;
 }
 
-const Overview: FC<OverviewProps> = ({ positions, stats, exchanges, onDiagnose, spotPositions = [], getSpotAutoConfig, updateSpotAutoConfig }) => {
+const Overview: FC<OverviewProps> = ({ positions, stats, exchanges, onDiagnose, spotPositions = [], spotOpportunities = [], onSpotOpen, getSpotAutoConfig, updateSpotAutoConfig }) => {
   const { t } = useLocale();
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagnosis, setDiagnosis] = useState<string | null>(null);
@@ -286,6 +288,75 @@ const Overview: FC<OverviewProps> = ({ positions, stats, exchanges, onDiagnose, 
           )}
         </div>
       )}
+
+      {/* Spot-Futures Opportunities */}
+      {spotOpportunities.length > 0 && (() => {
+        const passed = spotOpportunities.filter((o) => !o.filter_status);
+        return (
+          <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 overflow-x-auto">
+            <h3 className="text-sm font-semibold text-gray-400 mb-3">
+              Spot-Futures Opportunities
+              <span className="ml-2 text-xs font-normal text-gray-500">
+                {passed.length} actionable / {spotOpportunities.length} total
+              </span>
+            </h3>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-gray-400 text-left border-b border-gray-800">
+                  <th className="pb-2">#</th>
+                  <th className="pb-2">Symbol</th>
+                  <th className="pb-2">Exchange</th>
+                  <th className="pb-2">Direction</th>
+                  <th className="pb-2 text-right">Funding APR</th>
+                  <th className="pb-2 text-right">Borrow APR</th>
+                  <th className="pb-2 text-right">Fee APR</th>
+                  <th className="pb-2 text-right">Net APR</th>
+                  <th className="pb-2">Status</th>
+                  <th className="pb-2"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-800">
+                {spotOpportunities.map((opp, i) => {
+                  const filtered = !!opp.filter_status;
+                  const dirLabel = opp.direction === 'borrow_sell_long' ? 'A' : 'B';
+                  const dirColor = filtered ? 'text-gray-600' : opp.direction === 'borrow_sell_long' ? 'text-blue-400' : 'text-purple-400';
+                  const rowClass = filtered ? 'text-gray-600' : 'text-gray-100';
+                  return (
+                    <tr key={`${opp.symbol}-${opp.exchange}-${opp.direction}`} className={rowClass}>
+                      <td className="py-2 font-mono text-gray-500">{i + 1}</td>
+                      <td className="py-2 font-mono">{opp.symbol}</td>
+                      <td className="py-2 capitalize">{opp.exchange}</td>
+                      <td className={`py-2 ${dirColor}`}>Dir {dirLabel}</td>
+                      <td className={`py-2 text-right font-mono ${filtered ? '' : 'text-green-400'}`}>{(opp.funding_apr * 100).toFixed(1)}%</td>
+                      <td className={`py-2 text-right font-mono ${filtered ? '' : 'text-yellow-400'}`}>{opp.borrow_apr > 0 ? `${(opp.borrow_apr * 100).toFixed(1)}%` : '-'}</td>
+                      <td className={`py-2 text-right font-mono ${filtered ? '' : 'text-gray-400'}`}>{(opp.fee_apr * 100).toFixed(1)}%</td>
+                      <td className={`py-2 text-right font-mono font-semibold ${filtered ? '' : opp.net_apr >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {(opp.net_apr * 100).toFixed(1)}%
+                      </td>
+                      <td className="py-2 text-xs">
+                        {filtered
+                          ? <span className="text-gray-600">{opp.filter_status}</span>
+                          : <span className="text-green-400">ready</span>
+                        }
+                      </td>
+                      <td className="px-2 py-1">
+                        {onSpotOpen && !filtered && (
+                          <button
+                            onClick={() => onSpotOpen(opp.symbol, opp.exchange, opp.direction)}
+                            className="px-2 py-0.5 text-xs bg-green-600/20 text-green-400 rounded hover:bg-green-600/40"
+                          >
+                            Open
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        );
+      })()}
 
       {/* AI Diagnosis Modal */}
       {(diagnosis || diagError) && (

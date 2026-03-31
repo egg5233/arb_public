@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import type { Position, Opportunity, Stats, ExchangeInfo, TransferRecord, LogEntry, RejectedOpportunity, FundingEvent, SpotPosition, SpotStats } from '../types.ts';
+import type { Position, Opportunity, Stats, ExchangeInfo, TransferRecord, LogEntry, RejectedOpportunity, FundingEvent, SpotPosition, SpotStats, SpotOpportunity } from '../types.ts';
 
 const TOKEN_KEY = 'arb_token';
 
@@ -202,6 +202,17 @@ export function useApi() {
     return request<SpotStats>('/api/spot/stats');
   }, []);
 
+  const getSpotOpportunities = useCallback(() => {
+    return request<SpotOpportunity[]>('/api/spot/opportunities');
+  }, []);
+
+  const spotManualOpen = useCallback((symbol: string, exchange: string, direction: string) => {
+    return request<void>('/api/spot/open', {
+      method: 'POST',
+      body: JSON.stringify({ symbol, exchange, direction }),
+    });
+  }, []);
+
   const logout = useCallback(() => {
     clearToken();
     _setToken(null);
@@ -235,5 +246,7 @@ export function useApi() {
     getSpotAutoConfig,
     updateSpotAutoConfig,
     getSpotStats,
+    getSpotOpportunities,
+    spotManualOpen,
   };
 }

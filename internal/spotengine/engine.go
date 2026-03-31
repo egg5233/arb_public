@@ -117,10 +117,11 @@ func (e *SpotEngine) discoveryLoop() {
 	// Initial scan on startup.
 	e.log.Info("spot-futures discovery scan (interval: %s)", scanInterval)
 	opps := e.runDiscoveryScan()
-	e.logDiscoveryResults(opps)
+	passed := filterPassed(opps)
+	e.logDiscoveryResults(passed)
 	e.pushOppsToAPI(opps)
-	e.updatePersistenceCounts(opps)
-	e.attemptAutoEntries(opps)
+	e.updatePersistenceCounts(passed)
+	e.attemptAutoEntries(passed)
 
 	for {
 		select {
@@ -129,10 +130,11 @@ func (e *SpotEngine) discoveryLoop() {
 		case <-ticker.C:
 			e.log.Info("spot-futures discovery scan")
 			opps := e.runDiscoveryScan()
-			e.logDiscoveryResults(opps)
+			passed := filterPassed(opps)
+			e.logDiscoveryResults(passed)
 			e.pushOppsToAPI(opps)
-			e.updatePersistenceCounts(opps)
-			e.attemptAutoEntries(opps)
+			e.updatePersistenceCounts(passed)
+			e.attemptAutoEntries(passed)
 		}
 	}
 }
@@ -150,6 +152,18 @@ func (e *SpotEngine) pushOppsToAPI(opps []SpotArbOpportunity) {
 		items[i] = o
 	}
 	e.api.SetSpotOpportunities(items)
+	e.api.BroadcastSpotOpportunities(items)
+}
+
+// filterPassed returns only opportunities that passed all entry filters.
+func filterPassed(opps []SpotArbOpportunity) []SpotArbOpportunity {
+	var out []SpotArbOpportunity
+	for _, o := range opps {
+		if o.FilterStatus == "" {
+			out = append(out, o)
+		}
+	}
+	return out
 }
 
 // getLatestOpps returns a copy of the latest discovery scan results (thread-safe).
