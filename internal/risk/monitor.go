@@ -93,19 +93,71 @@ func (m *Monitor) checkAll() {
 		return
 	}
 
+	// Prefetch positions from all exchanges to reduce API calls.
+	// One GetAllPositions() call per exchange instead of one GetPosition() per (exchange,symbol) per check.
+	allPositions := map[string][]exchange.Position{} // exchange name -> all positions
+	allPosErrors := map[string]error{}               // exchange name -> error (if any)
+	fetchedExchanges := map[string]bool{}
+
 	for _, pos := range positions {
 		if pos.Status != models.StatusActive {
 			continue
 		}
-		m.checkPosition(pos)
+		for _, exchName := range []string{pos.LongExchange, pos.ShortExchange} {
+			if fetchedExchanges[exchName] {
+				continue
+			}
+			fetchedExchanges[exchName] = true
+			exch, ok := m.exchanges[exchName]
+			if !ok {
+				continue
+			}
+			ps, err := exch.GetAllPositions()
+			if err != nil {
+				allPosErrors[exchName] = err
+			} else {
+				allPositions[exchName] = ps
+			}
+		}
+	}
+
+	for _, pos := range positions {
+		if pos.Status != models.StatusActive {
+			continue
+		}
+		m.checkPosition(pos, allPositions, allPosErrors)
 	}
 }
 
-func (m *Monitor) checkPosition(pos *models.ArbitragePosition) {
+func (m *Monitor) checkPosition(pos *models.ArbitragePosition, allPositions map[string][]exchange.Position, allPosErrors map[string]error) {
 	m.checkFundingRate(pos)
-	m.checkPositionBalance(pos)
-	m.checkUnrealizedPnL(pos)
-	m.checkLiquidationDistance(pos)
+	m.checkPositionBalance(pos, allPositions, allPosErrors)
+	m.checkUnrealizedPnL(pos, allPositions, allPosErrors)
+	m.checkLiquidationDistance(pos, allPositions, allPosErrors)
+}
+
+// getCachedPositions returns positions for a symbol from the prefetched cache.
+// Falls back to GetPosition() if the exchange was not prefetched.
+func getCachedPositions(
+	exchName string, symbol string,
+	exch exchange.Exchange,
+	allPositions map[string][]exchange.Position,
+	allPosErrors map[string]error,
+) ([]exchange.Position, error) {
+	if err, hasErr := allPosErrors[exchName]; hasErr && err != nil {
+		return nil, err
+	}
+	if all, ok := allPositions[exchName]; ok {
+		var result []exchange.Position
+		for _, p := range all {
+			if p.Symbol == symbol {
+				result = append(result, p)
+			}
+		}
+		return result, nil
+	}
+	// Fallback: exchange was not prefetched
+	return exch.GetPosition(symbol)
 }
 
 // checkFundingRate verifies the funding rate spread has not reversed or narrowed significantly.
@@ -176,7 +228,7 @@ func (m *Monitor) checkFundingRate(pos *models.ArbitragePosition) {
 }
 
 // checkPositionBalance verifies long and short leg sizes are balanced.
-func (m *Monitor) checkPositionBalance(pos *models.ArbitragePosition) {
+func (m *Monitor) checkPositionBalance(pos *models.ArbitragePosition, allPositions map[string][]exchange.Position, allPosErrors map[string]error) {
 	longExch, ok := m.exchanges[pos.LongExchange]
 	if !ok {
 		return
@@ -186,12 +238,12 @@ func (m *Monitor) checkPositionBalance(pos *models.ArbitragePosition) {
 		return
 	}
 
-	longPositions, err := longExch.GetPosition(pos.Symbol)
+	longPositions, err := getCachedPositions(pos.LongExchange, pos.Symbol, longExch, allPositions, allPosErrors)
 	if err != nil {
 		m.log.Error("position check failed for %s on %s: %v", pos.Symbol, pos.LongExchange, err)
 		return
 	}
-	shortPositions, err := shortExch.GetPosition(pos.Symbol)
+	shortPositions, err := getCachedPositions(pos.ShortExchange, pos.Symbol, shortExch, allPositions, allPosErrors)
 	if err != nil {
 		m.log.Error("position check failed for %s on %s: %v", pos.Symbol, pos.ShortExchange, err)
 		return
@@ -227,7 +279,7 @@ func (m *Monitor) checkPositionBalance(pos *models.ArbitragePosition) {
 }
 
 // checkUnrealizedPnL monitors combined unrealized PnL against position value.
-func (m *Monitor) checkUnrealizedPnL(pos *models.ArbitragePosition) {
+func (m *Monitor) checkUnrealizedPnL(pos *models.ArbitragePosition, allPositions map[string][]exchange.Position, allPosErrors map[string]error) {
 	longExch, ok := m.exchanges[pos.LongExchange]
 	if !ok {
 		return
@@ -237,11 +289,11 @@ func (m *Monitor) checkUnrealizedPnL(pos *models.ArbitragePosition) {
 		return
 	}
 
-	longPositions, err := longExch.GetPosition(pos.Symbol)
+	longPositions, err := getCachedPositions(pos.LongExchange, pos.Symbol, longExch, allPositions, allPosErrors)
 	if err != nil {
 		return
 	}
-	shortPositions, err := shortExch.GetPosition(pos.Symbol)
+	shortPositions, err := getCachedPositions(pos.ShortExchange, pos.Symbol, shortExch, allPositions, allPosErrors)
 	if err != nil {
 		return
 	}
@@ -291,7 +343,7 @@ func (m *Monitor) checkUnrealizedPnL(pos *models.ArbitragePosition) {
 // Alert thresholds:
 //   - Warning  if mark price is within 15% of liquidation distance
 //   - Critical if mark price is within 10% of liquidation distance
-func (m *Monitor) checkLiquidationDistance(pos *models.ArbitragePosition) {
+func (m *Monitor) checkLiquidationDistance(pos *models.ArbitragePosition, allPositions map[string][]exchange.Position, allPosErrors map[string]error) {
 	type legInfo struct {
 		exchange string
 		side     string
@@ -306,7 +358,7 @@ func (m *Monitor) checkLiquidationDistance(pos *models.ArbitragePosition) {
 		if !ok {
 			continue
 		}
-		positions, err := exch.GetPosition(pos.Symbol)
+		positions, err := getCachedPositions(leg.exchange, pos.Symbol, exch, allPositions, allPosErrors)
 		if err != nil {
 			continue
 		}

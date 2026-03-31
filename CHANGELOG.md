@@ -81,6 +81,9 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **[spot-futures] Persistence counters no longer falsely satisfy consecutive-scan gate after restart** — `discoveryLoop` now seeds `lastSeen` from existing Redis persistence keys before the first scan; symbols absent during downtime are correctly purged on restart instead of having their stale counters incremented on reappearance (`internal/database/spot_state.go`, `internal/spotengine/engine.go`) ([ARB-80](/ARB/issues/ARB-80))
+- **Rebalance need over-estimation** — need calculation now simulates entry selection (ranked opps, skip occupied symbols, cap to remainingSlots × margin per exchange) instead of summing all opportunities (`internal/engine/engine.go`)
+- **Rebalance filter parity** — rebalanceScan now applies same 6 entry filters (persistence, volatility, cooldown, interval, funding window, backtest) to prevent funding wrong exchanges (`internal/discovery/scanner.go`)
+- **BingX rate limit** — risk-monitor now prefetches GetAllPositions() once per exchange per cycle instead of GetPosition() per symbol per check function, reducing 12+ API calls to 1 per exchange (`internal/risk/monitor.go`)
 
 ## [0.22.26] - 2026-03-31
 
