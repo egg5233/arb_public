@@ -24,6 +24,7 @@ type Manager struct {
 	log             *utils.Logger
 	allocator       *CapitalAllocator
 	spreadStability *SpreadStabilityChecker
+	scorer          *ExchangeScorer
 }
 
 // NewManager creates a new risk Manager.
@@ -43,6 +44,13 @@ func (m *Manager) SetSpreadHistoryProvider(provider func(models.Opportunity, int
 		return
 	}
 	m.spreadStability.SetHistoryProvider(provider)
+}
+
+func (m *Manager) SetExchangeScorer(scorer *ExchangeScorer) {
+	if m == nil {
+		return
+	}
+	m.scorer = scorer
 }
 
 // Approve runs all pre-trade risk checks and returns an Approval decision.
@@ -284,6 +292,17 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		return nil, fmt.Errorf("spread stability check: %w", err)
 	} else if reason != "" {
 		return &models.RiskApproval{Approved: false, Reason: reason}, nil
+	}
+
+	if m.cfg.EnableExchangeHealthScoring && m.scorer != nil {
+		longSnapshot := m.scorer.Snapshot(opp.LongExchange)
+		if longSnapshot.Score < m.scorer.minScore() {
+			return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("exchange health too low on %s: %.2f < %.2f", opp.LongExchange, longSnapshot.Score, m.scorer.minScore())}, nil
+		}
+		shortSnapshot := m.scorer.Snapshot(opp.ShortExchange)
+		if shortSnapshot.Score < m.scorer.minScore() {
+			return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("exchange health too low on %s: %.2f < %.2f", opp.ShortExchange, shortSnapshot.Score, m.scorer.minScore())}, nil
+		}
 	}
 
 	// g. Per-exchange capital exposure cap.

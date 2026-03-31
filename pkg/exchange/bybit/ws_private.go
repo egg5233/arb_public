@@ -21,13 +21,14 @@ const (
 
 // PrivateWS manages the private WebSocket connection for order updates.
 type PrivateWS struct {
-	apiKey     string
-	secretKey  string
-	conn       *websocket.Conn
-	connMu     sync.Mutex
-	orderStore *sync.Map
-	onFill     *func(exchange.OrderUpdate)
-	done       chan struct{}
+	apiKey               string
+	secretKey            string
+	conn                 *websocket.Conn
+	connMu               sync.Mutex
+	orderStore           *sync.Map
+	onFill               *func(exchange.OrderUpdate)
+	done                 chan struct{}
+	orderMetricsCallback exchange.OrderMetricsCallback
 }
 
 // NewPrivateWS creates a new private WebSocket handler.
@@ -39,6 +40,10 @@ func NewPrivateWS(apiKey, secretKey string, orderStore *sync.Map, onFill *func(e
 		onFill:     onFill,
 		done:       make(chan struct{}),
 	}
+}
+
+func (ws *PrivateWS) SetOrderMetricsCallback(fn exchange.OrderMetricsCallback) {
+	ws.orderMetricsCallback = fn
 }
 
 // Connect establishes the private WebSocket connection.
@@ -222,6 +227,14 @@ func (ws *PrivateWS) handleMessage(msg []byte) {
 		ws.orderStore.Store(o.OrderID, update)
 		log.Info("order update: %s %s status=%s filled=%.6f avg=%.8f reduceOnly=%v",
 			o.Symbol, o.OrderID, update.Status, filledQty, avgPrice, o.ReduceOnly)
+		if update.Status == "filled" && update.FilledVolume > 0 && ws.orderMetricsCallback != nil {
+			ws.orderMetricsCallback(exchange.OrderMetricEvent{
+				Type:      exchange.OrderMetricFilled,
+				OrderID:   o.OrderID,
+				FilledQty: update.FilledVolume,
+				Timestamp: time.Now(),
+			})
+		}
 		if update.Status == "filled" && update.FilledVolume > 0 && ws.onFill != nil && *ws.onFill != nil {
 			(*ws.onFill)(update)
 		}

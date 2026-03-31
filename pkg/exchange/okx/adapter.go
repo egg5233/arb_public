@@ -45,10 +45,26 @@ type Adapter struct {
 	depthSyms  map[string]bool // internal symbols with active depth subscriptions
 
 	// Private stream
-	privConn   *websocket.Conn
-	privMu     sync.Mutex
-	orderStore    sync.Map // orderID -> exchange.OrderUpdate
-	orderCallback func(exchange.OrderUpdate)
+	privConn             *websocket.Conn
+	privMu               sync.Mutex
+	orderStore           sync.Map // orderID -> exchange.OrderUpdate
+	orderCallback        func(exchange.OrderUpdate)
+	wsMetricsCallback    exchange.WSMetricsCallback
+	orderMetricsCallback exchange.OrderMetricsCallback
+}
+
+func (a *Adapter) SetMetricsCallback(fn exchange.MetricsCallback) {
+	if a.client != nil {
+		a.client.SetMetricsCallback(fn)
+	}
+}
+
+func (a *Adapter) SetWSMetricsCallback(fn exchange.WSMetricsCallback) {
+	a.wsMetricsCallback = fn
+}
+
+func (a *Adapter) SetOrderMetricsCallback(fn exchange.OrderMetricsCallback) {
+	a.orderMetricsCallback = fn
 }
 
 func (a *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
@@ -60,8 +76,12 @@ func (a *Adapter) CheckPermissions() exchange.PermissionResult {
 	checkOKX := func(data []byte, err error) exchange.PermStatus {
 		if err != nil {
 			s := err.Error()
-			if strings.Contains(s, "50111") { return exchange.PermDenied }
-			if strings.Contains(s, "403") { return exchange.PermUnknown }
+			if strings.Contains(s, "50111") {
+				return exchange.PermDenied
+			}
+			if strings.Contains(s, "403") {
+				return exchange.PermUnknown
+			}
 			return exchange.PermUnknown
 		}
 		return exchange.PermGranted
@@ -84,13 +104,17 @@ func (a *Adapter) CheckPermissions() exchange.PermissionResult {
 		"ccy": "USDT", "amt": "0", "dest": "4", "toAddr": "test", "fee": "0", "chain": "USDT-TRC20",
 	})
 	r.Withdraw = checkOKX(nil, err)
-	if err == nil { r.Withdraw = exchange.PermGranted }
+	if err == nil {
+		r.Withdraw = exchange.PermGranted
+	}
 	// Transfer
 	_, err = a.client.Post("/api/v5/asset/transfer", map[string]string{
 		"ccy": "USDT", "amt": "0", "from": "6", "to": "18", "type": "0",
 	})
 	r.Transfer = checkOKX(nil, err)
-	if err == nil { r.Transfer = exchange.PermGranted }
+	if err == nil {
+		r.Transfer = exchange.PermGranted
+	}
 	return r
 }
 
@@ -184,6 +208,13 @@ func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 	}
 	if resp[0].SCode != "0" {
 		return "", fmt.Errorf("PlaceOrder: code=%s msg=%s", resp[0].SCode, resp[0].SMsg)
+	}
+	if a.orderMetricsCallback != nil {
+		a.orderMetricsCallback(exchange.OrderMetricEvent{
+			Type:      exchange.OrderMetricPlaced,
+			OrderID:   resp[0].OrdID,
+			Timestamp: time.Now(),
+		})
 	}
 	return resp[0].OrdID, nil
 }
@@ -305,6 +336,14 @@ func (a *Adapter) GetOrderFilledQty(orderID, symbol string) (float64, error) {
 			AvgPrice:     avgPx,
 		})
 	}
+	if qty > 0 && a.orderMetricsCallback != nil {
+		a.orderMetricsCallback(exchange.OrderMetricEvent{
+			Type:      exchange.OrderMetricFilled,
+			OrderID:   orderID,
+			FilledQty: qty,
+			Timestamp: time.Now(),
+		})
+	}
 
 	return qty, nil
 }
@@ -347,13 +386,13 @@ func (a *Adapter) fetchPositions(params map[string]string) ([]exchange.Position,
 	}
 
 	var raw []struct {
-		InstID   string `json:"instId"`
-		PosSide  string `json:"posSide"`
-		Pos      string `json:"pos"`
-		AvailPos string `json:"availPos"`
-		AvgPx    string `json:"avgPx"`
-		Upl      string `json:"upl"`
-		Lever    string `json:"lever"`
+		InstID     string `json:"instId"`
+		PosSide    string `json:"posSide"`
+		Pos        string `json:"pos"`
+		AvailPos   string `json:"availPos"`
+		AvgPx      string `json:"avgPx"`
+		Upl        string `json:"upl"`
+		Lever      string `json:"lever"`
 		MgnMode    string `json:"mgnMode"`
 		LiqPx      string `json:"liqPx"`
 		MarkPx     string `json:"markPx"`
@@ -1025,13 +1064,13 @@ func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 	// so body is the raw data array.
 	var records []struct {
 		Pnl           string `json:"pnl"`         // PnL excluding fees
-		Fee           string `json:"fee"`          // trading fee (negative = charged)
-		FundingFee    string `json:"fundingFee"`   // funding fee
-		RealizedPnl   string `json:"realizedPnl"`  // = pnl + fee + fundingFee + liqPenalty
+		Fee           string `json:"fee"`         // trading fee (negative = charged)
+		FundingFee    string `json:"fundingFee"`  // funding fee
+		RealizedPnl   string `json:"realizedPnl"` // = pnl + fee + fundingFee + liqPenalty
 		OpenAvgPx     string `json:"openAvgPx"`
 		CloseAvgPx    string `json:"closeAvgPx"`
 		CloseTotalPos string `json:"closeTotalPos"`
-		PosSide       string `json:"posSide"` // "long", "short", or "net" (one-way mode)
+		PosSide       string `json:"posSide"`   // "long", "short", or "net" (one-way mode)
 		Direction     string `json:"direction"` // "long" or "short" (available directly)
 		OpenMaxPos    string `json:"openMaxPos"`
 		UTime         string `json:"uTime"`

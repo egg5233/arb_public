@@ -23,13 +23,14 @@ const (
 
 // PublicWS manages the public WebSocket connection for price streaming.
 type PublicWS struct {
-	conn       *websocket.Conn
-	connMu     sync.Mutex
-	priceStore *sync.Map
-	depthStore *sync.Map
-	symbols    []string
-	depthSyms  map[string]bool
-	done       chan struct{}
+	conn            *websocket.Conn
+	connMu          sync.Mutex
+	priceStore      *sync.Map
+	depthStore      *sync.Map
+	symbols         []string
+	depthSyms       map[string]bool
+	done            chan struct{}
+	metricsCallback exchange.WSMetricsCallback
 }
 
 // NewPublicWS creates a new public WebSocket handler.
@@ -40,6 +41,10 @@ func NewPublicWS(priceStore *sync.Map, depthStore *sync.Map) *PublicWS {
 		depthSyms:  make(map[string]bool),
 		done:       make(chan struct{}),
 	}
+}
+
+func (ws *PublicWS) SetMetricsCallback(fn exchange.WSMetricsCallback) {
+	ws.metricsCallback = fn
 }
 
 // Connect establishes the WebSocket connection and subscribes to symbols.
@@ -109,6 +114,9 @@ func (ws *PublicWS) dial() error {
 	}
 	ws.conn = conn
 	ws.connMu.Unlock()
+	if ws.metricsCallback != nil {
+		ws.metricsCallback(exchange.WSEvent{Type: exchange.WSEventConnect, Timestamp: time.Now()})
+	}
 	log.Info("bingx public ws connected")
 	return nil
 }
@@ -157,6 +165,9 @@ func (ws *PublicWS) readLoop() {
 		_, message, err := ws.conn.ReadMessage()
 		if err != nil {
 			log.Error("bingx public ws read: %v", err)
+			if ws.metricsCallback != nil {
+				ws.metricsCallback(exchange.WSEvent{Type: exchange.WSEventDisconnect, Timestamp: time.Now()})
+			}
 			return
 		}
 
@@ -179,6 +190,9 @@ func (ws *PublicWS) readLoop() {
 			continue
 		}
 
+		if ws.metricsCallback != nil {
+			ws.metricsCallback(exchange.WSEvent{Type: exchange.WSEventMessage, Timestamp: time.Now()})
+		}
 		ws.handleMessage(decoded)
 	}
 }

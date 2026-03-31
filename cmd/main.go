@@ -146,12 +146,31 @@ func main() {
 			}
 		}()
 	}
+	scorer := risk.NewExchangeScorer(cfg)
+	for name, exch := range exchanges {
+		exchangeName := name
+		exch.SetMetricsCallback(func(endpoint string, latency time.Duration, err error) {
+			scorer.RecordLatency(exchangeName, endpoint, latency, err)
+		})
+		if setter, ok := exch.(exchange.WSMetricsCallbackSetter); ok {
+			setter.SetWSMetricsCallback(func(event exchange.WSEvent) {
+				scorer.RecordWSEvent(exchangeName, event)
+			})
+		}
+		if setter, ok := exch.(exchange.OrderMetricsCallbackSetter); ok {
+			setter.SetOrderMetricsCallback(func(event exchange.OrderMetricEvent) {
+				scorer.RecordOrderEvent(exchangeName, event)
+			})
+		}
+	}
 	riskMgr := risk.NewManager(exchanges, db, cfg, allocator)
 	riskMgr.SetSpreadHistoryProvider(scanner.GetSpreadHistorySnapshot)
+	riskMgr.SetExchangeScorer(scorer)
 	riskMon := risk.NewMonitor(exchanges, db, cfg)
 	healthMon := risk.NewHealthMonitor(exchanges, db, cfg)
 	apiSrv := api.NewServer(db, cfg, exchanges)
 	apiSrv.SetPermissions(permResults)
+	apiSrv.SetExchangeScorer(scorer)
 	eng := engine.NewEngine(exchanges, scanner, riskMgr, riskMon, healthMon, db, apiSrv, cfg, allocator)
 	eng.SetContracts(allContracts)
 

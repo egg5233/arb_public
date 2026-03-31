@@ -22,14 +22,15 @@ const (
 
 // PriceWS manages the public WebSocket connection for BBO (best bid/offer) data.
 type PriceWS struct {
-	store      *sync.Map // symbol (Gate.io format) -> exchange.BBO
-	depthStore *sync.Map // Gate.io symbol -> *exchange.Orderbook
-	conn       *websocket.Conn
-	mu         sync.Mutex
-	done       chan struct{}
-	subs       []string          // Gate.io symbol list (BBO)
-	depthSubs  map[string]bool   // Gate.io symbols with depth subscriptions
-	multFunc   func(string) float64 // contractMult lookup
+	store           *sync.Map // symbol (Gate.io format) -> exchange.BBO
+	depthStore      *sync.Map // Gate.io symbol -> *exchange.Orderbook
+	conn            *websocket.Conn
+	mu              sync.Mutex
+	done            chan struct{}
+	subs            []string             // Gate.io symbol list (BBO)
+	depthSubs       map[string]bool      // Gate.io symbols with depth subscriptions
+	multFunc        func(string) float64 // contractMult lookup
+	metricsCallback exchange.WSMetricsCallback
 }
 
 // NewPriceWS creates a new public WebSocket manager.
@@ -41,6 +42,10 @@ func NewPriceWS(store *sync.Map, depthStore *sync.Map, multFunc func(string) flo
 		multFunc:   multFunc,
 		done:       make(chan struct{}),
 	}
+}
+
+func (ws *PriceWS) SetMetricsCallback(fn exchange.WSMetricsCallback) {
+	ws.metricsCallback = fn
 }
 
 // Connect establishes the WebSocket connection and subscribes to book ticker updates.
@@ -75,12 +80,18 @@ func (ws *PriceWS) connectAndListen() error {
 	syms := make([]string, len(ws.subs))
 	copy(syms, ws.subs)
 	ws.mu.Unlock()
+	if ws.metricsCallback != nil {
+		ws.metricsCallback(exchange.WSEvent{Type: exchange.WSEventConnect, Timestamp: time.Now()})
+	}
 
 	defer func() {
 		ws.mu.Lock()
 		ws.conn = nil
 		conn.Close()
 		ws.mu.Unlock()
+		if ws.metricsCallback != nil {
+			ws.metricsCallback(exchange.WSEvent{Type: exchange.WSEventDisconnect, Timestamp: time.Now()})
+		}
 	}()
 
 	// Subscribe to book ticker for all symbols
@@ -112,6 +123,9 @@ func (ws *PriceWS) connectAndListen() error {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
 			return fmt.Errorf("read: %w", err)
+		}
+		if ws.metricsCallback != nil {
+			ws.metricsCallback(exchange.WSEvent{Type: exchange.WSEventMessage, Timestamp: time.Now()})
 		}
 		ws.handleMessage(message)
 	}
@@ -278,10 +292,10 @@ func (ws *PriceWS) Subscribe(symbol string) bool {
 
 func (ws *PriceWS) sendDepthSubscribe(conn *websocket.Conn, symbol string) {
 	msg := map[string]interface{}{
-		"time":    time.Now().Unix(),
-		"channel": "futures.order_book",
-		"event":   "subscribe",
-		"payload": []string{symbol},
+		"time":     time.Now().Unix(),
+		"channel":  "futures.order_book",
+		"event":    "subscribe",
+		"payload":  []string{symbol},
 		"accuracy": "0",
 		"limit":    5,
 	}

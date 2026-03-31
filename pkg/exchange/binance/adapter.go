@@ -34,10 +34,26 @@ type Adapter struct {
 	depthSyms  map[string]bool // symbols with active depth subscriptions
 
 	// Private stream
-	listenKey  string
-	privConn   *websocket.Conn
-	orderStore    sync.Map // orderID (string) -> exchange.OrderUpdate
-	orderCallback func(exchange.OrderUpdate)
+	listenKey            string
+	privConn             *websocket.Conn
+	orderStore           sync.Map // orderID (string) -> exchange.OrderUpdate
+	orderCallback        func(exchange.OrderUpdate)
+	wsMetricsCallback    exchange.WSMetricsCallback
+	orderMetricsCallback exchange.OrderMetricsCallback
+}
+
+func (b *Adapter) SetMetricsCallback(fn exchange.MetricsCallback) {
+	if b.client != nil {
+		b.client.SetMetricsCallback(fn)
+	}
+}
+
+func (b *Adapter) SetWSMetricsCallback(fn exchange.WSMetricsCallback) {
+	b.wsMetricsCallback = fn
+}
+
+func (b *Adapter) SetOrderMetricsCallback(fn exchange.OrderMetricsCallback) {
+	b.orderMetricsCallback = fn
 }
 
 func (b *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
@@ -66,7 +82,9 @@ func (b *Adapter) CheckPermissions() exchange.PermissionResult {
 			Withdraw: exchange.PermUnknown, Transfer: exchange.PermUnknown}
 	}
 	toBool := func(v bool) exchange.PermStatus {
-		if v { return exchange.PermGranted }
+		if v {
+			return exchange.PermGranted
+		}
 		return exchange.PermDenied
 	}
 	return exchange.PermissionResult{
@@ -123,7 +141,15 @@ func (b *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return "", fmt.Errorf("PlaceOrder unmarshal: %w", err)
 	}
-	return strconv.FormatInt(resp.OrderID, 10), nil
+	orderID := strconv.FormatInt(resp.OrderID, 10)
+	if b.orderMetricsCallback != nil {
+		b.orderMetricsCallback(exchange.OrderMetricEvent{
+			Type:      exchange.OrderMetricPlaced,
+			OrderID:   orderID,
+			Timestamp: time.Now(),
+		})
+	}
+	return orderID, nil
 }
 
 func (b *Adapter) CancelOrder(symbol, orderID string) error {
@@ -200,6 +226,14 @@ func (b *Adapter) GetOrderFilledQty(orderID, symbol string) (float64, error) {
 		return 0, fmt.Errorf("GetOrderFilledQty unmarshal: %w", err)
 	}
 	qty, _ := strconv.ParseFloat(resp.ExecutedQty, 64)
+	if qty > 0 && b.orderMetricsCallback != nil {
+		b.orderMetricsCallback(exchange.OrderMetricEvent{
+			Type:      exchange.OrderMetricFilled,
+			OrderID:   orderID,
+			FilledQty: qty,
+			Timestamp: time.Now(),
+		})
+	}
 	return qty, nil
 }
 
@@ -426,10 +460,10 @@ func (b *Adapter) getFundingInfo(symbol string) (*fundingInfo, error) {
 	}
 
 	var infos []struct {
-		Symbol                    string `json:"symbol"`
-		FundingIntervalHours      int    `json:"fundingIntervalHours"`
-		AdjustedFundingRateCap    string `json:"adjustedFundingRateCap"`
-		AdjustedFundingRateFloor  string `json:"adjustedFundingRateFloor"`
+		Symbol                   string `json:"symbol"`
+		FundingIntervalHours     int    `json:"fundingIntervalHours"`
+		AdjustedFundingRateCap   string `json:"adjustedFundingRateCap"`
+		AdjustedFundingRateFloor string `json:"adjustedFundingRateFloor"`
 	}
 	if err := json.Unmarshal(body, &infos); err != nil {
 		return nil, fmt.Errorf("getFundingInfo unmarshal: %w", err)
@@ -767,15 +801,15 @@ func (b *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 	}
 
 	var resp []struct {
-		ID            int64  `json:"id"`
-		OrderID       int64  `json:"orderId"`
-		Symbol        string `json:"symbol"`
-		Side          string `json:"side"` // BUY or SELL
-		Price         string `json:"price"`
-		Qty           string `json:"qty"`
-		Commission    string `json:"commission"`
+		ID              int64  `json:"id"`
+		OrderID         int64  `json:"orderId"`
+		Symbol          string `json:"symbol"`
+		Side            string `json:"side"` // BUY or SELL
+		Price           string `json:"price"`
+		Qty             string `json:"qty"`
+		Commission      string `json:"commission"`
 		CommissionAsset string `json:"commissionAsset"`
-		Time          int64  `json:"time"`
+		Time            int64  `json:"time"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("GetUserTrades unmarshal: %w", err)

@@ -22,14 +22,19 @@ var wsPrivLog = utils.NewLogger("gateio-ws-priv")
 
 // PrivateWS manages the private WebSocket connection for order updates.
 type PrivateWS struct {
-	apiKey       string
-	secretKey    string
-	store        *sync.Map // orderID -> exchange.OrderUpdate
-	onFill       *func(exchange.OrderUpdate)
-	contractMult map[string]float64 // internalSymbol -> quanto multiplier
-	conn         *websocket.Conn
-	mu           sync.Mutex
-	done         chan struct{}
+	apiKey               string
+	secretKey            string
+	store                *sync.Map // orderID -> exchange.OrderUpdate
+	onFill               *func(exchange.OrderUpdate)
+	orderMetricsCallback exchange.OrderMetricsCallback
+	contractMult         map[string]float64 // internalSymbol -> quanto multiplier
+	conn                 *websocket.Conn
+	mu                   sync.Mutex
+	done                 chan struct{}
+}
+
+func (ws *PrivateWS) SetOrderMetricsCallback(fn exchange.OrderMetricsCallback) {
+	ws.orderMetricsCallback = fn
 }
 
 // NewPrivateWS creates a new private WebSocket manager.
@@ -153,13 +158,13 @@ func (ws *PrivateWS) pingLoop(conn *websocket.Conn, done <-chan struct{}) {
 
 func (ws *PrivateWS) handleMessage(data []byte) {
 	var msg struct {
-		Channel string          `json:"channel"`
-		Event   string          `json:"event"`
+		Channel string `json:"channel"`
+		Event   string `json:"event"`
 		Error   *struct {
 			Code    int    `json:"code"`
 			Message string `json:"message"`
 		} `json:"error"`
-		Result  json.RawMessage `json:"result"`
+		Result json.RawMessage `json:"result"`
 	}
 	if err := json.Unmarshal(data, &msg); err != nil {
 		return
@@ -181,16 +186,16 @@ func (ws *PrivateWS) handleMessage(data []byte) {
 
 	// Gate.io sends order updates as an array
 	var orders []struct {
-		ID           int64           `json:"id"`
-		Contract     string          `json:"contract"`       // e.g. "BTC_USDT"
-		Text         string          `json:"text"`
-		Status       string          `json:"status"`         // "open", "finished"
-		Size         int64           `json:"size"`
-		Left         int64           `json:"left"`
-		FillPrice    json.Number     `json:"fill_price"`     // Gate.io sends as number or string
-		FinishAs     string          `json:"finish_as"`      // "filled", "cancelled", "ioc", etc.
-		IsReduceOnly bool            `json:"is_reduce_only"` // true if reduce-only order
-		IsClose      bool            `json:"is_close"`       // true if close-position order
+		ID           int64       `json:"id"`
+		Contract     string      `json:"contract"` // e.g. "BTC_USDT"
+		Text         string      `json:"text"`
+		Status       string      `json:"status"` // "open", "finished"
+		Size         int64       `json:"size"`
+		Left         int64       `json:"left"`
+		FillPrice    json.Number `json:"fill_price"`     // Gate.io sends as number or string
+		FinishAs     string      `json:"finish_as"`      // "filled", "cancelled", "ioc", etc.
+		IsReduceOnly bool        `json:"is_reduce_only"` // true if reduce-only order
+		IsClose      bool        `json:"is_close"`       // true if close-position order
 	}
 	if err := json.Unmarshal(msg.Result, &orders); err != nil {
 		wsPrivLog.Error("unmarshal order update: %v", err)
@@ -244,6 +249,14 @@ func (ws *PrivateWS) handleMessage(data []byte) {
 			ReduceOnly:   reduceOnly,
 		}
 		ws.store.Store(orderID, upd)
+		if upd.Status == "filled" && upd.FilledVolume > 0 && ws.orderMetricsCallback != nil {
+			ws.orderMetricsCallback(exchange.OrderMetricEvent{
+				Type:      exchange.OrderMetricFilled,
+				OrderID:   orderID,
+				FilledQty: upd.FilledVolume,
+				Timestamp: time.Now(),
+			})
+		}
 		if upd.Status == "filled" && upd.FilledVolume > 0 && ws.onFill != nil && *ws.onFill != nil {
 			(*ws.onFill)(upd)
 		}

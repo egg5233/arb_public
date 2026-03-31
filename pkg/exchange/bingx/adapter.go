@@ -18,14 +18,36 @@ var log = utils.NewLogger("bingx")
 
 // Adapter implements the exchange.Exchange interface for BingX.
 type Adapter struct {
-	client     *Client
-	cfg        exchange.ExchangeConfig
-	priceStore sync.Map // symbol -> exchange.BBO
-	depthStore sync.Map // symbol -> *exchange.Orderbook
-	orderStore    sync.Map // orderID -> exchange.OrderUpdate
-	orderCallback func(exchange.OrderUpdate)
-	publicWS      *PublicWS
-	privateWS     *PrivateWS
+	client               *Client
+	cfg                  exchange.ExchangeConfig
+	priceStore           sync.Map // symbol -> exchange.BBO
+	depthStore           sync.Map // symbol -> *exchange.Orderbook
+	orderStore           sync.Map // orderID -> exchange.OrderUpdate
+	orderCallback        func(exchange.OrderUpdate)
+	publicWS             *PublicWS
+	privateWS            *PrivateWS
+	wsMetricsCallback    exchange.WSMetricsCallback
+	orderMetricsCallback exchange.OrderMetricsCallback
+}
+
+func (a *Adapter) SetMetricsCallback(fn exchange.MetricsCallback) {
+	if a.client != nil {
+		a.client.SetMetricsCallback(fn)
+	}
+}
+
+func (a *Adapter) SetWSMetricsCallback(fn exchange.WSMetricsCallback) {
+	a.wsMetricsCallback = fn
+	if a.publicWS != nil {
+		a.publicWS.SetMetricsCallback(fn)
+	}
+}
+
+func (a *Adapter) SetOrderMetricsCallback(fn exchange.OrderMetricsCallback) {
+	a.orderMetricsCallback = fn
+	if a.privateWS != nil {
+		a.privateWS.SetOrderMetricsCallback(fn)
+	}
 }
 
 func (a *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
@@ -61,7 +83,9 @@ func (a *Adapter) CheckPermissions() exchange.PermissionResult {
 			Withdraw: exchange.PermUnknown, Transfer: exchange.PermUnknown}
 	}
 	toBool := func(v bool) exchange.PermStatus {
-		if v { return exchange.PermGranted }
+		if v {
+			return exchange.PermGranted
+		}
 		return exchange.PermDenied
 	}
 	return exchange.PermissionResult{
@@ -187,7 +211,15 @@ func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 	if err := json.Unmarshal(result, &resp); err != nil {
 		return "", fmt.Errorf("bingx PlaceOrder parse: %w", err)
 	}
-	return resp.Order.OrderID.String(), nil
+	orderID := resp.Order.OrderID.String()
+	if a.orderMetricsCallback != nil {
+		a.orderMetricsCallback(exchange.OrderMetricEvent{
+			Type:      exchange.OrderMetricPlaced,
+			OrderID:   orderID,
+			Timestamp: time.Now(),
+		})
+	}
+	return orderID, nil
 }
 
 // CancelOrder cancels an order. Idempotent: returns nil if already cancelled/filled.
@@ -289,6 +321,14 @@ func (a *Adapter) GetOrderFilledQty(orderID, symbol string) (float64, error) {
 			AvgPrice:     avgPrice,
 		})
 	}
+	if qty > 0 && a.orderMetricsCallback != nil {
+		a.orderMetricsCallback(exchange.OrderMetricEvent{
+			Type:      exchange.OrderMetricFilled,
+			OrderID:   orderID,
+			FilledQty: qty,
+			Timestamp: time.Now(),
+		})
+	}
 
 	return qty, nil
 }
@@ -318,14 +358,14 @@ func (a *Adapter) GetAllPositions() ([]exchange.Position, error) {
 
 func (a *Adapter) parsePositions(data json.RawMessage) ([]exchange.Position, error) {
 	var positions []struct {
-		Symbol           string `json:"symbol"`
-		PositionSide     string `json:"positionSide"` // LONG or SHORT
-		PositionAmt      string `json:"positionAmt"`
-		AvailableAmt     string `json:"availableAmt"`
-		AvgPrice         string `json:"avgPrice"`
-		UnrealizedProfit string `json:"unrealizedProfit"`
+		Symbol           string      `json:"symbol"`
+		PositionSide     string      `json:"positionSide"` // LONG or SHORT
+		PositionAmt      string      `json:"positionAmt"`
+		AvailableAmt     string      `json:"availableAmt"`
+		AvgPrice         string      `json:"avgPrice"`
+		UnrealizedProfit string      `json:"unrealizedProfit"`
 		Leverage         json.Number `json:"leverage"`
-		Isolated         bool   `json:"isolated"`
+		Isolated         bool        `json:"isolated"`
 		LiquidationPrice json.Number `json:"liquidationPrice"`
 		MarkPrice        json.Number `json:"markPrice"`
 	}
@@ -445,8 +485,8 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 
 	var contracts []struct {
 		Symbol            string      `json:"symbol"`
-		Size              json.Number `json:"size"`              // stepSize
-		TradeMinQuantity  json.Number `json:"tradeMinQuantity"`  // minSize
+		Size              json.Number `json:"size"`             // stepSize
+		TradeMinQuantity  json.Number `json:"tradeMinQuantity"` // minSize
 		PricePrecision    int         `json:"pricePrecision"`
 		QuantityPrecision int         `json:"quantityPrecision"`
 		Status            int         `json:"status"` // 1 = trading
@@ -748,6 +788,7 @@ func (a *Adapter) StartPriceStream(symbols []string) {
 		bxSymbols[i] = toBingXSymbol(s)
 	}
 	a.publicWS = NewPublicWS(&a.priceStore, &a.depthStore)
+	a.publicWS.SetMetricsCallback(a.wsMetricsCallback)
 	a.publicWS.Connect(bxSymbols)
 }
 
@@ -806,6 +847,7 @@ func (a *Adapter) GetDepth(symbol string) (*exchange.Orderbook, bool) {
 // StartPrivateStream starts the private WebSocket for order updates.
 func (a *Adapter) StartPrivateStream() {
 	a.privateWS = NewPrivateWS(a.client, &a.orderStore, &a.orderCallback)
+	a.privateWS.SetOrderMetricsCallback(a.orderMetricsCallback)
 	a.privateWS.Connect()
 }
 
@@ -967,15 +1009,15 @@ func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 
 	var resp struct {
 		PositionHistory []struct {
-			NetProfit          string  `json:"netProfit"`
-			RealisedProfit     string  `json:"realisedProfit"`
-			PositionCommission string  `json:"positionCommission"`
-			TotalFunding       string  `json:"totalFunding"`
-			AvgPrice           string  `json:"avgPrice"`
-			AvgClosePrice      string  `json:"avgClosePrice"`
-			PositionAmt        string  `json:"positionAmt"`
-			PositionSide       string  `json:"positionSide"`
-			UpdateTime         int64   `json:"updateTime"`
+			NetProfit          string `json:"netProfit"`
+			RealisedProfit     string `json:"realisedProfit"`
+			PositionCommission string `json:"positionCommission"`
+			TotalFunding       string `json:"totalFunding"`
+			AvgPrice           string `json:"avgPrice"`
+			AvgClosePrice      string `json:"avgClosePrice"`
+			PositionAmt        string `json:"positionAmt"`
+			PositionSide       string `json:"positionSide"`
+			UpdateTime         int64  `json:"updateTime"`
 		} `json:"positionHistory"`
 	}
 	if err := json.Unmarshal(result, &resp); err != nil {

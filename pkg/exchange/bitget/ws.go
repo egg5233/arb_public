@@ -31,13 +31,14 @@ type dataStore struct {
 
 // WSClient manages the public WebSocket connection for price streams.
 type WSClient struct {
-	stop      chan struct{}
-	mu        sync.Mutex
-	conn      *websocket.Conn
-	symbols   map[string]bool
-	depthSyms map[string]bool
-	store     *dataStore
-	depthStore sync.Map // symbol -> *exchange.Orderbook
+	stop            chan struct{}
+	mu              sync.Mutex
+	conn            *websocket.Conn
+	symbols         map[string]bool
+	depthSyms       map[string]bool
+	store           *dataStore
+	depthStore      sync.Map // symbol -> *exchange.Orderbook
+	metricsCallback exchange.WSMetricsCallback
 }
 
 // NewWSClient creates a new public WebSocket client.
@@ -48,6 +49,10 @@ func NewWSClient() *WSClient {
 		depthSyms: make(map[string]bool),
 		store:     &dataStore{},
 	}
+}
+
+func (ws *WSClient) SetMetricsCallback(fn exchange.WSMetricsCallback) {
+	ws.metricsCallback = fn
 }
 
 // Start launches the public WebSocket stream (ticker channel) with auto-reconnect.
@@ -193,6 +198,9 @@ func (ws *WSClient) connectPublic() error {
 		ws.conn = nil
 		ws.mu.Unlock()
 		c.Close()
+		if ws.metricsCallback != nil {
+			ws.metricsCallback(exchange.WSEvent{Type: exchange.WSEventDisconnect, Timestamp: time.Now()})
+		}
 	}()
 
 	ws.mu.Lock()
@@ -202,6 +210,9 @@ func (ws *WSClient) connectPublic() error {
 		symbols = append(symbols, s)
 	}
 	ws.mu.Unlock()
+	if ws.metricsCallback != nil {
+		ws.metricsCallback(exchange.WSEvent{Type: exchange.WSEventConnect, Timestamp: time.Now()})
+	}
 
 	// Ping loop
 	go keepAlive(c, "Public", ws.stop)
@@ -241,6 +252,9 @@ func (ws *WSClient) connectPublic() error {
 		_, message, err := c.ReadMessage()
 		if err != nil {
 			return err
+		}
+		if ws.metricsCallback != nil {
+			ws.metricsCallback(exchange.WSEvent{Type: exchange.WSEventMessage, Timestamp: time.Now()})
 		}
 		if string(message) == "pong" {
 			continue

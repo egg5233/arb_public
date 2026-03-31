@@ -154,12 +154,18 @@ func (a *Adapter) connectPriceWS(symbols []string) error {
 	a.priceMu.Lock()
 	a.priceConn = conn
 	a.priceMu.Unlock()
+	if a.wsMetricsCallback != nil {
+		a.wsMetricsCallback(exchange.WSEvent{Type: exchange.WSEventConnect, Timestamp: time.Now()})
+	}
 
 	defer func() {
 		conn.Close()
 		a.priceMu.Lock()
 		a.priceConn = nil
 		a.priceMu.Unlock()
+		if a.wsMetricsCallback != nil {
+			a.wsMetricsCallback(exchange.WSEvent{Type: exchange.WSEventDisconnect, Timestamp: time.Now()})
+		}
 	}()
 
 	// Subscribe to tickers for all symbols + depth for active depth symbols
@@ -203,6 +209,9 @@ func (a *Adapter) connectPriceWS(symbols []string) error {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
 			return err
+		}
+		if a.wsMetricsCallback != nil {
+			a.wsMetricsCallback(exchange.WSEvent{Type: exchange.WSEventMessage, Timestamp: time.Now()})
 		}
 
 		// OKX sends "pong" as a text response to "ping"

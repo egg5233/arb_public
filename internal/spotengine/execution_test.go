@@ -79,6 +79,7 @@ func (s *closeTestExchange) GetOrderUpdate(orderID string) (exchange.OrderUpdate
 	return upd, ok
 }
 func (s *closeTestExchange) SetOrderCallback(func(exchange.OrderUpdate)) {}
+func (s *closeTestExchange) SetMetricsCallback(exchange.MetricsCallback) {}
 func (s *closeTestExchange) PlaceStopLoss(exchange.StopLossParams) (string, error) {
 	return "", nil
 }

@@ -14,13 +14,15 @@ import (
 
 // Adapter implements exchange.Exchange for Bitget.
 type Adapter struct {
-	client        *Client
-	ws            *WSClient
-	wsPriv        *WSPrivateClient
-	apiKey        string
-	secretKey     string
-	passphrase    string
-	orderCallback func(exchange.OrderUpdate)
+	client               *Client
+	ws                   *WSClient
+	wsPriv               *WSPrivateClient
+	apiKey               string
+	secretKey            string
+	passphrase           string
+	orderCallback        func(exchange.OrderUpdate)
+	wsMetricsCallback    exchange.WSMetricsCallback
+	orderMetricsCallback exchange.OrderMetricsCallback
 }
 
 // NewAdapter creates a Bitget adapter from the unified config.
@@ -38,6 +40,26 @@ func (a *Adapter) Name() string { return "bitget" }
 
 func (a *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
 	a.orderCallback = fn
+}
+
+func (a *Adapter) SetMetricsCallback(fn exchange.MetricsCallback) {
+	if a.client != nil {
+		a.client.SetMetricsCallback(fn)
+	}
+}
+
+func (a *Adapter) SetWSMetricsCallback(fn exchange.WSMetricsCallback) {
+	a.wsMetricsCallback = fn
+	if a.ws != nil {
+		a.ws.SetMetricsCallback(fn)
+	}
+}
+
+func (a *Adapter) SetOrderMetricsCallback(fn exchange.OrderMetricsCallback) {
+	a.orderMetricsCallback = fn
+	if a.wsPriv != nil {
+		a.wsPriv.SetOrderMetricsCallback(fn)
+	}
 }
 
 func (a *Adapter) CheckPermissions() exchange.PermissionResult {
@@ -114,6 +136,13 @@ func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 	}
 	if resp.Code != "00000" {
 		return "", fmt.Errorf("place-order failed: code=%s msg=%s", resp.Code, resp.Msg)
+	}
+	if a.orderMetricsCallback != nil {
+		a.orderMetricsCallback(exchange.OrderMetricEvent{
+			Type:      exchange.OrderMetricPlaced,
+			OrderID:   resp.Data.OrderId,
+			Timestamp: time.Now(),
+		})
 	}
 	return resp.Data.OrderId, nil
 }
@@ -217,7 +246,16 @@ func (a *Adapter) GetOrderFilledQty(orderID, symbol string) (float64, error) {
 	if resp.Data.BaseVolume == "" {
 		return 0, nil
 	}
-	return strconv.ParseFloat(resp.Data.BaseVolume, 64)
+	qty, err := strconv.ParseFloat(resp.Data.BaseVolume, 64)
+	if err == nil && qty > 0 && a.orderMetricsCallback != nil {
+		a.orderMetricsCallback(exchange.OrderMetricEvent{
+			Type:      exchange.OrderMetricFilled,
+			OrderID:   orderID,
+			FilledQty: qty,
+			Timestamp: time.Now(),
+		})
+	}
+	return qty, err
 }
 
 // ==================== Positions ====================
@@ -810,6 +848,7 @@ func mapChainToBitget(chain string) string {
 
 func (a *Adapter) StartPriceStream(symbols []string) {
 	a.ws = NewWSClient()
+	a.ws.SetMetricsCallback(a.wsMetricsCallback)
 	a.ws.Start(symbols)
 }
 
@@ -876,6 +915,7 @@ func (a *Adapter) GetDepth(symbol string) (*exchange.Orderbook, bool) {
 
 func (a *Adapter) StartPrivateStream() {
 	a.wsPriv = NewWSPrivateClient(a.apiKey, a.secretKey, a.passphrase, &a.orderCallback)
+	a.wsPriv.SetOrderMetricsCallback(a.orderMetricsCallback)
 	a.wsPriv.Start()
 }
 

@@ -1,6 +1,7 @@
 package bybit
 
 import (
+	"arb/pkg/exchange"
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -46,11 +47,12 @@ func (e *APIError) Error() string {
 
 // Client is a low-level HTTP client for the Bybit v5 REST API.
 type Client struct {
-	baseURL    string
-	apiKey     string
-	secretKey  string
-	recvWindow string
-	httpClient *http.Client
+	baseURL         string
+	apiKey          string
+	secretKey       string
+	recvWindow      string
+	httpClient      *http.Client
+	metricsCallback exchange.MetricsCallback
 }
 
 // NewClient creates a new Bybit REST API client.
@@ -62,6 +64,10 @@ func NewClient(apiKey, secretKey string) *Client {
 		recvWindow: defaultRecvWindow,
 		httpClient: &http.Client{Timeout: 15 * time.Second},
 	}
+}
+
+func (c *Client) SetMetricsCallback(fn exchange.MetricsCallback) {
+	c.metricsCallback = fn
 }
 
 // sign computes the HMAC-SHA256 signature (hex encoded).
@@ -103,6 +109,14 @@ func (c *Client) Post(path string, params map[string]string) (json.RawMessage, e
 
 // doRequest performs a single authenticated HTTP request.
 func (c *Client) doRequest(method, path string, queryParams, bodyParams map[string]string) (json.RawMessage, error) {
+	start := time.Now()
+	var err error
+	defer func() {
+		if c.metricsCallback != nil {
+			c.metricsCallback(path, time.Since(start), err)
+		}
+	}()
+
 	timestamp := fmt.Sprintf("%d", time.Now().UnixMilli())
 
 	var fullURL string
@@ -155,11 +169,13 @@ func (c *Client) doRequest(method, path string, queryParams, bodyParams map[stri
 
 	var apiResp APIResponse
 	if err := json.Unmarshal(data, &apiResp); err != nil {
-		return nil, fmt.Errorf("bybit: unmarshal response: %w (body=%s)", err, string(data))
+		err = fmt.Errorf("bybit: unmarshal response: %w (body=%s)", err, string(data))
+		return nil, err
 	}
 
 	if apiResp.RetCode != 0 {
-		return nil, &APIError{Code: apiResp.RetCode, Msg: apiResp.RetMsg}
+		err = &APIError{Code: apiResp.RetCode, Msg: apiResp.RetMsg}
+		return nil, err
 	}
 
 	return apiResp.Result, nil

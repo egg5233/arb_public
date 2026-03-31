@@ -434,23 +434,29 @@ type configFundResponse struct {
 }
 
 type configRiskResponse struct {
-	MarginL3Threshold      float64 `json:"margin_l3_threshold"`
-	MarginL4Threshold      float64 `json:"margin_l4_threshold"`
-	MarginL5Threshold      float64 `json:"margin_l5_threshold"`
-	L4ReduceFraction       float64 `json:"l4_reduce_fraction"`
-	MarginSafetyMultiplier float64 `json:"margin_safety_multiplier"`
-	RiskMonitorIntervalSec int     `json:"risk_monitor_interval_sec"`
-	EnableLiqTrendTracking bool    `json:"enable_liq_trend_tracking"`
-	LiqProjectionMinutes   int     `json:"liq_projection_minutes"`
-	LiqWarningSlopeThresh  float64 `json:"liq_warning_slope_thresh"`
-	LiqCriticalSlopeThresh float64 `json:"liq_critical_slope_thresh"`
-	LiqMinSamples          int     `json:"liq_min_samples"`
-	EnableCapitalAllocator bool    `json:"enable_capital_allocator"`
-	MaxTotalExposureUSDT   float64 `json:"max_total_exposure_usdt"`
-	MaxPerpPerpPct         float64 `json:"max_perp_perp_pct"`
-	MaxSpotFuturesPct      float64 `json:"max_spot_futures_pct"`
-	MaxPerExchangePct      float64 `json:"max_per_exchange_pct"`
-	ReservationTTLSec      int     `json:"reservation_ttl_sec"`
+	MarginL3Threshold           float64 `json:"margin_l3_threshold"`
+	MarginL4Threshold           float64 `json:"margin_l4_threshold"`
+	MarginL5Threshold           float64 `json:"margin_l5_threshold"`
+	L4ReduceFraction            float64 `json:"l4_reduce_fraction"`
+	MarginSafetyMultiplier      float64 `json:"margin_safety_multiplier"`
+	RiskMonitorIntervalSec      int     `json:"risk_monitor_interval_sec"`
+	EnableLiqTrendTracking      bool    `json:"enable_liq_trend_tracking"`
+	LiqProjectionMinutes        int     `json:"liq_projection_minutes"`
+	LiqWarningSlopeThresh       float64 `json:"liq_warning_slope_thresh"`
+	LiqCriticalSlopeThresh      float64 `json:"liq_critical_slope_thresh"`
+	LiqMinSamples               int     `json:"liq_min_samples"`
+	EnableCapitalAllocator      bool    `json:"enable_capital_allocator"`
+	MaxTotalExposureUSDT        float64 `json:"max_total_exposure_usdt"`
+	MaxPerpPerpPct              float64 `json:"max_perp_perp_pct"`
+	MaxSpotFuturesPct           float64 `json:"max_spot_futures_pct"`
+	MaxPerExchangePct           float64 `json:"max_per_exchange_pct"`
+	ReservationTTLSec           int     `json:"reservation_ttl_sec"`
+	EnableExchangeHealthScoring bool    `json:"enable_exchange_health_scoring"`
+	ExchHealthLatencyMs         int     `json:"exch_health_latency_ms"`
+	ExchHealthMinUptime         float64 `json:"exch_health_min_uptime"`
+	ExchHealthMinFillRate       float64 `json:"exch_health_min_fill_rate"`
+	ExchHealthMinScore          float64 `json:"exch_health_min_score"`
+	ExchHealthWindowMin         int     `json:"exch_health_window_min"`
 }
 
 // apiKeyPreview returns the first 6 characters of a key followed by "...", or empty if blank.
@@ -551,23 +557,29 @@ func (s *Server) buildConfigResponse() configResponse {
 			CapitalPerLeg: s.cfg.CapitalPerLeg,
 		},
 		Risk: configRiskResponse{
-			MarginL3Threshold:      s.cfg.MarginL3Threshold,
-			MarginL4Threshold:      s.cfg.MarginL4Threshold,
-			MarginL5Threshold:      s.cfg.MarginL5Threshold,
-			L4ReduceFraction:       s.cfg.L4ReduceFraction,
-			MarginSafetyMultiplier: s.cfg.MarginSafetyMultiplier,
-			RiskMonitorIntervalSec: s.cfg.RiskMonitorIntervalSec,
-			EnableLiqTrendTracking: s.cfg.EnableLiqTrendTracking,
-			LiqProjectionMinutes:   s.cfg.LiqProjectionMinutes,
-			LiqWarningSlopeThresh:  s.cfg.LiqWarningSlopeThresh,
-			LiqCriticalSlopeThresh: s.cfg.LiqCriticalSlopeThresh,
-			LiqMinSamples:          s.cfg.LiqMinSamples,
-			EnableCapitalAllocator: s.cfg.EnableCapitalAllocator,
-			MaxTotalExposureUSDT:   s.cfg.MaxTotalExposureUSDT,
-			MaxPerpPerpPct:         s.cfg.MaxPerpPerpPct,
-			MaxSpotFuturesPct:      s.cfg.MaxSpotFuturesPct,
-			MaxPerExchangePct:      s.cfg.MaxPerExchangePct,
-			ReservationTTLSec:      s.cfg.ReservationTTLSec,
+			MarginL3Threshold:           s.cfg.MarginL3Threshold,
+			MarginL4Threshold:           s.cfg.MarginL4Threshold,
+			MarginL5Threshold:           s.cfg.MarginL5Threshold,
+			L4ReduceFraction:            s.cfg.L4ReduceFraction,
+			MarginSafetyMultiplier:      s.cfg.MarginSafetyMultiplier,
+			RiskMonitorIntervalSec:      s.cfg.RiskMonitorIntervalSec,
+			EnableLiqTrendTracking:      s.cfg.EnableLiqTrendTracking,
+			LiqProjectionMinutes:        s.cfg.LiqProjectionMinutes,
+			LiqWarningSlopeThresh:       s.cfg.LiqWarningSlopeThresh,
+			LiqCriticalSlopeThresh:      s.cfg.LiqCriticalSlopeThresh,
+			LiqMinSamples:               s.cfg.LiqMinSamples,
+			EnableCapitalAllocator:      s.cfg.EnableCapitalAllocator,
+			MaxTotalExposureUSDT:        s.cfg.MaxTotalExposureUSDT,
+			MaxPerpPerpPct:              s.cfg.MaxPerpPerpPct,
+			MaxSpotFuturesPct:           s.cfg.MaxSpotFuturesPct,
+			MaxPerExchangePct:           s.cfg.MaxPerExchangePct,
+			ReservationTTLSec:           s.cfg.ReservationTTLSec,
+			EnableExchangeHealthScoring: s.cfg.EnableExchangeHealthScoring,
+			ExchHealthLatencyMs:         s.cfg.ExchHealthLatencyMs,
+			ExchHealthMinUptime:         s.cfg.ExchHealthMinUptime,
+			ExchHealthMinFillRate:       s.cfg.ExchHealthMinFillRate,
+			ExchHealthMinScore:          s.cfg.ExchHealthMinScore,
+			ExchHealthWindowMin:         s.cfg.ExchHealthWindowMin,
 		},
 		AI: configAIResponse{
 			Endpoint:  s.cfg.AIEndpoint,
@@ -627,6 +639,28 @@ func (s *Server) buildExchangesResponse() map[string]configExchangeResponse {
 // handleGetConfig returns the current runtime configuration (safe fields only).
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: s.buildConfigResponse()})
+}
+
+func (s *Server) handleGetExchangeHealth(w http.ResponseWriter, r *http.Request) {
+	data := make(map[string]interface{}, len(s.exchanges))
+	for name := range s.exchanges {
+		if s.scorer == nil {
+			data[name] = map[string]interface{}{
+				"exchange":            name,
+				"score":               1.0,
+				"latency_score":       1.0,
+				"uptime_score":        1.0,
+				"fill_rate_score":     1.0,
+				"ws_uptime":           1.0,
+				"fill_rate":           1.0,
+				"window_minutes":      60,
+				"min_score_for_entry": 0.5,
+			}
+			continue
+		}
+		data[name] = s.scorer.Snapshot(name)
+	}
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: data})
 }
 
 // ---------- Nested config update structs (pointer fields to detect presence) ----------
@@ -763,23 +797,29 @@ type fundUpdate struct {
 }
 
 type riskUpdate struct {
-	MarginL3Threshold      *float64 `json:"margin_l3_threshold"`
-	MarginL4Threshold      *float64 `json:"margin_l4_threshold"`
-	MarginL5Threshold      *float64 `json:"margin_l5_threshold"`
-	L4ReduceFraction       *float64 `json:"l4_reduce_fraction"`
-	MarginSafetyMultiplier *float64 `json:"margin_safety_multiplier"`
-	RiskMonitorIntervalSec *int     `json:"risk_monitor_interval_sec"`
-	EnableLiqTrendTracking *bool    `json:"enable_liq_trend_tracking"`
-	LiqProjectionMinutes   *int     `json:"liq_projection_minutes"`
-	LiqWarningSlopeThresh  *float64 `json:"liq_warning_slope_thresh"`
-	LiqCriticalSlopeThresh *float64 `json:"liq_critical_slope_thresh"`
-	LiqMinSamples          *int     `json:"liq_min_samples"`
-	EnableCapitalAllocator *bool    `json:"enable_capital_allocator"`
-	MaxTotalExposureUSDT   *float64 `json:"max_total_exposure_usdt"`
-	MaxPerpPerpPct         *float64 `json:"max_perp_perp_pct"`
-	MaxSpotFuturesPct      *float64 `json:"max_spot_futures_pct"`
-	MaxPerExchangePct      *float64 `json:"max_per_exchange_pct"`
-	ReservationTTLSec      *int     `json:"reservation_ttl_sec"`
+	MarginL3Threshold           *float64 `json:"margin_l3_threshold"`
+	MarginL4Threshold           *float64 `json:"margin_l4_threshold"`
+	MarginL5Threshold           *float64 `json:"margin_l5_threshold"`
+	L4ReduceFraction            *float64 `json:"l4_reduce_fraction"`
+	MarginSafetyMultiplier      *float64 `json:"margin_safety_multiplier"`
+	RiskMonitorIntervalSec      *int     `json:"risk_monitor_interval_sec"`
+	EnableLiqTrendTracking      *bool    `json:"enable_liq_trend_tracking"`
+	LiqProjectionMinutes        *int     `json:"liq_projection_minutes"`
+	LiqWarningSlopeThresh       *float64 `json:"liq_warning_slope_thresh"`
+	LiqCriticalSlopeThresh      *float64 `json:"liq_critical_slope_thresh"`
+	LiqMinSamples               *int     `json:"liq_min_samples"`
+	EnableCapitalAllocator      *bool    `json:"enable_capital_allocator"`
+	MaxTotalExposureUSDT        *float64 `json:"max_total_exposure_usdt"`
+	MaxPerpPerpPct              *float64 `json:"max_perp_perp_pct"`
+	MaxSpotFuturesPct           *float64 `json:"max_spot_futures_pct"`
+	MaxPerExchangePct           *float64 `json:"max_per_exchange_pct"`
+	ReservationTTLSec           *int     `json:"reservation_ttl_sec"`
+	EnableExchangeHealthScoring *bool    `json:"enable_exchange_health_scoring"`
+	ExchHealthLatencyMs         *int     `json:"exch_health_latency_ms"`
+	ExchHealthMinUptime         *float64 `json:"exch_health_min_uptime"`
+	ExchHealthMinFillRate       *float64 `json:"exch_health_min_fill_rate"`
+	ExchHealthMinScore          *float64 `json:"exch_health_min_score"`
+	ExchHealthWindowMin         *int     `json:"exch_health_window_min"`
 }
 
 // handlePostConfig accepts a nested JSON body and updates config fields,
@@ -1012,6 +1052,24 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if rk.ReservationTTLSec != nil && *rk.ReservationTTLSec > 0 {
 			s.cfg.ReservationTTLSec = *rk.ReservationTTLSec
+		}
+		if rk.EnableExchangeHealthScoring != nil {
+			s.cfg.EnableExchangeHealthScoring = *rk.EnableExchangeHealthScoring
+		}
+		if rk.ExchHealthLatencyMs != nil && *rk.ExchHealthLatencyMs > 0 {
+			s.cfg.ExchHealthLatencyMs = *rk.ExchHealthLatencyMs
+		}
+		if rk.ExchHealthMinUptime != nil && *rk.ExchHealthMinUptime >= 0 && *rk.ExchHealthMinUptime <= 1 {
+			s.cfg.ExchHealthMinUptime = *rk.ExchHealthMinUptime
+		}
+		if rk.ExchHealthMinFillRate != nil && *rk.ExchHealthMinFillRate >= 0 && *rk.ExchHealthMinFillRate <= 1 {
+			s.cfg.ExchHealthMinFillRate = *rk.ExchHealthMinFillRate
+		}
+		if rk.ExchHealthMinScore != nil && *rk.ExchHealthMinScore >= 0 && *rk.ExchHealthMinScore <= 1 {
+			s.cfg.ExchHealthMinScore = *rk.ExchHealthMinScore
+		}
+		if rk.ExchHealthWindowMin != nil && *rk.ExchHealthWindowMin > 0 {
+			s.cfg.ExchHealthWindowMin = *rk.ExchHealthWindowMin
 		}
 	}
 
@@ -1265,6 +1323,12 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"max_spot_futures_pct":                strconv.FormatFloat(snapshot.Risk.MaxSpotFuturesPct, 'f', -1, 64),
 		"max_per_exchange_pct":                strconv.FormatFloat(snapshot.Risk.MaxPerExchangePct, 'f', -1, 64),
 		"reservation_ttl_sec":                 strconv.Itoa(snapshot.Risk.ReservationTTLSec),
+		"enable_exchange_health_scoring":      strconv.FormatBool(snapshot.Risk.EnableExchangeHealthScoring),
+		"exch_health_latency_ms":              strconv.Itoa(snapshot.Risk.ExchHealthLatencyMs),
+		"exch_health_min_uptime":              strconv.FormatFloat(snapshot.Risk.ExchHealthMinUptime, 'f', -1, 64),
+		"exch_health_min_fill_rate":           strconv.FormatFloat(snapshot.Risk.ExchHealthMinFillRate, 'f', -1, 64),
+		"exch_health_min_score":               strconv.FormatFloat(snapshot.Risk.ExchHealthMinScore, 'f', -1, 64),
+		"exch_health_window_min":              strconv.Itoa(snapshot.Risk.ExchHealthWindowMin),
 		"exit_depth_timeout_sec":              strconv.Itoa(snapshot.Strategy.Exit.DepthTimeoutSec),
 		"enable_spread_reversal":              strconv.FormatBool(snapshot.Strategy.Exit.EnableSpreadReversal),
 		"spread_reversal_tolerance":           strconv.Itoa(snapshot.Strategy.Exit.SpreadReversalTolerance),

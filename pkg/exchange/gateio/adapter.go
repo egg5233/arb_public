@@ -31,12 +31,34 @@ type Adapter struct {
 	depthStore sync.Map // Gate.io symbol -> *exchange.Orderbook
 
 	// Private stream
-	privateWS     *PrivateWS
-	orderStore    sync.Map // orderID (string) -> exchange.OrderUpdate
-	orderCallback func(exchange.OrderUpdate)
+	privateWS            *PrivateWS
+	orderStore           sync.Map // orderID (string) -> exchange.OrderUpdate
+	orderCallback        func(exchange.OrderUpdate)
+	wsMetricsCallback    exchange.WSMetricsCallback
+	orderMetricsCallback exchange.OrderMetricsCallback
 
 	// Unified account detection
 	isUnified bool
+}
+
+func (a *Adapter) SetMetricsCallback(fn exchange.MetricsCallback) {
+	if a.client != nil {
+		a.client.SetMetricsCallback(fn)
+	}
+}
+
+func (a *Adapter) SetWSMetricsCallback(fn exchange.WSMetricsCallback) {
+	a.wsMetricsCallback = fn
+	if a.priceWS != nil {
+		a.priceWS.SetMetricsCallback(fn)
+	}
+}
+
+func (a *Adapter) SetOrderMetricsCallback(fn exchange.OrderMetricsCallback) {
+	a.orderMetricsCallback = fn
+	if a.privateWS != nil {
+		a.privateWS.SetOrderMetricsCallback(fn)
+	}
 }
 
 func (a *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
@@ -176,7 +198,15 @@ func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return "", fmt.Errorf("PlaceOrder unmarshal: %w (body: %s)", err, string(data))
 	}
-	return strconv.FormatInt(resp.ID, 10), nil
+	orderID := strconv.FormatInt(resp.ID, 10)
+	if a.orderMetricsCallback != nil {
+		a.orderMetricsCallback(exchange.OrderMetricEvent{
+			Type:      exchange.OrderMetricPlaced,
+			OrderID:   orderID,
+			Timestamp: time.Now(),
+		})
+	}
+	return orderID, nil
 }
 
 func (a *Adapter) CancelOrder(symbol, orderID string) error {
@@ -268,6 +298,14 @@ func (a *Adapter) GetOrderFilledQty(orderID, symbol string) (float64, error) {
 		if mult, ok := a.contractMult[symbol]; ok && mult > 0 {
 			filled *= mult
 		}
+	}
+	if filled > 0 && a.orderMetricsCallback != nil {
+		a.orderMetricsCallback(exchange.OrderMetricEvent{
+			Type:      exchange.OrderMetricFilled,
+			OrderID:   orderID,
+			FilledQty: filled,
+			Timestamp: time.Now(),
+		})
 	}
 	return filled, nil
 }
@@ -926,6 +964,7 @@ func (a *Adapter) StartPriceStream(symbols []string) {
 	}
 
 	a.priceWS = NewPriceWS(&a.priceStore, &a.depthStore, a.getContractMult)
+	a.priceWS.SetMetricsCallback(a.wsMetricsCallback)
 	go a.priceWS.Connect(gateSymbols)
 }
 
@@ -999,6 +1038,7 @@ func (a *Adapter) GetDepth(symbol string) (*exchange.Orderbook, bool) {
 
 func (a *Adapter) StartPrivateStream() {
 	a.privateWS = NewPrivateWS(a.apiKey, a.secretKey, &a.orderStore, a.contractMult, &a.orderCallback)
+	a.privateWS.SetOrderMetricsCallback(a.orderMetricsCallback)
 	go a.privateWS.Connect()
 }
 

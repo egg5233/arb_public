@@ -1,6 +1,7 @@
 package binance
 
 import (
+	"arb/pkg/exchange"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -28,19 +29,21 @@ func (e *APIError) Error() string {
 
 // Client is a low-level HTTP client for the Binance USDT-M Futures API.
 type Client struct {
-	baseURL   string
-	apiKey    string
-	secretKey string
-	http      *http.Client
+	baseURL         string
+	apiKey          string
+	secretKey       string
+	http            *http.Client
+	metricsCallback exchange.MetricsCallback
 }
 
 // WithBaseURL returns a copy of the client using a different base URL.
 func (c *Client) WithBaseURL(url string) *Client {
 	return &Client{
-		baseURL:   url,
-		apiKey:    c.apiKey,
-		secretKey: c.secretKey,
-		http:      c.http,
+		baseURL:         url,
+		apiKey:          c.apiKey,
+		secretKey:       c.secretKey,
+		http:            c.http,
+		metricsCallback: c.metricsCallback,
 	}
 }
 
@@ -54,6 +57,10 @@ func NewClient(apiKey, secretKey string) *Client {
 			Timeout: 10 * time.Second,
 		},
 	}
+}
+
+func (c *Client) SetMetricsCallback(fn exchange.MetricsCallback) {
+	c.metricsCallback = fn
 }
 
 // sign computes the HMAC-SHA256 signature of the given query string.
@@ -176,6 +183,14 @@ func (c *Client) SpotGet(path string, params map[string]string) ([]byte, error) 
 
 // doRequest executes the HTTP request and checks for Binance error responses.
 func (c *Client) doRequest(req *http.Request) ([]byte, error) {
+	start := time.Now()
+	var err error
+	defer func() {
+		if c.metricsCallback != nil {
+			c.metricsCallback(req.URL.Path, time.Since(start), err)
+		}
+	}()
+
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("http request failed: %w", err)
@@ -191,16 +206,19 @@ func (c *Client) doRequest(req *http.Request) ([]byte, error) {
 	if resp.StatusCode >= 400 {
 		var apiErr APIError
 		if json.Unmarshal(body, &apiErr) == nil && apiErr.Code != 0 {
-			return nil, &apiErr
+			err = &apiErr
+			return nil, err
 		}
-		return nil, fmt.Errorf("binance HTTP %d: %s", resp.StatusCode, string(body))
+		err = fmt.Errorf("binance HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, err
 	}
 
 	// Some successful responses can still contain error codes (e.g. -4046)
 	if len(body) > 0 && body[0] == '{' {
 		var apiErr APIError
 		if json.Unmarshal(body, &apiErr) == nil && apiErr.Code < 0 {
-			return nil, &apiErr
+			err = &apiErr
+			return nil, err
 		}
 	}
 

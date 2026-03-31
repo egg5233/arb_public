@@ -1,6 +1,7 @@
 package gateio
 
 import (
+	"arb/pkg/exchange"
 	"crypto/hmac"
 	"crypto/sha512"
 	"encoding/hex"
@@ -28,10 +29,11 @@ func (e *APIError) Error() string {
 
 // Client is a low-level HTTP client for the Gate.io API v4.
 type Client struct {
-	baseURL   string
-	apiKey    string
-	secretKey string
-	http      *http.Client
+	baseURL         string
+	apiKey          string
+	secretKey       string
+	http            *http.Client
+	metricsCallback exchange.MetricsCallback
 }
 
 // NewClient creates a new Gate.io API client.
@@ -44,6 +46,10 @@ func NewClient(apiKey, secretKey string) *Client {
 			Timeout: 15 * time.Second,
 		},
 	}
+}
+
+func (c *Client) SetMetricsCallback(fn exchange.MetricsCallback) {
+	c.metricsCallback = fn
 }
 
 // NewClientWithBase creates a client with a custom base URL (for testing).
@@ -108,6 +114,14 @@ func (c *Client) Delete(path string, params map[string]string) ([]byte, error) {
 
 // doRequest performs a single authenticated HTTP request.
 func (c *Client) doRequest(method, path string, queryParams map[string]string, body string) ([]byte, error) {
+	start := time.Now()
+	var err error
+	defer func() {
+		if c.metricsCallback != nil {
+			c.metricsCallback(cleanPathForMetrics(path), time.Since(start), err)
+		}
+	}()
+
 	timestamp := fmt.Sprintf("%d", time.Now().Unix())
 
 	// Separate any inline query string already in the path
@@ -159,7 +173,8 @@ func (c *Client) doRequest(method, path string, queryParams map[string]string, b
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("http request failed: %w", err)
+		err = fmt.Errorf("http request failed: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
@@ -172,12 +187,21 @@ func (c *Client) doRequest(method, path string, queryParams map[string]string, b
 	if resp.StatusCode >= 400 {
 		var apiErr APIError
 		if json.Unmarshal(data, &apiErr) == nil && apiErr.Label != "" {
-			return nil, &apiErr
+			err = &apiErr
+			return nil, err
 		}
-		return nil, fmt.Errorf("gateio HTTP %d: %s", resp.StatusCode, string(data))
+		err = fmt.Errorf("gateio HTTP %d: %s", resp.StatusCode, string(data))
+		return nil, err
 	}
 
 	return data, nil
+}
+
+func cleanPathForMetrics(path string) string {
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		return path[:idx]
+	}
+	return path
 }
 
 // isRetryable checks whether an error or API response is transient and worth retrying.

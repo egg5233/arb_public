@@ -898,6 +898,7 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
     const l4r = (getByPath(config, ['risk', 'l4_reduce_fraction']) as number) ?? 0;
     const liqTrendEnabled = getByPath(config, ['risk', 'enable_liq_trend_tracking']) === true;
     const allocatorEnabled = getByPath(config, ['risk', 'enable_capital_allocator']) === true;
+    const exchangeHealthEnabled = getByPath(config, ['risk', 'enable_exchange_health_scoring']) === true;
 
     return (
       <div className="space-y-4">
@@ -1069,6 +1070,22 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
               />
               <span className={`text-sm font-semibold ${allocatorEnabled ? 'text-green-400' : 'text-red-400'}`}>
                 {allocatorEnabled ? 'ON' : 'OFF'}
+              </span>
+            </div>
+          </div>
+
+          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+            <div className="flex items-center gap-2 mb-2">
+              <label className="text-sm font-medium">{t('cfg.field.enableExchangeHealthScoring')}</label>
+              <Tooltip text={t('cfg.desc.enableExchangeHealthScoring')} />
+            </div>
+            <div className="flex items-center gap-3">
+              <ToggleSwitch
+                on={exchangeHealthEnabled}
+                onChange={(v) => handleBoolChange(['risk', 'enable_exchange_health_scoring'], v)}
+              />
+              <span className={`text-sm font-semibold ${exchangeHealthEnabled ? 'text-green-400' : 'text-red-400'}`}>
+                {exchangeHealthEnabled ? 'ON' : 'OFF'}
               </span>
             </div>
           </div>

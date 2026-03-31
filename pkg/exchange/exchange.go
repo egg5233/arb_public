@@ -9,6 +9,7 @@ import (
 type Exchange interface {
 	// Identity
 	Name() string
+	SetMetricsCallback(fn MetricsCallback)
 
 	// Orders
 	PlaceOrder(req PlaceOrderParams) (orderID string, err error)

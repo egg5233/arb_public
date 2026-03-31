@@ -1,6 +1,7 @@
 package bitget
 
 import (
+	"arb/pkg/exchange"
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -30,11 +31,12 @@ var retryableCodes = map[string]bool{
 // Client is a self-contained REST client for the Bitget v2 API.
 // It handles HMAC-SHA256 + base64 signing with passphrase support.
 type Client struct {
-	apiKey     string
-	secretKey  string
-	passphrase string
-	baseURL    string
-	httpClient *http.Client
+	apiKey          string
+	secretKey       string
+	passphrase      string
+	baseURL         string
+	httpClient      *http.Client
+	metricsCallback exchange.MetricsCallback
 }
 
 // NewClient creates a new Bitget REST API client.
@@ -46,6 +48,10 @@ func NewClient(apiKey, secretKey, passphrase string) *Client {
 		baseURL:    baseURL,
 		httpClient: &http.Client{Timeout: 15 * time.Second},
 	}
+}
+
+func (c *Client) SetMetricsCallback(fn exchange.MetricsCallback) {
+	c.metricsCallback = fn
 }
 
 // sign generates the HMAC-SHA256 signature for Bitget API authentication.
@@ -87,12 +93,19 @@ func (c *Client) Post(path string, params map[string]string) (string, error) {
 
 // doRequest performs a single authenticated HTTP request.
 func (c *Client) doRequest(method, path string, queryParams, bodyParams map[string]string) (string, error) {
+	start := time.Now()
+	var err error
+	defer func() {
+		if c.metricsCallback != nil {
+			c.metricsCallback(path, time.Since(start), err)
+		}
+	}()
+
 	timestamp := fmt.Sprintf("%d", time.Now().UnixMilli())
 
 	var requestPath string
 	var bodyStr string
 	var reqBody io.Reader
-	var err error
 
 	if method == "GET" {
 		qs := buildQueryString(queryParams)

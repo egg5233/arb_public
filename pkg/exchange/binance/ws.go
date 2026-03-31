@@ -163,18 +163,27 @@ func (b *Adapter) connectPriceWS(symbols []string) error {
 	b.priceMu.Lock()
 	b.priceConn = conn
 	b.priceMu.Unlock()
+	if b.wsMetricsCallback != nil {
+		b.wsMetricsCallback(exchange.WSEvent{Type: exchange.WSEventConnect, Timestamp: time.Now()})
+	}
 
 	defer func() {
 		conn.Close()
 		b.priceMu.Lock()
 		b.priceConn = nil
 		b.priceMu.Unlock()
+		if b.wsMetricsCallback != nil {
+			b.wsMetricsCallback(exchange.WSEvent{Type: exchange.WSEventDisconnect, Timestamp: time.Now()})
+		}
 	}()
 
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
 			return fmt.Errorf("price ws read: %w", err)
+		}
+		if b.wsMetricsCallback != nil {
+			b.wsMetricsCallback(exchange.WSEvent{Type: exchange.WSEventMessage, Timestamp: time.Now()})
 		}
 
 		// Combined stream format: {"stream":"btcusdt@bookTicker","data":{...}}

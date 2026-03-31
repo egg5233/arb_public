@@ -38,10 +38,10 @@ func (s stubExchange) StartPriceStream([]string)                             {}
 func (s stubExchange) SubscribeSymbol(string) bool                           { return false }
 func (s stubExchange) GetBBO(string) (exchange.BBO, bool)                    { return exchange.BBO{}, false }
 func (s stubExchange) GetPriceStore() *sync.Map                              { return nil }
-func (s stubExchange) SubscribeDepth(string) bool                              { return false }
-func (s stubExchange) UnsubscribeDepth(string) bool                            { return false }
-func (s stubExchange) GetDepth(string) (*exchange.Orderbook, bool)             { return nil, false }
-func (s stubExchange) StartPrivateStream()                                     {}
+func (s stubExchange) SubscribeDepth(string) bool                            { return false }
+func (s stubExchange) UnsubscribeDepth(string) bool                          { return false }
+func (s stubExchange) GetDepth(string) (*exchange.Orderbook, bool)           { return nil, false }
+func (s stubExchange) StartPrivateStream()                                   {}
 func (s stubExchange) GetOrderUpdate(string) (exchange.OrderUpdate, bool) {
 	return exchange.OrderUpdate{}, false
 }
@@ -51,11 +51,12 @@ func (s stubExchange) GetUserTrades(string, time.Time, int) ([]exchange.Trade, e
 func (s stubExchange) PlaceStopLoss(exchange.StopLossParams) (string, error) { return "", nil }
 func (s stubExchange) CancelStopLoss(string, string) error                   { return nil }
 func (s stubExchange) SetOrderCallback(func(exchange.OrderUpdate))           {}
+func (s stubExchange) SetMetricsCallback(exchange.MetricsCallback)           {}
 func (s stubExchange) GetFundingFees(string, time.Time) ([]exchange.FundingPayment, error) {
 	return nil, nil
 }
 func (s stubExchange) EnsureOneWayMode() error { return nil }
-func (s stubExchange) Close()                   {}
+func (s stubExchange) Close()                  {}
 func (s stubExchange) GetClosePnL(string, time.Time) ([]exchange.ClosePnL, error) {
 	return nil, nil
 }

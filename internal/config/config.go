@@ -63,12 +63,18 @@ type Config struct {
 	LiqMinSamples          int
 
 	// Cross-strategy capital allocator (default disabled for production safety)
-	EnableCapitalAllocator bool
-	MaxTotalExposureUSDT   float64
-	MaxPerpPerpPct         float64
-	MaxSpotFuturesPct      float64
-	MaxPerExchangePct      float64
-	ReservationTTLSec      int
+	EnableCapitalAllocator      bool
+	MaxTotalExposureUSDT        float64
+	MaxPerpPerpPct              float64
+	MaxSpotFuturesPct           float64
+	MaxPerExchangePct           float64
+	ReservationTTLSec           int
+	EnableExchangeHealthScoring bool
+	ExchHealthLatencyMs         int
+	ExchHealthMinUptime         float64
+	ExchHealthMinFillRate       float64
+	ExchHealthMinScore          float64
+	ExchHealthWindowMin         int
 
 	// Persistence filter: require opportunities to appear across multiple scans
 	PersistLookback1h time.Duration // lookback window for 1h-interval pairs (default 15m)
@@ -361,23 +367,29 @@ type jsonFund struct {
 }
 
 type jsonRisk struct {
-	MarginL3Threshold      *float64 `json:"margin_l3_threshold"`
-	MarginL4Threshold      *float64 `json:"margin_l4_threshold"`
-	MarginL5Threshold      *float64 `json:"margin_l5_threshold"`
-	L4ReduceFraction       *float64 `json:"l4_reduce_fraction"`
-	MarginSafetyMultiplier *float64 `json:"margin_safety_multiplier"`
-	RiskMonitorIntervalSec *int     `json:"risk_monitor_interval_sec"`
-	EnableLiqTrendTracking *bool    `json:"enable_liq_trend_tracking"`
-	LiqProjectionMinutes   *int     `json:"liq_projection_minutes"`
-	LiqWarningSlopeThresh  *float64 `json:"liq_warning_slope_thresh"`
-	LiqCriticalSlopeThresh *float64 `json:"liq_critical_slope_thresh"`
-	LiqMinSamples          *int     `json:"liq_min_samples"`
-	EnableCapitalAllocator *bool    `json:"enable_capital_allocator"`
-	MaxTotalExposureUSDT   *float64 `json:"max_total_exposure_usdt"`
-	MaxPerpPerpPct         *float64 `json:"max_perp_perp_pct"`
-	MaxSpotFuturesPct      *float64 `json:"max_spot_futures_pct"`
-	MaxPerExchangePct      *float64 `json:"max_per_exchange_pct"`
-	ReservationTTLSec      *int     `json:"reservation_ttl_sec"`
+	MarginL3Threshold           *float64 `json:"margin_l3_threshold"`
+	MarginL4Threshold           *float64 `json:"margin_l4_threshold"`
+	MarginL5Threshold           *float64 `json:"margin_l5_threshold"`
+	L4ReduceFraction            *float64 `json:"l4_reduce_fraction"`
+	MarginSafetyMultiplier      *float64 `json:"margin_safety_multiplier"`
+	RiskMonitorIntervalSec      *int     `json:"risk_monitor_interval_sec"`
+	EnableLiqTrendTracking      *bool    `json:"enable_liq_trend_tracking"`
+	LiqProjectionMinutes        *int     `json:"liq_projection_minutes"`
+	LiqWarningSlopeThresh       *float64 `json:"liq_warning_slope_thresh"`
+	LiqCriticalSlopeThresh      *float64 `json:"liq_critical_slope_thresh"`
+	LiqMinSamples               *int     `json:"liq_min_samples"`
+	EnableCapitalAllocator      *bool    `json:"enable_capital_allocator"`
+	MaxTotalExposureUSDT        *float64 `json:"max_total_exposure_usdt"`
+	MaxPerpPerpPct              *float64 `json:"max_perp_perp_pct"`
+	MaxSpotFuturesPct           *float64 `json:"max_spot_futures_pct"`
+	MaxPerExchangePct           *float64 `json:"max_per_exchange_pct"`
+	ReservationTTLSec           *int     `json:"reservation_ttl_sec"`
+	EnableExchangeHealthScoring *bool    `json:"enable_exchange_health_scoring"`
+	ExchHealthLatencyMs         *int     `json:"exch_health_latency_ms"`
+	ExchHealthMinUptime         *float64 `json:"exch_health_min_uptime"`
+	ExchHealthMinFillRate       *float64 `json:"exch_health_min_fill_rate"`
+	ExchHealthMinScore          *float64 `json:"exch_health_min_score"`
+	ExchHealthWindowMin         *int     `json:"exch_health_window_min"`
 }
 
 // detectChromePath returns the first Chrome binary found in common locations.
@@ -429,6 +441,12 @@ func Load() *Config {
 		MaxSpotFuturesPct:               0.60,
 		MaxPerExchangePct:               0.60,
 		ReservationTTLSec:               300,
+		EnableExchangeHealthScoring:     false,
+		ExchHealthLatencyMs:             2000,
+		ExchHealthMinUptime:             0.95,
+		ExchHealthMinFillRate:           0.80,
+		ExchHealthMinScore:              0.50,
+		ExchHealthWindowMin:             60,
 		PersistLookback1h:               90 * time.Minute,
 		PersistMinCount1h:               1,
 		PersistLookback4h:               180 * time.Minute,
@@ -796,6 +814,24 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if rk.ReservationTTLSec != nil {
 			c.ReservationTTLSec = *rk.ReservationTTLSec
 		}
+		if rk.EnableExchangeHealthScoring != nil {
+			c.EnableExchangeHealthScoring = *rk.EnableExchangeHealthScoring
+		}
+		if rk.ExchHealthLatencyMs != nil {
+			c.ExchHealthLatencyMs = *rk.ExchHealthLatencyMs
+		}
+		if rk.ExchHealthMinUptime != nil {
+			c.ExchHealthMinUptime = *rk.ExchHealthMinUptime
+		}
+		if rk.ExchHealthMinFillRate != nil {
+			c.ExchHealthMinFillRate = *rk.ExchHealthMinFillRate
+		}
+		if rk.ExchHealthMinScore != nil {
+			c.ExchHealthMinScore = *rk.ExchHealthMinScore
+		}
+		if rk.ExchHealthWindowMin != nil {
+			c.ExchHealthWindowMin = *rk.ExchHealthWindowMin
+		}
 	}
 
 	// Exchanges
@@ -1128,6 +1164,12 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	risk["max_spot_futures_pct"] = c.MaxSpotFuturesPct
 	risk["max_per_exchange_pct"] = c.MaxPerExchangePct
 	risk["reservation_ttl_sec"] = c.ReservationTTLSec
+	risk["enable_exchange_health_scoring"] = c.EnableExchangeHealthScoring
+	risk["exch_health_latency_ms"] = c.ExchHealthLatencyMs
+	risk["exch_health_min_uptime"] = c.ExchHealthMinUptime
+	risk["exch_health_min_fill_rate"] = c.ExchHealthMinFillRate
+	risk["exch_health_min_score"] = c.ExchHealthMinScore
+	risk["exch_health_window_min"] = c.ExchHealthWindowMin
 
 	ai := getMap(raw, "ai")
 	if c.AIEndpoint != "" {

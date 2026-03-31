@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"arb/internal/config"
+	"arb/internal/risk"
+	"arb/pkg/exchange"
 )
 
 func TestHandlePostConfig_PersistsDisabledSpotFutures(t *testing.T) {
@@ -266,6 +268,114 @@ func TestHandleConfig_BorrowSpikeDetectionRoundTrip(t *testing.T) {
 	}
 	if reloaded.BorrowSpikeMinAbsolute != 0.06 {
 		t.Fatalf("expected reloaded BorrowSpikeMinAbsolute=0.06, got %v", reloaded.BorrowSpikeMinAbsolute)
+	}
+}
+
+func TestHandleConfig_ExchangeHealthScoringRoundTrip(t *testing.T) {
+	s, mr := newTestServer(t)
+	defer mr.Close()
+
+	s.cfg.EnableExchangeHealthScoring = false
+	s.cfg.ExchHealthLatencyMs = 2000
+	s.cfg.ExchHealthMinUptime = 0.95
+	s.cfg.ExchHealthMinFillRate = 0.80
+	s.cfg.ExchHealthMinScore = 0.50
+	s.cfg.ExchHealthWindowMin = 60
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	initialConfig := `{
+  "risk": {
+    "enable_exchange_health_scoring": false,
+    "exch_health_latency_ms": 2000,
+    "exch_health_min_uptime": 0.95,
+    "exch_health_min_fill_rate": 0.80,
+    "exch_health_min_score": 0.50,
+    "exch_health_window_min": 60
+  }
+}`
+	if err := os.WriteFile(configPath, []byte(initialConfig), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("CONFIG_FILE", configPath)
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	getW := httptest.NewRecorder()
+	s.handleGetConfig(getW, getReq)
+
+	var getResp struct {
+		OK   bool                   `json:"ok"`
+		Data map[string]interface{} `json:"data"`
+	}
+	if err := json.NewDecoder(getW.Body).Decode(&getResp); err != nil {
+		t.Fatalf("decode GET response: %v", err)
+	}
+	riskData, ok := getResp.Data["risk"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("risk payload missing or wrong type: %#v", getResp.Data["risk"])
+	}
+	if riskData["enable_exchange_health_scoring"] != false {
+		t.Fatalf("expected enable_exchange_health_scoring=false, got %#v", riskData["enable_exchange_health_scoring"])
+	}
+
+	postReq := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"risk":{"enable_exchange_health_scoring":true,"exch_health_latency_ms":1500,"exch_health_min_uptime":0.9,"exch_health_min_fill_rate":0.75,"exch_health_min_score":0.6,"exch_health_window_min":30}}`))
+	postW := httptest.NewRecorder()
+	s.handlePostConfig(postW, postReq)
+	if postW.Code != http.StatusOK {
+		t.Fatalf("POST expected 200, got %d: %s", postW.Code, postW.Body.String())
+	}
+
+	if !s.cfg.EnableExchangeHealthScoring || s.cfg.ExchHealthLatencyMs != 1500 || s.cfg.ExchHealthWindowMin != 30 {
+		t.Fatalf("config not updated correctly: %+v", s.cfg)
+	}
+
+	persisted, err := s.db.GetConfigField("enable_exchange_health_scoring")
+	if err != nil {
+		t.Fatalf("redis get enable_exchange_health_scoring: %v", err)
+	}
+	if persisted != "true" {
+		t.Fatalf("expected redis enable_exchange_health_scoring=true, got %q", persisted)
+	}
+
+	reloaded := config.Load()
+	if !reloaded.EnableExchangeHealthScoring || reloaded.ExchHealthLatencyMs != 1500 || reloaded.ExchHealthWindowMin != 30 {
+		t.Fatalf("reloaded config mismatch: %+v", reloaded)
+	}
+}
+
+func TestHandleGetExchangeHealth_ColdStart(t *testing.T) {
+	s, mr := newTestServer(t)
+	defer mr.Close()
+
+	s.exchanges = map[string]exchange.Exchange{
+		"binance": nil,
+		"bybit":   nil,
+	}
+	s.SetExchangeScorer(risk.NewExchangeScorer(s.cfg))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/exchanges/health", nil)
+	w := httptest.NewRecorder()
+	s.handleGetExchangeHealth(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		OK   bool                              `json:"ok"`
+		Data map[string]map[string]interface{} `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Data) == 0 {
+		t.Fatal("expected exchange health data")
+	}
+	for name, snapshot := range resp.Data {
+		if snapshot["exchange"] != name {
+			t.Fatalf("exchange field mismatch for %s: %#v", name, snapshot["exchange"])
+		}
+		if snapshot["score"] != float64(1) {
+			t.Fatalf("expected cold-start score=1 for %s, got %#v", name, snapshot["score"])
+		}
 	}
 }
 

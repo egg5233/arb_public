@@ -1,6 +1,7 @@
 package okx
 
 import (
+	"arb/pkg/exchange"
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -45,11 +46,12 @@ type Response struct {
 // Client is a REST client for the OKX v5 API.
 // It handles HMAC-SHA256 + Base64 signing with passphrase support.
 type Client struct {
-	apiKey     string
-	secretKey  string
-	passphrase string
-	baseURL    string
-	httpClient *http.Client
+	apiKey          string
+	secretKey       string
+	passphrase      string
+	baseURL         string
+	httpClient      *http.Client
+	metricsCallback exchange.MetricsCallback
 }
 
 // NewClient creates a new OKX REST API client.
@@ -61,6 +63,10 @@ func NewClient(apiKey, secretKey, passphrase string) *Client {
 		baseURL:    baseURL,
 		httpClient: &http.Client{Timeout: 15 * time.Second},
 	}
+}
+
+func (c *Client) SetMetricsCallback(fn exchange.MetricsCallback) {
+	c.metricsCallback = fn
 }
 
 // NewClientWithBase creates a client with a custom base URL (for testing).
@@ -119,6 +125,14 @@ func (c *Client) Post(path string, body interface{}) ([]byte, error) {
 
 // doRequest performs a single authenticated HTTP request.
 func (c *Client) doRequest(method, path string, queryParams map[string]string, body interface{}) ([]byte, error) {
+	start := time.Now()
+	var err error
+	defer func() {
+		if c.metricsCallback != nil {
+			c.metricsCallback(path, time.Since(start), err)
+		}
+	}()
+
 	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 
 	var requestPath string
@@ -174,7 +188,8 @@ func (c *Client) doRequest(method, path string, queryParams map[string]string, b
 	// Parse the standard response envelope
 	var okxResp Response
 	if err := json.Unmarshal(data, &okxResp); err != nil {
-		return nil, fmt.Errorf("okx response unmarshal: %w (raw: %s)", err, string(data))
+		err = fmt.Errorf("okx response unmarshal: %w (raw: %s)", err, string(data))
+		return nil, err
 	}
 
 	if okxResp.Code != "0" {
@@ -187,10 +202,12 @@ func (c *Client) doRequest(method, path string, queryParams map[string]string, b
 				SMsg  string `json:"sMsg"`
 			}
 			if json.Unmarshal(okxResp.Data, &inner) == nil && len(inner) > 0 && inner[0].SCode != "0" {
-				return nil, &APIError{Code: inner[0].SCode, Msg: inner[0].SMsg}
+				err = &APIError{Code: inner[0].SCode, Msg: inner[0].SMsg}
+				return nil, err
 			}
 		}
-		return nil, &APIError{Code: okxResp.Code, Msg: okxResp.Msg}
+		err = &APIError{Code: okxResp.Code, Msg: okxResp.Msg}
+		return nil, err
 	}
 
 	return okxResp.Data, nil

@@ -48,12 +48,13 @@ func (s *orderStore) GetOrder(orderID string) (orderInfo, bool) {
 
 // WSPrivateClient manages the private WebSocket connection for order/position updates.
 type WSPrivateClient struct {
-	apiKey     string
-	secretKey  string
-	passphrase string
-	stop       chan struct{}
-	store      *orderStore
-	onFill     *func(exchange.OrderUpdate)
+	apiKey               string
+	secretKey            string
+	passphrase           string
+	stop                 chan struct{}
+	store                *orderStore
+	onFill               *func(exchange.OrderUpdate)
+	orderMetricsCallback exchange.OrderMetricsCallback
 }
 
 // NewWSPrivateClient creates a new private WebSocket client.
@@ -66,6 +67,10 @@ func NewWSPrivateClient(apiKey, secretKey, passphrase string, onFill *func(excha
 		store:      &orderStore{},
 		onFill:     onFill,
 	}
+}
+
+func (ws *WSPrivateClient) SetOrderMetricsCallback(fn exchange.OrderMetricsCallback) {
+	ws.orderMetricsCallback = fn
 }
 
 // Start launches the private WebSocket stream with auto-reconnect.
@@ -213,6 +218,14 @@ func (ws *WSPrivateClient) handlePrivateMessage(msg []byte) {
 		if filled > 0 {
 			wsPrivLog.Info("order update: %s status=%s filled=%.6f avg=%.8f reduceOnly=%s symbol=%s",
 				orderID, status, filled, avgPrice, reduceOnly, symbol)
+		}
+		if info.Status == "filled" && info.FilledVolume > 0 && ws.orderMetricsCallback != nil {
+			ws.orderMetricsCallback(exchange.OrderMetricEvent{
+				Type:      exchange.OrderMetricFilled,
+				OrderID:   info.OrderID,
+				FilledQty: info.FilledVolume,
+				Timestamp: time.Now(),
+			})
 		}
 		if info.Status == "filled" && info.FilledVolume > 0 && ws.onFill != nil && *ws.onFill != nil {
 			(*ws.onFill)(exchange.OrderUpdate{

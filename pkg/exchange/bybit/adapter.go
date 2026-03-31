@@ -17,14 +17,16 @@ var log = utils.NewLogger("bybit")
 
 // Adapter implements the exchange.Exchange interface for Bybit.
 type Adapter struct {
-	client     *Client
-	cfg        exchange.ExchangeConfig
-	priceStore sync.Map // symbol -> exchange.BBO
-	depthStore sync.Map // symbol -> *exchange.Orderbook
-	orderStore    sync.Map // orderID -> exchange.OrderUpdate
-	orderCallback func(exchange.OrderUpdate)
-	publicWS   *PublicWS
-	privateWS  *PrivateWS
+	client               *Client
+	cfg                  exchange.ExchangeConfig
+	priceStore           sync.Map // symbol -> exchange.BBO
+	depthStore           sync.Map // symbol -> *exchange.Orderbook
+	orderStore           sync.Map // orderID -> exchange.OrderUpdate
+	orderCallback        func(exchange.OrderUpdate)
+	publicWS             *PublicWS
+	privateWS            *PrivateWS
+	wsMetricsCallback    exchange.WSMetricsCallback
+	orderMetricsCallback exchange.OrderMetricsCallback
 }
 
 // NewAdapter creates a new Bybit exchange adapter.
@@ -47,6 +49,26 @@ func (a *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
 	a.orderCallback = fn
 }
 
+func (a *Adapter) SetMetricsCallback(fn exchange.MetricsCallback) {
+	if a.client != nil {
+		a.client.SetMetricsCallback(fn)
+	}
+}
+
+func (a *Adapter) SetWSMetricsCallback(fn exchange.WSMetricsCallback) {
+	a.wsMetricsCallback = fn
+	if a.publicWS != nil {
+		a.publicWS.SetMetricsCallback(fn)
+	}
+}
+
+func (a *Adapter) SetOrderMetricsCallback(fn exchange.OrderMetricsCallback) {
+	a.orderMetricsCallback = fn
+	if a.privateWS != nil {
+		a.privateWS.SetOrderMetricsCallback(fn)
+	}
+}
+
 func (a *Adapter) CheckPermissions() exchange.PermissionResult {
 	data, err := a.client.Get("/v5/user/query-api", nil)
 	if err != nil {
@@ -55,8 +77,8 @@ func (a *Adapter) CheckPermissions() exchange.PermissionResult {
 			Withdraw: exchange.PermUnknown, Transfer: exchange.PermUnknown}
 	}
 	var resp struct {
-		ReadOnly    int                      `json:"readOnly"`
-		Permissions map[string][]string      `json:"permissions"`
+		ReadOnly    int                 `json:"readOnly"`
+		Permissions map[string][]string `json:"permissions"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return exchange.PermissionResult{Method: "direct", Error: err.Error(),
@@ -79,8 +101,12 @@ func (a *Adapter) CheckPermissions() exchange.PermissionResult {
 		trade = exchange.PermGranted
 	}
 	for _, v := range resp.Permissions["Wallet"] {
-		if v == "Withdraw" { withdraw = exchange.PermGranted }
-		if v == "AccountTransfer" { transfer = exchange.PermGranted }
+		if v == "Withdraw" {
+			withdraw = exchange.PermGranted
+		}
+		if v == "AccountTransfer" {
+			transfer = exchange.PermGranted
+		}
 	}
 	return exchange.PermissionResult{
 		Read: read, FuturesTrade: trade, Withdraw: withdraw, Transfer: transfer,
@@ -176,6 +202,13 @@ func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 	if err := json.Unmarshal(result, &resp); err != nil {
 		return "", fmt.Errorf("bybit PlaceOrder parse: %w", err)
 	}
+	if a.orderMetricsCallback != nil {
+		a.orderMetricsCallback(exchange.OrderMetricEvent{
+			Type:      exchange.OrderMetricPlaced,
+			OrderID:   resp.OrderID,
+			Timestamp: time.Now(),
+		})
+	}
 	return resp.OrderID, nil
 }
 
@@ -270,6 +303,14 @@ func (a *Adapter) GetOrderFilledQty(orderID, symbol string) (float64, error) {
 	qty, err := strconv.ParseFloat(resp.List[0].CumExecQty, 64)
 	if err != nil {
 		return 0, fmt.Errorf("bybit GetOrderFilledQty parse qty: %w", err)
+	}
+	if qty > 0 && a.orderMetricsCallback != nil {
+		a.orderMetricsCallback(exchange.OrderMetricEvent{
+			Type:      exchange.OrderMetricFilled,
+			OrderID:   orderID,
+			FilledQty: qty,
+			Timestamp: time.Now(),
+		})
 	}
 	return qty, nil
 }
@@ -795,6 +836,7 @@ func (a *Adapter) GetOrderbook(symbol string, depth int) (*exchange.Orderbook, e
 // StartPriceStream starts the public WebSocket for price streaming.
 func (a *Adapter) StartPriceStream(symbols []string) {
 	a.publicWS = NewPublicWS(&a.priceStore, &a.depthStore)
+	a.publicWS.SetMetricsCallback(a.wsMetricsCallback)
 	a.publicWS.Connect(symbols)
 }
 
@@ -853,6 +895,7 @@ func (a *Adapter) GetDepth(symbol string) (*exchange.Orderbook, bool) {
 // StartPrivateStream starts the private WebSocket for order updates.
 func (a *Adapter) StartPrivateStream() {
 	a.privateWS = NewPrivateWS(a.cfg.ApiKey, a.cfg.SecretKey, &a.orderStore, &a.orderCallback)
+	a.privateWS.SetOrderMetricsCallback(a.orderMetricsCallback)
 	a.privateWS.Connect()
 }
 
@@ -897,15 +940,15 @@ func (b *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 
 	var resp struct {
 		List []struct {
-			ExecID    string `json:"execId"`
-			OrderID   string `json:"orderId"`
-			Symbol    string `json:"symbol"`
-			Side      string `json:"side"` // Buy or Sell
-			ExecPrice string `json:"execPrice"`
-			ExecQty   string `json:"execQty"`
-			ExecFee   string `json:"execFee"`
+			ExecID      string `json:"execId"`
+			OrderID     string `json:"orderId"`
+			Symbol      string `json:"symbol"`
+			Side        string `json:"side"` // Buy or Sell
+			ExecPrice   string `json:"execPrice"`
+			ExecQty     string `json:"execQty"`
+			ExecFee     string `json:"execFee"`
 			FeeCurrency string `json:"feeCurrency"`
-			ExecTime  string `json:"execTime"` // ms timestamp string
+			ExecTime    string `json:"execTime"` // ms timestamp string
 		} `json:"list"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {

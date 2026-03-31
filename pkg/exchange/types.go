@@ -2,6 +2,56 @@ package exchange
 
 import "time"
 
+// MetricsCallback records REST endpoint latency and error outcomes.
+type MetricsCallback func(endpoint string, latency time.Duration, err error)
+
+// WSEventType describes an exchange WebSocket lifecycle event.
+type WSEventType string
+
+const (
+	WSEventConnect    WSEventType = "connect"
+	WSEventDisconnect WSEventType = "disconnect"
+	WSEventMessage    WSEventType = "message"
+)
+
+// WSEvent is emitted by exchange WebSocket clients for health scoring.
+type WSEvent struct {
+	Type      WSEventType
+	Timestamp time.Time
+}
+
+// WSMetricsCallback consumes exchange WebSocket lifecycle events.
+type WSMetricsCallback func(WSEvent)
+
+// WSMetricsCallbackSetter is implemented by adapters that expose public WS metrics.
+type WSMetricsCallbackSetter interface {
+	SetWSMetricsCallback(fn WSMetricsCallback)
+}
+
+// OrderMetricEventType describes an order lifecycle event used for fill-rate scoring.
+type OrderMetricEventType string
+
+const (
+	OrderMetricPlaced OrderMetricEventType = "placed"
+	OrderMetricFilled OrderMetricEventType = "filled"
+)
+
+// OrderMetricEvent is emitted for order placement/fill tracking.
+type OrderMetricEvent struct {
+	Type      OrderMetricEventType
+	OrderID   string
+	FilledQty float64
+	Timestamp time.Time
+}
+
+// OrderMetricsCallback consumes order lifecycle events for health scoring.
+type OrderMetricsCallback func(OrderMetricEvent)
+
+// OrderMetricsCallbackSetter is implemented by adapters that expose order metrics.
+type OrderMetricsCallbackSetter interface {
+	SetOrderMetricsCallback(fn OrderMetricsCallback)
+}
+
 // Side represents order side.
 type Side string
 

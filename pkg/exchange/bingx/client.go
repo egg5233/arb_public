@@ -1,6 +1,7 @@
 package bingx
 
 import (
+	"arb/pkg/exchange"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -44,10 +45,11 @@ func (e *APIError) Error() string {
 
 // Client is a low-level HTTP client for the BingX REST API.
 type Client struct {
-	baseURL    string
-	apiKey     string
-	secretKey  string
-	httpClient *http.Client
+	baseURL         string
+	apiKey          string
+	secretKey       string
+	httpClient      *http.Client
+	metricsCallback exchange.MetricsCallback
 }
 
 // NewClient creates a new BingX REST API client.
@@ -58,6 +60,10 @@ func NewClient(apiKey, secretKey string) *Client {
 		secretKey:  secretKey,
 		httpClient: &http.Client{Timeout: 15 * time.Second},
 	}
+}
+
+func (c *Client) SetMetricsCallback(fn exchange.MetricsCallback) {
+	c.metricsCallback = fn
 }
 
 // sign computes the HMAC-SHA256 signature (hex encoded).
@@ -118,6 +124,14 @@ func (c *Client) Delete(path string, params map[string]string) (json.RawMessage,
 // DoRequestRaw performs an authenticated HTTP request and returns the raw response body.
 // Use for endpoints that don't follow the standard {"code":0,"data":...} wrapper.
 func (c *Client) DoRequestRaw(method, path string, params map[string]string) ([]byte, error) {
+	start := time.Now()
+	var err error
+	defer func() {
+		if c.metricsCallback != nil {
+			c.metricsCallback(path, time.Since(start), err)
+		}
+	}()
+
 	if params == nil {
 		params = make(map[string]string)
 	}
@@ -158,6 +172,14 @@ func (c *Client) DoRequestRaw(method, path string, params map[string]string) ([]
 
 // doRequest performs a single authenticated HTTP request.
 func (c *Client) doRequest(method, path string, params map[string]string) (json.RawMessage, error) {
+	start := time.Now()
+	var err error
+	defer func() {
+		if c.metricsCallback != nil {
+			c.metricsCallback(path, time.Since(start), err)
+		}
+	}()
+
 	if params == nil {
 		params = make(map[string]string)
 	}
@@ -204,11 +226,13 @@ func (c *Client) doRequest(method, path string, params map[string]string) (json.
 
 	var apiResp APIResponse
 	if err := json.Unmarshal(data, &apiResp); err != nil {
-		return nil, fmt.Errorf("bingx: unmarshal response: %w (body=%s)", err, string(data))
+		err = fmt.Errorf("bingx: unmarshal response: %w (body=%s)", err, string(data))
+		return nil, err
 	}
 
 	if apiResp.Code != 0 {
-		return nil, &APIError{Code: apiResp.Code, Msg: apiResp.Msg}
+		err = &APIError{Code: apiResp.Code, Msg: apiResp.Msg}
+		return nil, err
 	}
 
 	return apiResp.Data, nil

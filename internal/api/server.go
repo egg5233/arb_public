@@ -8,26 +8,28 @@ import (
 
 	"arb/internal/config"
 	"arb/internal/database"
-	"arb/pkg/exchange"
 	"arb/internal/models"
+	"arb/internal/risk"
+	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
 
 // Server is the Dashboard HTTP/WebSocket server.
 type Server struct {
-	db        *database.Client
-	cfg       *config.Config
-	hub       *Hub
-	log       *utils.Logger
-	srv       *http.Server
-	opps      []models.Opportunity
-	auth          *authStore
-	exchanges     map[string]exchange.Exchange
-	closePosition func(posID string) error                              // registered by engine
-	openPosition  func(symbol, longExchange, shortExchange string, force bool) error // registered by engine
-	logSub        chan utils.LogEntry
-	rejStore      *models.RejectionStore
-	permissions   map[string]exchange.PermissionResult
+	db                *database.Client
+	cfg               *config.Config
+	hub               *Hub
+	log               *utils.Logger
+	srv               *http.Server
+	opps              []models.Opportunity
+	auth              *authStore
+	exchanges         map[string]exchange.Exchange
+	closePosition     func(posID string) error                                           // registered by engine
+	openPosition      func(symbol, longExchange, shortExchange string, force bool) error // registered by engine
+	logSub            chan utils.LogEntry
+	rejStore          *models.RejectionStore
+	permissions       map[string]exchange.PermissionResult
+	scorer            *risk.ExchangeScorer
 	spotOpps          atomic.Value // []interface{}
 	spotOpenPosition  func(symbol, exchange, direction string) error
 	spotClosePosition func(positionID string) error
@@ -73,6 +75,7 @@ func (s *Server) Start() {
 	mux.HandleFunc("/api/stats", s.cors(s.authMiddleware(s.handleGetStats)))
 	mux.HandleFunc("/api/config", s.cors(s.authMiddleware(s.handleConfig)))
 	mux.HandleFunc("/api/exchanges", s.cors(s.authMiddleware(s.handleGetExchanges)))
+	mux.HandleFunc("GET /api/exchanges/health", s.cors(s.authMiddleware(s.handleGetExchangeHealth)))
 
 	// Position actions
 	mux.HandleFunc("/api/positions/close", s.cors(s.authMiddleware(s.handleClosePosition)))
@@ -211,6 +214,10 @@ func (s *Server) BroadcastStats() {
 // BroadcastAlert sends an alert to all WebSocket clients.
 func (s *Server) BroadcastAlert(alert interface{}) {
 	s.hub.Broadcast("alert", alert)
+}
+
+func (s *Server) SetExchangeScorer(scorer *risk.ExchangeScorer) {
+	s.scorer = scorer
 }
 
 // BroadcastRejection sends a rejected opportunity to all WebSocket clients.

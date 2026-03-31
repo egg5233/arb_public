@@ -190,8 +190,26 @@ func main() {
 	// Risk approval
 	var tradeSize, tradePrice float64
 	allocator := risk.NewCapitalAllocator(db, cfg)
+	scorer := risk.NewExchangeScorer(cfg)
+	for name, exch := range exchanges {
+		exchangeName := name
+		exch.SetMetricsCallback(func(endpoint string, latency time.Duration, err error) {
+			scorer.RecordLatency(exchangeName, endpoint, latency, err)
+		})
+		if setter, ok := exch.(exchange.WSMetricsCallbackSetter); ok {
+			setter.SetWSMetricsCallback(func(event exchange.WSEvent) {
+				scorer.RecordWSEvent(exchangeName, event)
+			})
+		}
+		if setter, ok := exch.(exchange.OrderMetricsCallbackSetter); ok {
+			setter.SetOrderMetricsCallback(func(event exchange.OrderMetricEvent) {
+				scorer.RecordOrderEvent(exchangeName, event)
+			})
+		}
+	}
 	riskMgr := risk.NewManager(exchanges, db, cfg, allocator)
 	riskMgr.SetSpreadHistoryProvider(scanner.GetSpreadHistorySnapshot)
+	riskMgr.SetExchangeScorer(scorer)
 
 	if *skipRisk {
 		price := getPrice(exchanges, opp)

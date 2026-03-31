@@ -135,6 +135,14 @@ func (b *Adapter) handlePrivateMessage(msg []byte) {
 			ReduceOnly:   o.ReduceOnly,
 		}
 		b.orderStore.Store(oid, upd)
+		if upd.Status == "filled" && upd.FilledVolume > 0 && b.orderMetricsCallback != nil {
+			b.orderMetricsCallback(exchange.OrderMetricEvent{
+				Type:      exchange.OrderMetricFilled,
+				OrderID:   oid,
+				FilledQty: upd.FilledVolume,
+				Timestamp: time.Now(),
+			})
+		}
 		if upd.Status == "filled" && upd.FilledVolume > 0 && b.orderCallback != nil {
 			b.orderCallback(upd)
 		}
