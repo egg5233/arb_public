@@ -65,7 +65,7 @@ func (c *SpreadStabilityChecker) Check(opp models.Opportunity, automated bool) (
 	}
 
 	if len(spreads) < minSamples {
-		return "", nil
+		return fmt.Sprintf("insufficient spread history (n=%d < %d)", len(spreads), minSamples), nil
 	}
 
 	var sum float64

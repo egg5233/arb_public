@@ -48,7 +48,7 @@ func TestSpreadStabilityCheckerFallsBackToScannerHistory(t *testing.T) {
 	}
 }
 
-func TestSpreadStabilityCheckerAllowsWarmupWhileHistorySparse(t *testing.T) {
+func TestSpreadStabilityCheckerRejectsSparseHistory(t *testing.T) {
 	checker, _, opp := newSpreadStabilityTestHarness(t, baseSpreadStabilityConfig())
 	checker.SetHistoryProvider(func(models.Opportunity, int, time.Duration) []database.SpreadHistoryPoint {
 		return historyPoints([]float64{10, 10.2})
@@ -58,8 +58,8 @@ func TestSpreadStabilityCheckerAllowsWarmupWhileHistorySparse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("unexpected rejection while warming history: %s", reason)
+	if !strings.Contains(reason, "insufficient spread history") {
+		t.Fatalf("reason %q does not contain insufficient spread history", reason)
 	}
 }
 

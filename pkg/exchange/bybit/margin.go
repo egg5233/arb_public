@@ -121,11 +121,28 @@ func (a *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarg
 		"symbol":   symbol,
 		"orderId":  orderID,
 	}
-	result, err := a.client.Get("/v5/order/realtime", params)
+	status, err := a.getSpotMarginOrderFromPath("/v5/order/realtime", params)
 	if err != nil {
 		return nil, fmt.Errorf("bybit GetSpotMarginOrder: %w", err)
 	}
+	if status != nil {
+		return status, nil
+	}
 
+	// Filled/cancelled unified-account orders may disappear from realtime after
+	// Bybit service restarts; fall back to order history for reconciliation.
+	status, err = a.getSpotMarginOrderFromPath("/v5/order/history", params)
+	if err != nil {
+		return nil, fmt.Errorf("bybit GetSpotMarginOrder history: %w", err)
+	}
+	return status, nil
+}
+
+func (a *Adapter) getSpotMarginOrderFromPath(path string, params map[string]string) (*exchange.SpotMarginOrderStatus, error) {
+	result, err := a.client.Get(path, params)
+	if err != nil {
+		return nil, err
+	}
 	var resp struct {
 		List []struct {
 			OrderID     string `json:"orderId"`
@@ -136,7 +153,7 @@ func (a *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarg
 		} `json:"list"`
 	}
 	if err := json.Unmarshal(result, &resp); err != nil {
-		return nil, fmt.Errorf("bybit GetSpotMarginOrder parse: %w", err)
+		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	if len(resp.List) == 0 {
 		return nil, nil

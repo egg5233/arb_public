@@ -328,7 +328,7 @@ type configSpotFuturesResponse struct {
 	MarginEmergencyPct    float64  `json:"margin_emergency_pct"`
 	LossCooldownHours     int      `json:"loss_cooldown_hours"`
 	AutoEnabled           bool     `json:"auto_enabled"`
-	DryRun                bool     `json:"dry_run"`
+	DryRun                bool     `json:"auto_dry_run"`
 	PersistenceScans      int      `json:"persistence_scans"`
 	ProfitTransferEnabled bool     `json:"profit_transfer_enabled"`
 	SeparateAcctMaxUSDT   float64  `json:"separate_acct_max_usdt"`
@@ -637,7 +637,8 @@ type spotFuturesUpdate struct {
 	MarginEmergencyPct    *float64 `json:"margin_emergency_pct"`
 	LossCooldownHours     *int     `json:"loss_cooldown_hours"`
 	AutoEnabled           *bool    `json:"auto_enabled"`
-	DryRun                *bool    `json:"dry_run"`
+	DryRun                *bool    `json:"auto_dry_run"`
+	LegacyDryRun          *bool    `json:"dry_run"`
 	PersistenceScans      *int     `json:"persistence_scans"`
 	ProfitTransferEnabled *bool    `json:"profit_transfer_enabled"`
 	SeparateAcctMaxUSDT   *float64 `json:"separate_acct_max_usdt"`
@@ -1123,6 +1124,8 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if sf.DryRun != nil {
 			s.cfg.SpotFuturesDryRun = *sf.DryRun
+		} else if sf.LegacyDryRun != nil {
+			s.cfg.SpotFuturesDryRun = *sf.LegacyDryRun
 		}
 		if sf.PersistenceScans != nil && *sf.PersistenceScans >= 0 {
 			s.cfg.SpotFuturesPersistenceScans = *sf.PersistenceScans

@@ -230,6 +230,71 @@ func (a *CapitalAllocator) ReleasePosition(positionID string) error {
 	})
 }
 
+func (a *CapitalAllocator) UpdatePosition(positionID string, exposures map[string]float64) error {
+	if !a.Enabled() || positionID == "" {
+		return nil
+	}
+
+	nextExposures := cleanExposures(exposures)
+	if len(nextExposures) == 0 {
+		return a.ReleasePosition(positionID)
+	}
+
+	ctx := context.Background()
+	return a.withVersionRetry(ctx, func(tx *redis.Tx) error {
+		raw, err := tx.Get(ctx, a.positionKey(positionID)).Bytes()
+		if err == redis.Nil {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		var pos allocatorPosition
+		if err := json.Unmarshal(raw, &pos); err != nil {
+			return fmt.Errorf("unmarshal allocator position %s: %w", positionID, err)
+		}
+
+		current := cleanExposures(pos.Exposures)
+		totals := make(map[string]float64, len(current)+len(nextExposures))
+		for exchangeName := range current {
+			totals[exchangeName] = 0
+		}
+		for exchangeName := range nextExposures {
+			totals[exchangeName] = 0
+		}
+		for exchangeName := range totals {
+			amount, err := a.readFloatKey(ctx, tx, a.committedKey(pos.Strategy, exchangeName))
+			if err != nil {
+				return err
+			}
+			amount -= current[exchangeName]
+			amount += nextExposures[exchangeName]
+			if amount < 0 {
+				amount = 0
+			}
+			totals[exchangeName] = amount
+		}
+
+		pos.Exposures = nextExposures
+		pos.CommittedAt = time.Now().UTC()
+		payload, err := json.Marshal(pos)
+		if err != nil {
+			return fmt.Errorf("marshal allocator position %s: %w", positionID, err)
+		}
+
+		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			for exchangeName, amount := range totals {
+				pipe.Set(ctx, a.committedKey(pos.Strategy, exchangeName), strconv.FormatFloat(amount, 'f', -1, 64), 0)
+			}
+			pipe.Set(ctx, a.positionKey(positionID), payload, 0)
+			pipe.Incr(ctx, allocatorVersionKey)
+			return nil
+		})
+		return err
+	})
+}
+
 func (a *CapitalAllocator) Summary() (*CapitalSummary, error) {
 	if !a.Enabled() {
 		return &CapitalSummary{

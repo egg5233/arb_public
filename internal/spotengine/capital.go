@@ -56,3 +56,14 @@ func (e *SpotEngine) releaseSpotPosition(posID string) {
 		e.log.Error("allocator release position %s: %v", posID, err)
 	}
 }
+
+func (e *SpotEngine) updateSpotPositionCapital(posID, exchangeName string, amount float64) {
+	if e.allocator == nil || !e.allocator.Enabled() || posID == "" || exchangeName == "" {
+		return
+	}
+	if err := e.allocator.UpdatePosition(posID, map[string]float64{
+		exchangeName: amount,
+	}); err != nil {
+		e.log.Error("allocator update position %s: %v", posID, err)
+	}
+}

@@ -107,3 +107,53 @@ func TestHandlePostConfig_PersistsDisabledSpotFutures(t *testing.T) {
 		t.Fatalf("expected reloaded capital_per_position=500, got %v", reloaded.SpotFuturesCapitalPerPosition)
 	}
 }
+
+func TestHandleConfig_SpotFuturesAutoDryRunRoundTrip(t *testing.T) {
+	s, mr := newTestServer(t)
+	defer mr.Close()
+
+	s.cfg.SpotFuturesEnabled = true
+	s.cfg.SpotFuturesDryRun = true
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	getW := httptest.NewRecorder()
+	s.handleGetConfig(getW, getReq)
+
+	if getW.Code != http.StatusOK {
+		t.Fatalf("GET expected 200, got %d: %s", getW.Code, getW.Body.String())
+	}
+
+	var getResp struct {
+		OK   bool                   `json:"ok"`
+		Data map[string]interface{} `json:"data"`
+	}
+	if err := json.NewDecoder(getW.Body).Decode(&getResp); err != nil {
+		t.Fatalf("decode GET response: %v", err)
+	}
+	spotFutures, ok := getResp.Data["spot_futures"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("spot_futures payload missing or wrong type: %#v", getResp.Data["spot_futures"])
+	}
+	if spotFutures["auto_dry_run"] != true {
+		t.Fatalf("expected auto_dry_run=true, got %#v", spotFutures["auto_dry_run"])
+	}
+
+	postReq := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"spot_futures":{"auto_dry_run":false}}`))
+	postW := httptest.NewRecorder()
+	s.handlePostConfig(postW, postReq)
+
+	if postW.Code != http.StatusOK {
+		t.Fatalf("POST expected 200, got %d: %s", postW.Code, postW.Body.String())
+	}
+	if s.cfg.SpotFuturesDryRun {
+		t.Fatal("expected SpotFuturesDryRun=false after POST")
+	}
+
+	persisted, err := s.db.GetConfigField("spot_futures_dry_run")
+	if err != nil {
+		t.Fatalf("redis get spot_futures_dry_run: %v", err)
+	}
+	if persisted != "false" {
+		t.Fatalf("expected redis spot_futures_dry_run=false, got %q", persisted)
+	}
+}

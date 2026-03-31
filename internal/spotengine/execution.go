@@ -598,6 +598,7 @@ func (e *SpotEngine) reconcilePendingEntry(pos *models.SpotFuturesPosition) {
 			e.log.Error("pending entry %s: failed to checkpoint confirmed spot fill: %v", pos.ID, err)
 			return
 		}
+		e.updateSpotPositionCapital(pos.ID, pos.Exchange, pos.NotionalUSDT)
 		if e.api != nil {
 			e.api.BroadcastSpotPositionUpdate(pos)
 		}

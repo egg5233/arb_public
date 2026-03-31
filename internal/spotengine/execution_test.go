@@ -11,6 +11,7 @@ import (
 	"arb/internal/config"
 	"arb/internal/database"
 	"arb/internal/models"
+	"arb/internal/risk"
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
 
@@ -504,6 +505,86 @@ func TestManualOpen_PersistsPendingEntryUntilSpotConfirmationRecovers(t *testing
 	}
 	if futExch.placeCalls != 1 {
 		t.Fatalf("futures place calls after recovery = %d, want 1", futExch.placeCalls)
+	}
+}
+
+func TestManualOpen_PendingEntryReconcilesAllocatorExposureToActualNotional(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	engine.cfg = &config.Config{
+		EnableCapitalAllocator:        true,
+		MaxTotalExposureUSDT:          1000,
+		MaxPerpPerpPct:                1,
+		MaxSpotFuturesPct:             1,
+		MaxPerExchangePct:             1,
+		ReservationTTLSec:             300,
+		SpotFuturesMaxPositions:       1,
+		SpotFuturesLeverage:           3,
+		SpotFuturesUnifiedAcctMaxUSDT: 100,
+	}
+	engine.allocator = risk.NewCapitalAllocator(engine.db, engine.cfg)
+	engine.api = api.NewServer(engine.db, engine.cfg, nil)
+
+	futExch := &closeTestExchange{
+		orderUpdates: map[string]exchange.OrderUpdate{
+			"fut-close-1": {
+				OrderID:      "fut-close-1",
+				Status:       "filled",
+				FilledVolume: 0.5,
+				AvgPrice:     100,
+			},
+		},
+		orderbook: &exchange.Orderbook{
+			Bids: []exchange.PriceLevel{{Price: 99, Quantity: 1}},
+			Asks: []exchange.PriceLevel{{Price: 101, Quantity: 1}},
+		},
+	}
+	smExch := &closeTestSpotMargin{
+		queryErrs: []error{errors.New("temporary spot query failure")},
+		queryStates: []*exchange.SpotMarginOrderStatus{
+			{
+				OrderID:   "spot-close-1",
+				Symbol:    "BTCUSDT",
+				Status:    "filled",
+				FilledQty: 0.5,
+				AvgPrice:  100,
+			},
+		},
+	}
+
+	engine.exchanges = map[string]exchange.Exchange{"stub": futExch}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{"stub": smExch}
+	engine.latestOpps = []SpotArbOpportunity{
+		{
+			Symbol:    "BTCUSDT",
+			BaseCoin:  "BTC",
+			Exchange:  "stub",
+			Direction: "buy_spot_short",
+		},
+	}
+
+	err := engine.ManualOpen("BTCUSDT", "stub", "buy_spot_short")
+	if err == nil || !strings.Contains(err.Error(), "pending confirmation") {
+		t.Fatalf("ManualOpen error = %v, want pending confirmation", err)
+	}
+
+	summary, err := engine.allocator.Summary()
+	if err != nil {
+		t.Fatalf("allocator summary after pending entry: %v", err)
+	}
+	if got := summary.ByExchange["stub"]; got != 100 {
+		t.Fatalf("allocator exposure after pending entry = %.2f, want 100", got)
+	}
+
+	engine.monitorTick()
+
+	summary, err = engine.allocator.Summary()
+	if err != nil {
+		t.Fatalf("allocator summary after recovery: %v", err)
+	}
+	if got := summary.ByExchange["stub"]; got != 50 {
+		t.Fatalf("allocator exposure after recovery = %.2f, want 50", got)
 	}
 }
 
