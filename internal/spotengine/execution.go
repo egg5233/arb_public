@@ -15,6 +15,7 @@ import (
 
 const spotEntryLockKey = "spot_entry"
 const spotQtyTolerance = 1e-6
+const spotEntryManualRecoveryReason = "manual_intervention_required"
 
 var spotEntryLockTTL = 5 * time.Minute
 
@@ -215,7 +216,18 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 	if err != nil {
 		var pendingErr *pendingSpotEntryError
 		if errors.As(err, &pendingErr) {
-			if commitErr := e.commitSpotCapital(reservation, pendingErr.posID, plannedNotional); commitErr != nil {
+			if pendingErr.pendingPos != nil {
+				if saveErr := e.db.SaveSpotPosition(pendingErr.pendingPos); saveErr != nil {
+					e.log.Error("ManualOpen: failed to save pending spot recovery %s: %v", pendingErr.posID, saveErr)
+				} else if e.api != nil {
+					e.api.BroadcastSpotPositionUpdate(pendingErr.pendingPos)
+				}
+			}
+			amount := plannedNotional
+			if pendingErr.capitalAmount > 0 {
+				amount = pendingErr.capitalAmount
+			}
+			if commitErr := e.commitSpotCapital(reservation, pendingErr.posID, amount); commitErr != nil {
 				e.log.Error("ManualOpen: capital commit failed for pending entry %s: %v", pendingErr.posID, commitErr)
 			}
 			return err
@@ -509,16 +521,23 @@ func (e *pendingSpotExitError) Error() string {
 func (*pendingSpotExitError) nonRetryable() bool { return true }
 
 type pendingSpotEntryError struct {
-	posID   string
-	orderID string
-	err     error
+	posID         string
+	orderID       string
+	state         string
+	err           error
+	pendingPos    *models.SpotFuturesPosition
+	capitalAmount float64
 }
 
 func (e *pendingSpotEntryError) Error() string {
-	if e.err == nil {
-		return fmt.Sprintf("spot entry pending confirmation on order %s", e.orderID)
+	state := e.state
+	if state == "" {
+		state = "spot entry pending confirmation"
 	}
-	return fmt.Sprintf("spot entry pending confirmation on order %s: %v", e.orderID, e.err)
+	if e.err == nil {
+		return fmt.Sprintf("%s on order %s", state, e.orderID)
+	}
+	return fmt.Sprintf("%s on order %s: %v", state, e.orderID, e.err)
 }
 
 // Without a durable pending-entry checkpoint, immediately unwind the accepted
@@ -531,10 +550,20 @@ func (e *SpotEngine) abortAcceptedSpotEntry(
 	expectedQty float64,
 	persistErr error,
 ) error {
-	filledQty, _, confirmed, confErr := e.confirmSpotFill(smExch, futExch, orderID, symbol, expectedQty)
+	filledQty, filledAvg, confirmed, confErr := e.confirmSpotFill(smExch, futExch, orderID, symbol, expectedQty)
+	recoveryAvg := filledAvg
+	if recoveryAvg <= 0 && pos.SpotSize > 0 && pos.NotionalUSDT > 0 {
+		recoveryAvg = pos.NotionalUSDT / pos.SpotSize
+	}
 	if !confirmed {
-		return fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (cleanup could not reconcile order state: %v)",
-			orderID, persistErr, confErr)
+		return newManualRecoveryPendingEntryError(
+			pos,
+			orderID,
+			fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (cleanup could not reconcile order state: %v)",
+				orderID, persistErr, confErr),
+			expectedQty,
+			recoveryAvg,
+		)
 	}
 
 	if filledQty > 0 {
@@ -553,17 +582,35 @@ func (e *SpotEngine) abortAcceptedSpotEntry(
 			Force:     "ioc",
 		})
 		if err != nil {
-			return fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (cleanup could not %s %.6f: %v)",
-				orderID, persistErr, action, filledQty, err)
+			return newManualRecoveryPendingEntryError(
+				pos,
+				orderID,
+				fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (cleanup could not %s %.6f: %v)",
+					orderID, persistErr, action, filledQty, err),
+				filledQty,
+				recoveryAvg,
+			)
 		}
 		cleanupFilled, _, cleanupConfirmed, cleanupErr := e.confirmSpotFill(smExch, futExch, reverseOrderID, symbol, filledQty)
 		if !cleanupConfirmed {
-			return fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (cleanup order %s could not be confirmed flat after %s %.6f: %v; manual intervention required)",
-				orderID, persistErr, reverseOrderID, action, filledQty, cleanupErr)
+			return newManualRecoveryPendingEntryError(
+				pos,
+				orderID,
+				fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (cleanup order %s could not be confirmed flat after %s %.6f: %v; manual intervention required)",
+					orderID, persistErr, reverseOrderID, action, filledQty, cleanupErr),
+				filledQty,
+				recoveryAvg,
+			)
 		}
 		if !spotQtyComplete(cleanupFilled, filledQty) {
-			return fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (cleanup order %s only reconciled %.6f of %.6f after %s; manual intervention required)",
-				orderID, persistErr, reverseOrderID, cleanupFilled, filledQty, action)
+			return newManualRecoveryPendingEntryError(
+				pos,
+				orderID,
+				fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (cleanup order %s only reconciled %.6f of %.6f after %s; manual intervention required)",
+					orderID, persistErr, reverseOrderID, cleanupFilled, filledQty, action),
+				spotRemainingQty(cleanupFilled, filledQty),
+				recoveryAvg,
+			)
 		}
 		e.log.Warn("ManualOpen: pending entry save failed after accepted spot order %s; cleanup %s order %s confirmed %.6f",
 			orderID, action, reverseOrderID, cleanupFilled)
@@ -586,6 +633,52 @@ func (e *SpotEngine) abortAcceptedSpotEntry(
 	}
 	return fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (order reconciled unfilled and entry was aborted)",
 		orderID, persistErr)
+}
+
+func newManualRecoveryPendingEntryError(
+	pos *models.SpotFuturesPosition,
+	orderID string,
+	cause error,
+	spotQty, spotAvg float64,
+) error {
+	if pos == nil {
+		return cause
+	}
+
+	recoveryPos := *pos
+	recoveryPos.Status = models.SpotStatusPending
+	recoveryPos.PendingEntryOrderID = ""
+	recoveryPos.ExitReason = spotEntryManualRecoveryReason
+	recoveryPos.FuturesSize = 0
+	recoveryPos.FuturesEntry = 0
+	recoveryPos.NotionalUSDT = 0
+	recoveryPos.UpdatedAt = time.Now().UTC()
+
+	if spotQty > 0 {
+		recoveryPos.SpotSize = spotQty
+		if spotAvg > 0 {
+			recoveryPos.SpotEntryPrice = spotAvg
+			recoveryPos.NotionalUSDT = spotQty * spotAvg
+		}
+		if recoveryPos.Direction == "borrow_sell_long" {
+			recoveryPos.BorrowAmount = spotQty
+		}
+	} else {
+		recoveryPos.SpotSize = 0
+		recoveryPos.SpotEntryPrice = 0
+		if recoveryPos.Direction == "borrow_sell_long" {
+			recoveryPos.BorrowAmount = 0
+		}
+	}
+
+	return &pendingSpotEntryError{
+		posID:         recoveryPos.ID,
+		orderID:       orderID,
+		state:         "manual recovery required for accepted spot entry",
+		err:           cause,
+		pendingPos:    &recoveryPos,
+		capitalAmount: recoveryPos.NotionalUSDT,
+	}
 }
 
 func spotQtyComplete(filled, target float64) bool {

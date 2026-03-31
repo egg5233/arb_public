@@ -47,6 +47,9 @@ func (e *SpotEngine) monitorTick() {
 
 	for _, pos := range positions {
 		if pos.Status == models.SpotStatusPending {
+			if pos.ExitReason == spotEntryManualRecoveryReason {
+				continue
+			}
 			e.reconcilePendingEntry(pos)
 			continue
 		}

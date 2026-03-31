@@ -948,6 +948,127 @@ func TestManualOpen_ReportsManualInterventionWhenCleanupOrderOnlyPartiallyFills(
 	}
 }
 
+func TestManualOpen_PersistsManualRecoveryPositionWhenCleanupOnlyPartiallyFills(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	workingDB := engine.db
+	failRedis := miniredis.RunT(t)
+	failingDB, err := database.New(failRedis.Addr(), "", 0)
+	if err != nil {
+		t.Fatalf("database.New failingDB: %v", err)
+	}
+	failRedis.Close()
+
+	engine.cfg = &config.Config{
+		EnableCapitalAllocator:        true,
+		MaxTotalExposureUSDT:          1000,
+		MaxPerpPerpPct:                1,
+		MaxSpotFuturesPct:             1,
+		MaxPerExchangePct:             1,
+		ReservationTTLSec:             300,
+		SpotFuturesMaxPositions:       1,
+		SpotFuturesLeverage:           3,
+		SpotFuturesUnifiedAcctMaxUSDT: 100,
+	}
+	engine.allocator = risk.NewCapitalAllocator(workingDB, engine.cfg)
+
+	futExch := &closeTestExchange{
+		orderbook: &exchange.Orderbook{
+			Bids: []exchange.PriceLevel{{Price: 99, Quantity: 1}},
+			Asks: []exchange.PriceLevel{{Price: 101, Quantity: 1}},
+		},
+	}
+	smExch := &closeTestSpotMargin{
+		orderIDs:  []string{"spot-entry-1", "spot-cleanup-1"},
+		queryErrs: []error{errors.New("temporary spot query failure")},
+		queryStates: []*exchange.SpotMarginOrderStatus{
+			{
+				OrderID:   "spot-entry-1",
+				Symbol:    "BTCUSDT",
+				Status:    "filled",
+				FilledQty: 1,
+				AvgPrice:  100,
+			},
+			{
+				OrderID:   "spot-cleanup-1",
+				Symbol:    "BTCUSDT",
+				Status:    "cancelled",
+				FilledQty: 0.4,
+				AvgPrice:  100,
+			},
+		},
+		onPlace: func(call int, _ exchange.SpotMarginOrderParams) {
+			if call == 1 {
+				engine.db = failingDB
+				return
+			}
+			if call == 2 {
+				engine.db = workingDB
+			}
+		},
+	}
+
+	engine.exchanges = map[string]exchange.Exchange{"stub": futExch}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{"stub": smExch}
+	engine.latestOpps = []SpotArbOpportunity{
+		{
+			Symbol:    "BTCUSDT",
+			BaseCoin:  "BTC",
+			Exchange:  "stub",
+			Direction: "borrow_sell_long",
+		},
+	}
+
+	err = engine.ManualOpen("BTCUSDT", "stub", "borrow_sell_long")
+	if err == nil {
+		t.Fatal("expected ManualOpen to require manual recovery when cleanup only partially fills")
+	}
+	if !strings.Contains(err.Error(), "manual intervention required") {
+		t.Fatalf("ManualOpen error = %v, want manual intervention requirement", err)
+	}
+
+	active, err := workingDB.GetActiveSpotPositions()
+	if err != nil {
+		t.Fatalf("GetActiveSpotPositions: %v", err)
+	}
+	if len(active) != 1 {
+		t.Fatalf("active positions = %d, want 1", len(active))
+	}
+	pos := active[0]
+	if pos.Status != models.SpotStatusPending {
+		t.Fatalf("manual recovery status = %q, want %q", pos.Status, models.SpotStatusPending)
+	}
+	if pos.ExitReason != spotEntryManualRecoveryReason {
+		t.Fatalf("manual recovery reason = %q, want %q", pos.ExitReason, spotEntryManualRecoveryReason)
+	}
+	if pos.PendingEntryOrderID != "" {
+		t.Fatalf("manual recovery pending entry order = %q, want empty", pos.PendingEntryOrderID)
+	}
+	if math.Abs(pos.SpotSize-0.6) > 1e-9 {
+		t.Fatalf("manual recovery spot size = %.6f, want 0.600000", pos.SpotSize)
+	}
+	if math.Abs(pos.BorrowAmount-0.6) > 1e-9 {
+		t.Fatalf("manual recovery borrow amount = %.6f, want 0.600000", pos.BorrowAmount)
+	}
+	if math.Abs(pos.NotionalUSDT-60) > 1e-9 {
+		t.Fatalf("manual recovery notional = %.2f, want 60.00", pos.NotionalUSDT)
+	}
+
+	summary, err := engine.allocator.Summary()
+	if err != nil {
+		t.Fatalf("allocator summary after manual recovery = %v", err)
+	}
+	if got := summary.ByExchange["stub"]; got != 60 {
+		t.Fatalf("allocator exposure after manual recovery = %.2f, want 60.00", got)
+	}
+
+	engine.monitorTick()
+	if futExch.placeCalls != 0 {
+		t.Fatalf("futures place calls after manual recovery = %d, want 0", futExch.placeCalls)
+	}
+}
+
 func TestManualOpen_RejectsFilteredOpportunity(t *testing.T) {
 	engine, mr := newExecutionTestEngine(t)
 	defer mr.Close()
