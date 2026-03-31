@@ -227,11 +227,11 @@ func TestNegativeYieldSinceTransitions(t *testing.T) {
 	past := time.Now().Add(-10 * time.Minute)
 
 	tests := []struct {
-		name            string
-		negativeYield   bool
-		priorSince      *time.Time // NegativeYieldSince before this tick
-		wantSinceNil    bool       // expected: NegativeYieldSince == nil after tick
-		wantSinceIsNew  bool       // expected: NegativeYieldSince was just set (not the prior value)
+		name           string
+		negativeYield  bool
+		priorSince     *time.Time // NegativeYieldSince before this tick
+		wantSinceNil   bool       // expected: NegativeYieldSince == nil after tick
+		wantSinceIsNew bool       // expected: NegativeYieldSince was just set (not the prior value)
 	}{
 		{"starts timer on first negative", true, nil, false, true},
 		{"preserves timer on sustained negative", true, &past, false, false},
@@ -374,17 +374,17 @@ func TestPnLCalculation(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			pos := &models.SpotFuturesPosition{
-				Direction:        tc.direction,
-				FuturesSide:      tc.futSide,
-				SpotEntryPrice:   tc.spotEntry,
-				SpotExitPrice:    tc.spotExit,
-				SpotSize:         tc.spotSize,
-				FuturesEntry:     tc.futEntry,
-				FuturesExit:      tc.futExit,
-				FuturesSize:      tc.futSize,
+				Direction:         tc.direction,
+				FuturesSide:       tc.futSide,
+				SpotEntryPrice:    tc.spotEntry,
+				SpotExitPrice:     tc.spotExit,
+				SpotSize:          tc.spotSize,
+				FuturesEntry:      tc.futEntry,
+				FuturesExit:       tc.futExit,
+				FuturesSize:       tc.futSize,
 				BorrowCostAccrued: tc.borrow,
-				EntryFees:        tc.fees / 2,
-				ExitFees:         tc.fees / 2,
+				EntryFees:         tc.fees / 2,
+				ExitFees:          tc.fees / 2,
 			}
 
 			isDirA := pos.Direction == "borrow_sell_long"
