@@ -217,6 +217,34 @@ const Accordion: FC<{ title: string; defaultOpen?: boolean; children: React.Reac
 };
 
 // ---------------------------------------------------------------------------
+// ToggleField - a card with label, tooltip, and on/off toggle
+// ---------------------------------------------------------------------------
+const ToggleField: FC<{
+  label: string;
+  desc?: string;
+  value: unknown;
+  onChange: (v: boolean) => void;
+}> = ({ label, desc, value, onChange }) => {
+  const checked = Boolean(value);
+  return (
+    <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-sm font-medium text-gray-200">{label}</div>
+          {desc && <div className="text-xs text-gray-500 mt-1">{desc}</div>}
+        </div>
+        <button
+          type="button"
+          onClick={() => onChange(!checked)}
+          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${checked ? 'bg-blue-600' : 'bg-gray-700'}`}
+        >
+          <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${checked ? 'translate-x-6' : 'translate-x-1'}`} />
+        </button>
+      </div>
+    </div>
+  );
+};
+
 // NumberField - a card with label, tooltip, and number input
 // ---------------------------------------------------------------------------
 const NumberField: FC<{
@@ -519,6 +547,12 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
   // =========================================================================
   const renderScheduleTab = () => (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <ToggleField
+        label={t('cfg.field.rebalanceAfterExit')}
+        desc={t('cfg.desc.rebalanceAfterExit')}
+        value={getByPath(config, ['strategy', 'rebalance_after_exit'])}
+        onChange={(v) => handleChange(['strategy', 'rebalance_after_exit'], String(v))}
+      />
       <NumberField
         label={t('cfg.field.rebalanceScanMinute')}
         desc={t('cfg.desc.rebalanceScanMinute')}
