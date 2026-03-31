@@ -1016,53 +1016,56 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 					s.cfg.BingXEnabled = &v
 				}
 			}
+			// Only update secret fields when the user actually typed a new value.
+			// Empty strings are ignored to prevent accidental key wipe from
+			// dashboard saves that don't include secret fields.
 			switch name {
 			case "binance":
-				if eu.APIKey != nil {
+				if eu.APIKey != nil && *eu.APIKey != "" {
 					s.cfg.BinanceAPIKey = *eu.APIKey
 				}
-				if eu.SecretKey != nil {
+				if eu.SecretKey != nil && *eu.SecretKey != "" {
 					s.cfg.BinanceSecretKey = *eu.SecretKey
 				}
 			case "bybit":
-				if eu.APIKey != nil {
+				if eu.APIKey != nil && *eu.APIKey != "" {
 					s.cfg.BybitAPIKey = *eu.APIKey
 				}
-				if eu.SecretKey != nil {
+				if eu.SecretKey != nil && *eu.SecretKey != "" {
 					s.cfg.BybitSecretKey = *eu.SecretKey
 				}
 			case "gateio":
-				if eu.APIKey != nil {
+				if eu.APIKey != nil && *eu.APIKey != "" {
 					s.cfg.GateioAPIKey = *eu.APIKey
 				}
-				if eu.SecretKey != nil {
+				if eu.SecretKey != nil && *eu.SecretKey != "" {
 					s.cfg.GateioSecretKey = *eu.SecretKey
 				}
 			case "bitget":
-				if eu.APIKey != nil {
+				if eu.APIKey != nil && *eu.APIKey != "" {
 					s.cfg.BitgetAPIKey = *eu.APIKey
 				}
-				if eu.SecretKey != nil {
+				if eu.SecretKey != nil && *eu.SecretKey != "" {
 					s.cfg.BitgetSecretKey = *eu.SecretKey
 				}
-				if eu.Passphrase != nil {
+				if eu.Passphrase != nil && *eu.Passphrase != "" {
 					s.cfg.BitgetPassphrase = *eu.Passphrase
 				}
 			case "okx":
-				if eu.APIKey != nil {
+				if eu.APIKey != nil && *eu.APIKey != "" {
 					s.cfg.OKXAPIKey = *eu.APIKey
 				}
-				if eu.SecretKey != nil {
+				if eu.SecretKey != nil && *eu.SecretKey != "" {
 					s.cfg.OKXSecretKey = *eu.SecretKey
 				}
-				if eu.Passphrase != nil {
+				if eu.Passphrase != nil && *eu.Passphrase != "" {
 					s.cfg.OKXPassphrase = *eu.Passphrase
 				}
 			case "bingx":
-				if eu.APIKey != nil {
+				if eu.APIKey != nil && *eu.APIKey != "" {
 					s.cfg.BingXAPIKey = *eu.APIKey
 				}
-				if eu.SecretKey != nil {
+				if eu.SecretKey != nil && *eu.SecretKey != "" {
 					s.cfg.BingXSecretKey = *eu.SecretKey
 				}
 			}

@@ -268,3 +268,69 @@ func TestHandleConfig_BorrowSpikeDetectionRoundTrip(t *testing.T) {
 		t.Fatalf("expected reloaded BorrowSpikeMinAbsolute=0.06, got %v", reloaded.BorrowSpikeMinAbsolute)
 	}
 }
+
+func TestHandlePostConfig_IgnoresEmptyExchangeCredentialUpdates(t *testing.T) {
+	s, mr := newTestServer(t)
+	defer mr.Close()
+
+	s.cfg.BinanceAPIKey = "runtime-key"
+	s.cfg.BinanceSecretKey = "runtime-secret"
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	initialConfig := `{
+  "exchanges": {
+    "binance": {
+      "api_key": "file-key",
+      "secret_key": "file-secret",
+      "enabled": true
+    }
+  }
+}`
+	if err := os.WriteFile(configPath, []byte(initialConfig), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("CONFIG_FILE", configPath)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"exchanges":{"binance":{"api_key":"","secret_key":""}}}`))
+	w := httptest.NewRecorder()
+	s.handlePostConfig(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if s.cfg.BinanceAPIKey != "runtime-key" {
+		t.Fatalf("expected in-memory api key to remain unchanged, got %q", s.cfg.BinanceAPIKey)
+	}
+	if s.cfg.BinanceSecretKey != "runtime-secret" {
+		t.Fatalf("expected in-memory secret key to remain unchanged, got %q", s.cfg.BinanceSecretKey)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+
+	var saved map[string]interface{}
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+
+	exchanges, ok := saved["exchanges"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("exchanges missing or wrong type: %#v", saved["exchanges"])
+	}
+	binance, ok := exchanges["binance"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("binance missing or wrong type: %#v", exchanges["binance"])
+	}
+	if got := binance["api_key"]; got != "runtime-key" {
+		t.Fatalf("expected config api_key to remain non-empty, got %#v", got)
+	}
+	if got := binance["secret_key"]; got != "runtime-secret" {
+		t.Fatalf("expected config secret_key to remain non-empty, got %#v", got)
+	}
+
+	if _, err := os.Stat(configPath + ".bak"); err != nil {
+		t.Fatalf("expected backup config to be created: %v", err)
+	}
+}

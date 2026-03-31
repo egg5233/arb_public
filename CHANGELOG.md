@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.40] - 2026-03-31
+
+### Fixed
+- **[config] Preserve exchange credentials on dashboard saves** — empty-string exchange credential updates are ignored in `/api/config`, `SaveJSON()` no longer overwrites existing `config.json` secrets with empty runtime values, and a `.bak` copy is written before each config save to protect against accidental credential loss (`internal/api/handlers.go`, `internal/api/config_handlers_test.go`, `internal/config/config.go`, `internal/config/config_test.go`)
+
 ## [0.22.39] - 2026-03-31
 
 ### Added

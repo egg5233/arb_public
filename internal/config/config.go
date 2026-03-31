@@ -1105,9 +1105,13 @@ func (c *Config) SaveJSON() error {
 	}
 	for _, ed := range exchDefs {
 		exMap := getMap(exchanges, ed.name)
-		exMap["api_key"] = ed.apiKey
-		exMap["secret_key"] = ed.secretKey
-		if ed.hasPass {
+		if ed.apiKey != "" {
+			exMap["api_key"] = ed.apiKey
+		}
+		if ed.secretKey != "" {
+			exMap["secret_key"] = ed.secretKey
+		}
+		if ed.hasPass && ed.passphrase != "" {
 			exMap["passphrase"] = ed.passphrase
 		}
 		if ed.enabled != nil {
@@ -1150,6 +1154,14 @@ func (c *Config) SaveJSON() error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 	out = append(out, '\n')
+
+	if _, err := os.Stat(filePath); err == nil {
+		backupData, _ := os.ReadFile(filePath)
+		if len(backupData) > 0 {
+			_ = os.WriteFile(filePath+".bak", backupData, 0644)
+		}
+	}
+
 	return os.WriteFile(filePath, out, 0644)
 }
 
