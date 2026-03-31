@@ -576,26 +576,22 @@ func (e *Engine) rebalanceFunds() {
 			}
 		}
 
-		// Sweep ALL spot balance into futures (catches prior leftover too)
-		spotBal, err := recipientExch.GetSpotBalance()
-		if err != nil {
-			e.log.Error("rebalance: %s get spot balance for sweep failed: %v", recipient, err)
-			continue
-		}
-		sweepAmt := spotBal.Available
-		if sweepAmt < 1.0 {
-			if !arrived {
-				e.log.Warn("rebalance: deposits on %s not confirmed within 5min and no spot balance to sweep", recipient)
-			}
+		// Only transfer the amount that was sent via rebalance, not the entire spot balance.
+		if !arrived {
+			e.log.Warn("rebalance: deposits on %s not confirmed within 5min, skipping spot→futures", recipient)
 			continue
 		}
 
-		sweepStr := fmt.Sprintf("%.4f", sweepAmt)
-		if err := recipientExch.TransferToFutures("USDT", sweepStr); err != nil {
-			e.log.Error("rebalance: %s spot→futures sweep failed: %v", recipient, err)
+		transferAmt := totalPending
+		if transferAmt < 1.0 {
+			continue
+		}
+		transferStr := fmt.Sprintf("%.4f", transferAmt)
+		if err := recipientExch.TransferToFutures("USDT", transferStr); err != nil {
+			e.log.Error("rebalance: %s spot→futures failed: %v", recipient, err)
 		} else {
-			e.log.Info("rebalance: %s spot→futures %s USDT (sweep all after deposits)", recipient, sweepStr)
-			e.recordTransfer(recipient+" spot", recipient, "USDT", "internal", sweepStr, "0", "", "completed", "rebalance-recv")
+			e.log.Info("rebalance: %s spot→futures %s USDT (rebalance deposit)", recipient, transferStr)
+			e.recordTransfer(recipient+" spot", recipient, "USDT", "internal", transferStr, "0", "", "completed", "rebalance-recv")
 		}
 	}
 
