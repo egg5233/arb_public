@@ -57,6 +57,14 @@ type Config struct {
 	// Risk monitor (log-only)
 	RiskMonitorIntervalSec int // interval between risk monitor checks in seconds (default: 300)
 
+	// Cross-strategy capital allocator (default disabled for production safety)
+	EnableCapitalAllocator bool
+	MaxTotalExposureUSDT   float64
+	MaxPerpPerpPct         float64
+	MaxSpotFuturesPct      float64
+	MaxPerExchangePct      float64
+	ReservationTTLSec      int
+
 	// Persistence filter: require opportunities to appear across multiple scans
 	PersistLookback1h time.Duration // lookback window for 1h-interval pairs (default 15m)
 	PersistMinCount1h int           // min appearances in lookback for 1h pairs (default 2)
@@ -340,6 +348,12 @@ type jsonRisk struct {
 	L4ReduceFraction       *float64 `json:"l4_reduce_fraction"`
 	MarginSafetyMultiplier *float64 `json:"margin_safety_multiplier"`
 	RiskMonitorIntervalSec *int     `json:"risk_monitor_interval_sec"`
+	EnableCapitalAllocator *bool    `json:"enable_capital_allocator"`
+	MaxTotalExposureUSDT   *float64 `json:"max_total_exposure_usdt"`
+	MaxPerpPerpPct         *float64 `json:"max_perp_perp_pct"`
+	MaxSpotFuturesPct      *float64 `json:"max_spot_futures_pct"`
+	MaxPerExchangePct      *float64 `json:"max_per_exchange_pct"`
+	ReservationTTLSec      *int     `json:"reservation_ttl_sec"`
 }
 
 // detectChromePath returns the first Chrome binary found in common locations.
@@ -382,6 +396,10 @@ func Load() *Config {
 		ExitDepthTimeoutSec:             300,
 		ExitMaxGapBPS:                   10.0,
 		RiskMonitorIntervalSec:          300,
+		MaxPerpPerpPct:                  0.60,
+		MaxSpotFuturesPct:               0.60,
+		MaxPerExchangePct:               0.60,
+		ReservationTTLSec:               300,
 		PersistLookback1h:               90 * time.Minute,
 		PersistMinCount1h:               1,
 		PersistLookback4h:               180 * time.Minute,
@@ -705,6 +723,24 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if rk.RiskMonitorIntervalSec != nil {
 			c.RiskMonitorIntervalSec = *rk.RiskMonitorIntervalSec
 		}
+		if rk.EnableCapitalAllocator != nil {
+			c.EnableCapitalAllocator = *rk.EnableCapitalAllocator
+		}
+		if rk.MaxTotalExposureUSDT != nil {
+			c.MaxTotalExposureUSDT = *rk.MaxTotalExposureUSDT
+		}
+		if rk.MaxPerpPerpPct != nil {
+			c.MaxPerpPerpPct = *rk.MaxPerpPerpPct
+		}
+		if rk.MaxSpotFuturesPct != nil {
+			c.MaxSpotFuturesPct = *rk.MaxSpotFuturesPct
+		}
+		if rk.MaxPerExchangePct != nil {
+			c.MaxPerExchangePct = *rk.MaxPerExchangePct
+		}
+		if rk.ReservationTTLSec != nil {
+			c.ReservationTTLSec = *rk.ReservationTTLSec
+		}
 	}
 
 	// Exchanges
@@ -996,6 +1032,12 @@ func (c *Config) SaveJSON() error {
 	risk["l4_reduce_fraction"] = c.L4ReduceFraction
 	risk["margin_safety_multiplier"] = c.MarginSafetyMultiplier
 	risk["risk_monitor_interval_sec"] = c.RiskMonitorIntervalSec
+	risk["enable_capital_allocator"] = c.EnableCapitalAllocator
+	risk["max_total_exposure_usdt"] = c.MaxTotalExposureUSDT
+	risk["max_perp_perp_pct"] = c.MaxPerpPerpPct
+	risk["max_spot_futures_pct"] = c.MaxSpotFuturesPct
+	risk["max_per_exchange_pct"] = c.MaxPerExchangePct
+	risk["reservation_ttl_sec"] = c.ReservationTTLSec
 
 	ai := getMap(raw, "ai")
 	if c.AIEndpoint != "" {

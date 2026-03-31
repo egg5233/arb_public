@@ -433,6 +433,12 @@ type configRiskResponse struct {
 	L4ReduceFraction       float64 `json:"l4_reduce_fraction"`
 	MarginSafetyMultiplier float64 `json:"margin_safety_multiplier"`
 	RiskMonitorIntervalSec int     `json:"risk_monitor_interval_sec"`
+	EnableCapitalAllocator bool    `json:"enable_capital_allocator"`
+	MaxTotalExposureUSDT   float64 `json:"max_total_exposure_usdt"`
+	MaxPerpPerpPct         float64 `json:"max_perp_perp_pct"`
+	MaxSpotFuturesPct      float64 `json:"max_spot_futures_pct"`
+	MaxPerExchangePct      float64 `json:"max_per_exchange_pct"`
+	ReservationTTLSec      int     `json:"reservation_ttl_sec"`
 }
 
 // apiKeyPreview returns the first 6 characters of a key followed by "...", or empty if blank.
@@ -537,6 +543,12 @@ func (s *Server) buildConfigResponse() configResponse {
 			L4ReduceFraction:       s.cfg.L4ReduceFraction,
 			MarginSafetyMultiplier: s.cfg.MarginSafetyMultiplier,
 			RiskMonitorIntervalSec: s.cfg.RiskMonitorIntervalSec,
+			EnableCapitalAllocator: s.cfg.EnableCapitalAllocator,
+			MaxTotalExposureUSDT:   s.cfg.MaxTotalExposureUSDT,
+			MaxPerpPerpPct:         s.cfg.MaxPerpPerpPct,
+			MaxSpotFuturesPct:      s.cfg.MaxSpotFuturesPct,
+			MaxPerExchangePct:      s.cfg.MaxPerExchangePct,
+			ReservationTTLSec:      s.cfg.ReservationTTLSec,
 		},
 		AI: configAIResponse{
 			Endpoint:  s.cfg.AIEndpoint,
@@ -727,6 +739,12 @@ type riskUpdate struct {
 	L4ReduceFraction       *float64 `json:"l4_reduce_fraction"`
 	MarginSafetyMultiplier *float64 `json:"margin_safety_multiplier"`
 	RiskMonitorIntervalSec *int     `json:"risk_monitor_interval_sec"`
+	EnableCapitalAllocator *bool    `json:"enable_capital_allocator"`
+	MaxTotalExposureUSDT   *float64 `json:"max_total_exposure_usdt"`
+	MaxPerpPerpPct         *float64 `json:"max_perp_perp_pct"`
+	MaxSpotFuturesPct      *float64 `json:"max_spot_futures_pct"`
+	MaxPerExchangePct      *float64 `json:"max_per_exchange_pct"`
+	ReservationTTLSec      *int     `json:"reservation_ttl_sec"`
 }
 
 // handlePostConfig accepts a nested JSON body and updates config fields,
@@ -920,6 +938,24 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if rk.RiskMonitorIntervalSec != nil && *rk.RiskMonitorIntervalSec > 0 {
 			s.cfg.RiskMonitorIntervalSec = *rk.RiskMonitorIntervalSec
+		}
+		if rk.EnableCapitalAllocator != nil {
+			s.cfg.EnableCapitalAllocator = *rk.EnableCapitalAllocator
+		}
+		if rk.MaxTotalExposureUSDT != nil && *rk.MaxTotalExposureUSDT >= 0 {
+			s.cfg.MaxTotalExposureUSDT = *rk.MaxTotalExposureUSDT
+		}
+		if rk.MaxPerpPerpPct != nil && *rk.MaxPerpPerpPct >= 0 && *rk.MaxPerpPerpPct <= 1 {
+			s.cfg.MaxPerpPerpPct = *rk.MaxPerpPerpPct
+		}
+		if rk.MaxSpotFuturesPct != nil && *rk.MaxSpotFuturesPct >= 0 && *rk.MaxSpotFuturesPct <= 1 {
+			s.cfg.MaxSpotFuturesPct = *rk.MaxSpotFuturesPct
+		}
+		if rk.MaxPerExchangePct != nil && *rk.MaxPerExchangePct >= 0 && *rk.MaxPerExchangePct <= 1 {
+			s.cfg.MaxPerExchangePct = *rk.MaxPerExchangePct
+		}
+		if rk.ReservationTTLSec != nil && *rk.ReservationTTLSec > 0 {
+			s.cfg.ReservationTTLSec = *rk.ReservationTTLSec
 		}
 	}
 
@@ -1125,6 +1161,12 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"l4_reduce_fraction":                  strconv.FormatFloat(snapshot.Risk.L4ReduceFraction, 'f', -1, 64),
 		"margin_safety_multiplier":            strconv.FormatFloat(snapshot.Risk.MarginSafetyMultiplier, 'f', -1, 64),
 		"risk_monitor_interval_sec":           strconv.Itoa(snapshot.Risk.RiskMonitorIntervalSec),
+		"enable_capital_allocator":            strconv.FormatBool(snapshot.Risk.EnableCapitalAllocator),
+		"max_total_exposure_usdt":             strconv.FormatFloat(snapshot.Risk.MaxTotalExposureUSDT, 'f', -1, 64),
+		"max_perp_perp_pct":                   strconv.FormatFloat(snapshot.Risk.MaxPerpPerpPct, 'f', -1, 64),
+		"max_spot_futures_pct":                strconv.FormatFloat(snapshot.Risk.MaxSpotFuturesPct, 'f', -1, 64),
+		"max_per_exchange_pct":                strconv.FormatFloat(snapshot.Risk.MaxPerExchangePct, 'f', -1, 64),
+		"reservation_ttl_sec":                 strconv.Itoa(snapshot.Risk.ReservationTTLSec),
 		"exit_depth_timeout_sec":              strconv.Itoa(snapshot.Strategy.Exit.DepthTimeoutSec),
 		"enable_spread_reversal":              strconv.FormatBool(snapshot.Strategy.Exit.EnableSpreadReversal),
 		"spread_reversal_tolerance":           strconv.Itoa(snapshot.Strategy.Exit.SpreadReversalTolerance),
