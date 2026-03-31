@@ -1076,6 +1076,104 @@ func TestManualOpen_PersistsManualRecoveryPositionWhenCleanupOnlyPartiallyFills(
 	}
 }
 
+func TestManualOpen_LeavesReservationUncommittedWhenManualRecoverySaveFails(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	workingDB := engine.db
+	failRedis := miniredis.RunT(t)
+	failingDB, err := database.New(failRedis.Addr(), "", 0)
+	if err != nil {
+		t.Fatalf("database.New failingDB: %v", err)
+	}
+	failRedis.Close()
+
+	engine.cfg = &config.Config{
+		SpotFuturesMaxPositions:       1,
+		SpotFuturesLeverage:           3,
+		SpotFuturesUnifiedAcctMaxUSDT: 100,
+		EnableCapitalAllocator:        true,
+		MaxTotalExposureUSDT:          1000,
+		MaxPerpPerpPct:                1,
+		MaxSpotFuturesPct:             1,
+		MaxPerExchangePct:             1,
+	}
+	engine.allocator = risk.NewCapitalAllocator(engine.db, engine.cfg)
+
+	futExch := &closeTestExchange{
+		orderbook: &exchange.Orderbook{
+			Bids: []exchange.PriceLevel{{Price: 99, Quantity: 1}},
+			Asks: []exchange.PriceLevel{{Price: 101, Quantity: 1}},
+		},
+	}
+	smExch := &closeTestSpotMargin{
+		orderIDs:  []string{"spot-entry-1", "spot-cleanup-1"},
+		queryErrs: []error{errors.New("temporary spot query failure")},
+		queryStates: []*exchange.SpotMarginOrderStatus{
+			{
+				OrderID:   "spot-entry-1",
+				Symbol:    "BTCUSDT",
+				Status:    "filled",
+				FilledQty: 1,
+				AvgPrice:  100,
+			},
+			{
+				OrderID:   "spot-cleanup-1",
+				Symbol:    "BTCUSDT",
+				Status:    "cancelled",
+				FilledQty: 0.4,
+				AvgPrice:  100,
+			},
+		},
+		onPlace: func(call int, _ exchange.SpotMarginOrderParams) {
+			if call == 1 {
+				engine.db = failingDB
+			}
+		},
+	}
+
+	engine.exchanges = map[string]exchange.Exchange{"stub": futExch}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{"stub": smExch}
+	engine.latestOpps = []SpotArbOpportunity{
+		{
+			Symbol:    "BTCUSDT",
+			BaseCoin:  "BTC",
+			Exchange:  "stub",
+			Direction: "borrow_sell_long",
+		},
+	}
+
+	err = engine.ManualOpen("BTCUSDT", "stub", "borrow_sell_long")
+	if err == nil {
+		t.Fatal("expected ManualOpen to fail when manual recovery save fails")
+	}
+	if !strings.Contains(err.Error(), "could not be persisted") {
+		t.Fatalf("ManualOpen error = %v, want manual recovery persistence failure", err)
+	}
+
+	active, err := workingDB.GetActiveSpotPositions()
+	if err != nil {
+		t.Fatalf("GetActiveSpotPositions: %v", err)
+	}
+	if len(active) != 0 {
+		t.Fatalf("active positions = %d, want 0", len(active))
+	}
+
+	summary, err := engine.allocator.Summary()
+	if err != nil {
+		t.Fatalf("allocator summary after failed manual recovery save: %v", err)
+	}
+	if got := summary.ByExchange["stub"]; got != 100 {
+		t.Fatalf("allocator exposure after failed manual recovery save = %.2f, want 100.00 reserved", got)
+	}
+	if summary.Reservations != 1 {
+		t.Fatalf("allocator reservations after failed manual recovery save = %d, want 1", summary.Reservations)
+	}
+	if futExch.placeCalls != 0 {
+		t.Fatalf("futures place calls after failed manual recovery save = %d, want 0", futExch.placeCalls)
+	}
+}
+
 func TestManualClose_ClearsManualRecoveryWhenExchangeIsFlat(t *testing.T) {
 	engine, mr := newExecutionTestEngine(t)
 	defer mr.Close()

@@ -219,6 +219,8 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 			if pendingErr.pendingPos != nil {
 				if saveErr := e.db.SaveSpotPosition(pendingErr.pendingPos); saveErr != nil {
 					e.log.Error("ManualOpen: failed to save pending spot recovery %s: %v", pendingErr.posID, saveErr)
+					return fmt.Errorf("%w (manual recovery position %s could not be persisted: %v; capital reservation left uncommitted)",
+						err, pendingErr.posID, saveErr)
 				} else if e.api != nil {
 					e.api.BroadcastSpotPositionUpdate(pendingErr.pendingPos)
 				}
