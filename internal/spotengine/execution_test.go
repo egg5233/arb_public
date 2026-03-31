@@ -103,6 +103,7 @@ type closeTestSpotMargin struct {
 	queryStates  []*exchange.SpotMarginOrderStatus
 	repayCalls   int
 	repayAmounts []string
+	marginBal    *exchange.MarginBalance
 	onPlace      func(call int, params exchange.SpotMarginOrderParams)
 }
 
@@ -129,6 +130,9 @@ func (s *closeTestSpotMargin) GetMarginInterestRate(string) (*exchange.MarginInt
 	return nil, nil
 }
 func (s *closeTestSpotMargin) GetMarginBalance(string) (*exchange.MarginBalance, error) {
+	if s.marginBal != nil {
+		return s.marginBal, nil
+	}
 	return &exchange.MarginBalance{}, nil
 }
 func (s *closeTestSpotMargin) TransferToMargin(string, string) error   { return nil }
@@ -1066,6 +1070,83 @@ func TestManualOpen_PersistsManualRecoveryPositionWhenCleanupOnlyPartiallyFills(
 	engine.monitorTick()
 	if futExch.placeCalls != 0 {
 		t.Fatalf("futures place calls after manual recovery = %d, want 0", futExch.placeCalls)
+	}
+}
+
+func TestManualClose_ClearsManualRecoveryWhenExchangeIsFlat(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	engine.cfg = &config.Config{
+		EnableCapitalAllocator: true,
+		MaxTotalExposureUSDT:   1000,
+		MaxPerpPerpPct:         1,
+		MaxSpotFuturesPct:      1,
+		MaxPerExchangePct:      1,
+	}
+	engine.allocator = risk.NewCapitalAllocator(engine.db, engine.cfg)
+
+	pos := &models.SpotFuturesPosition{
+		ID:             "manual-recovery-1",
+		Symbol:         "BTCUSDT",
+		BaseCoin:       "BTC",
+		Exchange:       "stub",
+		Direction:      "borrow_sell_long",
+		Status:         models.SpotStatusPending,
+		ExitReason:     spotEntryManualRecoveryReason,
+		SpotSize:       0.6,
+		BorrowAmount:   0.6,
+		NotionalUSDT:   60,
+		CreatedAt:      time.Now().UTC(),
+		UpdatedAt:      time.Now().UTC(),
+		SpotEntryPrice: 100,
+	}
+	if err := engine.db.SaveSpotPosition(pos); err != nil {
+		t.Fatalf("SaveSpotPosition: %v", err)
+	}
+	res, err := engine.allocator.Reserve(risk.StrategySpotFutures, map[string]float64{"stub": 60})
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if err := engine.allocator.Commit(res, pos.ID, map[string]float64{"stub": 60}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{
+		"stub": &closeTestSpotMargin{
+			marginBal: &exchange.MarginBalance{},
+		},
+	}
+
+	if err := engine.ManualClose(pos.ID); err != nil {
+		t.Fatalf("ManualClose: %v", err)
+	}
+
+	stored, err := engine.db.GetSpotPosition(pos.ID)
+	if err != nil {
+		t.Fatalf("GetSpotPosition: %v", err)
+	}
+	if stored.Status != models.SpotStatusClosed {
+		t.Fatalf("status = %q, want %q", stored.Status, models.SpotStatusClosed)
+	}
+	if stored.ExitCompletedAt == nil {
+		t.Fatal("ExitCompletedAt should be set")
+	}
+
+	active, err := engine.db.GetActiveSpotPositions()
+	if err != nil {
+		t.Fatalf("GetActiveSpotPositions: %v", err)
+	}
+	if len(active) != 0 {
+		t.Fatalf("active positions = %d, want 0", len(active))
+	}
+
+	summary, err := engine.allocator.Summary()
+	if err != nil {
+		t.Fatalf("allocator summary: %v", err)
+	}
+	if got := summary.ByExchange["stub"]; got != 0 {
+		t.Fatalf("allocator exposure after clear = %.2f, want 0", got)
 	}
 }
 

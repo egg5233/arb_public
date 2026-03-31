@@ -503,8 +503,12 @@ func (e *SpotEngine) ManualClose(positionID string) error {
 		return fmt.Errorf("position %s not found", positionID)
 	}
 
+	if pos.Status == models.SpotStatusPending && pos.ExitReason == spotEntryManualRecoveryReason {
+		return e.resolveManualRecovery(positionID)
+	}
+
 	if pos.Status != models.SpotStatusActive {
-		return fmt.Errorf("position %s status is %q, expected %q", positionID, pos.Status, models.SpotStatusActive)
+		return fmt.Errorf("position %s not active: status %q", positionID, pos.Status)
 	}
 
 	if e.isExiting(positionID) {
@@ -528,5 +532,64 @@ func (e *SpotEngine) ManualClose(positionID string) error {
 		return fmt.Errorf("close failed — position %s stuck in status %q, manual intervention required", positionID, updated.Status)
 	}
 
+	return nil
+}
+
+func (e *SpotEngine) resolveManualRecovery(positionID string) error {
+	mu := e.posLock(positionID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	pos, err := e.db.GetSpotPosition(positionID)
+	if err != nil {
+		return fmt.Errorf("position not found: %w", err)
+	}
+	if pos == nil {
+		return fmt.Errorf("position %s not found", positionID)
+	}
+	if pos.Status != models.SpotStatusPending || pos.ExitReason != spotEntryManualRecoveryReason {
+		return fmt.Errorf("position %s not pending manual recovery", positionID)
+	}
+
+	smExch, ok := e.spotMargin[pos.Exchange]
+	if !ok {
+		return fmt.Errorf("exchange %s does not support spot margin", pos.Exchange)
+	}
+
+	bal, err := smExch.GetMarginBalance(pos.BaseCoin)
+	if err != nil {
+		return fmt.Errorf("manual recovery balance check failed: %w", err)
+	}
+
+	liability := bal.Borrowed + bal.Interest
+	if liability > spotQtyTolerance || bal.Available > spotQtyTolerance {
+		return fmt.Errorf(
+			"manual recovery still open on exchange: available=%.6f borrowed=%.6f interest=%.6f",
+			bal.Available,
+			bal.Borrowed,
+			bal.Interest,
+		)
+	}
+
+	now := time.Now().UTC()
+	pos.Status = models.SpotStatusClosed
+	pos.ExitCompletedAt = &now
+	pos.PendingEntryOrderID = ""
+	pos.PendingSpotExitOrderID = ""
+	pos.PendingRepay = false
+	pos.PendingRepayRetryAt = nil
+	pos.UpdatedAt = now
+
+	if err := e.db.SaveSpotPosition(pos); err != nil {
+		return fmt.Errorf("failed to clear manual recovery position: %w", err)
+	}
+
+	e.releaseSpotPosition(pos.ID)
+	if e.api != nil {
+		e.api.BroadcastSpotPositionUpdate(pos)
+	}
+
+	e.log.Info("ManualClose: cleared manual recovery %s %s on %s after operator flatten confirmation",
+		pos.Symbol, pos.ID, pos.Exchange)
 	return nil
 }

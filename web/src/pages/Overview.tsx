@@ -8,6 +8,7 @@ interface OverviewProps {
   stats: Stats | null;
   exchanges: ExchangeInfo[];
   onDiagnose?: () => Promise<{ analysis: string }>;
+  onResolveSpotPosition?: (positionId: string) => Promise<void>;
   spotPositions?: SpotPosition[];
 }
 
@@ -23,13 +24,27 @@ function formatFundingCountdown(next: string | undefined): string {
   return `${hours}h ${mins % 60}m`;
 }
 
-const Overview: FC<OverviewProps> = ({ positions, stats, exchanges, onDiagnose, spotPositions = [] }) => {
+const Overview: FC<OverviewProps> = ({
+  positions,
+  stats,
+  exchanges,
+  onDiagnose,
+  onResolveSpotPosition,
+  spotPositions = [],
+}) => {
   const { t } = useLocale();
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagnosis, setDiagnosis] = useState<string | null>(null);
   const [diagError, setDiagError] = useState<string | null>(null);
+  const [resolvingSpotId, setResolvingSpotId] = useState<string | null>(null);
+  const [spotResolveErrorId, setSpotResolveErrorId] = useState<string | null>(null);
+  const [spotResolveError, setSpotResolveError] = useState<string | null>(null);
 
-  const activeSpotPositions = spotPositions.filter((p) => p.status === 'active' || p.status === 'exiting');
+  const activeSpotPositions = spotPositions.filter((p) =>
+    p.status === 'active' ||
+    p.status === 'exiting' ||
+    (p.status === 'pending' && p.exit_reason === 'manual_intervention_required')
+  );
 
   const handleDiagnose = async () => {
     if (!onDiagnose) return;
@@ -43,6 +58,21 @@ const Overview: FC<OverviewProps> = ({ positions, stats, exchanges, onDiagnose, 
       setDiagError(err instanceof Error ? err.message : t('ai.error'));
     } finally {
       setDiagnosing(false);
+    }
+  };
+
+  const handleResolveSpotPosition = async (positionId: string) => {
+    if (!onResolveSpotPosition) return;
+    setResolvingSpotId(positionId);
+    setSpotResolveErrorId(null);
+    setSpotResolveError(null);
+    try {
+      await onResolveSpotPosition(positionId);
+    } catch (err) {
+      setSpotResolveErrorId(positionId);
+      setSpotResolveError(err instanceof Error ? err.message : 'Resolve failed');
+    } finally {
+      setResolvingSpotId(null);
     }
   };
 
@@ -171,15 +201,27 @@ const Overview: FC<OverviewProps> = ({ positions, stats, exchanges, onDiagnose, 
               const isFallback = pos.yield_data_source === 'entry_fallback';
               const duration = Math.floor((Date.now() - new Date(pos.created_at).getTime()) / 3600000);
               const dir = pos.direction === 'borrow_sell_long' ? 'A' : 'B';
+              const isManualRecovery = pos.status === 'pending' && pos.exit_reason === 'manual_intervention_required';
               return (
                 <div key={pos.id} className="bg-gray-800/50 rounded-md px-3 py-2 space-y-1">
                   <div className="flex items-center justify-between">
                     <span className="font-mono text-sm text-gray-100">{pos.symbol}</span>
-                    <span className={`text-xs px-1.5 py-0.5 rounded ${pos.status === 'exiting' ? 'bg-red-900/50 text-red-400' : 'bg-green-900/50 text-green-400'}`}>
-                      {pos.status} (Dir {dir})
+                    <span className={`text-xs px-1.5 py-0.5 rounded ${
+                      pos.status === 'exiting'
+                        ? 'bg-red-900/50 text-red-400'
+                        : isManualRecovery
+                          ? 'bg-yellow-900/50 text-yellow-300'
+                          : 'bg-green-900/50 text-green-400'
+                    }`}>
+                      {isManualRecovery ? `pending recovery (Dir ${dir})` : `${pos.status} (Dir ${dir})`}
                     </span>
                   </div>
                   <div className="text-xs text-gray-400 capitalize">{pos.exchange} &middot; {duration}h held</div>
+                  {isManualRecovery && (
+                    <div className="rounded border border-yellow-800/60 bg-yellow-950/40 px-2 py-1 text-xs text-yellow-200">
+                      Manual intervention required. After the exchange is flat, clear this record to release allocator exposure.
+                    </div>
+                  )}
                   <div className="grid grid-cols-2 gap-x-3 text-xs">
                     <div>
                       <span className="text-gray-500">Borrow APR</span>
@@ -218,6 +260,20 @@ const Overview: FC<OverviewProps> = ({ positions, stats, exchanges, onDiagnose, 
                       </div>
                     )}
                   </div>
+                  {isManualRecovery && onResolveSpotPosition && (
+                    <div className="pt-1">
+                      <button
+                        onClick={() => void handleResolveSpotPosition(pos.id)}
+                        disabled={resolvingSpotId === pos.id}
+                        className="rounded bg-yellow-900/60 px-2 py-1 text-xs text-yellow-100 hover:bg-yellow-800/70 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {resolvingSpotId === pos.id ? 'Clearing...' : 'Clear After Flatten'}
+                      </button>
+                      {spotResolveError && spotResolveErrorId === pos.id && (
+                        <p className="mt-1 text-xs text-red-400">{spotResolveError}</p>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}

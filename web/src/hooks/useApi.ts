@@ -213,6 +213,13 @@ export function useApi() {
     });
   }, []);
 
+  const spotManualClose = useCallback((positionId: string) => {
+    return request<void>('/api/spot/close', {
+      method: 'POST',
+      body: JSON.stringify({ position_id: positionId }),
+    });
+  }, []);
+
   const logout = useCallback(() => {
     clearToken();
     _setToken(null);
@@ -248,5 +255,6 @@ export function useApi() {
     getSpotStats,
     getSpotOpportunities,
     spotManualOpen,
+    spotManualClose,
   };
 }

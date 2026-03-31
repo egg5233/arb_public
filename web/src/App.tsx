@@ -135,6 +135,7 @@ function App() {
             stats={ws.stats}
             exchanges={exchanges}
             onDiagnose={api.diagnose}
+            onResolveSpotPosition={api.spotManualClose}
             spotPositions={ws.spotPositions}
           />
         );
