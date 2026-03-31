@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.42] - 2026-03-31
+
+### Fixed
+- **[perp-perp] Dashboard opportunities no longer wiped by filtered scan types** — rebalance/entry/exit/rotate scans applied heavy filters that could produce 0 results, overwriting the dashboard opportunity list; now only `normalScan` updates the dashboard while filtered scans use results internally (`internal/engine/engine.go`)
+
 ## [0.22.41] - 2026-03-31
 
 ### Fixed

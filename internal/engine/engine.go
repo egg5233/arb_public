@@ -681,9 +681,13 @@ func (e *Engine) run() {
 			e.log.Info("run loop: received %d opportunities (type=%s), dispatching...",
 				len(result.Opps), result.Type)
 
-			// Always forward to dashboard.
-			e.api.SetOpportunities(result.Opps)
-			e.api.BroadcastOpportunities(result.Opps)
+			// Forward to dashboard only from normal scans — filtered scan types
+			// (rebalance, entry, exit, rotate) apply heavy filters that can produce
+			// 0 results and would wipe the dashboard opportunity list.
+			if result.Type == discovery.NormalScan {
+				e.api.SetOpportunities(result.Opps)
+				e.api.BroadcastOpportunities(result.Opps)
+			}
 
 			// Check for delisted coins in active positions.
 			if e.cfg.DelistFilterEnabled {
