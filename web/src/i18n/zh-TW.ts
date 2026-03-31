@@ -72,6 +72,26 @@ const zhTW: Record<TranslationKey, string> = {
   'opp.forceOpen': '強制開倉（跳過風控）',
   'opp.openCancel': '取消',
 
+  // Spot-Futures Opportunities
+  'spot.tabPerp': '永續-永續',
+  'spot.tabSpot': '現貨-合約',
+  'spot.actionable': '可操作',
+  'spot.filtered': '已過濾',
+  'spot.symbol': '交易對',
+  'spot.exchange': '交易所',
+  'spot.direction': '方向',
+  'spot.dirA': 'A',
+  'spot.dirB': 'B',
+  'spot.dirADesc': '借幣賣出現貨，做多合約',
+  'spot.dirBDesc': '買入現貨，做空合約',
+  'spot.funding': '資金費率',
+  'spot.borrow': '借幣利率',
+  'spot.fees': '手續費',
+  'spot.netApr': '淨年化',
+  'spot.status': '狀態',
+  'spot.ready': '就緒',
+  'spot.noOpportunities': '無現貨-合約機會 — 等待下次掃描',
+
   // Positions
   'pos.title': '持倉',
   'pos.symbol': '交易對',

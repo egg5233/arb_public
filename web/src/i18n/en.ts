@@ -70,6 +70,26 @@ const en = {
   'opp.forceOpen': 'Force Open (Skip Risk)',
   'opp.openCancel': 'Cancel',
 
+  // Spot-Futures Opportunities
+  'spot.tabPerp': 'Perp-Perp',
+  'spot.tabSpot': 'Spot-Futures',
+  'spot.actionable': 'actionable',
+  'spot.filtered': 'filtered',
+  'spot.symbol': 'Symbol',
+  'spot.exchange': 'Exchange',
+  'spot.direction': 'Dir',
+  'spot.dirA': 'A',
+  'spot.dirB': 'B',
+  'spot.dirADesc': 'Borrow & sell spot, long futures',
+  'spot.dirBDesc': 'Buy spot, short futures',
+  'spot.funding': 'Funding',
+  'spot.borrow': 'Borrow',
+  'spot.fees': 'Fees',
+  'spot.netApr': 'Net APR',
+  'spot.status': 'Status',
+  'spot.ready': 'ready',
+  'spot.noOpportunities': 'No spot-futures opportunities — waiting for next discovery scan',
+
   // Positions
   'pos.title': 'Positions',
   'pos.symbol': 'Symbol',

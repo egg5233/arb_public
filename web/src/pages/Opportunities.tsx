@@ -89,7 +89,7 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
                 : 'text-gray-500 hover:text-gray-300'
             }`}
           >
-            Perp-Perp
+            {t('spot.tabPerp')}
             <span className={`ml-1.5 font-mono ${tab === 'perp' ? 'text-emerald-400' : 'text-gray-600'}`}>
               {sorted.length}
             </span>
@@ -102,7 +102,7 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
                 : 'text-gray-500 hover:text-gray-300'
             }`}
           >
-            Spot-Futures
+            {t('spot.tabSpot')}
             <span className={`ml-1.5 font-mono ${tab === 'spot' ? 'text-emerald-400' : 'text-gray-600'}`}>
               {spotPassed.length}/{spotOpportunities.length}
             </span>
@@ -171,11 +171,11 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
           <div className="flex items-center gap-4 mb-3 text-xs text-gray-500">
             <span>
               <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 mr-1.5" />
-              {spotPassed.length} actionable
+              {spotPassed.length} {t('spot.actionable')}
             </span>
             <span>
               <span className="inline-block w-2 h-2 rounded-full bg-gray-600 mr-1.5" />
-              {spotOpportunities.length - spotPassed.length} filtered
+              {spotOpportunities.length - spotPassed.length} {t('spot.filtered')}
             </span>
           </div>
 
@@ -183,21 +183,23 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
             <thead>
               <tr className="text-gray-400 text-left border-b border-gray-800">
                 <th className="pb-2">#</th>
-                <th className="pb-2">Symbol</th>
-                <th className="pb-2">Exchange</th>
-                <th className="pb-2">Dir</th>
-                <th className="pb-2 text-right">Funding</th>
-                <th className="pb-2 text-right">Borrow</th>
-                <th className="pb-2 text-right">Fees</th>
-                <th className="pb-2 text-right">Net APR</th>
-                <th className="pb-2">Status</th>
+                <th className="pb-2">{t('spot.symbol')}</th>
+                <th className="pb-2">{t('spot.exchange')}</th>
+                <th className="pb-2">{t('spot.direction')}</th>
+                <th className="pb-2 text-right">{t('spot.funding')}</th>
+                <th className="pb-2 text-right">{t('spot.borrow')}</th>
+                <th className="pb-2 text-right">{t('spot.fees')}</th>
+                <th className="pb-2 text-right">{t('spot.netApr')}</th>
+                <th className="pb-2">{t('spot.status')}</th>
                 <th className="pb-2"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800/50">
               {spotOpportunities.map((opp, i) => {
                 const filtered = !!opp.filter_status;
-                const dirLabel = opp.direction === 'borrow_sell_long' ? 'A' : 'B';
+                const isA = opp.direction === 'borrow_sell_long';
+                const dirLabel = isA ? t('spot.dirA') : t('spot.dirB');
+                const dirDesc = isA ? t('spot.dirADesc') : t('spot.dirBDesc');
                 return (
                   <tr
                     key={`${opp.symbol}-${opp.exchange}-${opp.direction}`}
@@ -212,9 +214,9 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
                       }
                     </td>
                     <td className={`py-2 font-mono ${
-                      filtered ? '' : opp.direction === 'borrow_sell_long' ? 'text-blue-400' : 'text-purple-400'
-                    }`}>
-                      {dirLabel}
+                      filtered ? '' : isA ? 'text-blue-400' : 'text-purple-400'
+                    }`} title={dirDesc}>
+                      {dirLabel} <span className="text-xs text-gray-500 font-normal hidden sm:inline">({dirDesc})</span>
                     </td>
                     <td className={`py-2 text-right font-mono ${filtered ? '' : 'text-emerald-400'}`}>
                       {(opp.funding_apr * 100).toFixed(1)}%
@@ -238,7 +240,7 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
                       ) : (
                         <span className="inline-flex items-center gap-1 text-xs text-emerald-400">
                           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                          ready
+                          {t('spot.ready')}
                         </span>
                       )}
                     </td>
@@ -258,7 +260,7 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
               {spotOpportunities.length === 0 && (
                 <tr>
                   <td colSpan={10} className="py-8 text-center text-gray-500">
-                    No spot-futures opportunities — waiting for next discovery scan
+                    {t('spot.noOpportunities')}
                   </td>
                 </tr>
               )}
