@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.38] - 2026-03-31
+
+### Fixed
+- **[spot-futures] Manual recovery position persisted after cleanup failure** — when `abortAcceptedSpotEntry` successfully reverses a spot fill but the cleanup record cannot be saved, a `SpotStatusManualRecovery` position is written to Redis so operators have a durable record of the residual state; monitors then track the manual-recovery entry rather than losing it (`internal/spotengine/execution.go`, `internal/spotengine/monitor.go`)
+- **[spot-futures] Manual recovery positions cleared after successful flatten** — `completeExit` and `initiateExit` now detect `SpotStatusManualRecovery` positions and remove the recovery record from Redis after the position is fully closed; dashboard `useApi` hook exposes manual-recovery positions so operators can see and act on them (`internal/spotengine/exit_manager.go`, `web/src/hooks/useApi.ts`, `web/src/pages/Overview.tsx`)
+- **[spot-futures] Premature manual recovery clear blocked** — clearing the manual-recovery record is now gated on both legs being fully settled (`FuturesExit > 0` and `SpotExitFilled`); partial-exit state no longer triggers premature record removal (`internal/spotengine/execution.go`, `internal/spotengine/exit_manager.go`)
+- **[spot-futures] Discovery retains active rows with nonpositive funding** — `filterOpportunities` no longer drops symbols that have zero or negative `FundingAPR` when they are already tracked in an active or pending position; prevents discovery from evicting live positions due to transient funding rate dips (`internal/spotengine/discovery.go`)
+- **[spot-futures] Fail closed on recovery save errors** — `ManualOpen` no longer commits allocator capital when the manual-recovery persistence step fails after accepted spot-entry cleanup; reservation remains uncommitted so budget accounting stays consistent (`internal/spotengine/execution.go`)
+
 ## [0.22.37] - 2026-03-31
 
 ### Fixed
