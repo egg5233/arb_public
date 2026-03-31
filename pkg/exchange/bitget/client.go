@@ -3,6 +3,7 @@ package bitget
 import (
 	"arb/pkg/exchange"
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -131,11 +132,15 @@ func (c *Client) doRequest(method, path string, queryParams, bodyParams map[stri
 	signature := c.sign(timestamp, method, requestPath, bodyStr)
 
 	var req *http.Request
+	// Use a context timeout as a hard safety net in addition to http.Client.Timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
 	if method == "GET" {
 		// Build request with base path only, then set RawQuery directly
 		// to avoid http.NewRequest re-encoding percent-escaped non-ASCII
 		// characters (e.g. Chinese symbols like 龙虾USDT).
-		req, err = http.NewRequest(method, c.baseURL+path, nil)
+		req, err = http.NewRequestWithContext(ctx, method, c.baseURL+path, nil)
 		if err != nil {
 			return "", err
 		}
@@ -144,7 +149,7 @@ func (c *Client) doRequest(method, path string, queryParams, bodyParams map[stri
 			req.URL.RawQuery = qs
 		}
 	} else {
-		req, err = http.NewRequest(method, c.baseURL+path, reqBody)
+		req, err = http.NewRequestWithContext(ctx, method, c.baseURL+path, reqBody)
 		if err != nil {
 			return "", err
 		}

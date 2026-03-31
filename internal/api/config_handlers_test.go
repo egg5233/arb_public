@@ -20,7 +20,6 @@ func TestHandlePostConfig_PersistsDisabledSpotFutures(t *testing.T) {
 
 	s.cfg.SpotFuturesEnabled = true
 	s.cfg.SpotFuturesMaxPositions = 2
-	s.cfg.SpotFuturesCapitalPerPosition = 500
 	s.cfg.SpotFuturesLeverage = 3
 	s.cfg.SpotFuturesMonitorIntervalSec = 60
 	s.cfg.SpotFuturesMinNetYieldAPR = 0.12
@@ -37,15 +36,17 @@ func TestHandlePostConfig_PersistsDisabledSpotFutures(t *testing.T) {
 	s.cfg.SpotFuturesDryRun = true
 	s.cfg.SpotFuturesPersistenceScans = 2
 	s.cfg.SpotFuturesProfitTransferEnabled = true
-	s.cfg.SpotFuturesSeparateAcctMaxUSDT = 200
-	s.cfg.SpotFuturesUnifiedAcctMaxUSDT = 500
+	s.cfg.SpotFuturesCapitalSeparate = 200
+	s.cfg.SpotFuturesCapitalUnified = 500
+
+	s.cfg.SpotFuturesCapitalSeparate = 300
 
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	initialConfig := `{
   "spot_futures": {
     "enabled": true,
     "max_positions": 2,
-    "capital_per_position": 500
+    "capital_separate_usdt": 300
   }
 }`
 	if err := os.WriteFile(configPath, []byte(initialConfig), 0644); err != nil {
@@ -65,9 +66,9 @@ func TestHandlePostConfig_PersistsDisabledSpotFutures(t *testing.T) {
 		OK   bool `json:"ok"`
 		Data struct {
 			SpotFutures *struct {
-				Enabled            bool    `json:"enabled"`
-				MaxPositions       int     `json:"max_positions"`
-				CapitalPerPosition float64 `json:"capital_per_position"`
+				Enabled             bool    `json:"enabled"`
+				MaxPositions        int     `json:"max_positions"`
+				CapitalSeparateUSDT float64 `json:"capital_separate_usdt"`
 			} `json:"spot_futures"`
 		} `json:"data"`
 	}
@@ -86,8 +87,8 @@ func TestHandlePostConfig_PersistsDisabledSpotFutures(t *testing.T) {
 	if resp.Data.SpotFutures.MaxPositions != 2 {
 		t.Fatalf("expected max_positions=2, got %d", resp.Data.SpotFutures.MaxPositions)
 	}
-	if resp.Data.SpotFutures.CapitalPerPosition != 500 {
-		t.Fatalf("expected capital_per_position=500, got %v", resp.Data.SpotFutures.CapitalPerPosition)
+	if resp.Data.SpotFutures.CapitalSeparateUSDT != 300 {
+		t.Fatalf("expected capital_separate_usdt=300, got %v", resp.Data.SpotFutures.CapitalSeparateUSDT)
 	}
 
 	enabled, err := s.db.GetConfigField("spot_futures_enabled")
@@ -105,8 +106,8 @@ func TestHandlePostConfig_PersistsDisabledSpotFutures(t *testing.T) {
 	if reloaded.SpotFuturesMaxPositions != 2 {
 		t.Fatalf("expected reloaded max_positions=2, got %d", reloaded.SpotFuturesMaxPositions)
 	}
-	if reloaded.SpotFuturesCapitalPerPosition != 500 {
-		t.Fatalf("expected reloaded capital_per_position=500, got %v", reloaded.SpotFuturesCapitalPerPosition)
+	if reloaded.SpotFuturesCapitalSeparate != 300 {
+		t.Fatalf("expected reloaded capital_separate_usdt=300, got %v", reloaded.SpotFuturesCapitalSeparate)
 	}
 }
 

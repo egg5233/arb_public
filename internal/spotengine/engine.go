@@ -267,13 +267,13 @@ func isSeparateAccount(exchName string) bool {
 // lower default since cross-margin collateral is not shared.
 func (e *SpotEngine) capitalForExchange(exchName string) float64 {
 	if isSeparateAccount(exchName) {
-		cap := e.cfg.SpotFuturesSeparateAcctMaxUSDT
+		cap := e.cfg.SpotFuturesCapitalSeparate
 		if cap <= 0 {
 			cap = 200
 		}
 		return cap
 	}
-	cap := e.cfg.SpotFuturesUnifiedAcctMaxUSDT
+	cap := e.cfg.SpotFuturesCapitalUnified
 	if cap <= 0 {
 		cap = 500
 	}

@@ -109,8 +109,8 @@ func (s *marginStubExchange) TransferFromMargin(string, string) error { return n
 // capital limits than unified-account exchanges.
 func TestCapitalForExchange(t *testing.T) {
 	cfg := &config.Config{
-		SpotFuturesSeparateAcctMaxUSDT: 200,
-		SpotFuturesUnifiedAcctMaxUSDT:  500,
+		SpotFuturesCapitalSeparate: 200,
+		SpotFuturesCapitalUnified:  500,
 	}
 	e := &SpotEngine{cfg: cfg}
 
@@ -135,8 +135,8 @@ func TestCapitalForExchange(t *testing.T) {
 // TestCapitalForExchangeDefaults verifies fallback behavior when config values are 0.
 func TestCapitalForExchangeDefaults(t *testing.T) {
 	cfg := &config.Config{
-		SpotFuturesSeparateAcctMaxUSDT: 0,
-		SpotFuturesUnifiedAcctMaxUSDT:  0,
+		SpotFuturesCapitalSeparate: 0,
+		SpotFuturesCapitalUnified:  0,
 	}
 	e := &SpotEngine{cfg: cfg}
 

@@ -312,8 +312,7 @@ func (s *Server) spotAutoConfigResponse() map[string]interface{} {
 		"dry_run":                s.cfg.SpotFuturesDryRun,
 		"persistence_scans":      s.cfg.SpotFuturesPersistenceScans,
 		"max_positions":          s.cfg.SpotFuturesMaxPositions,
-		"capital_per_position":   s.cfg.SpotFuturesCapitalPerPosition,
-		"separate_acct_max_usdt": s.cfg.SpotFuturesSeparateAcctMaxUSDT,
-		"unified_acct_max_usdt":  s.cfg.SpotFuturesUnifiedAcctMaxUSDT,
+		"capital_separate_usdt": s.cfg.SpotFuturesCapitalSeparate,
+		"capital_unified_usdt":  s.cfg.SpotFuturesCapitalUnified,
 	}
 }

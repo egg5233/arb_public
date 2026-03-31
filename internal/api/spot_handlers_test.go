@@ -127,7 +127,7 @@ func TestHandleSpotPositionHealth_NullTimestamps(t *testing.T) {
 }
 
 // TestHandleSpotAutoConfig_GET_ReturnsGuardrails verifies that the auto-config
-// GET endpoint exposes max_positions, capital_per_position, and account limits.
+// GET endpoint exposes max_positions and capital limits.
 func TestHandleSpotAutoConfig_GET_ReturnsGuardrails(t *testing.T) {
 	s, mr := newTestServer(t)
 	defer mr.Close()
@@ -136,9 +136,8 @@ func TestHandleSpotAutoConfig_GET_ReturnsGuardrails(t *testing.T) {
 	s.cfg.SpotFuturesDryRun = true
 	s.cfg.SpotFuturesPersistenceScans = 3
 	s.cfg.SpotFuturesMaxPositions = 2
-	s.cfg.SpotFuturesCapitalPerPosition = 500
-	s.cfg.SpotFuturesSeparateAcctMaxUSDT = 200
-	s.cfg.SpotFuturesUnifiedAcctMaxUSDT = 1000
+	s.cfg.SpotFuturesCapitalSeparate = 200
+	s.cfg.SpotFuturesCapitalUnified = 1000
 
 	req := httptest.NewRequest(http.MethodGet, "/api/spot/config/auto", nil)
 	w := httptest.NewRecorder()
@@ -170,18 +169,15 @@ func TestHandleSpotAutoConfig_GET_ReturnsGuardrails(t *testing.T) {
 		t.Errorf("expected persistence_scans=3, got %v", resp.Data["persistence_scans"])
 	}
 
-	// New guardrail fields.
+	// Guardrail fields.
 	if resp.Data["max_positions"] != float64(2) {
 		t.Errorf("expected max_positions=2, got %v", resp.Data["max_positions"])
 	}
-	if resp.Data["capital_per_position"] != float64(500) {
-		t.Errorf("expected capital_per_position=500, got %v", resp.Data["capital_per_position"])
+	if resp.Data["capital_separate_usdt"] != float64(200) {
+		t.Errorf("expected capital_separate_usdt=200, got %v", resp.Data["capital_separate_usdt"])
 	}
-	if resp.Data["separate_acct_max_usdt"] != float64(200) {
-		t.Errorf("expected separate_acct_max_usdt=200, got %v", resp.Data["separate_acct_max_usdt"])
-	}
-	if resp.Data["unified_acct_max_usdt"] != float64(1000) {
-		t.Errorf("expected unified_acct_max_usdt=1000, got %v", resp.Data["unified_acct_max_usdt"])
+	if resp.Data["capital_unified_usdt"] != float64(1000) {
+		t.Errorf("expected capital_unified_usdt=1000, got %v", resp.Data["capital_unified_usdt"])
 	}
 }
 
@@ -195,9 +191,8 @@ func TestHandleSpotAutoConfig_POST_EchoesWidenedPayload(t *testing.T) {
 	s.cfg.SpotFuturesDryRun = true
 	s.cfg.SpotFuturesPersistenceScans = 2
 	s.cfg.SpotFuturesMaxPositions = 1
-	s.cfg.SpotFuturesCapitalPerPosition = 200
-	s.cfg.SpotFuturesSeparateAcctMaxUSDT = 200
-	s.cfg.SpotFuturesUnifiedAcctMaxUSDT = 500
+	s.cfg.SpotFuturesCapitalSeparate = 200
+	s.cfg.SpotFuturesCapitalUnified = 500
 
 	body := `{"enabled": true, "dry_run": false}`
 	req := httptest.NewRequest(http.MethodPost, "/api/spot/config/auto", strings.NewReader(body))
@@ -228,8 +223,8 @@ func TestHandleSpotAutoConfig_POST_EchoesWidenedPayload(t *testing.T) {
 	if resp.Data["max_positions"] != float64(1) {
 		t.Errorf("expected max_positions=1, got %v", resp.Data["max_positions"])
 	}
-	if resp.Data["capital_per_position"] != float64(200) {
-		t.Errorf("expected capital_per_position=200, got %v", resp.Data["capital_per_position"])
+	if resp.Data["capital_separate_usdt"] != float64(200) {
+		t.Errorf("expected capital_separate_usdt=200, got %v", resp.Data["capital_separate_usdt"])
 	}
 }
 

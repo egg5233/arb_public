@@ -1237,25 +1237,18 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
         onChange={(v) => handleChange(['spot_futures', 'max_positions'], v)}
       />
       <NumberField
-        label={t('cfg.sf.capitalPerPosition')}
-        desc={t('cfg.sf.capitalPerPositionDesc')}
-        value={getByPath(config, ['spot_futures', 'capital_per_position'])}
+        label={t('cfg.sf.capitalSeparate')}
+        desc={t('cfg.sf.capitalSeparateDesc')}
+        value={getByPath(config, ['spot_futures', 'capital_separate_usdt'])}
         unit="USDT"
-        onChange={(v) => handleChange(['spot_futures', 'capital_per_position'], v)}
+        onChange={(v) => handleChange(['spot_futures', 'capital_separate_usdt'], v)}
       />
       <NumberField
-        label={t('cfg.sf.separateAcct')}
-        desc={t('cfg.sf.separateAcctDesc')}
-        value={getByPath(config, ['spot_futures', 'separate_acct_max_usdt'])}
+        label={t('cfg.sf.capitalUnified')}
+        desc={t('cfg.sf.capitalUnifiedDesc')}
+        value={getByPath(config, ['spot_futures', 'capital_unified_usdt'])}
         unit="USDT"
-        onChange={(v) => handleChange(['spot_futures', 'separate_acct_max_usdt'], v)}
-      />
-      <NumberField
-        label={t('cfg.sf.unifiedAcct')}
-        desc={t('cfg.sf.unifiedAcctDesc')}
-        value={getByPath(config, ['spot_futures', 'unified_acct_max_usdt'])}
-        unit="USDT"
-        onChange={(v) => handleChange(['spot_futures', 'unified_acct_max_usdt'], v)}
+        onChange={(v) => handleChange(['spot_futures', 'capital_unified_usdt'], v)}
       />
     </div>
   );

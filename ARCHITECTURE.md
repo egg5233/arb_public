@@ -789,8 +789,8 @@ JSON `config.json` → `spot_futures` section:
 |-------|---------|-------------|
 | `enabled` | false | Enable the spot-futures engine |
 | `max_positions` | 1 | Maximum concurrent spot-futures positions |
-| `separate_acct_max_usdt` | 200 | Capital per position for separate-account exchanges (Binance, Bitget) |
-| `unified_acct_max_usdt` | 500 | Capital per position for unified-account exchanges (Bybit, OKX, Gate.io) |
+| `capital_separate_usdt` | 200 | Capital per position for separate-wallet exchanges (Binance, Bitget) |
+| `capital_unified_usdt` | 500 | Capital per position for unified-account exchanges (Bybit, OKX, Gate.io) |
 | `leverage` | 3 | Futures leg leverage |
 | `monitor_interval_sec` | 300 | Position monitoring interval |
 | `min_net_yield_apr` | 0.10 | Minimum net APR after costs (10%) |
@@ -823,7 +823,7 @@ Env overrides: `SPOT_FUTURES_ENABLED`, `SPOT_FUTURES_MAX_POSITIONS`, `SPOT_FUTUR
 | `/api/spot/open` | POST | Manual open a spot-futures position |
 | `/api/spot/close` | POST | Manual close a spot-futures position |
 | `/api/spot/positions/{id}/health` | GET | Live health snapshot: `last_borrow_rate_check`, `negative_yield_since`, current margin utilization |
-| `/api/spot/config/auto` | GET/POST | View/update auto-entry config; response includes `max_positions` and `capital_per_position` guardrail fields |
+| `/api/spot/config/auto` | GET/POST | View/update auto-entry config; response includes `max_positions`, `capital_separate_usdt`, and `capital_unified_usdt` guardrail fields |
 
 WebSocket events: `spot_position_update` (single position), `spot_positions` (full active list), `spot_opportunities` (discovery results broadcast), `spot_position_health` (real-time health tick).
 

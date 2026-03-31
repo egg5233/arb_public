@@ -359,7 +359,7 @@ func TestManualOpen_RejectsConcurrentEntry(t *testing.T) {
 	engine.cfg = &config.Config{
 		SpotFuturesMaxPositions:       1,
 		SpotFuturesLeverage:           3,
-		SpotFuturesUnifiedAcctMaxUSDT: 100,
+		SpotFuturesCapitalUnified: 100,
 	}
 	engine.api = api.NewServer(engine.db, engine.cfg, nil)
 
@@ -457,7 +457,7 @@ func TestManualOpen_FailsClosedWhenEntryLockIsLost(t *testing.T) {
 	engine.cfg = &config.Config{
 		SpotFuturesMaxPositions:       1,
 		SpotFuturesLeverage:           3,
-		SpotFuturesUnifiedAcctMaxUSDT: 100,
+		SpotFuturesCapitalUnified: 100,
 	}
 	engine.api = api.NewServer(engine.db, engine.cfg, nil)
 
@@ -543,7 +543,7 @@ func TestManualOpen_PersistsPendingEntryUntilSpotConfirmationRecovers(t *testing
 	engine.cfg = &config.Config{
 		SpotFuturesMaxPositions:       1,
 		SpotFuturesLeverage:           3,
-		SpotFuturesUnifiedAcctMaxUSDT: 100,
+		SpotFuturesCapitalUnified: 100,
 	}
 	engine.api = api.NewServer(engine.db, engine.cfg, nil)
 
@@ -643,7 +643,7 @@ func TestManualOpen_PendingEntryReconcilesAllocatorExposureToActualNotional(t *t
 		ReservationTTLSec:             300,
 		SpotFuturesMaxPositions:       1,
 		SpotFuturesLeverage:           3,
-		SpotFuturesUnifiedAcctMaxUSDT: 100,
+		SpotFuturesCapitalUnified: 100,
 	}
 	engine.allocator = risk.NewCapitalAllocator(engine.db, engine.cfg)
 	engine.api = api.NewServer(engine.db, engine.cfg, nil)
@@ -725,7 +725,7 @@ func TestManualOpen_CleansUpAcceptedSpotOrderWhenPendingEntrySaveFails(t *testin
 	engine.cfg = &config.Config{
 		SpotFuturesMaxPositions:       1,
 		SpotFuturesLeverage:           3,
-		SpotFuturesUnifiedAcctMaxUSDT: 100,
+		SpotFuturesCapitalUnified: 100,
 	}
 
 	futExch := &closeTestExchange{
@@ -810,7 +810,7 @@ func TestManualOpen_ReversesAndRepaysBorrowWhenPendingEntrySaveFails(t *testing.
 	engine.cfg = &config.Config{
 		SpotFuturesMaxPositions:       1,
 		SpotFuturesLeverage:           3,
-		SpotFuturesUnifiedAcctMaxUSDT: 100,
+		SpotFuturesCapitalUnified: 100,
 	}
 
 	futExch := &closeTestExchange{
@@ -895,7 +895,7 @@ func TestManualOpen_ReportsManualInterventionWhenCleanupOrderOnlyPartiallyFills(
 	engine.cfg = &config.Config{
 		SpotFuturesMaxPositions:       1,
 		SpotFuturesLeverage:           3,
-		SpotFuturesUnifiedAcctMaxUSDT: 100,
+		SpotFuturesCapitalUnified: 100,
 	}
 
 	futExch := &closeTestExchange{
@@ -976,7 +976,7 @@ func TestManualOpen_PersistsManualRecoveryPositionWhenCleanupOnlyPartiallyFills(
 		ReservationTTLSec:             300,
 		SpotFuturesMaxPositions:       1,
 		SpotFuturesLeverage:           3,
-		SpotFuturesUnifiedAcctMaxUSDT: 100,
+		SpotFuturesCapitalUnified: 100,
 	}
 	engine.allocator = risk.NewCapitalAllocator(workingDB, engine.cfg)
 
@@ -1093,7 +1093,7 @@ func TestManualOpen_RetainsPendingRecordWhenManualRecoverySaveFails(t *testing.T
 	engine.cfg = &config.Config{
 		SpotFuturesMaxPositions:       1,
 		SpotFuturesLeverage:           3,
-		SpotFuturesUnifiedAcctMaxUSDT: 100,
+		SpotFuturesCapitalUnified: 100,
 		EnableCapitalAllocator:        true,
 		MaxTotalExposureUSDT:          1000,
 		MaxPerpPerpPct:                1,

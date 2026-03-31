@@ -172,8 +172,7 @@ type Config struct {
 	// Spot-futures arbitrage engine
 	SpotFuturesEnabled            bool
 	SpotFuturesMaxPositions       int
-	SpotFuturesCapitalPerPosition float64
-	SpotFuturesLeverage           int
+	SpotFuturesLeverage int
 	SpotFuturesMonitorIntervalSec int
 	SpotFuturesMinNetYieldAPR     float64  // minimum net APR after costs (decimal, e.g. 0.10 = 10%)
 	SpotFuturesMaxBorrowAPR       float64  // maximum borrow APR for Direction A (decimal, e.g. 0.50 = 50%)
@@ -195,8 +194,8 @@ type Config struct {
 
 	// Separate-account exchange support (Binance/Bitget)
 	SpotFuturesProfitTransferEnabled bool    // enable auto profit-to-margin transfers after exit (default: false)
-	SpotFuturesSeparateAcctMaxUSDT   float64 // max capital per position for separate-account exchanges (default: 200)
-	SpotFuturesUnifiedAcctMaxUSDT    float64 // max capital per position for unified-account exchanges (default: 500)
+	SpotFuturesCapitalSeparate float64 // capital per position for separate-account exchanges (default: 200)
+	SpotFuturesCapitalUnified  float64 // capital per position for unified-account exchanges (default: 500)
 
 	// Telegram notifications
 	TelegramBotToken string
@@ -232,9 +231,8 @@ type jsonSpotArb struct {
 
 type jsonSpotFutures struct {
 	Enabled                    *bool    `json:"enabled"`
-	MaxPositions               *int     `json:"max_positions"`
-	CapitalPerPosition         *float64 `json:"capital_per_position"`
-	Leverage                   *int     `json:"leverage"`
+	MaxPositions *int `json:"max_positions"`
+	Leverage     *int `json:"leverage"`
 	MonitorIntervalSec         *int     `json:"monitor_interval_sec"`
 	MinNetYieldAPR             *float64 `json:"min_net_yield_apr"`
 	MaxBorrowAPR               *float64 `json:"max_borrow_apr"`
@@ -255,8 +253,12 @@ type jsonSpotFutures struct {
 	PersistenceScans           *int     `json:"persistence_scans"`
 
 	ProfitTransferEnabled *bool    `json:"profit_transfer_enabled"`
-	SeparateAcctMaxUSDT   *float64 `json:"separate_acct_max_usdt"`
-	UnifiedAcctMaxUSDT    *float64 `json:"unified_acct_max_usdt"`
+	CapitalSeparateUSDT   *float64 `json:"capital_separate_usdt"`
+	CapitalUnifiedUSDT    *float64 `json:"capital_unified_usdt"`
+
+	// Backward-compat: accept old key names from existing config files.
+	LegacySeparateAcctMaxUSDT *float64 `json:"separate_acct_max_usdt"`
+	LegacyUnifiedAcctMaxUSDT  *float64 `json:"unified_acct_max_usdt"`
 }
 
 type jsonExchange struct {
@@ -483,8 +485,7 @@ func Load() *Config {
 		SpotArbSchedule:                 "15,35",
 		SpotArbChromePath:               detectChromePath(),
 		SpotFuturesMaxPositions:         1,
-		SpotFuturesCapitalPerPosition:   200,
-		SpotFuturesLeverage:             3,
+		SpotFuturesLeverage: 3,
 		SpotFuturesMonitorIntervalSec:   60,
 		SpotFuturesMinNetYieldAPR:       0.10, // 10%
 		SpotFuturesMaxBorrowAPR:         0.50, // 50%
@@ -501,8 +502,8 @@ func Load() *Config {
 		SpotFuturesLossCooldownHours:    4,
 		SpotFuturesDryRun:               true,
 		SpotFuturesPersistenceScans:     2,
-		SpotFuturesSeparateAcctMaxUSDT:  200,
-		SpotFuturesUnifiedAcctMaxUSDT:   500,
+		SpotFuturesCapitalSeparate: 200,
+		SpotFuturesCapitalUnified:  500,
 	}
 
 	// Load from JSON file
@@ -578,7 +579,7 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 
 	// Strategy
 	if s := jc.Strategy; s != nil {
-		if s.TopOpportunities != nil {
+		if s.TopOpportunities != nil && *s.TopOpportunities > 0 {
 			c.TopOpportunities = *s.TopOpportunities
 		}
 		if len(s.ScanMinutes) > 0 {
@@ -602,19 +603,19 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 
 		// Discovery
 		if d := s.Discovery; d != nil {
-			if d.MinHoldTimeHours != nil {
+			if d.MinHoldTimeHours != nil && *d.MinHoldTimeHours > 0 {
 				c.MinHoldTime = time.Duration(*d.MinHoldTimeHours) * time.Hour
 			}
-			if d.MaxCostRatio != nil {
+			if d.MaxCostRatio != nil && *d.MaxCostRatio > 0 {
 				c.MaxCostRatio = *d.MaxCostRatio
 			}
-			if d.MaxPriceGapBPS != nil {
+			if d.MaxPriceGapBPS != nil && *d.MaxPriceGapBPS > 0 {
 				c.MaxPriceGapBPS = *d.MaxPriceGapBPS
 			}
-			if d.PriceGapFreeBPS != nil {
+			if d.PriceGapFreeBPS != nil && *d.PriceGapFreeBPS > 0 {
 				c.PriceGapFreeBPS = *d.PriceGapFreeBPS
 			}
-			if d.MaxGapRecoveryIntervals != nil {
+			if d.MaxGapRecoveryIntervals != nil && *d.MaxGapRecoveryIntervals > 0 {
 				c.MaxGapRecoveryIntervals = *d.MaxGapRecoveryIntervals
 			}
 			if d.MaxIntervalHours != nil {
@@ -627,25 +628,25 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 				c.DelistFilterEnabled = *d.DelistFilter
 			}
 			if p := d.Persistence; p != nil {
-				if p.LookbackMin1h != nil {
+				if p.LookbackMin1h != nil && *p.LookbackMin1h > 0 {
 					c.PersistLookback1h = time.Duration(*p.LookbackMin1h) * time.Minute
 				}
-				if p.MinCount1h != nil {
+				if p.MinCount1h != nil && *p.MinCount1h > 0 {
 					c.PersistMinCount1h = *p.MinCount1h
 				}
-				if p.LookbackMin4h != nil {
+				if p.LookbackMin4h != nil && *p.LookbackMin4h > 0 {
 					c.PersistLookback4h = time.Duration(*p.LookbackMin4h) * time.Minute
 				}
-				if p.MinCount4h != nil {
+				if p.MinCount4h != nil && *p.MinCount4h > 0 {
 					c.PersistMinCount4h = *p.MinCount4h
 				}
-				if p.LookbackMin8h != nil {
+				if p.LookbackMin8h != nil && *p.LookbackMin8h > 0 {
 					c.PersistLookback8h = time.Duration(*p.LookbackMin8h) * time.Minute
 				}
-				if p.MinCount8h != nil {
+				if p.MinCount8h != nil && *p.MinCount8h > 0 {
 					c.PersistMinCount8h = *p.MinCount8h
 				}
-				if p.SpreadStabilityRatio1h != nil {
+				if p.SpreadStabilityRatio1h != nil && *p.SpreadStabilityRatio1h > 0 {
 					c.SpreadStabilityRatio1h = *p.SpreadStabilityRatio1h
 				}
 				if p.SpreadStabilityOIRank1h != nil {
@@ -669,16 +670,16 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 				if p.SpreadVolatilityMaxCV != nil {
 					c.SpreadVolatilityMaxCV = *p.SpreadVolatilityMaxCV
 				}
-				if p.SpreadVolatilityMinSamples != nil {
+				if p.SpreadVolatilityMinSamples != nil && *p.SpreadVolatilityMinSamples > 0 {
 					c.SpreadVolatilityMinSamples = *p.SpreadVolatilityMinSamples
 				}
 				if p.SpreadStabilityStricterForAuto != nil {
 					c.SpreadStabilityStricterForAuto = *p.SpreadStabilityStricterForAuto
 				}
-				if p.SpreadStabilityAutoCVMultiplier != nil {
+				if p.SpreadStabilityAutoCVMultiplier != nil && *p.SpreadStabilityAutoCVMultiplier > 0 {
 					c.SpreadStabilityAutoCVMultiplier = *p.SpreadStabilityAutoCVMultiplier
 				}
-				if p.FundingWindowMin != nil {
+				if p.FundingWindowMin != nil && *p.FundingWindowMin > 0 {
 					c.FundingWindowMin = *p.FundingWindowMin
 				}
 			}
@@ -686,13 +687,13 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 
 		// Entry
 		if e := s.Entry; e != nil {
-			if e.SlippageLimitBPS != nil {
+			if e.SlippageLimitBPS != nil && *e.SlippageLimitBPS > 0 {
 				c.SlippageBPS = *e.SlippageLimitBPS
 			}
-			if e.MinChunkUSDT != nil {
+			if e.MinChunkUSDT != nil && *e.MinChunkUSDT > 0 {
 				c.MinChunkUSDT = *e.MinChunkUSDT
 			}
-			if e.EntryTimeoutSec != nil {
+			if e.EntryTimeoutSec != nil && *e.EntryTimeoutSec > 0 {
 				c.EntryTimeoutSec = *e.EntryTimeoutSec
 			}
 			if e.LossCooldownHours != nil {
@@ -701,7 +702,7 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 			if e.ReEnterCooldownHours != nil {
 				c.ReEnterCooldownHours = *e.ReEnterCooldownHours
 			}
-			if e.BacktestDays != nil {
+			if e.BacktestDays != nil && *e.BacktestDays > 0 {
 				c.BacktestDays = *e.BacktestDays
 			}
 			if e.BacktestMinProfit != nil {
@@ -711,32 +712,32 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 
 		// Exit
 		if x := s.Exit; x != nil {
-			if x.DepthTimeoutSec != nil {
+			if x.DepthTimeoutSec != nil && *x.DepthTimeoutSec > 0 {
 				c.ExitDepthTimeoutSec = *x.DepthTimeoutSec
 			}
 			if x.EnableSpreadReversal != nil {
 				c.EnableSpreadReversal = *x.EnableSpreadReversal
 			}
-			if x.SpreadReversalTolerance != nil {
+			if x.SpreadReversalTolerance != nil && *x.SpreadReversalTolerance > 0 {
 				c.SpreadReversalTolerance = *x.SpreadReversalTolerance
 			}
 			if x.ReversalResetOnRecover != nil {
 				c.ReversalResetOnRecover = *x.ReversalResetOnRecover
 			}
-			if x.ZeroSpreadTolerance != nil {
+			if x.ZeroSpreadTolerance != nil && *x.ZeroSpreadTolerance > 0 {
 				c.ZeroSpreadTolerance = *x.ZeroSpreadTolerance
 			}
-			if x.MaxGapBPS != nil {
+			if x.MaxGapBPS != nil && *x.MaxGapBPS > 0 {
 				c.ExitMaxGapBPS = *x.MaxGapBPS
 			}
 		}
 
 		// Rotation
 		if r := s.Rotation; r != nil {
-			if r.ThresholdBPS != nil {
+			if r.ThresholdBPS != nil && *r.ThresholdBPS > 0 {
 				c.RotationThresholdBPS = *r.ThresholdBPS
 			}
-			if r.CooldownMin != nil {
+			if r.CooldownMin != nil && *r.CooldownMin > 0 {
 				c.RotationCooldownMin = *r.CooldownMin
 			}
 		}
@@ -744,10 +745,10 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 
 	// Fund
 	if f := jc.Fund; f != nil {
-		if f.MaxPositions != nil {
+		if f.MaxPositions != nil && *f.MaxPositions > 0 {
 			c.MaxPositions = *f.MaxPositions
 		}
-		if f.Leverage != nil {
+		if f.Leverage != nil && *f.Leverage > 0 {
 			c.Leverage = *f.Leverage
 		}
 		if f.CapitalPerLeg != nil {
@@ -763,37 +764,37 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 
 	// Risk
 	if rk := jc.Risk; rk != nil {
-		if rk.MarginL3Threshold != nil {
+		if rk.MarginL3Threshold != nil && *rk.MarginL3Threshold > 0 {
 			c.MarginL3Threshold = *rk.MarginL3Threshold
 		}
-		if rk.MarginL4Threshold != nil {
+		if rk.MarginL4Threshold != nil && *rk.MarginL4Threshold > 0 {
 			c.MarginL4Threshold = *rk.MarginL4Threshold
 		}
-		if rk.MarginL5Threshold != nil {
+		if rk.MarginL5Threshold != nil && *rk.MarginL5Threshold > 0 {
 			c.MarginL5Threshold = *rk.MarginL5Threshold
 		}
-		if rk.L4ReduceFraction != nil {
+		if rk.L4ReduceFraction != nil && *rk.L4ReduceFraction > 0 {
 			c.L4ReduceFraction = *rk.L4ReduceFraction
 		}
-		if rk.MarginSafetyMultiplier != nil {
+		if rk.MarginSafetyMultiplier != nil && *rk.MarginSafetyMultiplier > 0 {
 			c.MarginSafetyMultiplier = *rk.MarginSafetyMultiplier
 		}
-		if rk.RiskMonitorIntervalSec != nil {
+		if rk.RiskMonitorIntervalSec != nil && *rk.RiskMonitorIntervalSec > 0 {
 			c.RiskMonitorIntervalSec = *rk.RiskMonitorIntervalSec
 		}
 		if rk.EnableLiqTrendTracking != nil {
 			c.EnableLiqTrendTracking = *rk.EnableLiqTrendTracking
 		}
-		if rk.LiqProjectionMinutes != nil {
+		if rk.LiqProjectionMinutes != nil && *rk.LiqProjectionMinutes > 0 {
 			c.LiqProjectionMinutes = *rk.LiqProjectionMinutes
 		}
-		if rk.LiqWarningSlopeThresh != nil {
+		if rk.LiqWarningSlopeThresh != nil && *rk.LiqWarningSlopeThresh > 0 {
 			c.LiqWarningSlopeThresh = *rk.LiqWarningSlopeThresh
 		}
-		if rk.LiqCriticalSlopeThresh != nil {
+		if rk.LiqCriticalSlopeThresh != nil && *rk.LiqCriticalSlopeThresh > 0 {
 			c.LiqCriticalSlopeThresh = *rk.LiqCriticalSlopeThresh
 		}
-		if rk.LiqMinSamples != nil {
+		if rk.LiqMinSamples != nil && *rk.LiqMinSamples > 0 {
 			c.LiqMinSamples = *rk.LiqMinSamples
 		}
 		if rk.EnableCapitalAllocator != nil {
@@ -802,34 +803,34 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if rk.MaxTotalExposureUSDT != nil {
 			c.MaxTotalExposureUSDT = *rk.MaxTotalExposureUSDT
 		}
-		if rk.MaxPerpPerpPct != nil {
+		if rk.MaxPerpPerpPct != nil && *rk.MaxPerpPerpPct > 0 {
 			c.MaxPerpPerpPct = *rk.MaxPerpPerpPct
 		}
-		if rk.MaxSpotFuturesPct != nil {
+		if rk.MaxSpotFuturesPct != nil && *rk.MaxSpotFuturesPct > 0 {
 			c.MaxSpotFuturesPct = *rk.MaxSpotFuturesPct
 		}
-		if rk.MaxPerExchangePct != nil {
+		if rk.MaxPerExchangePct != nil && *rk.MaxPerExchangePct > 0 {
 			c.MaxPerExchangePct = *rk.MaxPerExchangePct
 		}
-		if rk.ReservationTTLSec != nil {
+		if rk.ReservationTTLSec != nil && *rk.ReservationTTLSec > 0 {
 			c.ReservationTTLSec = *rk.ReservationTTLSec
 		}
 		if rk.EnableExchangeHealthScoring != nil {
 			c.EnableExchangeHealthScoring = *rk.EnableExchangeHealthScoring
 		}
-		if rk.ExchHealthLatencyMs != nil {
+		if rk.ExchHealthLatencyMs != nil && *rk.ExchHealthLatencyMs > 0 {
 			c.ExchHealthLatencyMs = *rk.ExchHealthLatencyMs
 		}
-		if rk.ExchHealthMinUptime != nil {
+		if rk.ExchHealthMinUptime != nil && *rk.ExchHealthMinUptime > 0 {
 			c.ExchHealthMinUptime = *rk.ExchHealthMinUptime
 		}
-		if rk.ExchHealthMinFillRate != nil {
+		if rk.ExchHealthMinFillRate != nil && *rk.ExchHealthMinFillRate > 0 {
 			c.ExchHealthMinFillRate = *rk.ExchHealthMinFillRate
 		}
-		if rk.ExchHealthMinScore != nil {
+		if rk.ExchHealthMinScore != nil && *rk.ExchHealthMinScore > 0 {
 			c.ExchHealthMinScore = *rk.ExchHealthMinScore
 		}
-		if rk.ExchHealthWindowMin != nil {
+		if rk.ExchHealthWindowMin != nil && *rk.ExchHealthWindowMin > 0 {
 			c.ExchHealthWindowMin = *rk.ExchHealthWindowMin
 		}
 	}
@@ -916,7 +917,7 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if a.Model != "" {
 			c.AIModel = a.Model
 		}
-		if a.MaxTokens != nil {
+		if a.MaxTokens != nil && *a.MaxTokens > 0 {
 			c.AIMaxTokens = *a.MaxTokens
 		}
 	}
@@ -939,16 +940,13 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if sf.Enabled != nil {
 			c.SpotFuturesEnabled = *sf.Enabled
 		}
-		if sf.MaxPositions != nil {
+		if sf.MaxPositions != nil && *sf.MaxPositions > 0 {
 			c.SpotFuturesMaxPositions = *sf.MaxPositions
 		}
-		if sf.CapitalPerPosition != nil {
-			c.SpotFuturesCapitalPerPosition = *sf.CapitalPerPosition
-		}
-		if sf.Leverage != nil {
+		if sf.Leverage != nil && *sf.Leverage > 0 {
 			c.SpotFuturesLeverage = *sf.Leverage
 		}
-		if sf.MonitorIntervalSec != nil {
+		if sf.MonitorIntervalSec != nil && *sf.MonitorIntervalSec > 0 {
 			c.SpotFuturesMonitorIntervalSec = *sf.MonitorIntervalSec
 		}
 		if sf.MinNetYieldAPR != nil {
@@ -960,34 +958,34 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if sf.EnableBorrowSpikeDetection != nil {
 			c.EnableBorrowSpikeDetection = *sf.EnableBorrowSpikeDetection
 		}
-		if sf.BorrowSpikeWindowMin != nil {
+		if sf.BorrowSpikeWindowMin != nil && *sf.BorrowSpikeWindowMin > 0 {
 			c.BorrowSpikeWindowMin = *sf.BorrowSpikeWindowMin
 		}
-		if sf.BorrowSpikeMultiplier != nil {
+		if sf.BorrowSpikeMultiplier != nil && *sf.BorrowSpikeMultiplier > 0 {
 			c.BorrowSpikeMultiplier = *sf.BorrowSpikeMultiplier
 		}
-		if sf.BorrowSpikeMinAbsolute != nil {
+		if sf.BorrowSpikeMinAbsolute != nil && *sf.BorrowSpikeMinAbsolute > 0 {
 			c.BorrowSpikeMinAbsolute = *sf.BorrowSpikeMinAbsolute
 		}
 		if len(sf.Exchanges) > 0 {
 			c.SpotFuturesExchanges = sf.Exchanges
 		}
-		if sf.ScanIntervalMin != nil {
+		if sf.ScanIntervalMin != nil && *sf.ScanIntervalMin > 0 {
 			c.SpotFuturesScanIntervalMin = *sf.ScanIntervalMin
 		}
 		if sf.BorrowGraceMin != nil {
 			c.SpotFuturesBorrowGraceMin = *sf.BorrowGraceMin
 		}
-		if sf.PriceExitPct != nil {
+		if sf.PriceExitPct != nil && *sf.PriceExitPct > 0 {
 			c.SpotFuturesPriceExitPct = *sf.PriceExitPct
 		}
-		if sf.PriceEmergencyPct != nil {
+		if sf.PriceEmergencyPct != nil && *sf.PriceEmergencyPct > 0 {
 			c.SpotFuturesPriceEmergencyPct = *sf.PriceEmergencyPct
 		}
-		if sf.MarginExitPct != nil {
+		if sf.MarginExitPct != nil && *sf.MarginExitPct > 0 {
 			c.SpotFuturesMarginExitPct = *sf.MarginExitPct
 		}
-		if sf.MarginEmergencyPct != nil {
+		if sf.MarginEmergencyPct != nil && *sf.MarginEmergencyPct > 0 {
 			c.SpotFuturesMarginEmergencyPct = *sf.MarginEmergencyPct
 		}
 		if sf.LossCooldownHours != nil {
@@ -999,17 +997,21 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if sf.AutoDryRun != nil {
 			c.SpotFuturesDryRun = *sf.AutoDryRun
 		}
-		if sf.PersistenceScans != nil {
+		if sf.PersistenceScans != nil && *sf.PersistenceScans > 0 {
 			c.SpotFuturesPersistenceScans = *sf.PersistenceScans
 		}
 		if sf.ProfitTransferEnabled != nil {
 			c.SpotFuturesProfitTransferEnabled = *sf.ProfitTransferEnabled
 		}
-		if sf.SeparateAcctMaxUSDT != nil {
-			c.SpotFuturesSeparateAcctMaxUSDT = *sf.SeparateAcctMaxUSDT
+		if sf.CapitalSeparateUSDT != nil && *sf.CapitalSeparateUSDT > 0 {
+			c.SpotFuturesCapitalSeparate = *sf.CapitalSeparateUSDT
+		} else if sf.LegacySeparateAcctMaxUSDT != nil && *sf.LegacySeparateAcctMaxUSDT > 0 {
+			c.SpotFuturesCapitalSeparate = *sf.LegacySeparateAcctMaxUSDT
 		}
-		if sf.UnifiedAcctMaxUSDT != nil {
-			c.SpotFuturesUnifiedAcctMaxUSDT = *sf.UnifiedAcctMaxUSDT
+		if sf.CapitalUnifiedUSDT != nil && *sf.CapitalUnifiedUSDT > 0 {
+			c.SpotFuturesCapitalUnified = *sf.CapitalUnifiedUSDT
+		} else if sf.LegacyUnifiedAcctMaxUSDT != nil && *sf.LegacyUnifiedAcctMaxUSDT > 0 {
+			c.SpotFuturesCapitalUnified = *sf.LegacyUnifiedAcctMaxUSDT
 		}
 	}
 
@@ -1228,7 +1230,6 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	sf := getMap(raw, "spot_futures")
 	sf["enabled"] = c.SpotFuturesEnabled
 	sf["max_positions"] = c.SpotFuturesMaxPositions
-	sf["capital_per_position"] = c.SpotFuturesCapitalPerPosition
 	sf["leverage"] = c.SpotFuturesLeverage
 	sf["monitor_interval_sec"] = c.SpotFuturesMonitorIntervalSec
 	sf["min_net_yield_apr"] = c.SpotFuturesMinNetYieldAPR
@@ -1249,8 +1250,12 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	sf["auto_dry_run"] = c.SpotFuturesDryRun
 	sf["persistence_scans"] = c.SpotFuturesPersistenceScans
 	sf["profit_transfer_enabled"] = c.SpotFuturesProfitTransferEnabled
-	sf["separate_acct_max_usdt"] = c.SpotFuturesSeparateAcctMaxUSDT
-	sf["unified_acct_max_usdt"] = c.SpotFuturesUnifiedAcctMaxUSDT
+	sf["capital_separate_usdt"] = c.SpotFuturesCapitalSeparate
+	sf["capital_unified_usdt"] = c.SpotFuturesCapitalUnified
+	// Clean up old keys if present in the config file.
+	delete(sf, "capital_per_position")
+	delete(sf, "separate_acct_max_usdt")
+	delete(sf, "unified_acct_max_usdt")
 
 	out, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
@@ -1421,11 +1426,6 @@ func (c *Config) loadEnvOverrides() {
 	if v := os.Getenv("SPOT_FUTURES_MAX_POSITIONS"); v != "" {
 		if i, err := strconv.Atoi(v); err == nil {
 			c.SpotFuturesMaxPositions = i
-		}
-	}
-	if v := os.Getenv("SPOT_FUTURES_CAPITAL_PER_POSITION"); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			c.SpotFuturesCapitalPerPosition = f
 		}
 	}
 	if v := os.Getenv("SPOT_FUTURES_LEVERAGE"); v != "" {

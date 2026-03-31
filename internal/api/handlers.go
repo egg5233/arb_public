@@ -315,8 +315,7 @@ type configResponse struct {
 type configSpotFuturesResponse struct {
 	Enabled                    bool     `json:"enabled"`
 	MaxPositions               int      `json:"max_positions"`
-	CapitalPerPosition         float64  `json:"capital_per_position"`
-	Leverage                   int      `json:"leverage"`
+	Leverage int `json:"leverage"`
 	MonitorIntervalSec         int      `json:"monitor_interval_sec"`
 	MinNetYieldAPR             float64  `json:"min_net_yield_apr"`
 	MaxBorrowAPR               float64  `json:"max_borrow_apr"`
@@ -335,9 +334,9 @@ type configSpotFuturesResponse struct {
 	AutoEnabled                bool     `json:"auto_enabled"`
 	DryRun                     bool     `json:"auto_dry_run"`
 	PersistenceScans           int      `json:"persistence_scans"`
-	ProfitTransferEnabled      bool     `json:"profit_transfer_enabled"`
-	SeparateAcctMaxUSDT        float64  `json:"separate_acct_max_usdt"`
-	UnifiedAcctMaxUSDT         float64  `json:"unified_acct_max_usdt"`
+	ProfitTransferEnabled bool    `json:"profit_transfer_enabled"`
+	CapitalSeparateUSDT   float64 `json:"capital_separate_usdt"`
+	CapitalUnifiedUSDT    float64 `json:"capital_unified_usdt"`
 }
 
 type configExchangeResponse struct {
@@ -592,8 +591,7 @@ func (s *Server) buildConfigResponse() configResponse {
 	resp.SpotFutures = &configSpotFuturesResponse{
 		Enabled:                    s.cfg.SpotFuturesEnabled,
 		MaxPositions:               s.cfg.SpotFuturesMaxPositions,
-		CapitalPerPosition:         s.cfg.SpotFuturesCapitalPerPosition,
-		Leverage:                   s.cfg.SpotFuturesLeverage,
+		Leverage: s.cfg.SpotFuturesLeverage,
 		MonitorIntervalSec:         s.cfg.SpotFuturesMonitorIntervalSec,
 		MinNetYieldAPR:             s.cfg.SpotFuturesMinNetYieldAPR,
 		MaxBorrowAPR:               s.cfg.SpotFuturesMaxBorrowAPR,
@@ -613,8 +611,8 @@ func (s *Server) buildConfigResponse() configResponse {
 		DryRun:                     s.cfg.SpotFuturesDryRun,
 		PersistenceScans:           s.cfg.SpotFuturesPersistenceScans,
 		ProfitTransferEnabled:      s.cfg.SpotFuturesProfitTransferEnabled,
-		SeparateAcctMaxUSDT:        s.cfg.SpotFuturesSeparateAcctMaxUSDT,
-		UnifiedAcctMaxUSDT:         s.cfg.SpotFuturesUnifiedAcctMaxUSDT,
+		CapitalSeparateUSDT: s.cfg.SpotFuturesCapitalSeparate,
+		CapitalUnifiedUSDT:  s.cfg.SpotFuturesCapitalUnified,
 	}
 	return resp
 }
@@ -678,8 +676,7 @@ type configUpdate struct {
 type spotFuturesUpdate struct {
 	Enabled                    *bool    `json:"enabled"`
 	MaxPositions               *int     `json:"max_positions"`
-	CapitalPerPosition         *float64 `json:"capital_per_position"`
-	Leverage                   *int     `json:"leverage"`
+	Leverage *int `json:"leverage"`
 	MonitorIntervalSec         *int     `json:"monitor_interval_sec"`
 	MinNetYieldAPR             *float64 `json:"min_net_yield_apr"`
 	MaxBorrowAPR               *float64 `json:"max_borrow_apr"`
@@ -699,9 +696,9 @@ type spotFuturesUpdate struct {
 	DryRun                     *bool    `json:"auto_dry_run"`
 	LegacyDryRun               *bool    `json:"dry_run"`
 	PersistenceScans           *int     `json:"persistence_scans"`
-	ProfitTransferEnabled      *bool    `json:"profit_transfer_enabled"`
-	SeparateAcctMaxUSDT        *float64 `json:"separate_acct_max_usdt"`
-	UnifiedAcctMaxUSDT         *float64 `json:"unified_acct_max_usdt"`
+	ProfitTransferEnabled *bool    `json:"profit_transfer_enabled"`
+	CapitalSeparateUSDT   *float64 `json:"capital_separate_usdt"`
+	CapitalUnifiedUSDT    *float64 `json:"capital_unified_usdt"`
 }
 
 type exchangeUpdate struct {
@@ -1209,9 +1206,6 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		if sf.MaxPositions != nil && *sf.MaxPositions > 0 {
 			s.cfg.SpotFuturesMaxPositions = *sf.MaxPositions
 		}
-		if sf.CapitalPerPosition != nil && *sf.CapitalPerPosition > 0 {
-			s.cfg.SpotFuturesCapitalPerPosition = *sf.CapitalPerPosition
-		}
 		if sf.Leverage != nil && *sf.Leverage > 0 {
 			s.cfg.SpotFuturesLeverage = *sf.Leverage
 		}
@@ -1274,11 +1268,11 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		if sf.ProfitTransferEnabled != nil {
 			s.cfg.SpotFuturesProfitTransferEnabled = *sf.ProfitTransferEnabled
 		}
-		if sf.SeparateAcctMaxUSDT != nil && *sf.SeparateAcctMaxUSDT > 0 {
-			s.cfg.SpotFuturesSeparateAcctMaxUSDT = *sf.SeparateAcctMaxUSDT
+		if sf.CapitalSeparateUSDT != nil && *sf.CapitalSeparateUSDT > 0 {
+			s.cfg.SpotFuturesCapitalSeparate = *sf.CapitalSeparateUSDT
 		}
-		if sf.UnifiedAcctMaxUSDT != nil && *sf.UnifiedAcctMaxUSDT > 0 {
-			s.cfg.SpotFuturesUnifiedAcctMaxUSDT = *sf.UnifiedAcctMaxUSDT
+		if sf.CapitalUnifiedUSDT != nil && *sf.CapitalUnifiedUSDT > 0 {
+			s.cfg.SpotFuturesCapitalUnified = *sf.CapitalUnifiedUSDT
 		}
 	}
 
@@ -1363,7 +1357,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	if sf := snapshot.SpotFutures; sf != nil {
 		fields["spot_futures_enabled"] = strconv.FormatBool(sf.Enabled)
 		fields["spot_futures_max_positions"] = strconv.Itoa(sf.MaxPositions)
-		fields["spot_futures_capital_per_position"] = strconv.FormatFloat(sf.CapitalPerPosition, 'f', -1, 64)
+		fields["spot_futures_capital_separate_usdt"] = strconv.FormatFloat(sf.CapitalSeparateUSDT, 'f', -1, 64)
 		fields["spot_futures_leverage"] = strconv.Itoa(sf.Leverage)
 		fields["spot_futures_monitor_interval_sec"] = strconv.Itoa(sf.MonitorIntervalSec)
 		fields["spot_futures_min_net_yield_apr"] = strconv.FormatFloat(sf.MinNetYieldAPR, 'f', -1, 64)
@@ -1384,8 +1378,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		fields["spot_futures_dry_run"] = strconv.FormatBool(sf.DryRun)
 		fields["spot_futures_persistence_scans"] = strconv.Itoa(sf.PersistenceScans)
 		fields["spot_futures_profit_transfer_enabled"] = strconv.FormatBool(sf.ProfitTransferEnabled)
-		fields["spot_futures_separate_acct_max_usdt"] = strconv.FormatFloat(sf.SeparateAcctMaxUSDT, 'f', -1, 64)
-		fields["spot_futures_unified_acct_max_usdt"] = strconv.FormatFloat(sf.UnifiedAcctMaxUSDT, 'f', -1, 64)
+		fields["spot_futures_capital_unified_usdt"] = strconv.FormatFloat(sf.CapitalUnifiedUSDT, 'f', -1, 64)
 	}
 
 	if err := s.db.SetConfigFields(fields); err != nil {
