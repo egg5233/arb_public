@@ -847,6 +847,7 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
     const l4 = (getByPath(config, ['risk', 'margin_l4_threshold']) as number) ?? 0;
     const l5 = (getByPath(config, ['risk', 'margin_l5_threshold']) as number) ?? 0;
     const l4r = (getByPath(config, ['risk', 'l4_reduce_fraction']) as number) ?? 0;
+    const allocatorEnabled = getByPath(config, ['risk', 'enable_capital_allocator']) === true;
 
     return (
       <div className="space-y-4">
@@ -956,6 +957,59 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
             value={getByPath(config, ['risk', 'risk_monitor_interval_sec'])}
             unit="sec"
             onChange={(v) => handleChange(['risk', 'risk_monitor_interval_sec'], v)}
+          />
+
+          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+            <div className="flex items-center gap-2 mb-2">
+              <label className="text-sm font-medium">{t('cfg.field.enableCapitalAllocator')}</label>
+              <Tooltip text={t('cfg.desc.enableCapitalAllocator')} />
+            </div>
+            <div className="flex items-center gap-3">
+              <ToggleSwitch
+                on={allocatorEnabled}
+                onChange={(v) => handleBoolChange(['risk', 'enable_capital_allocator'], v)}
+              />
+              <span className={`text-sm font-semibold ${allocatorEnabled ? 'text-green-400' : 'text-red-400'}`}>
+                {allocatorEnabled ? 'ON' : 'OFF'}
+              </span>
+            </div>
+          </div>
+
+          <NumberField
+            label={t('cfg.field.maxTotalExposureUSDT')}
+            desc={t('cfg.desc.maxTotalExposureUSDT')}
+            value={getByPath(config, ['risk', 'max_total_exposure_usdt'])}
+            unit="USDT"
+            onChange={(v) => handleChange(['risk', 'max_total_exposure_usdt'], v)}
+          />
+
+          <NumberField
+            label={t('cfg.field.maxPerpPerpPct')}
+            desc={t('cfg.desc.maxPerpPerpPct')}
+            value={getByPath(config, ['risk', 'max_perp_perp_pct'])}
+            onChange={(v) => handleChange(['risk', 'max_perp_perp_pct'], v)}
+          />
+
+          <NumberField
+            label={t('cfg.field.maxSpotFuturesPct')}
+            desc={t('cfg.desc.maxSpotFuturesPct')}
+            value={getByPath(config, ['risk', 'max_spot_futures_pct'])}
+            onChange={(v) => handleChange(['risk', 'max_spot_futures_pct'], v)}
+          />
+
+          <NumberField
+            label={t('cfg.field.maxPerExchangePct')}
+            desc={t('cfg.desc.maxPerExchangePct')}
+            value={getByPath(config, ['risk', 'max_per_exchange_pct'])}
+            onChange={(v) => handleChange(['risk', 'max_per_exchange_pct'], v)}
+          />
+
+          <NumberField
+            label={t('cfg.field.reservationTTLSec')}
+            desc={t('cfg.desc.reservationTTLSec')}
+            value={getByPath(config, ['risk', 'reservation_ttl_sec'])}
+            unit="sec"
+            onChange={(v) => handleChange(['risk', 'reservation_ttl_sec'], v)}
           />
         </div>
       </div>
