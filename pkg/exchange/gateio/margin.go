@@ -83,6 +83,9 @@ func (a *Adapter) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (s
 	if params.OrderType == "limit" {
 		orderReq["amount"] = params.Size
 		orderReq["price"] = params.Price
+	} else if params.Side == exchange.SideBuy && params.QuoteSize != "" {
+		// Gate.io market BUY: amount is in quote currency (USDT).
+		orderReq["amount"] = params.QuoteSize
 	} else {
 		orderReq["amount"] = params.Size
 	}

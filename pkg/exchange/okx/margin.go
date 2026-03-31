@@ -70,8 +70,14 @@ func (a *Adapter) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (s
 	if strings.ToLower(params.OrderType) == "limit" {
 		body["px"] = params.Price
 	}
+	// OKX market: BUY with QuoteSize → quote_ccy (USDT amount); otherwise base_ccy.
 	if strings.ToLower(params.OrderType) == "market" {
-		body["tgtCcy"] = "base_ccy"
+		if params.Side == exchange.SideBuy && params.QuoteSize != "" {
+			body["tgtCcy"] = "quote_ccy"
+			body["sz"] = params.QuoteSize
+		} else {
+			body["tgtCcy"] = "base_ccy"
+		}
 	}
 	if params.ClientOid != "" {
 		body["clOrdId"] = params.ClientOid

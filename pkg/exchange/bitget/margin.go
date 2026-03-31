@@ -78,9 +78,18 @@ func (a *Adapter) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (s
 		"symbol":    params.Symbol,
 		"side":      string(params.Side),
 		"orderType": params.OrderType,
-		"baseSize":  params.Size,
-		"force":     params.Force,
 		"loanType":  loanType,
+	}
+	// Bitget margin: market BUY requires quoteSize (USDT amount),
+	// limit + market SELL require baseSize (coin quantity).
+	// force is invalid for market orders per Bitget docs.
+	if params.OrderType == "market" && params.Side == exchange.SideBuy {
+		body["quoteSize"] = params.QuoteSize
+	} else {
+		body["baseSize"] = params.Size
+	}
+	if params.OrderType != "market" && params.Force != "" {
+		body["force"] = params.Force
 	}
 	if params.Price != "" {
 		body["price"] = params.Price

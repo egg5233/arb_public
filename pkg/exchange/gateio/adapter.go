@@ -168,10 +168,16 @@ func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 		tif = strings.ToLower(req.Force)
 	}
 
+	// GateIO market orders require price "0" with tif "ioc".
+	price := req.Price
+	if price == "" {
+		price = "0"
+	}
+
 	orderReq := map[string]interface{}{
 		"contract": contract,
 		"size":     size,
-		"price":    req.Price,
+		"price":    price,
 		"tif":      tif,
 	}
 	if req.ReduceOnly {

@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.46] - 2026-03-31
+
+### Fixed
+- **[spot-futures] Market BUY sends quote currency on all 5 margin adapters** — all 5 `PlaceSpotMarginOrder` implementations (Binance, Bybit, Gate.io, Bitget, OKX) were sending base currency quantity for market BUY orders instead of the required quote currency (USDT) amount; added `QuoteSize` field to `SpotMarginOrderParams` and updated each adapter: Binance uses `quoteOrderQty`, Bybit uses `qty` with quote-currency default, Gate.io sends `amount` as quote, Bitget sends `quoteSize`, OKX uses `tgtCcy: "quote_ccy"` with `sz` as quote amount; all `PlaceSpotMarginOrder` callers in execution and monitor updated to populate `QuoteSize` for market BUY orders (`pkg/exchange/types.go`, `pkg/exchange/binance/margin.go`, `pkg/exchange/bybit/margin.go`, `pkg/exchange/gateio/margin.go`, `pkg/exchange/bitget/margin.go`, `pkg/exchange/okx/margin.go`, `internal/spotengine/execution.go`, `internal/spotengine/monitor.go`)
+- **[gateio] Futures PlaceOrder sends `price: "0"` for market orders** — was sending empty string `price: ""` which Gate.io API rejects; now correctly sends `"0"` as required by the API (`pkg/exchange/gateio/adapter.go`)
+
 ## [0.22.45] - 2026-03-31
 
 ### Changed

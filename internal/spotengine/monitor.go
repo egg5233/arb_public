@@ -301,12 +301,13 @@ func (e *SpotEngine) retryPendingRepay(pos *models.SpotFuturesPosition) {
 			e.log.Info("retryPendingRepay: account short %.6f %s (available=%.6f, liability=%.6f) — buying deficit %s",
 				deficit, pos.BaseCoin, bal.Available, liability, deficitStr)
 
+			quoteEst := utils.FormatSize(deficitWithBuffer*pos.SpotEntryPrice*1.02, 2)
 			orderID, buyErr := smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
 				Symbol:    pos.Symbol,
 				Side:      exchange.SideBuy,
 				OrderType: "market",
 				Size:      deficitStr,
-				Force:     "ioc",
+				QuoteSize: quoteEst,
 			})
 			if buyErr != nil {
 				e.log.Warn("retryPendingRepay: deficit buy failed for %s: %v — will retry next tick", pos.ID, buyErr)

@@ -281,7 +281,8 @@ type SpotMarginOrderParams struct {
 	Side       Side   // buy or sell
 	OrderType  string // "limit" or "market"
 	Price      string // required for limit orders
-	Size       string // quantity in base coin
+	Size       string // quantity in base coin (required for limit + market sell)
+	QuoteSize  string // quantity in quote coin / USDT (required for market buy on some exchanges)
 	Force      string // "gtc", "ioc", "fok"
 	AutoBorrow bool   // if true, exchange auto-borrows on sell
 	AutoRepay  bool   // if true, exchange auto-repays on buy
