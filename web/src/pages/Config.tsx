@@ -10,10 +10,11 @@ interface ConfigProps {
 // ---------------------------------------------------------------------------
 // Tab definitions
 // ---------------------------------------------------------------------------
-type Strategy = 'exchanges' | 'perp' | 'spot';
-type PerpTabId = 'fund' | 'schedule' | 'discovery' | 'persist' | 'entry' | 'exit' | 'risk';
+type Strategy = 'exchanges' | 'perp' | 'spot' | 'risk';
+type PerpTabId = 'fund' | 'schedule' | 'discovery' | 'persist' | 'entry' | 'exit';
 type SpotTabId = 'sf-general' | 'sf-sizing' | 'sf-discovery' | 'sf-exit';
-type TabId = PerpTabId | SpotTabId;
+type RiskTabId = 'risk-margins' | 'risk-liq' | 'risk-alloc';
+type TabId = PerpTabId | SpotTabId | RiskTabId;
 
 const PERP_TABS: { id: PerpTabId; labelKey: TranslationKey }[] = [
   { id: 'fund', labelKey: 'cfg.tab.fund' },
@@ -22,7 +23,6 @@ const PERP_TABS: { id: PerpTabId; labelKey: TranslationKey }[] = [
   { id: 'persist', labelKey: 'cfg.tab.persistence' },
   { id: 'entry', labelKey: 'cfg.tab.entry' },
   { id: 'exit', labelKey: 'cfg.tab.exitRotation' },
-  { id: 'risk', labelKey: 'cfg.tab.risk' },
 ];
 
 const SPOT_TABS: { id: SpotTabId; labelKey: TranslationKey }[] = [
@@ -30,6 +30,12 @@ const SPOT_TABS: { id: SpotTabId; labelKey: TranslationKey }[] = [
   { id: 'sf-sizing', labelKey: 'cfg.sf.tabSizing' },
   { id: 'sf-discovery', labelKey: 'cfg.sf.tabDiscovery' },
   { id: 'sf-exit', labelKey: 'cfg.sf.tabExitRisk' },
+];
+
+const RISK_TABS: { id: RiskTabId; labelKey: TranslationKey }[] = [
+  { id: 'risk-margins', labelKey: 'cfg.risk.tabMargins' },
+  { id: 'risk-liq', labelKey: 'cfg.risk.tabLiq' },
+  { id: 'risk-alloc', labelKey: 'cfg.risk.tabAllocator' },
 ];
 
 // Exchange metadata
@@ -891,14 +897,14 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
   // =========================================================================
   // Tab: Risk
   // =========================================================================
-  const renderRiskTab = () => {
+  // =========================================================================
+  // Global Risk: Margins tab
+  // =========================================================================
+  const renderRiskMarginsTab = () => {
     const l3 = (getByPath(config, ['risk', 'margin_l3_threshold']) as number) ?? 0;
     const l4 = (getByPath(config, ['risk', 'margin_l4_threshold']) as number) ?? 0;
     const l5 = (getByPath(config, ['risk', 'margin_l5_threshold']) as number) ?? 0;
     const l4r = (getByPath(config, ['risk', 'l4_reduce_fraction']) as number) ?? 0;
-    const liqTrendEnabled = getByPath(config, ['risk', 'enable_liq_trend_tracking']) === true;
-    const allocatorEnabled = getByPath(config, ['risk', 'enable_capital_allocator']) === true;
-    const exchangeHealthEnabled = getByPath(config, ['risk', 'enable_exchange_health_scoring']) === true;
 
     return (
       <div className="space-y-4">
@@ -906,17 +912,14 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
         <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
           <h3 className="text-sm font-semibold mb-4">{t('cfg.risk.overview')}</h3>
           <div className="relative h-10 rounded-full overflow-hidden mb-2" style={{ background: 'linear-gradient(to right, #22c55e 0%, #eab308 50%, #ef4444 100%)' }}>
-            {/* L3 marker */}
             <div className="absolute top-0 h-full flex flex-col items-center" style={{ left: `${l3 * 100}%` }}>
               <div className="w-0.5 h-full bg-white" />
               <span className="absolute -top-5 text-xs font-bold text-yellow-400 whitespace-nowrap">L3</span>
             </div>
-            {/* L4 marker */}
             <div className="absolute top-0 h-full flex flex-col items-center" style={{ left: `${l4 * 100}%` }}>
               <div className="w-0.5 h-full bg-white" />
               <span className="absolute -top-5 text-xs font-bold text-orange-400 whitespace-nowrap">L4</span>
             </div>
-            {/* L5 marker */}
             <div className="absolute top-0 h-full flex flex-col items-center" style={{ left: `${l5 * 100}%` }}>
               <div className="w-0.5 h-full bg-white" />
               <span className="absolute -top-5 text-xs font-bold text-red-400 whitespace-nowrap">L5</span>
@@ -928,71 +931,38 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {/* L3 */}
           <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
             <div className="flex items-center gap-2 mb-2">
               <label className="text-sm font-medium">{t('cfg.field.l3TransferTrigger')}</label>
               <Tooltip text={t('cfg.desc.l3TransferTrigger')} />
             </div>
-            <RangeSlider
-              value={l3}
-              min={0}
-              max={1}
-              step={0.01}
-              onChange={(v) => handleNumberChange(['risk', 'margin_l3_threshold'], v)}
-              colorClass="text-yellow-400"
-            />
+            <RangeSlider value={l3} min={0} max={1} step={0.01} onChange={(v) => handleNumberChange(['risk', 'margin_l3_threshold'], v)} colorClass="text-yellow-400" />
           </div>
 
-          {/* L4 */}
           <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
             <div className="flex items-center gap-2 mb-2">
               <label className="text-sm font-medium">{t('cfg.field.l4ReduceTrigger')}</label>
               <Tooltip text={t('cfg.desc.l4ReduceTrigger')} />
             </div>
-            <RangeSlider
-              value={l4}
-              min={0}
-              max={1}
-              step={0.01}
-              onChange={(v) => handleNumberChange(['risk', 'margin_l4_threshold'], v)}
-              colorClass="text-orange-400"
-            />
+            <RangeSlider value={l4} min={0} max={1} step={0.01} onChange={(v) => handleNumberChange(['risk', 'margin_l4_threshold'], v)} colorClass="text-orange-400" />
           </div>
 
-          {/* L5 */}
           <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
             <div className="flex items-center gap-2 mb-2">
               <label className="text-sm font-medium">{t('cfg.field.l5EmergencyClose')}</label>
               <Tooltip text={t('cfg.desc.l5EmergencyClose')} />
             </div>
-            <RangeSlider
-              value={l5}
-              min={0}
-              max={1}
-              step={0.01}
-              onChange={(v) => handleNumberChange(['risk', 'margin_l5_threshold'], v)}
-              colorClass="text-red-400"
-            />
+            <RangeSlider value={l5} min={0} max={1} step={0.01} onChange={(v) => handleNumberChange(['risk', 'margin_l5_threshold'], v)} colorClass="text-red-400" />
           </div>
 
-          {/* L4 reduce fraction */}
           <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
             <div className="flex items-center gap-2 mb-2">
               <label className="text-sm font-medium">{t('cfg.field.l4ReduceFraction')}</label>
               <Tooltip text={t('cfg.desc.l4ReduceFraction')} />
             </div>
-            <RangeSlider
-              value={l4r}
-              min={0}
-              max={1}
-              step={0.01}
-              onChange={(v) => handleNumberChange(['risk', 'l4_reduce_fraction'], v)}
-              colorClass="text-blue-400"
-            />
+            <RangeSlider value={l4r} min={0} max={1} step={0.01} onChange={(v) => handleNumberChange(['risk', 'l4_reduce_fraction'], v)} colorClass="text-blue-400" />
           </div>
 
-          {/* Margin safety multiplier */}
           <NumberField
             label={t('cfg.field.marginSafetyMultiplier')}
             desc={t('cfg.desc.marginSafetyMultiplier')}
@@ -1001,7 +971,6 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
             onChange={(v) => handleChange(['risk', 'margin_safety_multiplier'], v)}
           />
 
-          {/* Risk monitor interval */}
           <NumberField
             label={t('cfg.field.riskMonitorInterval')}
             desc={t('cfg.desc.riskMonitorInterval')}
@@ -1009,124 +978,147 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
             unit="sec"
             onChange={(v) => handleChange(['risk', 'risk_monitor_interval_sec'], v)}
           />
-
-          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-            <div className="flex items-center gap-2 mb-2">
-              <label className="text-sm font-medium">{t('cfg.field.enableLiqTrendTracking')}</label>
-              <Tooltip text={t('cfg.desc.enableLiqTrendTracking')} />
-            </div>
-            <div className="flex items-center gap-3">
-              <ToggleSwitch
-                on={liqTrendEnabled}
-                onChange={(v) => handleBoolChange(['risk', 'enable_liq_trend_tracking'], v)}
-              />
-              <span className={`text-sm font-semibold ${liqTrendEnabled ? 'text-green-400' : 'text-red-400'}`}>
-                {liqTrendEnabled ? 'ON' : 'OFF'}
-              </span>
-            </div>
-          </div>
-
-          <NumberField
-            label={t('cfg.field.liqProjectionMinutes')}
-            desc={t('cfg.desc.liqProjectionMinutes')}
-            value={getByPath(config, ['risk', 'liq_projection_minutes'])}
-            unit="min"
-            onChange={(v) => handleChange(['risk', 'liq_projection_minutes'], v)}
-          />
-
-          <NumberField
-            label={t('cfg.field.liqWarningSlopeThresh')}
-            desc={t('cfg.desc.liqWarningSlopeThresh')}
-            value={getByPath(config, ['risk', 'liq_warning_slope_thresh'])}
-            unit="/min"
-            onChange={(v) => handleChange(['risk', 'liq_warning_slope_thresh'], v)}
-          />
-
-          <NumberField
-            label={t('cfg.field.liqCriticalSlopeThresh')}
-            desc={t('cfg.desc.liqCriticalSlopeThresh')}
-            value={getByPath(config, ['risk', 'liq_critical_slope_thresh'])}
-            unit="/min"
-            onChange={(v) => handleChange(['risk', 'liq_critical_slope_thresh'], v)}
-          />
-
-          <NumberField
-            label={t('cfg.field.liqMinSamples')}
-            desc={t('cfg.desc.liqMinSamples')}
-            value={getByPath(config, ['risk', 'liq_min_samples'])}
-            unit="samples"
-            onChange={(v) => handleChange(['risk', 'liq_min_samples'], v)}
-          />
-
-          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-            <div className="flex items-center gap-2 mb-2">
-              <label className="text-sm font-medium">{t('cfg.field.enableCapitalAllocator')}</label>
-              <Tooltip text={t('cfg.desc.enableCapitalAllocator')} />
-            </div>
-            <div className="flex items-center gap-3">
-              <ToggleSwitch
-                on={allocatorEnabled}
-                onChange={(v) => handleBoolChange(['risk', 'enable_capital_allocator'], v)}
-              />
-              <span className={`text-sm font-semibold ${allocatorEnabled ? 'text-green-400' : 'text-red-400'}`}>
-                {allocatorEnabled ? 'ON' : 'OFF'}
-              </span>
-            </div>
-          </div>
-
-          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-            <div className="flex items-center gap-2 mb-2">
-              <label className="text-sm font-medium">{t('cfg.field.enableExchangeHealthScoring')}</label>
-              <Tooltip text={t('cfg.desc.enableExchangeHealthScoring')} />
-            </div>
-            <div className="flex items-center gap-3">
-              <ToggleSwitch
-                on={exchangeHealthEnabled}
-                onChange={(v) => handleBoolChange(['risk', 'enable_exchange_health_scoring'], v)}
-              />
-              <span className={`text-sm font-semibold ${exchangeHealthEnabled ? 'text-green-400' : 'text-red-400'}`}>
-                {exchangeHealthEnabled ? 'ON' : 'OFF'}
-              </span>
-            </div>
-          </div>
-
-          <NumberField
-            label={t('cfg.field.maxTotalExposureUSDT')}
-            desc={t('cfg.desc.maxTotalExposureUSDT')}
-            value={getByPath(config, ['risk', 'max_total_exposure_usdt'])}
-            unit="USDT"
-            onChange={(v) => handleChange(['risk', 'max_total_exposure_usdt'], v)}
-          />
-
-          <NumberField
-            label={t('cfg.field.maxPerpPerpPct')}
-            desc={t('cfg.desc.maxPerpPerpPct')}
-            value={getByPath(config, ['risk', 'max_perp_perp_pct'])}
-            onChange={(v) => handleChange(['risk', 'max_perp_perp_pct'], v)}
-          />
-
-          <NumberField
-            label={t('cfg.field.maxSpotFuturesPct')}
-            desc={t('cfg.desc.maxSpotFuturesPct')}
-            value={getByPath(config, ['risk', 'max_spot_futures_pct'])}
-            onChange={(v) => handleChange(['risk', 'max_spot_futures_pct'], v)}
-          />
-
-          <NumberField
-            label={t('cfg.field.maxPerExchangePct')}
-            desc={t('cfg.desc.maxPerExchangePct')}
-            value={getByPath(config, ['risk', 'max_per_exchange_pct'])}
-            onChange={(v) => handleChange(['risk', 'max_per_exchange_pct'], v)}
-          />
-
-          <NumberField
-            label={t('cfg.field.reservationTTLSec')}
-            desc={t('cfg.desc.reservationTTLSec')}
-            value={getByPath(config, ['risk', 'reservation_ttl_sec'])}
-            unit="sec"
-            onChange={(v) => handleChange(['risk', 'reservation_ttl_sec'], v)}
-          />
         </div>
+      </div>
+    );
+  };
+
+  // =========================================================================
+  // Global Risk: Liquidation tab
+  // =========================================================================
+  const renderRiskLiqTab = () => {
+    const liqTrendEnabled = getByPath(config, ['risk', 'enable_liq_trend_tracking']) === true;
+
+    return (
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.field.enableLiqTrendTracking')}</label>
+            <Tooltip text={t('cfg.desc.enableLiqTrendTracking')} />
+          </div>
+          <div className="flex items-center gap-3">
+            <ToggleSwitch
+              on={liqTrendEnabled}
+              onChange={(v) => handleBoolChange(['risk', 'enable_liq_trend_tracking'], v)}
+            />
+            <span className={`text-sm font-semibold ${liqTrendEnabled ? 'text-green-400' : 'text-red-400'}`}>
+              {liqTrendEnabled ? 'ON' : 'OFF'}
+            </span>
+          </div>
+        </div>
+
+        <NumberField
+          label={t('cfg.field.liqProjectionMinutes')}
+          desc={t('cfg.desc.liqProjectionMinutes')}
+          value={getByPath(config, ['risk', 'liq_projection_minutes'])}
+          unit="min"
+          onChange={(v) => handleChange(['risk', 'liq_projection_minutes'], v)}
+        />
+
+        <NumberField
+          label={t('cfg.field.liqWarningSlopeThresh')}
+          desc={t('cfg.desc.liqWarningSlopeThresh')}
+          value={getByPath(config, ['risk', 'liq_warning_slope_thresh'])}
+          unit="/min"
+          onChange={(v) => handleChange(['risk', 'liq_warning_slope_thresh'], v)}
+        />
+
+        <NumberField
+          label={t('cfg.field.liqCriticalSlopeThresh')}
+          desc={t('cfg.desc.liqCriticalSlopeThresh')}
+          value={getByPath(config, ['risk', 'liq_critical_slope_thresh'])}
+          unit="/min"
+          onChange={(v) => handleChange(['risk', 'liq_critical_slope_thresh'], v)}
+        />
+
+        <NumberField
+          label={t('cfg.field.liqMinSamples')}
+          desc={t('cfg.desc.liqMinSamples')}
+          value={getByPath(config, ['risk', 'liq_min_samples'])}
+          unit="samples"
+          onChange={(v) => handleChange(['risk', 'liq_min_samples'], v)}
+        />
+      </div>
+    );
+  };
+
+  // =========================================================================
+  // Global Risk: Capital Allocator tab
+  // =========================================================================
+  const renderRiskAllocTab = () => {
+    const allocatorEnabled = getByPath(config, ['risk', 'enable_capital_allocator']) === true;
+    const exchangeHealthEnabled = getByPath(config, ['risk', 'enable_exchange_health_scoring']) === true;
+
+    return (
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.field.enableCapitalAllocator')}</label>
+            <Tooltip text={t('cfg.desc.enableCapitalAllocator')} />
+          </div>
+          <div className="flex items-center gap-3">
+            <ToggleSwitch
+              on={allocatorEnabled}
+              onChange={(v) => handleBoolChange(['risk', 'enable_capital_allocator'], v)}
+            />
+            <span className={`text-sm font-semibold ${allocatorEnabled ? 'text-green-400' : 'text-red-400'}`}>
+              {allocatorEnabled ? 'ON' : 'OFF'}
+            </span>
+          </div>
+        </div>
+
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.field.enableExchangeHealthScoring')}</label>
+            <Tooltip text={t('cfg.desc.enableExchangeHealthScoring')} />
+          </div>
+          <div className="flex items-center gap-3">
+            <ToggleSwitch
+              on={exchangeHealthEnabled}
+              onChange={(v) => handleBoolChange(['risk', 'enable_exchange_health_scoring'], v)}
+            />
+            <span className={`text-sm font-semibold ${exchangeHealthEnabled ? 'text-green-400' : 'text-red-400'}`}>
+              {exchangeHealthEnabled ? 'ON' : 'OFF'}
+            </span>
+          </div>
+        </div>
+
+        <NumberField
+          label={t('cfg.field.maxTotalExposureUSDT')}
+          desc={t('cfg.desc.maxTotalExposureUSDT')}
+          value={getByPath(config, ['risk', 'max_total_exposure_usdt'])}
+          unit="USDT"
+          onChange={(v) => handleChange(['risk', 'max_total_exposure_usdt'], v)}
+        />
+
+        <NumberField
+          label={t('cfg.field.maxPerpPerpPct')}
+          desc={t('cfg.desc.maxPerpPerpPct')}
+          value={getByPath(config, ['risk', 'max_perp_perp_pct'])}
+          onChange={(v) => handleChange(['risk', 'max_perp_perp_pct'], v)}
+        />
+
+        <NumberField
+          label={t('cfg.field.maxSpotFuturesPct')}
+          desc={t('cfg.desc.maxSpotFuturesPct')}
+          value={getByPath(config, ['risk', 'max_spot_futures_pct'])}
+          onChange={(v) => handleChange(['risk', 'max_spot_futures_pct'], v)}
+        />
+
+        <NumberField
+          label={t('cfg.field.maxPerExchangePct')}
+          desc={t('cfg.desc.maxPerExchangePct')}
+          value={getByPath(config, ['risk', 'max_per_exchange_pct'])}
+          onChange={(v) => handleChange(['risk', 'max_per_exchange_pct'], v)}
+        />
+
+        <NumberField
+          label={t('cfg.field.reservationTTLSec')}
+          desc={t('cfg.desc.reservationTTLSec')}
+          value={getByPath(config, ['risk', 'reservation_ttl_sec'])}
+          unit="sec"
+          onChange={(v) => handleChange(['risk', 'reservation_ttl_sec'], v)}
+        />
       </div>
     );
   };
@@ -1426,7 +1418,9 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
       case 'persist': return renderPersistTab();
       case 'entry': return renderEntryTab();
       case 'exit': return renderExitTab();
-      case 'risk': return renderRiskTab();
+      case 'risk-margins': return renderRiskMarginsTab();
+      case 'risk-liq': return renderRiskLiqTab();
+      case 'risk-alloc': return renderRiskAllocTab();
       case 'sf-general': return renderSfGeneralTab();
       case 'sf-sizing': return renderSfSizingTab();
       case 'sf-discovery': return renderSfDiscoveryTab();
@@ -1475,6 +1469,17 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
         >
           {t('cfg.strategySpot')}
         </button>
+        <button
+          type="button"
+          onClick={() => { setStrategy('risk'); setActiveTab('risk-margins'); }}
+          className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all duration-150 ${
+            strategy === 'risk'
+              ? 'bg-amber-900/60 text-amber-200 shadow-sm'
+              : 'text-gray-500 hover:text-gray-300'
+          }`}
+        >
+          {t('cfg.strategyRisk')}
+        </button>
       </div>
 
       {/* Tab bar (hidden for exchanges — no sub-tabs) */}
@@ -1483,20 +1488,23 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
         className="flex gap-1 overflow-x-auto pb-3 mb-4 scrollbar-none"
         style={{ scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' }}
       >
-        {(strategy === 'perp' ? PERP_TABS : SPOT_TABS).map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => setActiveTab(tab.id)}
-            className={`whitespace-nowrap px-3 py-1.5 rounded-full text-sm font-medium transition shrink-0 ${
-              activeTab === tab.id
-                ? 'bg-blue-600 text-white'
-                : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800'
-            }`}
-          >
-            {t(tab.labelKey)}
-          </button>
-        ))}
+        {(strategy === 'perp' ? PERP_TABS : strategy === 'spot' ? SPOT_TABS : RISK_TABS).map((tab) => {
+          const isRisk = strategy === 'risk';
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveTab(tab.id)}
+              className={`whitespace-nowrap px-3 py-1.5 rounded-full text-sm font-medium transition shrink-0 ${
+                activeTab === tab.id
+                  ? isRisk ? 'bg-amber-600 text-white' : 'bg-blue-600 text-white'
+                  : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800'
+              }`}
+            >
+              {t(tab.labelKey)}
+            </button>
+          );
+        })}
       </div>}
 
       {/* Tab content */}

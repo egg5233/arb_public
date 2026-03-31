@@ -338,9 +338,15 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.desc.reservationTTLSec': '交易尚未 commit 時，資金預留可存活多久後自動過期釋放。',
   'cfg.desc.dryRun': '啟用時，機器人記錄所有操作但不執行任何真實交易',
 
-  // Config - Spot-Futures Strategy Toggle
+  // Config - Strategy Toggles
   'cfg.strategyPerp': '永續-永續',
   'cfg.strategySpot': '現貨-合約',
+  'cfg.strategyRisk': '全域風控',
+
+  // Config - Global Risk Tabs
+  'cfg.risk.tabMargins': '保證金',
+  'cfg.risk.tabLiq': '清算',
+  'cfg.risk.tabAllocator': '資金配置',
 
   // Config - Spot-Futures Tabs
   'cfg.sf.tabGeneral': '一般',

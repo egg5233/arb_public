@@ -336,9 +336,15 @@ const en = {
   'cfg.desc.reservationTTLSec': 'How long a pending capital reservation stays live before auto-expiring if the trade never commits.',
   'cfg.desc.dryRun': 'When enabled, the bot logs all actions but does not execute any real trades',
 
-  // Config - Spot-Futures Strategy Toggle
+  // Config - Strategy Toggles
   'cfg.strategyPerp': 'Perp-Perp',
   'cfg.strategySpot': 'Spot-Futures',
+  'cfg.strategyRisk': 'Global Risk',
+
+  // Config - Global Risk Tabs
+  'cfg.risk.tabMargins': 'Margins',
+  'cfg.risk.tabLiq': 'Liquidation',
+  'cfg.risk.tabAllocator': 'Allocator',
 
   // Config - Spot-Futures Tabs
   'cfg.sf.tabGeneral': 'General',

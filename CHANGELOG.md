@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.45] - 2026-03-31
+
+### Changed
+- **[dashboard] Move global risk controls to dedicated strategy section** — Config page reorganized: monolithic "Risk Control" tab removed from Perp-Perp section; new top-level "Global Risk" strategy section (amber-tinted) added alongside Exchanges / Perp-Perp / Spot-Futures with 3 sub-tabs: **Margins** (L3–L5 thresholds, reduce fraction, safety multiplier, risk monitor interval), **Liquidation** (liq trend tracking toggle + projection/slope/sample params), **Allocator** (capital allocator toggle, exchange health scoring, max total exposure, per-strategy budget shares, per-exchange cap, reservation TTL); `max_spot_futures_pct` no longer misplaced under perp-perp (`web/src/pages/Config.tsx`, `web/src/i18n/en.ts`, `web/src/i18n/zh-TW.ts`)
+
 ## [0.22.44] - 2026-03-31
 
 ### Fixed
