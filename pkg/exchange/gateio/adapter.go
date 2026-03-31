@@ -31,7 +31,7 @@ type Adapter struct {
 	depthStore sync.Map // Gate.io symbol -> *exchange.Orderbook
 
 	// Private stream
-	privateWS  *PrivateWS
+	privateWS     *PrivateWS
 	orderStore    sync.Map // orderID (string) -> exchange.OrderUpdate
 	orderCallback func(exchange.OrderUpdate)
 
@@ -285,16 +285,16 @@ func (a *Adapter) GetPosition(symbol string) ([]exchange.Position, error) {
 	}
 
 	var raw struct {
-		Contract           string          `json:"contract"`
-		Size               int64           `json:"size"`
-		EntryPrice         string          `json:"entry_price"`
-		UnrealisedPnl      string          `json:"unrealised_pnl"`
-		Leverage           string          `json:"leverage"`
-		CrossLeverageLimit json.Number     `json:"cross_leverage_limit"`
-		Mode               string          `json:"mode"`
-		LiqPrice           string          `json:"liq_price"`
-		MarkPrice          string          `json:"mark_price"`
-		PnlFund            string          `json:"pnl_fund"`
+		Contract           string      `json:"contract"`
+		Size               int64       `json:"size"`
+		EntryPrice         string      `json:"entry_price"`
+		UnrealisedPnl      string      `json:"unrealised_pnl"`
+		Leverage           string      `json:"leverage"`
+		CrossLeverageLimit json.Number `json:"cross_leverage_limit"`
+		Mode               string      `json:"mode"`
+		LiqPrice           string      `json:"liq_price"`
+		MarkPrice          string      `json:"mark_price"`
+		PnlFund            string      `json:"pnl_fund"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("GetPosition unmarshal: %w", err)
@@ -474,12 +474,12 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 	}
 
 	var contracts []struct {
-		Name             string `json:"name"`
-		QuantoMultiplier string `json:"quanto_multiplier"`
+		Name             string      `json:"name"`
+		QuantoMultiplier string      `json:"quanto_multiplier"`
 		OrderSizeMin     json.Number `json:"order_size_min"`
 		OrderSizeMax     json.Number `json:"order_size_max"`
-		OrderPriceRound  string `json:"order_price_round"`
-		InTrade          bool   `json:"in_delisting"`
+		OrderPriceRound  string      `json:"order_price_round"`
+		InTrade          bool        `json:"in_delisting"`
 	}
 	if err := json.Unmarshal(data, &contracts); err != nil {
 		return nil, fmt.Errorf("LoadAllContracts unmarshal: %w", err)
@@ -635,12 +635,12 @@ func (a *Adapter) getUnifiedBalance() (*exchange.Balance, error) {
 		UnifiedAccountTotalEquity string `json:"unified_account_total_equity"`
 		TotalMaintenanceMargin    string `json:"total_maintenance_margin"`
 		Balances                  map[string]struct {
-			Available      string `json:"available"`
-			Equity         string `json:"equity"`
-			Freeze         string `json:"freeze"`
-			MM             string `json:"mm"`              // maintenance margin (per-currency)
-			IM             string `json:"im"`              // initial margin (per-currency)
-			MarginBalance  string `json:"margin_balance"`  // margin balance (per-currency)
+			Available       string `json:"available"`
+			Equity          string `json:"equity"`
+			Freeze          string `json:"freeze"`
+			MM              string `json:"mm"`               // maintenance margin (per-currency)
+			IM              string `json:"im"`               // initial margin (per-currency)
+			MarginBalance   string `json:"margin_balance"`   // margin balance (per-currency)
 			AvailableMargin string `json:"available_margin"` // available margin (per-currency)
 		} `json:"balances"`
 	}
@@ -1046,7 +1046,7 @@ func (a *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 		Contract   string  `json:"contract"`
 		Size       int64   `json:"size"` // positive=buy, negative=sell (in contracts)
 		Price      string  `json:"price"`
-		Fee        string  `json:"fee"` // Gate.io returns fee as string
+		Fee        string  `json:"fee"`         // Gate.io returns fee as string
 		CreateTime float64 `json:"create_time"` // unix seconds with decimals
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -1143,15 +1143,15 @@ func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 	}
 
 	var resp []struct {
-		Pnl           string  `json:"pnl"`
-		PnlPnl        string  `json:"pnl_pnl"`
-		PnlFund       string  `json:"pnl_fund"`
-		PnlFee        string  `json:"pnl_fee"`
-		Side          string  `json:"side"`
-		LongPrice     string  `json:"long_price"`
-		ShortPrice    string  `json:"short_price"`
-		AccumSize     string  `json:"accum_size"`
-		Time          float64 `json:"time"`
+		Pnl        string  `json:"pnl"`
+		PnlPnl     string  `json:"pnl_pnl"`
+		PnlFund    string  `json:"pnl_fund"`
+		PnlFee     string  `json:"pnl_fee"`
+		Side       string  `json:"side"`
+		LongPrice  string  `json:"long_price"`
+		ShortPrice string  `json:"short_price"`
+		AccumSize  string  `json:"accum_size"`
+		Time       float64 `json:"time"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("GetClosePnL unmarshal: %w", err)
@@ -1223,11 +1223,11 @@ func (a *Adapter) PlaceStopLoss(params exchange.StopLossParams) (string, error) 
 
 	orderReq := map[string]interface{}{
 		"initial": map[string]interface{}{
-			"contract":     contract,
-			"size":         size,
-			"price":        "0", // market price
-			"tif":          "ioc",
-			"reduce_only":  true,
+			"contract":    contract,
+			"size":        size,
+			"price":       "0", // market price
+			"tif":         "ioc",
+			"reduce_only": true,
 		},
 		"trigger": map[string]interface{}{
 			"strategy_type": 0,
@@ -1281,8 +1281,8 @@ func (a *Adapter) Close() {
 }
 
 func (a *Adapter) EnsureOneWayMode() error {
-	// Gate.io: POST /futures/usdt/dual_mode — dual_mode is a query parameter, not body
-	_, err := a.client.Post("/futures/usdt/dual_mode?dual_mode=false", "")
+	// Gate.io annotations validate dual_mode as a JSON body, not a query parameter.
+	_, err := a.client.Post("/futures/usdt/dual_mode", `{"dual_mode":false}`)
 	if err != nil {
 		errMsg := err.Error()
 		// Already in single mode, has open positions, or no change needed

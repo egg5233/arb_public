@@ -7,8 +7,8 @@ import (
 
 	"arb/internal/config"
 	"arb/internal/database"
-	"arb/pkg/exchange"
 	"arb/internal/models"
+	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
 
@@ -49,6 +49,9 @@ type ExchangeHealth struct {
 	Exchange    string
 	Level       HealthLevel
 	MarginRatio float64
+	TrendState  LiqTrendState
+	TrendSlope  float64
+	TrendRatio  float64
 	PnL         float64 // sum of unrealized PnL across all positions on this exchange
 	Balance     *exchange.Balance
 	Positions   []string // position IDs with legs on this exchange
@@ -71,6 +74,7 @@ type HealthMonitor struct {
 	cfg       *config.Config
 	log       *utils.Logger
 	states    map[string]*ExchangeHealth
+	liqTrend  *LiqTrendTracker
 	actionCh  chan HealthAction
 	stopCh    chan struct{}
 }
@@ -83,6 +87,7 @@ func NewHealthMonitor(exchanges map[string]exchange.Exchange, db *database.Clien
 		cfg:       cfg,
 		log:       utils.NewLogger("health-monitor"),
 		states:    make(map[string]*ExchangeHealth),
+		liqTrend:  NewLiqTrendTracker(cfg),
 		actionCh:  make(chan HealthAction, 20),
 		stopCh:    make(chan struct{}),
 	}
@@ -170,13 +175,18 @@ func (h *HealthMonitor) checkExchangeHealth(name string, positions []*models.Arb
 	}
 
 	// Determine health level
-	level := h.computeLevel(bal, totalPnL, len(exchPositions))
+	marginRatio := h.normalizeMarginRatio(bal)
+	level := h.computeLevel(marginRatio, totalPnL, len(exchPositions))
+	trend := h.liqTrend.Sample(name, marginRatio, time.Now(), h.cfg.MarginL3Threshold, h.cfg.MarginL4Threshold)
 
 	prevState := h.states[name]
 	state := &ExchangeHealth{
 		Exchange:    name,
 		Level:       level,
-		MarginRatio: bal.MarginRatio,
+		MarginRatio: marginRatio,
+		TrendState:  trend.State,
+		TrendSlope:  trend.SlopePerMinute,
+		TrendRatio:  trend.ProjectedRatio,
 		PnL:         totalPnL,
 		Balance:     bal,
 		Positions:   posIDs,
@@ -203,21 +213,23 @@ func (h *HealthMonitor) checkExchangeHealth(name string, positions []*models.Arb
 	case L5Critical:
 		h.handleL5(name, state, exchPositions)
 	}
+	h.handleTrend(name, state, exchPositions, trend)
 }
 
-func (h *HealthMonitor) computeLevel(bal *exchange.Balance, pnl float64, posCount int) HealthLevel {
+func (h *HealthMonitor) normalizeMarginRatio(bal *exchange.Balance) float64 {
+	if bal == nil {
+		return 0
+	}
+	marginRatio := bal.MarginRatio
+	if marginRatio <= 0 && bal.Total > 0 && bal.Available > 0 {
+		return 1.0 - (bal.Available / bal.Total)
+	}
+	return marginRatio
+}
+
+func (h *HealthMonitor) computeLevel(marginRatio float64, pnl float64, posCount int) HealthLevel {
 	if posCount == 0 {
 		return L0None
-	}
-
-	marginRatio := bal.MarginRatio
-
-	// Use hybrid fallback if margin ratio unavailable.
-	// Skip fallback if Available is 0 — unified accounts (e.g. Gate.io) may
-	// report Available=0 when all equity is allocated as position margin,
-	// which does NOT mean 100% margin utilization.
-	if marginRatio <= 0 && bal.Total > 0 && bal.Available > 0 {
-		marginRatio = 1.0 - (bal.Available / bal.Total)
 	}
 
 	// L5: Critical (regardless of PnL)
@@ -265,6 +277,26 @@ func (h *HealthMonitor) getLegPnL(exch exchange.Exchange, pos *models.ArbitrageP
 		}
 	}
 	return pnl
+}
+
+func (h *HealthMonitor) handleTrend(name string, state *ExchangeHealth, positions []*models.ArbitragePosition, trend LiqTrendResult) {
+	if trend.SampleCount < h.cfg.LiqMinSamples || trend.State == LiqTrendStable {
+		return
+	}
+	if trend.State == LiqTrendWarning {
+		h.log.Warn("liq-trend %s: warning slope=%.4f/min projected=%.4f current=%.4f",
+			name, trend.SlopePerMinute, trend.ProjectedRatio, trend.CurrentRatio)
+		return
+	}
+	if !h.cfg.EnableLiqTrendTracking || state.Level >= L4High {
+		return
+	}
+	if len(positions) == 0 {
+		return
+	}
+	h.log.Warn("liq-trend %s: projected margin ratio %.4f crosses L4 with slope %.4f/min, requesting pre-emptive reduce",
+		name, trend.ProjectedRatio, trend.SlopePerMinute)
+	h.queueReduceAction(name, positions, h.cfg.L4ReduceFraction)
 }
 
 // handleL3 attempts to transfer funds from a donor exchange to the at-risk exchange.
@@ -367,8 +399,15 @@ func (h *HealthMonitor) handleL4(name string, state *ExchangeHealth, positions [
 
 	h.log.Warn("L4 %s: marginRatio=%.4f, requesting position reduction (%.0f%%)",
 		name, state.MarginRatio, h.cfg.L4ReduceFraction*100)
+	h.queueReduceAction(name, positions, h.cfg.L4ReduceFraction)
+}
 
-	// Sort positions by PnL ascending (worst first) using the leg on this exchange
+func (h *HealthMonitor) queueReduceAction(name string, positions []*models.ArbitragePosition, fraction float64) {
+	if len(positions) == 0 {
+		return
+	}
+
+	// Sort positions by PnL ascending (worst first) using the leg on this exchange.
 	type posPnL struct {
 		pos *models.ArbitragePosition
 		pnl float64
@@ -393,7 +432,7 @@ func (h *HealthMonitor) handleL4(name string, state *ExchangeHealth, positions [
 		Type:      "reduce",
 		Exchange:  name,
 		Positions: sortedPositions,
-		Fraction:  h.cfg.L4ReduceFraction,
+		Fraction:  fraction,
 	}:
 	default:
 		h.log.Warn("L4 %s: action channel full, dropping reduce request", name)

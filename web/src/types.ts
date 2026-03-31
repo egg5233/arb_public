@@ -153,3 +153,17 @@ export interface SpotStats {
   loss_count: number;
   trade_count: number;
 }
+
+export interface SpotOpportunity {
+  symbol: string;
+  base_coin: string;
+  exchange: string;
+  direction: string;
+  funding_apr: number;
+  borrow_apr: number;
+  fee_apr: number;
+  net_apr: number;
+  source: string;
+  timestamp: string;
+  filter_status?: string;
+}

@@ -12,10 +12,14 @@ import (
 	"strings"
 	"time"
 
+	"arb/internal/config"
 	"arb/internal/database"
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
+
+// processStartTime records when the process started, used to detect binary drift.
+var processStartTime = time.Now()
 
 // Response is the standard JSON response wrapper.
 type Response struct {
@@ -309,27 +313,31 @@ type configResponse struct {
 }
 
 type configSpotFuturesResponse struct {
-	Enabled               bool     `json:"enabled"`
-	MaxPositions          int      `json:"max_positions"`
-	CapitalPerPosition    float64  `json:"capital_per_position"`
-	Leverage              int      `json:"leverage"`
-	MonitorIntervalSec    int      `json:"monitor_interval_sec"`
-	MinNetYieldAPR        float64  `json:"min_net_yield_apr"`
-	MaxBorrowAPR          float64  `json:"max_borrow_apr"`
-	Exchanges             []string `json:"exchanges"`
-	ScanIntervalMin       int      `json:"scan_interval_min"`
-	BorrowGraceMin        int      `json:"borrow_grace_min"`
-	PriceExitPct          float64  `json:"price_exit_pct"`
-	PriceEmergencyPct     float64  `json:"price_emergency_pct"`
-	MarginExitPct         float64  `json:"margin_exit_pct"`
-	MarginEmergencyPct    float64  `json:"margin_emergency_pct"`
-	LossCooldownHours     int      `json:"loss_cooldown_hours"`
-	AutoEnabled           bool     `json:"auto_enabled"`
-	DryRun                bool     `json:"dry_run"`
-	PersistenceScans      int      `json:"persistence_scans"`
-	ProfitTransferEnabled bool     `json:"profit_transfer_enabled"`
-	SeparateAcctMaxUSDT   float64  `json:"separate_acct_max_usdt"`
-	UnifiedAcctMaxUSDT    float64  `json:"unified_acct_max_usdt"`
+	Enabled                    bool     `json:"enabled"`
+	MaxPositions               int      `json:"max_positions"`
+	CapitalPerPosition         float64  `json:"capital_per_position"`
+	Leverage                   int      `json:"leverage"`
+	MonitorIntervalSec         int      `json:"monitor_interval_sec"`
+	MinNetYieldAPR             float64  `json:"min_net_yield_apr"`
+	MaxBorrowAPR               float64  `json:"max_borrow_apr"`
+	EnableBorrowSpikeDetection bool     `json:"enable_borrow_spike_detection"`
+	BorrowSpikeWindowMin       int      `json:"borrow_spike_window_min"`
+	BorrowSpikeMultiplier      float64  `json:"borrow_spike_multiplier"`
+	BorrowSpikeMinAbsolute     float64  `json:"borrow_spike_min_absolute"`
+	Exchanges                  []string `json:"exchanges"`
+	ScanIntervalMin            int      `json:"scan_interval_min"`
+	BorrowGraceMin             int      `json:"borrow_grace_min"`
+	PriceExitPct               float64  `json:"price_exit_pct"`
+	PriceEmergencyPct          float64  `json:"price_emergency_pct"`
+	MarginExitPct              float64  `json:"margin_exit_pct"`
+	MarginEmergencyPct         float64  `json:"margin_emergency_pct"`
+	LossCooldownHours          int      `json:"loss_cooldown_hours"`
+	AutoEnabled                bool     `json:"auto_enabled"`
+	DryRun                     bool     `json:"auto_dry_run"`
+	PersistenceScans           int      `json:"persistence_scans"`
+	ProfitTransferEnabled      bool     `json:"profit_transfer_enabled"`
+	SeparateAcctMaxUSDT        float64  `json:"separate_acct_max_usdt"`
+	UnifiedAcctMaxUSDT         float64  `json:"unified_acct_max_usdt"`
 }
 
 type configExchangeResponse struct {
@@ -388,9 +396,12 @@ type configPersistenceResponse struct {
 	SpreadStabilityRatio8h  float64 `json:"spread_stability_ratio_8h"`
 	SpreadStabilityOIRank8h int     `json:"spread_stability_oi_rank_8h"`
 
-	SpreadVolatilityMaxCV      float64 `json:"spread_volatility_max_cv"`
-	SpreadVolatilityMinSamples int     `json:"spread_volatility_min_samples"`
-	FundingWindowMin           int     `json:"funding_window_min"`
+	EnableSpreadStabilityGate       bool    `json:"enable_spread_stability_gate"`
+	SpreadVolatilityMaxCV           float64 `json:"spread_volatility_max_cv"`
+	SpreadVolatilityMinSamples      int     `json:"spread_volatility_min_samples"`
+	SpreadStabilityStricterForAuto  bool    `json:"spread_stability_stricter_for_auto"`
+	SpreadStabilityAutoCVMultiplier float64 `json:"spread_stability_auto_cv_multiplier"`
+	FundingWindowMin                int     `json:"funding_window_min"`
 }
 
 type configEntryResponse struct {
@@ -429,6 +440,17 @@ type configRiskResponse struct {
 	L4ReduceFraction       float64 `json:"l4_reduce_fraction"`
 	MarginSafetyMultiplier float64 `json:"margin_safety_multiplier"`
 	RiskMonitorIntervalSec int     `json:"risk_monitor_interval_sec"`
+	EnableLiqTrendTracking bool    `json:"enable_liq_trend_tracking"`
+	LiqProjectionMinutes   int     `json:"liq_projection_minutes"`
+	LiqWarningSlopeThresh  float64 `json:"liq_warning_slope_thresh"`
+	LiqCriticalSlopeThresh float64 `json:"liq_critical_slope_thresh"`
+	LiqMinSamples          int     `json:"liq_min_samples"`
+	EnableCapitalAllocator bool    `json:"enable_capital_allocator"`
+	MaxTotalExposureUSDT   float64 `json:"max_total_exposure_usdt"`
+	MaxPerpPerpPct         float64 `json:"max_perp_perp_pct"`
+	MaxSpotFuturesPct      float64 `json:"max_spot_futures_pct"`
+	MaxPerExchangePct      float64 `json:"max_per_exchange_pct"`
+	ReservationTTLSec      int     `json:"reservation_ttl_sec"`
 }
 
 // apiKeyPreview returns the first 6 characters of a key followed by "...", or empty if blank.
@@ -494,15 +516,18 @@ func (s *Server) buildConfigResponse() configResponse {
 					SpreadStabilityRatio8h:  s.cfg.SpreadStabilityRatio8h,
 					SpreadStabilityOIRank8h: s.cfg.SpreadStabilityOIRank8h,
 
-					SpreadVolatilityMaxCV:      s.cfg.SpreadVolatilityMaxCV,
-					SpreadVolatilityMinSamples: s.cfg.SpreadVolatilityMinSamples,
-					FundingWindowMin:           s.cfg.FundingWindowMin,
+					EnableSpreadStabilityGate:       s.cfg.EnableSpreadStabilityGate,
+					SpreadVolatilityMaxCV:           s.cfg.SpreadVolatilityMaxCV,
+					SpreadVolatilityMinSamples:      s.cfg.SpreadVolatilityMinSamples,
+					SpreadStabilityStricterForAuto:  s.cfg.SpreadStabilityStricterForAuto,
+					SpreadStabilityAutoCVMultiplier: s.cfg.SpreadStabilityAutoCVMultiplier,
+					FundingWindowMin:                s.cfg.FundingWindowMin,
 				},
 			},
 			Entry: configEntryResponse{
 				SlippageLimitBPS:     s.cfg.SlippageBPS,
-				MinChunkUSDT:        s.cfg.MinChunkUSDT,
-				EntryTimeoutSec:     s.cfg.EntryTimeoutSec,
+				MinChunkUSDT:         s.cfg.MinChunkUSDT,
+				EntryTimeoutSec:      s.cfg.EntryTimeoutSec,
 				LossCooldownHours:    s.cfg.LossCooldownHours,
 				ReEnterCooldownHours: s.cfg.ReEnterCooldownHours,
 				BacktestDays:         s.cfg.BacktestDays,
@@ -532,6 +557,17 @@ func (s *Server) buildConfigResponse() configResponse {
 			L4ReduceFraction:       s.cfg.L4ReduceFraction,
 			MarginSafetyMultiplier: s.cfg.MarginSafetyMultiplier,
 			RiskMonitorIntervalSec: s.cfg.RiskMonitorIntervalSec,
+			EnableLiqTrendTracking: s.cfg.EnableLiqTrendTracking,
+			LiqProjectionMinutes:   s.cfg.LiqProjectionMinutes,
+			LiqWarningSlopeThresh:  s.cfg.LiqWarningSlopeThresh,
+			LiqCriticalSlopeThresh: s.cfg.LiqCriticalSlopeThresh,
+			LiqMinSamples:          s.cfg.LiqMinSamples,
+			EnableCapitalAllocator: s.cfg.EnableCapitalAllocator,
+			MaxTotalExposureUSDT:   s.cfg.MaxTotalExposureUSDT,
+			MaxPerpPerpPct:         s.cfg.MaxPerpPerpPct,
+			MaxSpotFuturesPct:      s.cfg.MaxSpotFuturesPct,
+			MaxPerExchangePct:      s.cfg.MaxPerExchangePct,
+			ReservationTTLSec:      s.cfg.ReservationTTLSec,
 		},
 		AI: configAIResponse{
 			Endpoint:  s.cfg.AIEndpoint,
@@ -541,30 +577,32 @@ func (s *Server) buildConfigResponse() configResponse {
 		},
 		Exchanges: s.buildExchangesResponse(),
 	}
-	if s.cfg.SpotFuturesEnabled {
-		resp.SpotFutures = &configSpotFuturesResponse{
-			Enabled:               s.cfg.SpotFuturesEnabled,
-			MaxPositions:          s.cfg.SpotFuturesMaxPositions,
-			CapitalPerPosition:    s.cfg.SpotFuturesCapitalPerPosition,
-			Leverage:              s.cfg.SpotFuturesLeverage,
-			MonitorIntervalSec:    s.cfg.SpotFuturesMonitorIntervalSec,
-			MinNetYieldAPR:        s.cfg.SpotFuturesMinNetYieldAPR,
-			MaxBorrowAPR:          s.cfg.SpotFuturesMaxBorrowAPR,
-			Exchanges:             s.cfg.SpotFuturesExchanges,
-			ScanIntervalMin:       s.cfg.SpotFuturesScanIntervalMin,
-			BorrowGraceMin:        s.cfg.SpotFuturesBorrowGraceMin,
-			PriceExitPct:          s.cfg.SpotFuturesPriceExitPct,
-			PriceEmergencyPct:     s.cfg.SpotFuturesPriceEmergencyPct,
-			MarginExitPct:         s.cfg.SpotFuturesMarginExitPct,
-			MarginEmergencyPct:    s.cfg.SpotFuturesMarginEmergencyPct,
-			LossCooldownHours:     s.cfg.SpotFuturesLossCooldownHours,
-			AutoEnabled:           s.cfg.SpotFuturesAutoEnabled,
-			DryRun:                s.cfg.SpotFuturesDryRun,
-			PersistenceScans:      s.cfg.SpotFuturesPersistenceScans,
-			ProfitTransferEnabled: s.cfg.SpotFuturesProfitTransferEnabled,
-			SeparateAcctMaxUSDT:   s.cfg.SpotFuturesSeparateAcctMaxUSDT,
-			UnifiedAcctMaxUSDT:    s.cfg.SpotFuturesUnifiedAcctMaxUSDT,
-		}
+	resp.SpotFutures = &configSpotFuturesResponse{
+		Enabled:                    s.cfg.SpotFuturesEnabled,
+		MaxPositions:               s.cfg.SpotFuturesMaxPositions,
+		CapitalPerPosition:         s.cfg.SpotFuturesCapitalPerPosition,
+		Leverage:                   s.cfg.SpotFuturesLeverage,
+		MonitorIntervalSec:         s.cfg.SpotFuturesMonitorIntervalSec,
+		MinNetYieldAPR:             s.cfg.SpotFuturesMinNetYieldAPR,
+		MaxBorrowAPR:               s.cfg.SpotFuturesMaxBorrowAPR,
+		EnableBorrowSpikeDetection: s.cfg.EnableBorrowSpikeDetection,
+		BorrowSpikeWindowMin:       s.cfg.BorrowSpikeWindowMin,
+		BorrowSpikeMultiplier:      s.cfg.BorrowSpikeMultiplier,
+		BorrowSpikeMinAbsolute:     s.cfg.BorrowSpikeMinAbsolute,
+		Exchanges:                  s.cfg.SpotFuturesExchanges,
+		ScanIntervalMin:            s.cfg.SpotFuturesScanIntervalMin,
+		BorrowGraceMin:             s.cfg.SpotFuturesBorrowGraceMin,
+		PriceExitPct:               s.cfg.SpotFuturesPriceExitPct,
+		PriceEmergencyPct:          s.cfg.SpotFuturesPriceEmergencyPct,
+		MarginExitPct:              s.cfg.SpotFuturesMarginExitPct,
+		MarginEmergencyPct:         s.cfg.SpotFuturesMarginEmergencyPct,
+		LossCooldownHours:          s.cfg.SpotFuturesLossCooldownHours,
+		AutoEnabled:                s.cfg.SpotFuturesAutoEnabled,
+		DryRun:                     s.cfg.SpotFuturesDryRun,
+		PersistenceScans:           s.cfg.SpotFuturesPersistenceScans,
+		ProfitTransferEnabled:      s.cfg.SpotFuturesProfitTransferEnabled,
+		SeparateAcctMaxUSDT:        s.cfg.SpotFuturesSeparateAcctMaxUSDT,
+		UnifiedAcctMaxUSDT:         s.cfg.SpotFuturesUnifiedAcctMaxUSDT,
 	}
 	return resp
 }
@@ -604,27 +642,32 @@ type configUpdate struct {
 }
 
 type spotFuturesUpdate struct {
-	Enabled               *bool    `json:"enabled"`
-	MaxPositions          *int     `json:"max_positions"`
-	CapitalPerPosition    *float64 `json:"capital_per_position"`
-	Leverage              *int     `json:"leverage"`
-	MonitorIntervalSec    *int     `json:"monitor_interval_sec"`
-	MinNetYieldAPR        *float64 `json:"min_net_yield_apr"`
-	MaxBorrowAPR          *float64 `json:"max_borrow_apr"`
-	Exchanges             []string `json:"exchanges"`
-	ScanIntervalMin       *int     `json:"scan_interval_min"`
-	BorrowGraceMin        *int     `json:"borrow_grace_min"`
-	PriceExitPct          *float64 `json:"price_exit_pct"`
-	PriceEmergencyPct     *float64 `json:"price_emergency_pct"`
-	MarginExitPct         *float64 `json:"margin_exit_pct"`
-	MarginEmergencyPct    *float64 `json:"margin_emergency_pct"`
-	LossCooldownHours     *int     `json:"loss_cooldown_hours"`
-	AutoEnabled           *bool    `json:"auto_enabled"`
-	DryRun                *bool    `json:"dry_run"`
-	PersistenceScans      *int     `json:"persistence_scans"`
-	ProfitTransferEnabled *bool    `json:"profit_transfer_enabled"`
-	SeparateAcctMaxUSDT   *float64 `json:"separate_acct_max_usdt"`
-	UnifiedAcctMaxUSDT    *float64 `json:"unified_acct_max_usdt"`
+	Enabled                    *bool    `json:"enabled"`
+	MaxPositions               *int     `json:"max_positions"`
+	CapitalPerPosition         *float64 `json:"capital_per_position"`
+	Leverage                   *int     `json:"leverage"`
+	MonitorIntervalSec         *int     `json:"monitor_interval_sec"`
+	MinNetYieldAPR             *float64 `json:"min_net_yield_apr"`
+	MaxBorrowAPR               *float64 `json:"max_borrow_apr"`
+	EnableBorrowSpikeDetection *bool    `json:"enable_borrow_spike_detection"`
+	BorrowSpikeWindowMin       *int     `json:"borrow_spike_window_min"`
+	BorrowSpikeMultiplier      *float64 `json:"borrow_spike_multiplier"`
+	BorrowSpikeMinAbsolute     *float64 `json:"borrow_spike_min_absolute"`
+	Exchanges                  []string `json:"exchanges"`
+	ScanIntervalMin            *int     `json:"scan_interval_min"`
+	BorrowGraceMin             *int     `json:"borrow_grace_min"`
+	PriceExitPct               *float64 `json:"price_exit_pct"`
+	PriceEmergencyPct          *float64 `json:"price_emergency_pct"`
+	MarginExitPct              *float64 `json:"margin_exit_pct"`
+	MarginEmergencyPct         *float64 `json:"margin_emergency_pct"`
+	LossCooldownHours          *int     `json:"loss_cooldown_hours"`
+	AutoEnabled                *bool    `json:"auto_enabled"`
+	DryRun                     *bool    `json:"auto_dry_run"`
+	LegacyDryRun               *bool    `json:"dry_run"`
+	PersistenceScans           *int     `json:"persistence_scans"`
+	ProfitTransferEnabled      *bool    `json:"profit_transfer_enabled"`
+	SeparateAcctMaxUSDT        *float64 `json:"separate_acct_max_usdt"`
+	UnifiedAcctMaxUSDT         *float64 `json:"unified_acct_max_usdt"`
 }
 
 type exchangeUpdate struct {
@@ -682,9 +725,12 @@ type persistenceUpdate struct {
 	SpreadStabilityRatio8h  *float64 `json:"spread_stability_ratio_8h"`
 	SpreadStabilityOIRank8h *int     `json:"spread_stability_oi_rank_8h"`
 
-	SpreadVolatilityMaxCV      *float64 `json:"spread_volatility_max_cv"`
-	SpreadVolatilityMinSamples *int     `json:"spread_volatility_min_samples"`
-	FundingWindowMin           *int     `json:"funding_window_min"`
+	EnableSpreadStabilityGate       *bool    `json:"enable_spread_stability_gate"`
+	SpreadVolatilityMaxCV           *float64 `json:"spread_volatility_max_cv"`
+	SpreadVolatilityMinSamples      *int     `json:"spread_volatility_min_samples"`
+	SpreadStabilityStricterForAuto  *bool    `json:"spread_stability_stricter_for_auto"`
+	SpreadStabilityAutoCVMultiplier *float64 `json:"spread_stability_auto_cv_multiplier"`
+	FundingWindowMin                *int     `json:"funding_window_min"`
 }
 
 type entryUpdate struct {
@@ -723,6 +769,17 @@ type riskUpdate struct {
 	L4ReduceFraction       *float64 `json:"l4_reduce_fraction"`
 	MarginSafetyMultiplier *float64 `json:"margin_safety_multiplier"`
 	RiskMonitorIntervalSec *int     `json:"risk_monitor_interval_sec"`
+	EnableLiqTrendTracking *bool    `json:"enable_liq_trend_tracking"`
+	LiqProjectionMinutes   *int     `json:"liq_projection_minutes"`
+	LiqWarningSlopeThresh  *float64 `json:"liq_warning_slope_thresh"`
+	LiqCriticalSlopeThresh *float64 `json:"liq_critical_slope_thresh"`
+	LiqMinSamples          *int     `json:"liq_min_samples"`
+	EnableCapitalAllocator *bool    `json:"enable_capital_allocator"`
+	MaxTotalExposureUSDT   *float64 `json:"max_total_exposure_usdt"`
+	MaxPerpPerpPct         *float64 `json:"max_perp_perp_pct"`
+	MaxSpotFuturesPct      *float64 `json:"max_spot_futures_pct"`
+	MaxPerExchangePct      *float64 `json:"max_per_exchange_pct"`
+	ReservationTTLSec      *int     `json:"reservation_ttl_sec"`
 }
 
 // handlePostConfig accepts a nested JSON body and updates config fields,
@@ -822,11 +879,20 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 				if p.SpreadStabilityOIRank8h != nil && *p.SpreadStabilityOIRank8h >= 0 {
 					s.cfg.SpreadStabilityOIRank8h = *p.SpreadStabilityOIRank8h
 				}
+				if p.EnableSpreadStabilityGate != nil {
+					s.cfg.EnableSpreadStabilityGate = *p.EnableSpreadStabilityGate
+				}
 				if p.SpreadVolatilityMaxCV != nil && *p.SpreadVolatilityMaxCV >= 0 {
 					s.cfg.SpreadVolatilityMaxCV = *p.SpreadVolatilityMaxCV
 				}
 				if p.SpreadVolatilityMinSamples != nil && *p.SpreadVolatilityMinSamples >= 0 {
 					s.cfg.SpreadVolatilityMinSamples = *p.SpreadVolatilityMinSamples
+				}
+				if p.SpreadStabilityStricterForAuto != nil {
+					s.cfg.SpreadStabilityStricterForAuto = *p.SpreadStabilityStricterForAuto
+				}
+				if p.SpreadStabilityAutoCVMultiplier != nil && *p.SpreadStabilityAutoCVMultiplier >= 0 {
+					s.cfg.SpreadStabilityAutoCVMultiplier = *p.SpreadStabilityAutoCVMultiplier
 				}
 				if p.FundingWindowMin != nil && *p.FundingWindowMin > 0 {
 					s.cfg.FundingWindowMin = *p.FundingWindowMin
@@ -914,6 +980,39 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		if rk.RiskMonitorIntervalSec != nil && *rk.RiskMonitorIntervalSec > 0 {
 			s.cfg.RiskMonitorIntervalSec = *rk.RiskMonitorIntervalSec
 		}
+		if rk.EnableLiqTrendTracking != nil {
+			s.cfg.EnableLiqTrendTracking = *rk.EnableLiqTrendTracking
+		}
+		if rk.LiqProjectionMinutes != nil && *rk.LiqProjectionMinutes > 0 {
+			s.cfg.LiqProjectionMinutes = *rk.LiqProjectionMinutes
+		}
+		if rk.LiqWarningSlopeThresh != nil && *rk.LiqWarningSlopeThresh >= 0 {
+			s.cfg.LiqWarningSlopeThresh = *rk.LiqWarningSlopeThresh
+		}
+		if rk.LiqCriticalSlopeThresh != nil && *rk.LiqCriticalSlopeThresh >= 0 {
+			s.cfg.LiqCriticalSlopeThresh = *rk.LiqCriticalSlopeThresh
+		}
+		if rk.LiqMinSamples != nil && *rk.LiqMinSamples > 0 {
+			s.cfg.LiqMinSamples = *rk.LiqMinSamples
+		}
+		if rk.EnableCapitalAllocator != nil {
+			s.cfg.EnableCapitalAllocator = *rk.EnableCapitalAllocator
+		}
+		if rk.MaxTotalExposureUSDT != nil && *rk.MaxTotalExposureUSDT >= 0 {
+			s.cfg.MaxTotalExposureUSDT = *rk.MaxTotalExposureUSDT
+		}
+		if rk.MaxPerpPerpPct != nil && *rk.MaxPerpPerpPct >= 0 && *rk.MaxPerpPerpPct <= 1 {
+			s.cfg.MaxPerpPerpPct = *rk.MaxPerpPerpPct
+		}
+		if rk.MaxSpotFuturesPct != nil && *rk.MaxSpotFuturesPct >= 0 && *rk.MaxSpotFuturesPct <= 1 {
+			s.cfg.MaxSpotFuturesPct = *rk.MaxSpotFuturesPct
+		}
+		if rk.MaxPerExchangePct != nil && *rk.MaxPerExchangePct >= 0 && *rk.MaxPerExchangePct <= 1 {
+			s.cfg.MaxPerExchangePct = *rk.MaxPerExchangePct
+		}
+		if rk.ReservationTTLSec != nil && *rk.ReservationTTLSec > 0 {
+			s.cfg.ReservationTTLSec = *rk.ReservationTTLSec
+		}
 	}
 
 	if ai := upd.AI; ai != nil {
@@ -932,6 +1031,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Exchanges
+	exchangeSecretOverrides := make(map[string]config.ExchangeSecretOverride)
 	if upd.Exchanges != nil {
 		for name, eu := range upd.Exchanges {
 			if eu == nil {
@@ -954,55 +1054,76 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 					s.cfg.BingXEnabled = &v
 				}
 			}
+			// Only update secret fields when the user actually typed a new value.
+			// Empty strings are ignored to prevent accidental key wipe from
+			// dashboard saves that don't include secret fields.
+			var override config.ExchangeSecretOverride
 			switch name {
 			case "binance":
-				if eu.APIKey != nil {
+				if eu.APIKey != nil && *eu.APIKey != "" {
 					s.cfg.BinanceAPIKey = *eu.APIKey
+					override.APIKey = *eu.APIKey
 				}
-				if eu.SecretKey != nil {
+				if eu.SecretKey != nil && *eu.SecretKey != "" {
 					s.cfg.BinanceSecretKey = *eu.SecretKey
+					override.SecretKey = *eu.SecretKey
 				}
 			case "bybit":
-				if eu.APIKey != nil {
+				if eu.APIKey != nil && *eu.APIKey != "" {
 					s.cfg.BybitAPIKey = *eu.APIKey
+					override.APIKey = *eu.APIKey
 				}
-				if eu.SecretKey != nil {
+				if eu.SecretKey != nil && *eu.SecretKey != "" {
 					s.cfg.BybitSecretKey = *eu.SecretKey
+					override.SecretKey = *eu.SecretKey
 				}
 			case "gateio":
-				if eu.APIKey != nil {
+				if eu.APIKey != nil && *eu.APIKey != "" {
 					s.cfg.GateioAPIKey = *eu.APIKey
+					override.APIKey = *eu.APIKey
 				}
-				if eu.SecretKey != nil {
+				if eu.SecretKey != nil && *eu.SecretKey != "" {
 					s.cfg.GateioSecretKey = *eu.SecretKey
+					override.SecretKey = *eu.SecretKey
 				}
 			case "bitget":
-				if eu.APIKey != nil {
+				if eu.APIKey != nil && *eu.APIKey != "" {
 					s.cfg.BitgetAPIKey = *eu.APIKey
+					override.APIKey = *eu.APIKey
 				}
-				if eu.SecretKey != nil {
+				if eu.SecretKey != nil && *eu.SecretKey != "" {
 					s.cfg.BitgetSecretKey = *eu.SecretKey
+					override.SecretKey = *eu.SecretKey
 				}
-				if eu.Passphrase != nil {
+				if eu.Passphrase != nil && *eu.Passphrase != "" {
 					s.cfg.BitgetPassphrase = *eu.Passphrase
+					override.Passphrase = *eu.Passphrase
 				}
 			case "okx":
-				if eu.APIKey != nil {
+				if eu.APIKey != nil && *eu.APIKey != "" {
 					s.cfg.OKXAPIKey = *eu.APIKey
+					override.APIKey = *eu.APIKey
 				}
-				if eu.SecretKey != nil {
+				if eu.SecretKey != nil && *eu.SecretKey != "" {
 					s.cfg.OKXSecretKey = *eu.SecretKey
+					override.SecretKey = *eu.SecretKey
 				}
-				if eu.Passphrase != nil {
+				if eu.Passphrase != nil && *eu.Passphrase != "" {
 					s.cfg.OKXPassphrase = *eu.Passphrase
+					override.Passphrase = *eu.Passphrase
 				}
 			case "bingx":
-				if eu.APIKey != nil {
+				if eu.APIKey != nil && *eu.APIKey != "" {
 					s.cfg.BingXAPIKey = *eu.APIKey
+					override.APIKey = *eu.APIKey
 				}
-				if eu.SecretKey != nil {
+				if eu.SecretKey != nil && *eu.SecretKey != "" {
 					s.cfg.BingXSecretKey = *eu.SecretKey
+					override.SecretKey = *eu.SecretKey
 				}
+			}
+			if override.APIKey != "" || override.SecretKey != "" || override.Passphrase != "" {
+				exchangeSecretOverrides[name] = override
 			}
 			// Update addresses
 			if eu.Address != nil {
@@ -1045,6 +1166,18 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		if sf.MaxBorrowAPR != nil && *sf.MaxBorrowAPR >= 0 {
 			s.cfg.SpotFuturesMaxBorrowAPR = *sf.MaxBorrowAPR
 		}
+		if sf.EnableBorrowSpikeDetection != nil {
+			s.cfg.EnableBorrowSpikeDetection = *sf.EnableBorrowSpikeDetection
+		}
+		if sf.BorrowSpikeWindowMin != nil && *sf.BorrowSpikeWindowMin > 0 {
+			s.cfg.BorrowSpikeWindowMin = *sf.BorrowSpikeWindowMin
+		}
+		if sf.BorrowSpikeMultiplier != nil && *sf.BorrowSpikeMultiplier > 0 {
+			s.cfg.BorrowSpikeMultiplier = *sf.BorrowSpikeMultiplier
+		}
+		if sf.BorrowSpikeMinAbsolute != nil && *sf.BorrowSpikeMinAbsolute >= 0 {
+			s.cfg.BorrowSpikeMinAbsolute = *sf.BorrowSpikeMinAbsolute
+		}
 		if sf.Exchanges != nil {
 			s.cfg.SpotFuturesExchanges = sf.Exchanges
 		}
@@ -1074,6 +1207,8 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if sf.DryRun != nil {
 			s.cfg.SpotFuturesDryRun = *sf.DryRun
+		} else if sf.LegacyDryRun != nil {
+			s.cfg.SpotFuturesDryRun = *sf.LegacyDryRun
 		}
 		if sf.PersistenceScans != nil && *sf.PersistenceScans >= 0 {
 			s.cfg.SpotFuturesPersistenceScans = *sf.PersistenceScans
@@ -1093,58 +1228,72 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	snapshot := s.buildConfigResponse()
 
 	fields := map[string]interface{}{
-		"min_hold_time_hours":           strconv.Itoa(snapshot.Strategy.Discovery.MinHoldTimeHours),
-		"max_cost_ratio":                strconv.FormatFloat(snapshot.Strategy.Discovery.MaxCostRatio, 'f', -1, 64),
-		"max_positions":                 strconv.Itoa(snapshot.Fund.MaxPositions),
-		"leverage":                      strconv.Itoa(snapshot.Fund.Leverage),
-		"slippage_limit_bps":            strconv.FormatFloat(snapshot.Strategy.Entry.SlippageLimitBPS, 'f', -1, 64),
-		"rebalance_scan_minute":         strconv.Itoa(snapshot.Strategy.RebalanceScanMinute),
-		"rebalance_after_exit":          strconv.FormatBool(snapshot.Strategy.RebalanceAfterExit),
-		"top_opportunities":             strconv.Itoa(snapshot.Strategy.TopOpportunities),
-		"entry_scan_minute":             strconv.Itoa(snapshot.Strategy.EntryScanMinute),
-		"exit_scan_minute":              strconv.Itoa(snapshot.Strategy.ExitScanMinute),
-		"rotate_scan_minute":            strconv.Itoa(snapshot.Strategy.RotateScanMinute),
-		"capital_per_leg":               strconv.FormatFloat(snapshot.Fund.CapitalPerLeg, 'f', -1, 64),
-		"dry_run":                       strconv.FormatBool(snapshot.DryRun),
-		"entry_timeout_sec":             strconv.Itoa(snapshot.Strategy.Entry.EntryTimeoutSec),
-		"min_chunk_usdt":                strconv.FormatFloat(snapshot.Strategy.Entry.MinChunkUSDT, 'f', -1, 64),
-		"price_gap_free_bps":            strconv.FormatFloat(snapshot.Strategy.Discovery.PriceGapFreeBPS, 'f', -1, 64),
-		"max_price_gap_bps":             strconv.FormatFloat(snapshot.Strategy.Discovery.MaxPriceGapBPS, 'f', -1, 64),
-		"max_gap_recovery_intervals":    strconv.FormatFloat(snapshot.Strategy.Discovery.MaxGapRecoveryIntervals, 'f', -1, 64),
-		"max_interval_hours":            strconv.FormatFloat(snapshot.Strategy.Discovery.MaxIntervalHours, 'f', -1, 64),
-		"delist_filter":                 strconv.FormatBool(snapshot.Strategy.Discovery.DelistFilter),
-		"margin_l3_threshold":           strconv.FormatFloat(snapshot.Risk.MarginL3Threshold, 'f', -1, 64),
-		"margin_l4_threshold":           strconv.FormatFloat(snapshot.Risk.MarginL4Threshold, 'f', -1, 64),
-		"margin_l5_threshold":           strconv.FormatFloat(snapshot.Risk.MarginL5Threshold, 'f', -1, 64),
-		"l4_reduce_fraction":            strconv.FormatFloat(snapshot.Risk.L4ReduceFraction, 'f', -1, 64),
-		"margin_safety_multiplier":      strconv.FormatFloat(snapshot.Risk.MarginSafetyMultiplier, 'f', -1, 64),
-		"risk_monitor_interval_sec":     strconv.Itoa(snapshot.Risk.RiskMonitorIntervalSec),
-		"exit_depth_timeout_sec":        strconv.Itoa(snapshot.Strategy.Exit.DepthTimeoutSec),
-		"enable_spread_reversal":        strconv.FormatBool(snapshot.Strategy.Exit.EnableSpreadReversal),
-		"spread_reversal_tolerance":     strconv.Itoa(snapshot.Strategy.Exit.SpreadReversalTolerance),
-		"reversal_reset_on_recover":    strconv.FormatBool(snapshot.Strategy.Exit.ReversalResetOnRecover),
-		"zero_spread_tolerance":         strconv.Itoa(snapshot.Strategy.Exit.ZeroSpreadTolerance),
-		"rotation_threshold_bps":        strconv.FormatFloat(snapshot.Strategy.Rotation.ThresholdBPS, 'f', -1, 64),
-		"rotation_cooldown_min":         strconv.Itoa(snapshot.Strategy.Rotation.CooldownMin),
-		"persist_lookback_min_1h":       strconv.Itoa(snapshot.Strategy.Discovery.Persistence.LookbackMin1h),
-		"persist_min_count_1h":          strconv.Itoa(snapshot.Strategy.Discovery.Persistence.MinCount1h),
-		"persist_lookback_min_4h":       strconv.Itoa(snapshot.Strategy.Discovery.Persistence.LookbackMin4h),
-		"persist_min_count_4h":          strconv.Itoa(snapshot.Strategy.Discovery.Persistence.MinCount4h),
-		"persist_lookback_min_8h":       strconv.Itoa(snapshot.Strategy.Discovery.Persistence.LookbackMin8h),
-		"persist_min_count_8h":          strconv.Itoa(snapshot.Strategy.Discovery.Persistence.MinCount8h),
-		"spread_stability_ratio_1h":     strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadStabilityRatio1h, 'f', -1, 64),
-		"spread_stability_oi_rank_1h":   strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadStabilityOIRank1h),
-		"spread_stability_ratio_4h":     strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadStabilityRatio4h, 'f', -1, 64),
-		"spread_stability_oi_rank_4h":   strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadStabilityOIRank4h),
-		"spread_stability_ratio_8h":     strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadStabilityRatio8h, 'f', -1, 64),
-		"spread_stability_oi_rank_8h":   strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadStabilityOIRank8h),
-		"spread_volatility_max_cv":      strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadVolatilityMaxCV, 'f', -1, 64),
-		"spread_volatility_min_samples": strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadVolatilityMinSamples),
-		"funding_window_min":            strconv.Itoa(snapshot.Strategy.Discovery.Persistence.FundingWindowMin),
-		"loss_cooldown_hours":           strconv.FormatFloat(snapshot.Strategy.Entry.LossCooldownHours, 'f', -1, 64),
-		"re_enter_cooldown_hours":       strconv.FormatFloat(snapshot.Strategy.Entry.ReEnterCooldownHours, 'f', -1, 64),
-		"backtest_days":                 strconv.Itoa(snapshot.Strategy.Entry.BacktestDays),
-		"backtest_min_profit":           strconv.FormatFloat(snapshot.Strategy.Entry.BacktestMinProfit, 'f', -1, 64),
+		"min_hold_time_hours":                 strconv.Itoa(snapshot.Strategy.Discovery.MinHoldTimeHours),
+		"max_cost_ratio":                      strconv.FormatFloat(snapshot.Strategy.Discovery.MaxCostRatio, 'f', -1, 64),
+		"max_positions":                       strconv.Itoa(snapshot.Fund.MaxPositions),
+		"leverage":                            strconv.Itoa(snapshot.Fund.Leverage),
+		"slippage_limit_bps":                  strconv.FormatFloat(snapshot.Strategy.Entry.SlippageLimitBPS, 'f', -1, 64),
+		"rebalance_scan_minute":               strconv.Itoa(snapshot.Strategy.RebalanceScanMinute),
+		"rebalance_after_exit":                strconv.FormatBool(snapshot.Strategy.RebalanceAfterExit),
+		"top_opportunities":                   strconv.Itoa(snapshot.Strategy.TopOpportunities),
+		"entry_scan_minute":                   strconv.Itoa(snapshot.Strategy.EntryScanMinute),
+		"exit_scan_minute":                    strconv.Itoa(snapshot.Strategy.ExitScanMinute),
+		"rotate_scan_minute":                  strconv.Itoa(snapshot.Strategy.RotateScanMinute),
+		"capital_per_leg":                     strconv.FormatFloat(snapshot.Fund.CapitalPerLeg, 'f', -1, 64),
+		"dry_run":                             strconv.FormatBool(snapshot.DryRun),
+		"entry_timeout_sec":                   strconv.Itoa(snapshot.Strategy.Entry.EntryTimeoutSec),
+		"min_chunk_usdt":                      strconv.FormatFloat(snapshot.Strategy.Entry.MinChunkUSDT, 'f', -1, 64),
+		"price_gap_free_bps":                  strconv.FormatFloat(snapshot.Strategy.Discovery.PriceGapFreeBPS, 'f', -1, 64),
+		"max_price_gap_bps":                   strconv.FormatFloat(snapshot.Strategy.Discovery.MaxPriceGapBPS, 'f', -1, 64),
+		"max_gap_recovery_intervals":          strconv.FormatFloat(snapshot.Strategy.Discovery.MaxGapRecoveryIntervals, 'f', -1, 64),
+		"max_interval_hours":                  strconv.FormatFloat(snapshot.Strategy.Discovery.MaxIntervalHours, 'f', -1, 64),
+		"delist_filter":                       strconv.FormatBool(snapshot.Strategy.Discovery.DelistFilter),
+		"margin_l3_threshold":                 strconv.FormatFloat(snapshot.Risk.MarginL3Threshold, 'f', -1, 64),
+		"margin_l4_threshold":                 strconv.FormatFloat(snapshot.Risk.MarginL4Threshold, 'f', -1, 64),
+		"margin_l5_threshold":                 strconv.FormatFloat(snapshot.Risk.MarginL5Threshold, 'f', -1, 64),
+		"l4_reduce_fraction":                  strconv.FormatFloat(snapshot.Risk.L4ReduceFraction, 'f', -1, 64),
+		"margin_safety_multiplier":            strconv.FormatFloat(snapshot.Risk.MarginSafetyMultiplier, 'f', -1, 64),
+		"risk_monitor_interval_sec":           strconv.Itoa(snapshot.Risk.RiskMonitorIntervalSec),
+		"enable_liq_trend_tracking":           strconv.FormatBool(snapshot.Risk.EnableLiqTrendTracking),
+		"liq_projection_minutes":              strconv.Itoa(snapshot.Risk.LiqProjectionMinutes),
+		"liq_warning_slope_thresh":            strconv.FormatFloat(snapshot.Risk.LiqWarningSlopeThresh, 'f', -1, 64),
+		"liq_critical_slope_thresh":           strconv.FormatFloat(snapshot.Risk.LiqCriticalSlopeThresh, 'f', -1, 64),
+		"liq_min_samples":                     strconv.Itoa(snapshot.Risk.LiqMinSamples),
+		"enable_capital_allocator":            strconv.FormatBool(snapshot.Risk.EnableCapitalAllocator),
+		"max_total_exposure_usdt":             strconv.FormatFloat(snapshot.Risk.MaxTotalExposureUSDT, 'f', -1, 64),
+		"max_perp_perp_pct":                   strconv.FormatFloat(snapshot.Risk.MaxPerpPerpPct, 'f', -1, 64),
+		"max_spot_futures_pct":                strconv.FormatFloat(snapshot.Risk.MaxSpotFuturesPct, 'f', -1, 64),
+		"max_per_exchange_pct":                strconv.FormatFloat(snapshot.Risk.MaxPerExchangePct, 'f', -1, 64),
+		"reservation_ttl_sec":                 strconv.Itoa(snapshot.Risk.ReservationTTLSec),
+		"exit_depth_timeout_sec":              strconv.Itoa(snapshot.Strategy.Exit.DepthTimeoutSec),
+		"enable_spread_reversal":              strconv.FormatBool(snapshot.Strategy.Exit.EnableSpreadReversal),
+		"spread_reversal_tolerance":           strconv.Itoa(snapshot.Strategy.Exit.SpreadReversalTolerance),
+		"reversal_reset_on_recover":           strconv.FormatBool(snapshot.Strategy.Exit.ReversalResetOnRecover),
+		"zero_spread_tolerance":               strconv.Itoa(snapshot.Strategy.Exit.ZeroSpreadTolerance),
+		"rotation_threshold_bps":              strconv.FormatFloat(snapshot.Strategy.Rotation.ThresholdBPS, 'f', -1, 64),
+		"rotation_cooldown_min":               strconv.Itoa(snapshot.Strategy.Rotation.CooldownMin),
+		"persist_lookback_min_1h":             strconv.Itoa(snapshot.Strategy.Discovery.Persistence.LookbackMin1h),
+		"persist_min_count_1h":                strconv.Itoa(snapshot.Strategy.Discovery.Persistence.MinCount1h),
+		"persist_lookback_min_4h":             strconv.Itoa(snapshot.Strategy.Discovery.Persistence.LookbackMin4h),
+		"persist_min_count_4h":                strconv.Itoa(snapshot.Strategy.Discovery.Persistence.MinCount4h),
+		"persist_lookback_min_8h":             strconv.Itoa(snapshot.Strategy.Discovery.Persistence.LookbackMin8h),
+		"persist_min_count_8h":                strconv.Itoa(snapshot.Strategy.Discovery.Persistence.MinCount8h),
+		"spread_stability_ratio_1h":           strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadStabilityRatio1h, 'f', -1, 64),
+		"spread_stability_oi_rank_1h":         strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadStabilityOIRank1h),
+		"spread_stability_ratio_4h":           strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadStabilityRatio4h, 'f', -1, 64),
+		"spread_stability_oi_rank_4h":         strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadStabilityOIRank4h),
+		"spread_stability_ratio_8h":           strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadStabilityRatio8h, 'f', -1, 64),
+		"spread_stability_oi_rank_8h":         strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadStabilityOIRank8h),
+		"enable_spread_stability_gate":        strconv.FormatBool(snapshot.Strategy.Discovery.Persistence.EnableSpreadStabilityGate),
+		"spread_volatility_max_cv":            strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadVolatilityMaxCV, 'f', -1, 64),
+		"spread_volatility_min_samples":       strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadVolatilityMinSamples),
+		"spread_stability_stricter_for_auto":  strconv.FormatBool(snapshot.Strategy.Discovery.Persistence.SpreadStabilityStricterForAuto),
+		"spread_stability_auto_cv_multiplier": strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadStabilityAutoCVMultiplier, 'f', -1, 64),
+		"funding_window_min":                  strconv.Itoa(snapshot.Strategy.Discovery.Persistence.FundingWindowMin),
+		"loss_cooldown_hours":                 strconv.FormatFloat(snapshot.Strategy.Entry.LossCooldownHours, 'f', -1, 64),
+		"re_enter_cooldown_hours":             strconv.FormatFloat(snapshot.Strategy.Entry.ReEnterCooldownHours, 'f', -1, 64),
+		"backtest_days":                       strconv.Itoa(snapshot.Strategy.Entry.BacktestDays),
+		"backtest_min_profit":                 strconv.FormatFloat(snapshot.Strategy.Entry.BacktestMinProfit, 'f', -1, 64),
 	}
 
 	if sf := snapshot.SpotFutures; sf != nil {
@@ -1155,6 +1304,10 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		fields["spot_futures_monitor_interval_sec"] = strconv.Itoa(sf.MonitorIntervalSec)
 		fields["spot_futures_min_net_yield_apr"] = strconv.FormatFloat(sf.MinNetYieldAPR, 'f', -1, 64)
 		fields["spot_futures_max_borrow_apr"] = strconv.FormatFloat(sf.MaxBorrowAPR, 'f', -1, 64)
+		fields["spot_futures_enable_borrow_spike_detection"] = strconv.FormatBool(sf.EnableBorrowSpikeDetection)
+		fields["spot_futures_borrow_spike_window_min"] = strconv.Itoa(sf.BorrowSpikeWindowMin)
+		fields["spot_futures_borrow_spike_multiplier"] = strconv.FormatFloat(sf.BorrowSpikeMultiplier, 'f', -1, 64)
+		fields["spot_futures_borrow_spike_min_absolute"] = strconv.FormatFloat(sf.BorrowSpikeMinAbsolute, 'f', -1, 64)
 		fields["spot_futures_exchanges"] = strings.Join(sf.Exchanges, ",")
 		fields["spot_futures_scan_interval_min"] = strconv.Itoa(sf.ScanIntervalMin)
 		fields["spot_futures_borrow_grace_min"] = strconv.Itoa(sf.BorrowGraceMin)
@@ -1178,7 +1331,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Also persist to config.json so changes survive fresh installs.
-	if err := s.cfg.SaveJSON(); err != nil {
+	if err := s.cfg.SaveJSONWithExchangeSecretOverrides(exchangeSecretOverrides); err != nil {
 		s.log.Warn("save config.json: %v (Redis saved OK)", err)
 	}
 
@@ -1639,13 +1792,50 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 		changelog = cl
 	}
 
-	hasUpdate := latestVersion != currentVersion
+	hasUpdate := versionNewer(latestVersion, currentVersion)
+
+	// Structured runtime drift assessment (ARB-87).
+	prov := runtimeProvenance()
+
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: map[string]interface{}{
 		"currentVersion": currentVersion,
 		"latestVersion":  latestVersion,
 		"hasUpdate":      hasUpdate,
+		"binaryDrift":    prov.DriftDetected,
+		"runtime":        prov,
 		"changelog":      changelog,
 	}})
+}
+
+// versionNewer returns true when remote is a newer semver than local.
+// Both are expected in "major.minor.patch" format (e.g. "0.22.30").
+// Returns false on parse errors or when local >= remote.
+func versionNewer(remote, local string) bool {
+	parse := func(v string) (int, int, int, bool) {
+		parts := strings.SplitN(strings.TrimSpace(v), ".", 3)
+		if len(parts) != 3 {
+			return 0, 0, 0, false
+		}
+		maj, e1 := strconv.Atoi(parts[0])
+		min, e2 := strconv.Atoi(parts[1])
+		pat, e3 := strconv.Atoi(parts[2])
+		if e1 != nil || e2 != nil || e3 != nil {
+			return 0, 0, 0, false
+		}
+		return maj, min, pat, true
+	}
+	rMaj, rMin, rPat, rok := parse(remote)
+	lMaj, lMin, lPat, lok := parse(local)
+	if !rok || !lok {
+		return remote != local // fallback to inequality if unparseable
+	}
+	if rMaj != lMaj {
+		return rMaj > lMaj
+	}
+	if rMin != lMin {
+		return rMin > lMin
+	}
+	return rPat > lPat
 }
 
 // handleUpdate downloads the latest GitHub Release binary via pull-release.sh and restarts.

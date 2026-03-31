@@ -24,14 +24,14 @@ import (
 	"arb/internal/database"
 	"arb/internal/discovery"
 	"arb/internal/engine"
+	"arb/internal/models"
+	"arb/internal/risk"
 	"arb/pkg/exchange"
 	"arb/pkg/exchange/binance"
 	"arb/pkg/exchange/bitget"
 	"arb/pkg/exchange/bybit"
 	"arb/pkg/exchange/gateio"
 	"arb/pkg/exchange/okx"
-	"arb/internal/models"
-	"arb/internal/risk"
 	"arb/pkg/utils"
 )
 
@@ -108,6 +108,8 @@ func main() {
 
 	// Discover or build opportunity
 	var opp models.Opportunity
+	scanner := discovery.NewScanner(exchanges, db, cfg)
+	scanner.SetContracts(allContracts)
 
 	if *symbol != "" && *longExchFlag != "" && *shortExchFlag != "" {
 		opp = models.Opportunity{
@@ -118,8 +120,6 @@ func main() {
 		}
 		log.Info("manual opportunity: %s long=%s short=%s", opp.Symbol, opp.LongExchange, opp.ShortExchange)
 	} else {
-		scanner := discovery.NewScanner(exchanges, db, cfg)
-		scanner.SetContracts(allContracts)
 		opps := scanner.GetOpportunities()
 		if len(opps) == 0 {
 			log.Error("no opportunities found")
@@ -189,7 +189,9 @@ func main() {
 
 	// Risk approval
 	var tradeSize, tradePrice float64
-	riskMgr := risk.NewManager(exchanges, db, cfg)
+	allocator := risk.NewCapitalAllocator(db, cfg)
+	riskMgr := risk.NewManager(exchanges, db, cfg, allocator)
+	riskMgr.SetSpreadHistoryProvider(scanner.GetSpreadHistorySnapshot)
 
 	if *skipRisk {
 		price := getPrice(exchanges, opp)
@@ -301,7 +303,7 @@ func main() {
 	apiSrv := api.NewServer(db, cfg, exchanges)
 	riskMon := risk.NewMonitor(exchanges, db, cfg)
 	healthMon := risk.NewHealthMonitor(exchanges, db, cfg)
-	eng := engine.NewEngine(exchanges, nil, riskMgr, riskMon, healthMon, db, apiSrv, cfg)
+	eng := engine.NewEngine(exchanges, nil, riskMgr, riskMon, healthMon, db, apiSrv, cfg, allocator)
 	eng.SetContracts(allContracts)
 
 	err = eng.SimExecuteTradeV2(opp, tradeSize, tradePrice, 0)

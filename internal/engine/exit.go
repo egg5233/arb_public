@@ -1569,6 +1569,7 @@ func (e *Engine) closePositionWithMode(pos *models.ArbitragePosition, emergency 
 	if err := e.db.UpdateStats(realizedPnL, won); err != nil {
 		e.log.Error("failed to update stats: %v", err)
 	}
+	e.releasePerpPosition(pos.ID)
 
 	e.api.BroadcastPositionUpdate(pos)
 

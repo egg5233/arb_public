@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import type { Position, Opportunity, Stats, ExchangeInfo, TransferRecord, LogEntry, RejectedOpportunity, FundingEvent, SpotPosition, SpotStats } from '../types.ts';
+import type { Position, Opportunity, Stats, ExchangeInfo, TransferRecord, LogEntry, RejectedOpportunity, FundingEvent, SpotPosition, SpotStats, SpotOpportunity } from '../types.ts';
 
 const TOKEN_KEY = 'arb_token';
 
@@ -188,11 +188,11 @@ export function useApi() {
   }, []);
 
   const getSpotAutoConfig = useCallback(() => {
-    return request<{ auto_enabled: boolean; dry_run: boolean; persistence_scans: number }>('/api/spot/config/auto');
+    return request<{ auto_enabled: boolean; dry_run: boolean; persistence_scans: number; max_positions: number; capital_per_position: number; separate_acct_max_usdt: number; unified_acct_max_usdt: number }>('/api/spot/config/auto');
   }, []);
 
   const updateSpotAutoConfig = useCallback((data: { enabled?: boolean; dry_run?: boolean }) => {
-    return request<{ auto_enabled: boolean; dry_run: boolean; persistence_scans: number }>('/api/spot/config/auto', {
+    return request<{ auto_enabled: boolean; dry_run: boolean; persistence_scans: number; max_positions: number; capital_per_position: number; separate_acct_max_usdt: number; unified_acct_max_usdt: number }>('/api/spot/config/auto', {
       method: 'POST',
       body: JSON.stringify(data),
     });
@@ -200,6 +200,24 @@ export function useApi() {
 
   const getSpotStats = useCallback(() => {
     return request<SpotStats>('/api/spot/stats');
+  }, []);
+
+  const getSpotOpportunities = useCallback(() => {
+    return request<SpotOpportunity[]>('/api/spot/opportunities');
+  }, []);
+
+  const spotManualOpen = useCallback((symbol: string, exchange: string, direction: string) => {
+    return request<void>('/api/spot/open', {
+      method: 'POST',
+      body: JSON.stringify({ symbol, exchange, direction }),
+    });
+  }, []);
+
+  const spotManualClose = useCallback((positionId: string) => {
+    return request<void>('/api/spot/close', {
+      method: 'POST',
+      body: JSON.stringify({ position_id: positionId }),
+    });
   }, []);
 
   const logout = useCallback(() => {
@@ -235,5 +253,8 @@ export function useApi() {
     getSpotAutoConfig,
     updateSpotAutoConfig,
     getSpotStats,
+    getSpotOpportunities,
+    spotManualOpen,
+    spotManualClose,
   };
 }

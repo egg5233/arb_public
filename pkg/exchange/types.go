@@ -131,7 +131,7 @@ type Trade struct {
 	TradeID  string
 	OrderID  string
 	Symbol   string
-	Side     string  // "buy" or "sell"
+	Side     string // "buy" or "sell"
 	Price    float64
 	Quantity float64
 	Fee      float64 // always positive (cost)
@@ -147,21 +147,21 @@ type FundingPayment struct {
 
 // ClosePnL represents exchange-reported PnL for a closed position.
 type ClosePnL struct {
-	PricePnL   float64   // Raw price P/L (entry vs exit)
-	Fees       float64   // Total trading fees (negative = cost)
-	Funding    float64   // Total funding fees
-	NetPnL     float64   // All-inclusive net PnL
+	PricePnL   float64 // Raw price P/L (entry vs exit)
+	Fees       float64 // Total trading fees (negative = cost)
+	Funding    float64 // Total funding fees
+	NetPnL     float64 // All-inclusive net PnL
 	EntryPrice float64
 	ExitPrice  float64
 	CloseSize  float64
-	Side       string    // normalized: "long" or "short"
+	Side       string // normalized: "long" or "short"
 	CloseTime  time.Time
 }
 
 // StopLossParams contains parameters for placing a stop-loss (conditional) order.
 type StopLossParams struct {
 	Symbol       string
-	Side         Side   // sell for long SL, buy for short SL
+	Side         Side // sell for long SL, buy for short SL
 	Size         string
 	TriggerPrice string
 }
@@ -227,14 +227,14 @@ func (e *ErrRepayBlackout) Error() string { return e.Message }
 
 // SpotMarginOrderParams contains parameters for placing a spot margin order.
 type SpotMarginOrderParams struct {
-	Symbol    string // e.g. "BTCUSDT"
-	Side      Side   // buy or sell
-	OrderType string // "limit" or "market"
-	Price     string // required for limit orders
-	Size      string // quantity in base coin
-	Force     string // "gtc", "ioc", "fok"
-	AutoBorrow bool  // if true, exchange auto-borrows on sell
-	AutoRepay  bool  // if true, exchange auto-repays on buy
+	Symbol     string // e.g. "BTCUSDT"
+	Side       Side   // buy or sell
+	OrderType  string // "limit" or "market"
+	Price      string // required for limit orders
+	Size       string // quantity in base coin
+	Force      string // "gtc", "ioc", "fok"
+	AutoBorrow bool   // if true, exchange auto-borrows on sell
+	AutoRepay  bool   // if true, exchange auto-repays on buy
 	ClientOid  string
 }
 
@@ -254,6 +254,15 @@ type MarginBalance struct {
 	Interest      float64 // accrued interest
 	NetBalance    float64 // total - borrowed - interest
 	MaxBorrowable float64 // maximum additional borrowable
+}
+
+// SpotMarginOrderStatus is a normalized view of a spot margin order state.
+type SpotMarginOrderStatus struct {
+	OrderID   string
+	Symbol    string
+	Status    string
+	FilledQty float64
+	AvgPrice  float64
 }
 
 // SpotMarginExchange is an optional interface for exchanges that support
@@ -280,4 +289,12 @@ type SpotMarginExchange interface {
 
 	// TransferFromMargin moves funds from the margin account back to main/futures.
 	TransferFromMargin(coin string, amount string) error
+}
+
+// SpotMarginOrderQuerier is an optional interface for exchanges that can
+// query native spot margin order state. The spot-futures exit flow uses this
+// to reconcile accepted spot close orders without routing through futures
+// order endpoints.
+type SpotMarginOrderQuerier interface {
+	GetSpotMarginOrder(orderID, symbol string) (*SpotMarginOrderStatus, error)
 }

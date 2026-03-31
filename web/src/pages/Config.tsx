@@ -10,10 +10,12 @@ interface ConfigProps {
 // ---------------------------------------------------------------------------
 // Tab definitions
 // ---------------------------------------------------------------------------
-type TabId = 'exchanges' | 'fund' | 'schedule' | 'discovery' | 'persist' | 'entry' | 'exit' | 'risk';
+type Strategy = 'exchanges' | 'perp' | 'spot';
+type PerpTabId = 'fund' | 'schedule' | 'discovery' | 'persist' | 'entry' | 'exit' | 'risk';
+type SpotTabId = 'sf-general' | 'sf-sizing' | 'sf-discovery' | 'sf-exit';
+type TabId = PerpTabId | SpotTabId;
 
-const TABS: { id: TabId; labelKey: TranslationKey }[] = [
-  { id: 'exchanges', labelKey: 'cfg.tab.exchanges' },
+const PERP_TABS: { id: PerpTabId; labelKey: TranslationKey }[] = [
   { id: 'fund', labelKey: 'cfg.tab.fund' },
   { id: 'schedule', labelKey: 'cfg.tab.schedule' },
   { id: 'discovery', labelKey: 'cfg.tab.discovery' },
@@ -21,6 +23,13 @@ const TABS: { id: TabId; labelKey: TranslationKey }[] = [
   { id: 'entry', labelKey: 'cfg.tab.entry' },
   { id: 'exit', labelKey: 'cfg.tab.exitRotation' },
   { id: 'risk', labelKey: 'cfg.tab.risk' },
+];
+
+const SPOT_TABS: { id: SpotTabId; labelKey: TranslationKey }[] = [
+  { id: 'sf-general', labelKey: 'cfg.sf.tabGeneral' },
+  { id: 'sf-sizing', labelKey: 'cfg.sf.tabSizing' },
+  { id: 'sf-discovery', labelKey: 'cfg.sf.tabDiscovery' },
+  { id: 'sf-exit', labelKey: 'cfg.sf.tabExitRisk' },
 ];
 
 // Exchange metadata
@@ -34,6 +43,7 @@ const EXCHANGE_LIST = [
 ];
 
 const LEVERAGE_OPTIONS = [1, 2, 3, 5, 10, 20];
+const SF_LEVERAGE_OPTIONS = [1, 2, 3, 5];
 
 // ---------------------------------------------------------------------------
 // Utility: nested path get/set
@@ -280,7 +290,8 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [dirty, setDirty] = useState(false);
-  const [activeTab, setActiveTab] = useState<TabId>('exchanges');
+  const [strategy, setStrategy] = useState<Strategy>('exchanges');
+  const [activeTab, setActiveTab] = useState<TabId>('fund');
   const tabBarRef = useRef<HTMLDivElement>(null);
 
   // Exchange overrides: only fields the user actually typed
@@ -705,8 +716,39 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
       {/* Volatility */}
       <Accordion title={t('cfg.persist.volatility')}>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="bg-gray-950 rounded-lg border border-gray-800 px-3 py-2">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-xs text-gray-400">{t('cfg.field.enableSpreadStabilityGate')}</span>
+              <Tooltip text={t('cfg.desc.enableSpreadStabilityGate')} />
+            </div>
+            <div className="flex items-center gap-3">
+              <ToggleSwitch
+                on={getByPath(config, ['strategy', 'discovery', 'persistence', 'enable_spread_stability_gate']) === true}
+                onChange={(v) => handleBoolChange(['strategy', 'discovery', 'persistence', 'enable_spread_stability_gate'], v)}
+              />
+              <span className={`text-sm font-semibold ${getByPath(config, ['strategy', 'discovery', 'persistence', 'enable_spread_stability_gate']) ? 'text-green-400' : 'text-red-400'}`}>
+                {getByPath(config, ['strategy', 'discovery', 'persistence', 'enable_spread_stability_gate']) ? 'ON' : 'OFF'}
+              </span>
+            </div>
+          </div>
           {renderPersistenceField('cfg.field.spreadVolatilityMaxCV', 'cfg.desc.spreadVolatilityMaxCV', ['strategy', 'discovery', 'persistence', 'spread_volatility_max_cv'])}
           {renderPersistenceField('cfg.field.spreadVolatilityMinSamples', 'cfg.desc.spreadVolatilityMinSamples', ['strategy', 'discovery', 'persistence', 'spread_volatility_min_samples'])}
+          {renderPersistenceField('cfg.field.spreadStabilityAutoCVMultiplier', 'cfg.desc.spreadStabilityAutoCVMultiplier', ['strategy', 'discovery', 'persistence', 'spread_stability_auto_cv_multiplier'])}
+          <div className="bg-gray-950 rounded-lg border border-gray-800 px-3 py-2">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-xs text-gray-400">{t('cfg.field.spreadStabilityStricterForAuto')}</span>
+              <Tooltip text={t('cfg.desc.spreadStabilityStricterForAuto')} />
+            </div>
+            <div className="flex items-center gap-3">
+              <ToggleSwitch
+                on={getByPath(config, ['strategy', 'discovery', 'persistence', 'spread_stability_stricter_for_auto']) === true}
+                onChange={(v) => handleBoolChange(['strategy', 'discovery', 'persistence', 'spread_stability_stricter_for_auto'], v)}
+              />
+              <span className={`text-sm font-semibold ${getByPath(config, ['strategy', 'discovery', 'persistence', 'spread_stability_stricter_for_auto']) ? 'text-green-400' : 'text-red-400'}`}>
+                {getByPath(config, ['strategy', 'discovery', 'persistence', 'spread_stability_stricter_for_auto']) ? 'ON' : 'OFF'}
+              </span>
+            </div>
+          </div>
         </div>
       </Accordion>
     </div>
@@ -854,6 +896,8 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
     const l4 = (getByPath(config, ['risk', 'margin_l4_threshold']) as number) ?? 0;
     const l5 = (getByPath(config, ['risk', 'margin_l5_threshold']) as number) ?? 0;
     const l4r = (getByPath(config, ['risk', 'l4_reduce_fraction']) as number) ?? 0;
+    const liqTrendEnabled = getByPath(config, ['risk', 'enable_liq_trend_tracking']) === true;
+    const allocatorEnabled = getByPath(config, ['risk', 'enable_capital_allocator']) === true;
 
     return (
       <div className="space-y-4">
@@ -964,6 +1008,390 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
             unit="sec"
             onChange={(v) => handleChange(['risk', 'risk_monitor_interval_sec'], v)}
           />
+
+          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+            <div className="flex items-center gap-2 mb-2">
+              <label className="text-sm font-medium">{t('cfg.field.enableLiqTrendTracking')}</label>
+              <Tooltip text={t('cfg.desc.enableLiqTrendTracking')} />
+            </div>
+            <div className="flex items-center gap-3">
+              <ToggleSwitch
+                on={liqTrendEnabled}
+                onChange={(v) => handleBoolChange(['risk', 'enable_liq_trend_tracking'], v)}
+              />
+              <span className={`text-sm font-semibold ${liqTrendEnabled ? 'text-green-400' : 'text-red-400'}`}>
+                {liqTrendEnabled ? 'ON' : 'OFF'}
+              </span>
+            </div>
+          </div>
+
+          <NumberField
+            label={t('cfg.field.liqProjectionMinutes')}
+            desc={t('cfg.desc.liqProjectionMinutes')}
+            value={getByPath(config, ['risk', 'liq_projection_minutes'])}
+            unit="min"
+            onChange={(v) => handleChange(['risk', 'liq_projection_minutes'], v)}
+          />
+
+          <NumberField
+            label={t('cfg.field.liqWarningSlopeThresh')}
+            desc={t('cfg.desc.liqWarningSlopeThresh')}
+            value={getByPath(config, ['risk', 'liq_warning_slope_thresh'])}
+            unit="/min"
+            onChange={(v) => handleChange(['risk', 'liq_warning_slope_thresh'], v)}
+          />
+
+          <NumberField
+            label={t('cfg.field.liqCriticalSlopeThresh')}
+            desc={t('cfg.desc.liqCriticalSlopeThresh')}
+            value={getByPath(config, ['risk', 'liq_critical_slope_thresh'])}
+            unit="/min"
+            onChange={(v) => handleChange(['risk', 'liq_critical_slope_thresh'], v)}
+          />
+
+          <NumberField
+            label={t('cfg.field.liqMinSamples')}
+            desc={t('cfg.desc.liqMinSamples')}
+            value={getByPath(config, ['risk', 'liq_min_samples'])}
+            unit="samples"
+            onChange={(v) => handleChange(['risk', 'liq_min_samples'], v)}
+          />
+
+          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+            <div className="flex items-center gap-2 mb-2">
+              <label className="text-sm font-medium">{t('cfg.field.enableCapitalAllocator')}</label>
+              <Tooltip text={t('cfg.desc.enableCapitalAllocator')} />
+            </div>
+            <div className="flex items-center gap-3">
+              <ToggleSwitch
+                on={allocatorEnabled}
+                onChange={(v) => handleBoolChange(['risk', 'enable_capital_allocator'], v)}
+              />
+              <span className={`text-sm font-semibold ${allocatorEnabled ? 'text-green-400' : 'text-red-400'}`}>
+                {allocatorEnabled ? 'ON' : 'OFF'}
+              </span>
+            </div>
+          </div>
+
+          <NumberField
+            label={t('cfg.field.maxTotalExposureUSDT')}
+            desc={t('cfg.desc.maxTotalExposureUSDT')}
+            value={getByPath(config, ['risk', 'max_total_exposure_usdt'])}
+            unit="USDT"
+            onChange={(v) => handleChange(['risk', 'max_total_exposure_usdt'], v)}
+          />
+
+          <NumberField
+            label={t('cfg.field.maxPerpPerpPct')}
+            desc={t('cfg.desc.maxPerpPerpPct')}
+            value={getByPath(config, ['risk', 'max_perp_perp_pct'])}
+            onChange={(v) => handleChange(['risk', 'max_perp_perp_pct'], v)}
+          />
+
+          <NumberField
+            label={t('cfg.field.maxSpotFuturesPct')}
+            desc={t('cfg.desc.maxSpotFuturesPct')}
+            value={getByPath(config, ['risk', 'max_spot_futures_pct'])}
+            onChange={(v) => handleChange(['risk', 'max_spot_futures_pct'], v)}
+          />
+
+          <NumberField
+            label={t('cfg.field.maxPerExchangePct')}
+            desc={t('cfg.desc.maxPerExchangePct')}
+            value={getByPath(config, ['risk', 'max_per_exchange_pct'])}
+            onChange={(v) => handleChange(['risk', 'max_per_exchange_pct'], v)}
+          />
+
+          <NumberField
+            label={t('cfg.field.reservationTTLSec')}
+            desc={t('cfg.desc.reservationTTLSec')}
+            value={getByPath(config, ['risk', 'reservation_ttl_sec'])}
+            unit="sec"
+            onChange={(v) => handleChange(['risk', 'reservation_ttl_sec'], v)}
+          />
+        </div>
+      </div>
+    );
+  };
+
+  // =========================================================================
+  // Tab: Spot-Futures General
+  // =========================================================================
+  const renderSfGeneralTab = () => {
+    const sfEnabled = getByPath(config, ['spot_futures', 'enabled']) === true;
+    const sfAutoEnabled = getByPath(config, ['spot_futures', 'auto_enabled']) === true;
+    const sfDryRun = getByPath(config, ['spot_futures', 'auto_dry_run']) === true;
+    const sfExchanges = (getByPath(config, ['spot_futures', 'exchanges']) as string[] | undefined) || [];
+
+    return (
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {/* Engine enabled toggle */}
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.sf.enabled')}</label>
+            <Tooltip text={t('cfg.sf.enabledDesc')} />
+          </div>
+          <div className="flex items-center gap-3">
+            <ToggleSwitch
+              on={sfEnabled}
+              onChange={(v) => handleBoolChange(['spot_futures', 'enabled'], v)}
+            />
+            <span className={`text-sm font-semibold ${sfEnabled ? 'text-green-400' : 'text-red-400'}`}>
+              {sfEnabled ? 'ON' : 'OFF'}
+            </span>
+          </div>
+        </div>
+
+        {/* Auto entry toggle */}
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.sf.autoEnabled')}</label>
+            <Tooltip text={t('cfg.sf.autoEnabledDesc')} />
+          </div>
+          <div className="flex items-center gap-3">
+            <ToggleSwitch
+              on={sfAutoEnabled}
+              onChange={(v) => handleBoolChange(['spot_futures', 'auto_enabled'], v)}
+            />
+            <span className={`text-sm font-semibold ${sfAutoEnabled ? 'text-green-400' : 'text-red-400'}`}>
+              {sfAutoEnabled ? 'ON' : 'OFF'}
+            </span>
+          </div>
+        </div>
+
+        {/* Dry run toggle */}
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.sf.autoDryRun')}</label>
+            <Tooltip text={t('cfg.sf.autoDryRunDesc')} />
+          </div>
+          <div className="flex items-center gap-3">
+            <ToggleSwitch
+              on={sfDryRun}
+              onChange={(v) => handleBoolChange(['spot_futures', 'auto_dry_run'], v)}
+            />
+            <span className={`text-sm font-semibold ${sfDryRun ? 'text-green-400' : 'text-red-400'}`}>
+              {sfDryRun ? 'ON' : 'OFF'}
+            </span>
+          </div>
+        </div>
+
+        {/* Leverage dropdown */}
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.sf.leverage')}</label>
+            <Tooltip text={t('cfg.sf.leverageDesc')} />
+          </div>
+          <select
+            value={String(getByPath(config, ['spot_futures', 'leverage']) ?? 3)}
+            onChange={(e) => handleChange(['spot_futures', 'leverage'], e.target.value)}
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg py-2 px-3 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+          >
+            {SF_LEVERAGE_OPTIONS.map((lev) => (
+              <option key={lev} value={lev}>{lev}x</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Exchange allowlist */}
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800 sm:col-span-2">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.sf.exchanges')}</label>
+            <Tooltip text={t('cfg.sf.exchangesDesc')} />
+          </div>
+          <input
+            type="text"
+            value={sfExchanges.join(', ')}
+            onChange={(e) => {
+              const arr = e.target.value.split(',').map((s) => s.trim()).filter(Boolean);
+              setDirty(true);
+              setDirtyPaths((prev) => new Set(prev).add('spot_futures'));
+              setConfig((prev) => setByPath(prev, ['spot_futures', 'exchanges'], arr));
+            }}
+            placeholder="binance, bybit, gateio, bitget, okx"
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg py-1.5 px-3 text-sm font-mono text-gray-100 focus:outline-none focus:border-blue-500"
+          />
+        </div>
+      </div>
+    );
+  };
+
+  // =========================================================================
+  // Tab: Spot-Futures Sizing
+  // =========================================================================
+  const renderSfSizingTab = () => (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <NumberField
+        label={t('cfg.sf.maxPositions')}
+        desc={t('cfg.sf.maxPositionsDesc')}
+        value={getByPath(config, ['spot_futures', 'max_positions'])}
+        onChange={(v) => handleChange(['spot_futures', 'max_positions'], v)}
+      />
+      <NumberField
+        label={t('cfg.sf.capitalPerPosition')}
+        desc={t('cfg.sf.capitalPerPositionDesc')}
+        value={getByPath(config, ['spot_futures', 'capital_per_position'])}
+        unit="USDT"
+        onChange={(v) => handleChange(['spot_futures', 'capital_per_position'], v)}
+      />
+      <NumberField
+        label={t('cfg.sf.separateAcct')}
+        desc={t('cfg.sf.separateAcctDesc')}
+        value={getByPath(config, ['spot_futures', 'separate_acct_max_usdt'])}
+        unit="USDT"
+        onChange={(v) => handleChange(['spot_futures', 'separate_acct_max_usdt'], v)}
+      />
+      <NumberField
+        label={t('cfg.sf.unifiedAcct')}
+        desc={t('cfg.sf.unifiedAcctDesc')}
+        value={getByPath(config, ['spot_futures', 'unified_acct_max_usdt'])}
+        unit="USDT"
+        onChange={(v) => handleChange(['spot_futures', 'unified_acct_max_usdt'], v)}
+      />
+    </div>
+  );
+
+  // =========================================================================
+  // Tab: Spot-Futures Discovery
+  // =========================================================================
+  const renderSfDiscoveryTab = () => (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <NumberField
+        label={t('cfg.sf.scanInterval')}
+        desc={t('cfg.sf.scanIntervalDesc')}
+        value={getByPath(config, ['spot_futures', 'scan_interval_min'])}
+        unit="min"
+        onChange={(v) => handleChange(['spot_futures', 'scan_interval_min'], v)}
+      />
+      <NumberField
+        label={t('cfg.sf.persistenceScans')}
+        desc={t('cfg.sf.persistenceScansDesc')}
+        value={getByPath(config, ['spot_futures', 'persistence_scans'])}
+        onChange={(v) => handleChange(['spot_futures', 'persistence_scans'], v)}
+      />
+      <NumberField
+        label={t('cfg.sf.minNetYield')}
+        desc={t('cfg.sf.minNetYieldDesc')}
+        value={getByPath(config, ['spot_futures', 'min_net_yield_apr'])}
+        onChange={(v) => handleChange(['spot_futures', 'min_net_yield_apr'], v)}
+      />
+      <NumberField
+        label={t('cfg.sf.maxBorrowApr')}
+        desc={t('cfg.sf.maxBorrowAprDesc')}
+        value={getByPath(config, ['spot_futures', 'max_borrow_apr'])}
+        onChange={(v) => handleChange(['spot_futures', 'max_borrow_apr'], v)}
+      />
+    </div>
+  );
+
+  // =========================================================================
+  // Tab: Spot-Futures Exit & Risk
+  // =========================================================================
+  const renderSfExitTab = () => {
+    const sfProfitTransfer = getByPath(config, ['spot_futures', 'profit_transfer_enabled']) === true;
+    const sfBorrowSpikeEnabled = getByPath(config, ['spot_futures', 'enable_borrow_spike_detection']) === true;
+
+    return (
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <NumberField
+          label={t('cfg.sf.monitorInterval')}
+          desc={t('cfg.sf.monitorIntervalDesc')}
+          value={getByPath(config, ['spot_futures', 'monitor_interval_sec'])}
+          unit="sec"
+          onChange={(v) => handleChange(['spot_futures', 'monitor_interval_sec'], v)}
+        />
+        <NumberField
+          label={t('cfg.sf.borrowGrace')}
+          desc={t('cfg.sf.borrowGraceDesc')}
+          value={getByPath(config, ['spot_futures', 'borrow_grace_min'])}
+          unit="min"
+          onChange={(v) => handleChange(['spot_futures', 'borrow_grace_min'], v)}
+        />
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.sf.borrowSpikeEnabled')}</label>
+            <Tooltip text={t('cfg.sf.borrowSpikeEnabledDesc')} />
+          </div>
+          <div className="flex items-center gap-3">
+            <ToggleSwitch
+              on={sfBorrowSpikeEnabled}
+              onChange={(v) => handleBoolChange(['spot_futures', 'enable_borrow_spike_detection'], v)}
+            />
+            <span className={`text-sm font-semibold ${sfBorrowSpikeEnabled ? 'text-green-400' : 'text-red-400'}`}>
+              {sfBorrowSpikeEnabled ? 'ON' : 'OFF'}
+            </span>
+          </div>
+        </div>
+        <NumberField
+          label={t('cfg.sf.borrowSpikeWindow')}
+          desc={t('cfg.sf.borrowSpikeWindowDesc')}
+          value={getByPath(config, ['spot_futures', 'borrow_spike_window_min'])}
+          unit="min"
+          onChange={(v) => handleChange(['spot_futures', 'borrow_spike_window_min'], v)}
+        />
+        <NumberField
+          label={t('cfg.sf.borrowSpikeMultiplier')}
+          desc={t('cfg.sf.borrowSpikeMultiplierDesc')}
+          value={getByPath(config, ['spot_futures', 'borrow_spike_multiplier'])}
+          onChange={(v) => handleChange(['spot_futures', 'borrow_spike_multiplier'], v)}
+        />
+        <NumberField
+          label={t('cfg.sf.borrowSpikeMinAbsolute')}
+          desc={t('cfg.sf.borrowSpikeMinAbsoluteDesc')}
+          value={getByPath(config, ['spot_futures', 'borrow_spike_min_absolute'])}
+          onChange={(v) => handleChange(['spot_futures', 'borrow_spike_min_absolute'], v)}
+        />
+        <NumberField
+          label={t('cfg.sf.priceExit')}
+          desc={t('cfg.sf.priceExitDesc')}
+          value={getByPath(config, ['spot_futures', 'price_exit_pct'])}
+          unit="%"
+          onChange={(v) => handleChange(['spot_futures', 'price_exit_pct'], v)}
+        />
+        <NumberField
+          label={t('cfg.sf.priceEmergency')}
+          desc={t('cfg.sf.priceEmergencyDesc')}
+          value={getByPath(config, ['spot_futures', 'price_emergency_pct'])}
+          unit="%"
+          onChange={(v) => handleChange(['spot_futures', 'price_emergency_pct'], v)}
+        />
+        <NumberField
+          label={t('cfg.sf.marginExit')}
+          desc={t('cfg.sf.marginExitDesc')}
+          value={getByPath(config, ['spot_futures', 'margin_exit_pct'])}
+          unit="%"
+          onChange={(v) => handleChange(['spot_futures', 'margin_exit_pct'], v)}
+        />
+        <NumberField
+          label={t('cfg.sf.marginEmergency')}
+          desc={t('cfg.sf.marginEmergencyDesc')}
+          value={getByPath(config, ['spot_futures', 'margin_emergency_pct'])}
+          unit="%"
+          onChange={(v) => handleChange(['spot_futures', 'margin_emergency_pct'], v)}
+        />
+        <NumberField
+          label={t('cfg.sf.lossCooldown')}
+          desc={t('cfg.sf.lossCooldownDesc')}
+          value={getByPath(config, ['spot_futures', 'loss_cooldown_hours'])}
+          unit="h"
+          onChange={(v) => handleChange(['spot_futures', 'loss_cooldown_hours'], v)}
+        />
+
+        {/* Profit transfer toggle */}
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.sf.profitTransfer')}</label>
+            <Tooltip text={t('cfg.sf.profitTransferDesc')} />
+          </div>
+          <div className="flex items-center gap-3">
+            <ToggleSwitch
+              on={sfProfitTransfer}
+              onChange={(v) => handleBoolChange(['spot_futures', 'profit_transfer_enabled'], v)}
+            />
+            <span className={`text-sm font-semibold ${sfProfitTransfer ? 'text-green-400' : 'text-red-400'}`}>
+              {sfProfitTransfer ? 'ON' : 'OFF'}
+            </span>
+          </div>
         </div>
       </div>
     );
@@ -973,8 +1401,8 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
   // Render active tab content
   // =========================================================================
   const renderTabContent = () => {
+    if (strategy === 'exchanges') return renderExchangesTab();
     switch (activeTab) {
-      case 'exchanges': return renderExchangesTab();
       case 'fund': return renderFundTab();
       case 'schedule': return renderScheduleTab();
       case 'discovery': return renderDiscoveryTab();
@@ -982,6 +1410,10 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
       case 'entry': return renderEntryTab();
       case 'exit': return renderExitTab();
       case 'risk': return renderRiskTab();
+      case 'sf-general': return renderSfGeneralTab();
+      case 'sf-sizing': return renderSfSizingTab();
+      case 'sf-discovery': return renderSfDiscoveryTab();
+      case 'sf-exit': return renderSfExitTab();
       default: return null;
     }
   };
@@ -991,13 +1423,50 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
       {/* Title */}
       <h2 className="text-xl font-bold text-gray-100 mb-4">{t('cfg.title')}</h2>
 
-      {/* Tab bar */}
-      <div
+      {/* Strategy toggle */}
+      <div className="flex bg-gray-900 border border-gray-700 rounded-lg p-0.5 gap-0.5 mb-4 w-fit">
+        <button
+          type="button"
+          onClick={() => setStrategy('exchanges')}
+          className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all duration-150 ${
+            strategy === 'exchanges'
+              ? 'bg-gray-700 text-gray-100 shadow-sm'
+              : 'text-gray-500 hover:text-gray-300'
+          }`}
+        >
+          {t('cfg.tab.exchanges')}
+        </button>
+        <button
+          type="button"
+          onClick={() => { setStrategy('perp'); setActiveTab('fund'); }}
+          className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all duration-150 ${
+            strategy === 'perp'
+              ? 'bg-gray-700 text-gray-100 shadow-sm'
+              : 'text-gray-500 hover:text-gray-300'
+          }`}
+        >
+          {t('cfg.strategyPerp')}
+        </button>
+        <button
+          type="button"
+          onClick={() => { setStrategy('spot'); setActiveTab('sf-general'); }}
+          className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all duration-150 ${
+            strategy === 'spot'
+              ? 'bg-gray-700 text-gray-100 shadow-sm'
+              : 'text-gray-500 hover:text-gray-300'
+          }`}
+        >
+          {t('cfg.strategySpot')}
+        </button>
+      </div>
+
+      {/* Tab bar (hidden for exchanges — no sub-tabs) */}
+      {strategy !== 'exchanges' && <div
         ref={tabBarRef}
         className="flex gap-1 overflow-x-auto pb-3 mb-4 scrollbar-none"
         style={{ scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' }}
       >
-        {TABS.map((tab) => (
+        {(strategy === 'perp' ? PERP_TABS : SPOT_TABS).map((tab) => (
           <button
             key={tab.id}
             type="button"
@@ -1011,7 +1480,7 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
             {t(tab.labelKey)}
           </button>
         ))}
-      </div>
+      </div>}
 
       {/* Tab content */}
       <form onSubmit={handleSubmit}>

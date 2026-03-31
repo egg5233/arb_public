@@ -2,6 +2,109 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.43] - 2026-03-31
+
+### Added
+- **[risk] Liquidation trend tracking** — new `LiqTrendTracker` keeps a 30-sample ring buffer of exchange margin-ratio history, fits a linear-regression slope, filters single-tick spikes, and triggers pre-emptive reduce actions when the projected ratio trends into L4; feature ships default OFF behind `risk.enable_liq_trend_tracking` with 4 new tuning fields, plus API/dashboard config support and regression tests (`internal/risk/liq_trend.go`, `internal/risk/health.go`, `internal/api/handlers.go`, `internal/api/config_handlers_test.go`, `internal/config/config.go`, `web/src/pages/Config.tsx`, `web/src/i18n/en.ts`, `web/src/i18n/zh-TW.ts`)
+
+## [0.22.42] - 2026-03-31
+
+### Fixed
+- **[perp-perp] Dashboard opportunities no longer wiped by filtered scan types** — rebalance/entry/exit/rotate scans applied heavy filters that could produce 0 results, overwriting the dashboard opportunity list; now only `normalScan` updates the dashboard while filtered scans use results internally (`internal/engine/engine.go`)
+
+## [0.22.41] - 2026-03-31
+
+### Fixed
+- **[config] Preserve newer on-disk exchange credentials on unrelated saves** — `/api/config` now only persists exchange secrets when a non-empty replacement was explicitly submitted; unrelated config/address saves preserve the existing `config.json` exchange secrets even when runtime memory is stale, and `SaveJSON()` now fails closed if `config.json.bak` cannot be written (`internal/api/handlers.go`, `internal/api/config_handlers_test.go`, `internal/config/config.go`, `internal/config/config_test.go`)
+
+## [0.22.40] - 2026-03-31
+
+### Fixed
+- **[config] Preserve exchange credentials on dashboard saves** — empty-string exchange credential updates are ignored in `/api/config`, `SaveJSON()` no longer overwrites existing `config.json` secrets with empty runtime values, and a `.bak` copy is written before each config save to protect against accidental credential loss (`internal/api/handlers.go`, `internal/api/config_handlers_test.go`, `internal/config/config.go`, `internal/config/config_test.go`)
+
+## [0.22.39] - 2026-03-31
+
+### Added
+- **[spot-futures] Borrow rate spike detection** — new `RateVelocityDetector` tracks a bounded sliding window of borrow APR samples per position; fires a one-shot exit trigger when the rate multiplies beyond a configurable threshold within the lookback window; integrates into `monitorPosition` after standard exit triggers; disabled by default via `enable_borrow_spike_detection: false` (`internal/spotengine/rate_velocity.go`, `internal/spotengine/monitor.go`)
+- **[dashboard] Borrow spike detection config** — Spot-Futures Exit & Risk tab exposes toggle and 3 parameters (window, multiplier, min absolute move) with i18n for en + zh-TW (`Config.tsx`, `en.ts`, `zh-TW.ts`)
+
+### Changed
+- **[spot-futures] ManualOpen 2-phase commit** — pending checkpoint is saved before execution; on success, atomically promoted to active after both legs fill; on failure, `abandonPendingEntry` marks the record closed; prevents orphaned active records when execution fails mid-flight (`internal/spotengine/execution.go`)
+- **[spot-futures] Exit goroutines tracked via exitWG** — `launchExit` replaces bare `go initiateExit` so `Stop()` waits for all in-flight exits to drain before returning (`internal/spotengine/engine.go`, `internal/spotengine/exit_manager.go`, `internal/spotengine/monitor.go`)
+
+### Fixed
+- **[spot-futures] Abort-entry test alignment** — 5 ManualOpen abort-path tests fixed to match `confirmSpotFill` gate behavior: removed spurious first-query error from mocks, fixed `active positions` and allocator exposure assertions (`internal/spotengine/execution_test.go`)
+
+## [0.22.38] - 2026-03-31
+
+### Fixed
+- **[spot-futures] Manual recovery position persisted after cleanup failure** — when `abortAcceptedSpotEntry` successfully reverses a spot fill but the cleanup record cannot be saved, a `SpotStatusManualRecovery` position is written to Redis so operators have a durable record of the residual state; monitors then track the manual-recovery entry rather than losing it (`internal/spotengine/execution.go`, `internal/spotengine/monitor.go`)
+- **[spot-futures] Manual recovery positions cleared after successful flatten** — `completeExit` and `initiateExit` now detect `SpotStatusManualRecovery` positions and remove the recovery record from Redis after the position is fully closed; dashboard `useApi` hook exposes manual-recovery positions so operators can see and act on them (`internal/spotengine/exit_manager.go`, `web/src/hooks/useApi.ts`, `web/src/pages/Overview.tsx`)
+- **[spot-futures] Premature manual recovery clear blocked** — clearing the manual-recovery record is now gated on both legs being fully settled (`FuturesExit > 0` and `SpotExitFilled`); partial-exit state no longer triggers premature record removal (`internal/spotengine/execution.go`, `internal/spotengine/exit_manager.go`)
+- **[spot-futures] Discovery retains active rows with nonpositive funding** — `filterOpportunities` no longer drops symbols that have zero or negative `FundingAPR` when they are already tracked in an active or pending position; prevents discovery from evicting live positions due to transient funding rate dips (`internal/spotengine/discovery.go`)
+- **[spot-futures] Fail closed on recovery save errors** — `ManualOpen` no longer commits allocator capital when the manual-recovery persistence step fails after accepted spot-entry cleanup; reservation remains uncommitted so budget accounting stays consistent (`internal/spotengine/execution.go`)
+
+## [0.22.37] - 2026-03-31
+
+### Fixed
+- **[spot-futures] Partial spot exits tracked and retried correctly** — introduced `SpotExitFilledQty` field to accumulate partial fills across exit retries; `applySpotExitFill` computes VWAP-weighted exit price across multiple partial fills; `persistExitCheckpoint` and `completeExit` propagate partial fill progress; `spotExitComplete` guards completion via quantity tolerance rather than boolean; exit is no longer falsely marked complete when only partially filled (`internal/spotengine/execution.go`, `internal/spotengine/exit_manager.go`, `internal/models/spot_position.go`, `pkg/exchange/gateio/margin.go`)
+- **[spot-futures] Accepted spot entry unwound on checkpoint failure** — when `ManualOpen` accepts a spot order but Redis persistence fails before the pending-entry record is saved, `abortAcceptedSpotEntry` immediately reconciles the fill, places a reversal market IOC order, and repays any borrow so restart recovery never encounters an orphaned position without a Redis record (`internal/spotengine/execution.go`)
+- **[spot-futures] Cleanup IOC confirmed before aborting entry** — after placing the reversal IOC order in `abortAcceptedSpotEntry`, the engine calls `confirmSpotFill` on the cleanup order; if cleanup is unconfirmed or only partially filled, the error surfaces with explicit detail requiring manual intervention rather than silently leaving a residual position (`internal/spotengine/execution.go`)
+
+## [0.22.36] - 2026-03-31
+
+### Fixed
+- **[risk] Spread stability gate now requires `enable_spread_stability_gate: true` to activate** — added top-level `EnableSpreadStabilityGate` config toggle (default `false`) so the gate is fully inert until explicitly enabled; prevents accidental filtering on rollout; dashboard Config page exposes the toggle (`internal/config/config.go`, `internal/risk/spread_stability.go`, `internal/api/handlers.go`, `web/src/pages/Config.tsx`)
+- **[risk] Spread stability gate now rejects on insufficient history** — previously `len(spreads) < minSamples` was a silent pass; now returns a rejection reason `"insufficient spread history (n=X < Y)"` so thin-history slots are blocked rather than waved through (`internal/risk/spread_stability.go`)
+- **[risk] Capital allocator `UpdatePosition` helper** — adds atomic `UpdatePosition(positionID, exposures)` to `CapitalAllocator` so callers can atomically adjust per-exchange committed amounts when a position's exposure changes, without release+reserve races (`internal/risk/allocator.go`)
+- **[spot-futures] Pending spot entries survive restart** — `ManualOpen` now persists a `SpotStatusPending` position record before execution begins; a new `recoverPendingSpotEntries` path on startup detects in-flight entries, checks order fill status, and either promotes to active or cleans up stale entries; capital commitment is preserved across the pending→active transition (`internal/spotengine/execution.go`, `internal/models/spot_position.go`, `internal/api/spot_handlers.go`)
+- **[spot-futures] ManualOpen rejects filtered opportunities** — `ManualOpen` now checks `opp.FilterStatus != ""` before proceeding and returns an explicit error, preventing manual entry on opportunities the discovery layer has already flagged as non-viable (`internal/spotengine/execution.go`)
+- **[spot-futures] Bybit pending exposure includes borrow open orders** — `GetPendingExposure` now sums unfilled borrow/margin open orders into the returned exposure value so the pre-trade gate accurately accounts for in-flight spot entries on Bybit (`pkg/exchange/bybit/margin.go`)
+
+## [0.22.35] - 2026-03-31
+
+### Added
+- **[risk] Cross-strategy capital allocator** — new `CapitalAllocator` module enforces shared USDT budgets across perp-perp and spot-futures strategies via Redis-backed reservations and committed positions; supports per-strategy caps (`max_perp_perp_pct`, `max_spot_futures_pct`) and per-exchange caps (`max_per_exchange_pct`); reservation TTL auto-expires stale pending entries; disabled by default (`enable_capital_allocator: false`) so production can stage safely (`internal/risk/allocator.go`, `internal/engine/capital.go`, `internal/spotengine/capital.go`)
+- **[dashboard] Capital allocator config section** — Config page Risk tab exposes toggle + 5 allocator fields (`max_total_exposure_usdt`, per-strategy and per-exchange share sliders, reservation TTL); i18n for en + zh-TW (`Config.tsx`, `en.ts`, `zh-TW.ts`)
+
+### Changed
+- **[risk] Legacy per-exchange cap bypassed when allocator enabled** — `risk.Manager` injects `CapitalAllocator`; the prior pair-local 60% exchange cap is skipped when the allocator is active since central budgeting supersedes it (`internal/risk/manager.go`)
+- **[engine] Perp-perp engine wired to allocator** — `NewEngine` accepts `*CapitalAllocator`; reserve/commit/release helpers added to `engine.go`; allocation is a no-op when allocator is disabled (`internal/engine/engine.go`, `cmd/main.go`, `cmd/simtrade/main.go`)
+
+### Fixed
+- **[spot-futures] Capital released on position close** — `completeExit` now calls `releaseSpotPosition` so closed spot-futures positions free their allocator budget (`internal/spotengine/exit_manager.go`)
+- **[spot-futures] ManualOpen wires capital reservation** — entry reserves spot capital before setup and releases on failure; `NotionalUSDT` now records actual fill notional instead of planned (`internal/spotengine/execution.go`)
+
+## [0.22.34] - 2026-03-31
+
+### Added
+- **[dashboard] Spot-futures config tabs in Config page** — Config page now has a Perp-Perp / Spot-Futures strategy toggle; spot-futures mode exposes 4 sub-tabs (General, Sizing, Discovery, Exit & Risk) covering all 21 spot_futures config parameters with i18n support (en + zh-TW); auto-trade toggles moved from Overview to Config General tab; Overview retains only spot position cards (`Config.tsx`, `Overview.tsx`, `App.tsx`, `en.ts`, `zh-TW.ts`)
+
+## [0.22.33] - 2026-03-31
+
+### Added
+- **[spot-futures] Dashboard now displays spot-futures opportunities with filter status** — discovery scan returns all opportunities (not just survivors); filtered ones carry a `filter_status` reason string so the dashboard table shows actionable vs informational rows; passed opportunities sort first with colored APR values and Open button, filtered rows are dimmed with reason text; WebSocket `spot_opportunities` broadcast added for real-time updates; `max_borrow_apr: 0` now disables the borrow rate cap filter (`discovery.go`, `engine.go`, `spot_handlers.go`, `Overview.tsx`, `useApi.ts`, `useWebSocket.ts`, `types.ts`, `App.tsx`)
+
+## [0.22.32] - 2026-03-31
+
+### Fixed
+- **[spot-futures] confirmSpotFill no longer assumes full fill when REST confirmation fails** — removed unsafe fallback that returned `expectedQty` on REST error, now returns `0, 0` (consistent with `confirmFuturesFill`); entry paths abort/rollback instead of over-hedging, exit retry paths retry instead of falsely checkpointing; emergency close now checks `filledQty > 0` instead of ignoring fill quantity (`internal/spotengine/execution.go`) ([ARB-93](/ARB/issues/ARB-93))
+
+## [0.22.31] - 2026-03-31
+
+### Fixed
+- **[api] `/api/check-update` now uses semver comparison for `hasUpdate`** — previously `hasUpdate` was `latestVersion != currentVersion`, which falsely reported updates when the local version was ahead of `origin/main`; now uses proper major.minor.patch ordering so `hasUpdate` is only true when remote is strictly newer; added `versionNewer()` helper with test coverage for newer/same/older/unparseable cases (`internal/api/handlers.go`, `internal/api/handlers_test.go`) ([ARB-90](/ARB/issues/ARB-90))
+
+## [0.22.30] - 2026-03-31
+
+### Fixed
+- **[api] Drift monitor now triggers systemd auto-restart after graceful shutdown** — upgraded binary drift monitor from detect-only to detect-and-remediate; in supervised mode (`INVOCATION_ID` set), confirmed drift schedules a graceful shutdown via `syscall.SIGTERM` to self so all engines drain cleanly, then exits non-zero via `DriftRestartRequested()` check in `cmd/main.go` so `Restart=on-failure` fires; `/api/check-update` now returns structured `runtime` provenance (`pid`, `exePath`, `startedAt`, `binaryModTime`, `driftReason`, `restartSupported`) alongside the existing `binaryDrift` bool; manual/unsupervised runs alert-only with `restartSupported: false` (`internal/api/drift_monitor.go`, `internal/api/handlers.go`, `cmd/main.go`) ([ARB-87](/ARB/issues/ARB-87))
+
+## [0.22.29] - 2026-03-31
+
+### Fixed
+- **[spot-futures] Health and auto-config API responses widened for ops monitoring** — `GET /api/spot/positions/{id}/health` now returns `last_borrow_rate_check` and `negative_yield_since` so ops can confirm monitor freshness; `GET /api/spot/config/auto` now includes `max_positions` and `capital_per_position` guardrail fields so ops can verify the full auto-entry safety envelope without falling back to `GET /api/config` (`internal/api/spot_handlers.go`) ([ARB-85](/ARB/issues/ARB-85))
+
 ## [0.22.28] - 2026-03-31
 
 ### Added
@@ -9,16 +112,21 @@ All notable changes to this project will be documented in this file.
 - **ExitScan entry filters** — ExitScan now applies 5 entry filters (persistence, volatility, cooldown, interval, backtest) excluding funding window, enabling accurate rebalance when bound to exit scan (`scanner.go`)
 - **ToggleField UI component** — reusable boolean toggle for dashboard config page (`Config.tsx`)
 
+### Fixed
+- **[api] Binary drift monitor detects stale running process after build** — added background goroutine (`internal/api/drift_monitor.go`) that compares on-disk binary mtime against process start time every 60s; logs `ERROR` and broadcasts `binary_drift` alert to WebSocket clients on drift; `/api/check-update` now returns `binaryDrift: true` when process predates the current binary; prevents silent runtime drift where a deploy succeeds but old PID continues serving stale code ([ARB-81](/ARB/issues/ARB-81))
+
 ## [0.22.27] - 2026-03-31
 
 ### Fixed
-- **Rebalance need over-estimation** — need calculation now simulates entry selection (ranked opps, skip occupied symbols, cap to remainingSlots × margin per exchange) instead of summing all opportunities (`engine.go`)
-- **Rebalance filter parity** — rebalanceScan now applies same 6 entry filters (persistence, volatility, cooldown, interval, funding window, backtest) to prevent funding wrong exchanges (`scanner.go`)
-- **BingX rate limit** — risk-monitor now prefetches GetAllPositions() once per exchange per cycle instead of GetPosition() per symbol per check function, reducing 12+ API calls to 1 per exchange (`monitor.go`)
+- **[spot-futures] Persistence counters no longer falsely satisfy consecutive-scan gate after restart** — `discoveryLoop` now seeds `lastSeen` from existing Redis persistence keys before the first scan; symbols absent during downtime are correctly purged on restart instead of having their stale counters incremented on reappearance (`internal/database/spot_state.go`, `internal/spotengine/engine.go`) ([ARB-80](/ARB/issues/ARB-80))
+- **Rebalance need over-estimation** — need calculation now simulates entry selection (ranked opps, skip occupied symbols, cap to remainingSlots × margin per exchange) instead of summing all opportunities (`internal/engine/engine.go`)
+- **Rebalance filter parity** — rebalanceScan now applies same 6 entry filters (persistence, volatility, cooldown, interval, funding window, backtest) to prevent funding wrong exchanges (`internal/discovery/scanner.go`)
+- **BingX rate limit** — risk-monitor now prefetches GetAllPositions() once per exchange per cycle instead of GetPosition() per symbol per check function, reducing 12+ API calls to 1 per exchange (`internal/risk/monitor.go`)
 
 ## [0.22.26] - 2026-03-31
 
 ### Fixed
+- **[spot-futures] Empty `/api/spot/stats` payload no longer yields NaN dashboard stats on cold start** — `handleGetSpotStats` now normalizes missing `total_pnl`, `win_count`, `loss_count`, and `trade_count` fields to `"0"` before returning; added defensive `|| '0'` defaults in `Overview.tsx` when parsing stats fields so partial or malformed payloads cannot produce `NaN` values; added 3 regression tests covering cold start (empty hash), partial hash, and full hash cases (`internal/api/spot_stats_test.go`) ([ARB-78](/ARB/issues/ARB-78))
 - **Cross-exchange rebalance deposit transfer** — withdrawals now batch per recipient, poll once for all deposits (5min), then transfer only the rebalance amount into futures (does not touch existing spot balance) (`engine.go`)
 - **History exit_reason display** — click to expand/collapse long exit reasons (`History.tsx`)
 

@@ -1,11 +1,13 @@
 package spotengine
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"time"
 
 	"arb/internal/models"
+	"arb/pkg/exchange"
 )
 
 // exitState tracks in-flight exits to prevent double-triggering.
@@ -110,14 +112,16 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 				}
 
 				if isDirA {
-					// Direction A (long futures, short spot): UP move is risky.
-					if movePct > priceEmergencyPct {
-						e.log.Error("exit trigger: %s EMERGENCY price spike +%.1f%% (entry=%.4f now=%.4f)",
+					// Direction A (long futures, short spot):
+					//   UP move -> borrow buy-back cost risk
+					//   DOWN move -> long futures liquidation risk
+					if movePct > priceEmergencyPct || movePct < -priceEmergencyPct {
+						e.log.Error("exit trigger: %s EMERGENCY price move %.1f%% (entry=%.4f now=%.4f)",
 							pos.Symbol, movePct, pos.FuturesEntry, currentPrice)
 						return "emergency_price_spike", true
 					}
-					if movePct > priceExitPct {
-						e.log.Warn("exit trigger: %s price spike +%.1f%% (entry=%.4f now=%.4f)",
+					if movePct > priceExitPct || movePct < -priceExitPct {
+						e.log.Warn("exit trigger: %s price move %.1f%% (entry=%.4f now=%.4f)",
 							pos.Symbol, movePct, pos.FuturesEntry, currentPrice)
 						return "price_spike_exit", false
 					}
@@ -192,6 +196,31 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 				}
 			} else {
 				e.log.Warn("exit check: %s GetMarginBalance(%s) failed: %v", pos.Symbol, pos.BaseCoin, err)
+			}
+		}
+
+		// Also check futures margin for Direction A (long futures can be liquidated).
+		futExch, futOk := e.exchanges[pos.Exchange]
+		if futOk {
+			bal, err := futExch.GetFuturesBalance()
+			if err == nil && bal.MarginRatio > 0 {
+				futUtilPct := bal.MarginRatio * 100
+				if futUtilPct > pos.MarginUtilizationPct {
+					pos.MarginUtilizationPct = futUtilPct
+				}
+
+				if futUtilPct > marginEmergencyPct {
+					e.log.Error("exit trigger: %s EMERGENCY futures margin ratio %.1f%% > %.1f%%",
+						pos.Symbol, futUtilPct, marginEmergencyPct)
+					return "margin_health_exit", true
+				}
+				if futUtilPct > marginExitPct {
+					e.log.Warn("exit trigger: %s futures margin ratio %.1f%% > %.1f%%",
+						pos.Symbol, futUtilPct, marginExitPct)
+					return "margin_health_exit", false
+				}
+			} else if err != nil {
+				e.log.Warn("exit check: %s GetFuturesBalance failed: %v", pos.Symbol, err)
 			}
 		}
 	} else {
@@ -270,10 +299,16 @@ func (e *SpotEngine) initiateExit(pos *models.SpotFuturesPosition, reason string
 		// The close methods checkpoint each leg individually, but this
 		// catches any edge case where in-memory state advanced without
 		// a prior checkpoint write.
-		if pos.FuturesExit > 0 || pos.SpotExitPrice > 0 {
+		if pos.FuturesExit > 0 || pos.SpotExitFilledQty > 0 || pos.SpotExitPrice > 0 || pos.SpotExitFilled || pos.PendingSpotExitOrderID != "" {
 			if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
 				e.log.Error("initiateExit: fallback checkpoint failed for %s: %v", pos.ID, cpErr)
 			}
+		}
+		var pendingErr *pendingSpotExitError
+		if errors.As(err, &pendingErr) {
+			e.log.Warn("initiateExit: %s awaiting spot exit confirmation on order %s: %v",
+				pos.ID, pendingErr.orderID, pendingErr.err)
+			return
 		}
 		e.log.Error("CRITICAL: ClosePosition failed for %s (%s): %v — position stuck in 'exiting', manual intervention required",
 			pos.ID, pos.Symbol, err)
@@ -287,7 +322,10 @@ func (e *SpotEngine) initiateExit(pos *models.SpotFuturesPosition, reason string
 			p.PendingRepay = true
 			p.PendingRepayRetryAt = pos.PendingRepayRetryAt
 			p.FuturesExit = pos.FuturesExit
+			p.SpotExitFilledQty = pos.SpotExitFilledQty
 			p.SpotExitPrice = pos.SpotExitPrice
+			p.SpotExitFilled = pos.SpotExitFilled || spotExitComplete(pos)
+			p.PendingSpotExitOrderID = pos.PendingSpotExitOrderID
 			p.ExitFees = pos.ExitFees
 			return true
 		}); err != nil {
@@ -316,8 +354,20 @@ func (e *SpotEngine) persistExitCheckpoint(pos *models.SpotFuturesPosition) erro
 			p.FuturesExit = pos.FuturesExit
 			changed = true
 		}
-		if pos.SpotExitPrice > 0 && p.SpotExitPrice == 0 {
+		if pos.SpotExitFilledQty > p.SpotExitFilledQty {
+			p.SpotExitFilledQty = pos.SpotExitFilledQty
+			changed = true
+		}
+		if (pos.SpotExitFilled || spotQtyComplete(pos.SpotExitFilledQty, pos.SpotSize)) && !p.SpotExitFilled {
+			p.SpotExitFilled = true
+			changed = true
+		}
+		if pos.SpotExitPrice > 0 && math.Abs(pos.SpotExitPrice-p.SpotExitPrice) > spotQtyTolerance {
 			p.SpotExitPrice = pos.SpotExitPrice
+			changed = true
+		}
+		if pos.PendingSpotExitOrderID != p.PendingSpotExitOrderID {
+			p.PendingSpotExitOrderID = pos.PendingSpotExitOrderID
 			changed = true
 		}
 		if pos.ExitFees > 0 {
@@ -369,7 +419,10 @@ func (e *SpotEngine) completeExit(pos *models.SpotFuturesPosition, reason string
 		p.RealizedPnL = totalPnL
 		p.ExitCompletedAt = &now
 		p.FuturesExit = pos.FuturesExit
+		p.SpotExitFilledQty = pos.SpotExitFilledQty
+		p.SpotExitFilled = pos.SpotExitFilled || spotExitComplete(pos)
 		p.SpotExitPrice = pos.SpotExitPrice
+		p.PendingSpotExitOrderID = ""
 		p.PeakPriceMovePct = pos.PeakPriceMovePct
 		p.MarginUtilizationPct = pos.MarginUtilizationPct
 		return true
@@ -394,6 +447,8 @@ func (e *SpotEngine) completeExit(pos *models.SpotFuturesPosition, reason string
 	if err := e.db.UpdateSpotStats(totalPnL, totalPnL >= 0); err != nil {
 		e.log.Error("completeExit: failed to update stats for %s: %v", pos.ID, err)
 	}
+	e.releaseSpotPosition(pos.ID)
+	e.borrowVelocity.Delete(pos.ID)
 
 	// Set cooldown on loss.
 	if totalPnL < 0 {
@@ -409,7 +464,7 @@ func (e *SpotEngine) completeExit(pos *models.SpotFuturesPosition, reason string
 	}
 
 	// Broadcast final update.
-	if updated != nil {
+	if updated != nil && e.api != nil {
 		e.api.BroadcastSpotPositionUpdate(updated)
 	}
 
@@ -450,8 +505,12 @@ func (e *SpotEngine) ManualClose(positionID string) error {
 		return fmt.Errorf("position %s not found", positionID)
 	}
 
+	if pos.Status == models.SpotStatusPending && pos.ExitReason == spotEntryManualRecoveryReason {
+		return e.resolveManualRecovery(positionID)
+	}
+
 	if pos.Status != models.SpotStatusActive {
-		return fmt.Errorf("position %s status is %q, expected %q", positionID, pos.Status, models.SpotStatusActive)
+		return fmt.Errorf("position %s not active: status %q", positionID, pos.Status)
 	}
 
 	if e.isExiting(positionID) {
@@ -475,5 +534,88 @@ func (e *SpotEngine) ManualClose(positionID string) error {
 		return fmt.Errorf("close failed — position %s stuck in status %q, manual intervention required", positionID, updated.Status)
 	}
 
+	return nil
+}
+
+func (e *SpotEngine) resolveManualRecovery(positionID string) error {
+	mu := e.posLock(positionID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	pos, err := e.db.GetSpotPosition(positionID)
+	if err != nil {
+		return fmt.Errorf("position not found: %w", err)
+	}
+	if pos == nil {
+		return fmt.Errorf("position %s not found", positionID)
+	}
+	if pos.Status != models.SpotStatusPending || pos.ExitReason != spotEntryManualRecoveryReason {
+		return fmt.Errorf("position %s not pending manual recovery", positionID)
+	}
+
+	smExch, ok := e.spotMargin[pos.Exchange]
+	if !ok {
+		return fmt.Errorf("exchange %s does not support spot margin", pos.Exchange)
+	}
+
+	if pos.PendingSpotExitOrderID != "" {
+		querier, ok := smExch.(exchange.SpotMarginOrderQuerier)
+		if !ok {
+			return fmt.Errorf("manual recovery order query unsupported for %s", pos.Exchange)
+		}
+		status, err := querier.GetSpotMarginOrder(pos.PendingSpotExitOrderID, pos.Symbol)
+		if err != nil {
+			return fmt.Errorf("manual recovery cleanup order check failed: %w", err)
+		}
+		if status == nil {
+			return fmt.Errorf("manual recovery cleanup order %s not found", pos.PendingSpotExitOrderID)
+		}
+		if isActiveSpotOrderStatus(status.Status) {
+			return fmt.Errorf(
+				"manual recovery cleanup order %s still active: status=%s filled=%.6f",
+				pos.PendingSpotExitOrderID,
+				status.Status,
+				status.FilledQty,
+			)
+		}
+	}
+
+	bal, err := smExch.GetMarginBalance(pos.BaseCoin)
+	if err != nil {
+		return fmt.Errorf("manual recovery balance check failed: %w", err)
+	}
+
+	liability := bal.Borrowed + bal.Interest
+	if math.Abs(liability) > spotQtyTolerance || math.Abs(bal.TotalBalance) > spotQtyTolerance {
+		return fmt.Errorf(
+			"manual recovery still open on exchange: total=%.6f available=%.6f borrowed=%.6f interest=%.6f",
+			bal.TotalBalance,
+			bal.Available,
+			bal.Borrowed,
+			bal.Interest,
+		)
+	}
+
+	now := time.Now().UTC()
+	pos.Status = models.SpotStatusClosed
+	pos.ExitCompletedAt = &now
+	pos.PendingEntryOrderID = ""
+	pos.PendingSpotExitOrderID = ""
+	pos.PendingRepay = false
+	pos.PendingRepayRetryAt = nil
+	pos.UpdatedAt = now
+
+	if err := e.db.SaveSpotPosition(pos); err != nil {
+		return fmt.Errorf("failed to clear manual recovery position: %w", err)
+	}
+
+	e.releaseSpotPosition(pos.ID)
+	e.borrowVelocity.Delete(pos.ID)
+	if e.api != nil {
+		e.api.BroadcastSpotPositionUpdate(pos)
+	}
+
+	e.log.Info("ManualClose: cleared manual recovery %s %s on %s after operator flatten confirmation",
+		pos.Symbol, pos.ID, pos.Exchange)
 	return nil
 }

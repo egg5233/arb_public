@@ -17,20 +17,22 @@ var _ models.StateStore = (*Client)(nil)
 
 // Redis key constants.
 const (
-	keyConfig           = "arb:config"
-	keyPositions        = "arb:positions"
-	keyPositionsActive  = "arb:positions:active"
-	keyHistory          = "arb:history"
-	keyFundingLatest    = "arb:funding:latest"
-	keyStats            = "arb:stats"
-	keyTransfers        = "arb:transfers"
-	keyTransfersHistory = "arb:transfers:history"
+	keyConfig                = "arb:config"
+	keyPositions             = "arb:positions"
+	keyPositionsActive       = "arb:positions:active"
+	keyHistory               = "arb:history"
+	keyFundingLatest         = "arb:funding:latest"
+	keyStats                 = "arb:stats"
+	keyTransfers             = "arb:transfers"
+	keyTransfersHistory      = "arb:transfers:history"
+	keySpreadHistoryPrefix   = "arb:spread:history:"
 	keyLossCooldownPrefix    = "arb:lossCooldown:"
 	keyReEnterCooldownPrefix = "arb:reEnterCooldown:"
 
 	historyMaxLen         = 1000
 	fundingSnapshotMaxLen = 100
 	transfersMaxLen       = 200
+	spreadHistoryMaxLen   = 256
 )
 
 // TransferRecord represents a cross-exchange fund transfer.
@@ -47,8 +49,18 @@ type TransferRecord struct {
 	CreatedAt string `json:"created_at"`
 }
 
+// SpreadHistoryPoint stores one observed spread sample for an opportunity key.
+type SpreadHistoryPoint struct {
+	Timestamp time.Time `json:"timestamp"`
+	Spread    float64   `json:"spread"`
+}
+
 func fundingSnapshotsKey(symbol string) string {
 	return fmt.Sprintf("arb:funding:snapshots:%s", symbol)
+}
+
+func spreadHistoryKey(opp models.Opportunity) string {
+	return fmt.Sprintf("%s%s|%s|%s", keySpreadHistoryPrefix, opp.Symbol, opp.LongExchange, opp.ShortExchange)
 }
 
 func balanceKey(exchange string) string {
@@ -278,6 +290,60 @@ func (c *Client) GetHistory(limit int) ([]*models.ArbitragePosition, error) {
 		positions = append(positions, &pos)
 	}
 	return positions, nil
+}
+
+// AddSpreadHistoryBatch appends spread samples for verified opportunities and
+// trims each per-opportunity list to spreadHistoryMaxLen entries.
+func (c *Client) AddSpreadHistoryBatch(opps []models.Opportunity, recordedAt time.Time) error {
+	if len(opps) == 0 {
+		return nil
+	}
+
+	ctx := context.Background()
+	pipe := c.rdb.Pipeline()
+	recordedAt = recordedAt.UTC()
+
+	for _, opp := range opps {
+		entry := SpreadHistoryPoint{
+			Timestamp: recordedAt,
+			Spread:    opp.Spread,
+		}
+		data, err := json.Marshal(entry)
+		if err != nil {
+			return fmt.Errorf("marshal spread history: %w", err)
+		}
+
+		key := spreadHistoryKey(opp)
+		pipe.LPush(ctx, key, data)
+		pipe.LTrim(ctx, key, 0, spreadHistoryMaxLen-1)
+	}
+
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+// GetSpreadHistory returns the most recent spread samples for an opportunity key.
+func (c *Client) GetSpreadHistory(opp models.Opportunity, limit int) ([]SpreadHistoryPoint, error) {
+	ctx := context.Background()
+
+	if limit <= 0 {
+		limit = spreadHistoryMaxLen
+	}
+
+	vals, err := c.rdb.LRange(ctx, spreadHistoryKey(opp), 0, int64(limit-1)).Result()
+	if err != nil {
+		return nil, fmt.Errorf("read spread history: %w", err)
+	}
+
+	points := make([]SpreadHistoryPoint, 0, len(vals))
+	for _, v := range vals {
+		var point SpreadHistoryPoint
+		if err := json.Unmarshal([]byte(v), &point); err != nil {
+			continue
+		}
+		points = append(points, point)
+	}
+	return points, nil
 }
 
 // ---------------------------------------------------------------------------

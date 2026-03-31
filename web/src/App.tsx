@@ -97,6 +97,7 @@ function App() {
     api.getOpportunities().then(ws.setOpportunities).catch(() => {});
     api.getStats().then(ws.setStats).catch(() => {});
     api.getSpotPositions().then(ws.setSpotPositions).catch(() => {});
+    api.getSpotOpportunities().then(ws.setSpotOpportunities).catch(() => {});
     const loadExchanges = () => {
       api.getExchanges().then(setExchanges).catch(() => {});
     };
@@ -134,16 +135,17 @@ function App() {
             stats={ws.stats}
             exchanges={exchanges}
             onDiagnose={api.diagnose}
+            onResolveSpotPosition={api.spotManualClose}
             spotPositions={ws.spotPositions}
-            getSpotAutoConfig={api.getSpotAutoConfig}
-            updateSpotAutoConfig={api.updateSpotAutoConfig}
           />
         );
       case 'opportunities':
         return (
           <Opportunities
             opportunities={ws.opportunities}
+            spotOpportunities={ws.spotOpportunities}
             onOpen={api.openPosition}
+            onSpotOpen={api.spotManualOpen}
           />
         );
       case 'positions':

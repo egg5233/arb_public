@@ -128,6 +128,8 @@ func formatExitReason(reason string) string {
 	switch reason {
 	case "borrow_cost_exceeded":
 		return "Borrow cost exceeded"
+	case "borrow_rate_spike":
+		return "Borrow rate spike"
 	case "yield_below_minimum":
 		return "Yield below minimum"
 	case "price_spike_exit":

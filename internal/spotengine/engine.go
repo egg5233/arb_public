@@ -9,6 +9,7 @@ import (
 	"arb/internal/database"
 	"arb/internal/models"
 	"arb/internal/notify"
+	"arb/internal/risk"
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
@@ -21,9 +22,11 @@ type SpotEngine struct {
 	db         *database.Client
 	api        *api.Server
 	cfg        *config.Config
+	allocator  *risk.CapitalAllocator
 	log        *utils.Logger
 	stopCh     chan struct{}
 	wg         sync.WaitGroup
+	exitWG     sync.WaitGroup
 
 	// latestOpps caches the most recent discovery scan results for ManualOpen lookups.
 	oppsMu     sync.RWMutex
@@ -35,10 +38,14 @@ type SpotEngine struct {
 
 	// lastSeen tracks which symbols were present in the previous scan
 	// so we can delete Redis persistence counters for symbols that disappeared.
-	lastSeen map[string]bool
+	lastSeenMu sync.RWMutex
+	lastSeen   map[string]bool
 
 	// posMu provides per-position locking for read-modify-write operations.
 	posMu sync.Map // posID → *sync.Mutex
+
+	// borrowVelocity tracks recent borrow APR samples per position for spike detection.
+	borrowVelocity *RateVelocityDetector
 
 	// telegram sends trade lifecycle alerts. Nil if unconfigured.
 	telegram *notify.TelegramNotifier
@@ -51,6 +58,7 @@ func NewSpotEngine(
 	db *database.Client,
 	apiSrv *api.Server,
 	cfg *config.Config,
+	allocator *risk.CapitalAllocator,
 ) *SpotEngine {
 	sm := make(map[string]exchange.SpotMarginExchange)
 	for name, exc := range exchanges {
@@ -60,16 +68,18 @@ func NewSpotEngine(
 	}
 
 	return &SpotEngine{
-		exchanges:     exchanges,
-		spotMargin:    sm,
-		db:            db,
-		api:           apiSrv,
-		cfg:           cfg,
-		log:           utils.NewLogger("spot-engine"),
-		stopCh:        make(chan struct{}),
-		exitState: exitState{exiting: make(map[string]bool)},
-		lastSeen:  make(map[string]bool),
-		telegram:  notify.NewTelegram(cfg.TelegramBotToken, cfg.TelegramChatID),
+		exchanges:      exchanges,
+		spotMargin:     sm,
+		db:             db,
+		api:            apiSrv,
+		cfg:            cfg,
+		allocator:      allocator,
+		log:            utils.NewLogger("spot-engine"),
+		stopCh:         make(chan struct{}),
+		exitState:      exitState{exiting: make(map[string]bool)},
+		lastSeen:       make(map[string]bool),
+		borrowVelocity: NewRateVelocityDetector(),
+		telegram:       notify.NewTelegram(cfg.TelegramBotToken, cfg.TelegramChatID),
 	}
 }
 
@@ -89,7 +99,18 @@ func (e *SpotEngine) Stop() {
 	e.log.Info("Spot-futures engine stopping...")
 	close(e.stopCh)
 	e.wg.Wait()
+	e.exitWG.Wait()
 	e.log.Info("Spot-futures engine stopped")
+}
+
+// launchExit runs an automated exit in the background and tracks it so Stop
+// waits for in-flight close sequences to finish before returning.
+func (e *SpotEngine) launchExit(pos *models.SpotFuturesPosition, reason string, isEmergency bool) {
+	e.exitWG.Add(1)
+	go func() {
+		defer e.exitWG.Done()
+		e.initiateExit(pos, reason, isEmergency)
+	}()
 }
 
 // discoveryLoop periodically scans for spot-futures arbitrage opportunities.
@@ -103,13 +124,27 @@ func (e *SpotEngine) discoveryLoop() {
 	ticker := time.NewTicker(scanInterval)
 	defer ticker.Stop()
 
+	// Seed lastSeen from Redis so the first scan correctly cleans up
+	// persistence counters for symbols that disappeared during downtime.
+	if syms, err := e.db.ListSpotPersistenceSymbols(); err != nil {
+		e.log.Error("failed to seed lastSeen from Redis: %v", err)
+	} else if len(syms) > 0 {
+		e.lastSeenMu.Lock()
+		for _, s := range syms {
+			e.lastSeen[s] = true
+		}
+		e.lastSeenMu.Unlock()
+		e.log.Info("seeded lastSeen with %d symbols from Redis persistence keys", len(syms))
+	}
+
 	// Initial scan on startup.
 	e.log.Info("spot-futures discovery scan (interval: %s)", scanInterval)
 	opps := e.runDiscoveryScan()
-	e.logDiscoveryResults(opps)
+	passed := filterPassed(opps)
+	e.logDiscoveryResults(passed)
 	e.pushOppsToAPI(opps)
-	e.updatePersistenceCounts(opps)
-	e.attemptAutoEntries(opps)
+	e.updatePersistenceCounts(passed)
+	e.attemptAutoEntries(passed)
 
 	for {
 		select {
@@ -118,10 +153,11 @@ func (e *SpotEngine) discoveryLoop() {
 		case <-ticker.C:
 			e.log.Info("spot-futures discovery scan")
 			opps := e.runDiscoveryScan()
-			e.logDiscoveryResults(opps)
+			passed := filterPassed(opps)
+			e.logDiscoveryResults(passed)
 			e.pushOppsToAPI(opps)
-			e.updatePersistenceCounts(opps)
-			e.attemptAutoEntries(opps)
+			e.updatePersistenceCounts(passed)
+			e.attemptAutoEntries(passed)
 		}
 	}
 }
@@ -139,6 +175,18 @@ func (e *SpotEngine) pushOppsToAPI(opps []SpotArbOpportunity) {
 		items[i] = o
 	}
 	e.api.SetSpotOpportunities(items)
+	e.api.BroadcastSpotOpportunities(items)
+}
+
+// filterPassed returns only opportunities that passed all entry filters.
+func filterPassed(opps []SpotArbOpportunity) []SpotArbOpportunity {
+	var out []SpotArbOpportunity
+	for _, o := range opps {
+		if o.FilterStatus == "" {
+			out = append(out, o)
+		}
+	}
+	return out
 }
 
 // getLatestOpps returns a copy of the latest discovery scan results (thread-safe).
@@ -173,14 +221,18 @@ func (e *SpotEngine) updatePersistenceCounts(opps []SpotArbOpportunity) {
 	}
 
 	// Delete counters for symbols that disappeared since last scan.
-	for key := range e.lastSeen {
+	e.lastSeenMu.Lock()
+	prevSeen := e.lastSeen
+	e.lastSeen = seen
+	e.lastSeenMu.Unlock()
+
+	for key := range prevSeen {
 		if !seen[key] {
 			if err := e.db.DeleteSpotPersistence(key); err != nil {
 				e.log.Error("persist del %s: %v", key, err)
 			}
 		}
 	}
-	e.lastSeen = seen
 }
 
 // getPersistenceCount returns how many consecutive scans a symbol has appeared in.

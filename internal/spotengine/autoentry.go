@@ -2,7 +2,6 @@ package spotengine
 
 import (
 	"strings"
-	"time"
 )
 
 // attemptAutoEntries processes discovered opportunities and attempts automated
@@ -34,20 +33,10 @@ func (e *SpotEngine) attemptAutoEntries(opps []SpotArbOpportunity) {
 			continue
 		}
 
-		// Acquire entry lock to prevent concurrent entries across scans.
-		lockKey := "spot_auto_entry"
-		acquired, err := e.db.AcquireLock(lockKey, 5*time.Minute)
-		if err != nil || !acquired {
-			e.log.Warn("auto-entry: could not acquire entry lock — skipping this scan")
-			return
-		}
-
 		e.log.Info("auto-entry: ENTERING %s on %s (%s, net %.1f%% APR)",
 			opp.Symbol, opp.Exchange, opp.Direction, opp.NetAPR*100)
 
-		err = e.ManualOpen(opp.Symbol, opp.Exchange, opp.Direction)
-		e.db.ReleaseLock(lockKey)
-
+		err := e.ManualOpen(opp.Symbol, opp.Exchange, opp.Direction)
 		if err != nil {
 			e.log.Error("auto-entry: FAILED %s on %s: %v", opp.Symbol, opp.Exchange, err)
 			continue

@@ -51,6 +51,7 @@ func NewServer(db *database.Client, cfg *config.Config, exchanges map[string]exc
 func (s *Server) Start() {
 	go s.hub.Run()
 	go s.auth.cleanupLoop()
+	s.startBinaryDriftMonitor()
 
 	// Subscribe to log stream and broadcast to WS clients.
 	s.logSub = utils.Subscribe()

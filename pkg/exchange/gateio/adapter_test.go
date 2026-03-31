@@ -2,6 +2,7 @@ package gateio
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -20,11 +21,11 @@ import (
 // PlaceOrder should convert 880 back to 88 contracts.
 func TestQuantoMultiplierRoundTrip(t *testing.T) {
 	const (
-		quantoMult   = 10.0
-		contracts    = int64(88)
-		baseUnits    = float64(contracts) * quantoMult // 880
-		symbol       = "IR_USDT"
-		internalSym  = "IRUSDT"
+		quantoMult  = 10.0
+		contracts   = int64(88)
+		baseUnits   = float64(contracts) * quantoMult // 880
+		symbol      = "IR_USDT"
+		internalSym = "IRUSDT"
 	)
 
 	// Track what PlaceOrder sends to the API.
@@ -46,15 +47,15 @@ func TestQuantoMultiplierRoundTrip(t *testing.T) {
 		case r.URL.Path == "/api/v4/futures/usdt/positions/"+symbol:
 			// GetPosition response — returns raw contract count
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"contract":      symbol,
-				"size":          -contracts, // negative = short
-				"entry_price":   "0.0400",
-				"unrealised_pnl": "-0.50",
-				"leverage":      "5",
+				"contract":             symbol,
+				"size":                 -contracts, // negative = short
+				"entry_price":          "0.0400",
+				"unrealised_pnl":       "-0.50",
+				"leverage":             "5",
 				"cross_leverage_limit": 0,
-				"mode":          "single",
-				"liq_price":     "0.0500",
-				"mark_price":    "0.0410",
+				"mode":                 "single",
+				"liq_price":            "0.0500",
+				"mark_price":           "0.0410",
 			})
 
 		case r.URL.Path == "/api/v4/futures/usdt/orders" && r.Method == "POST":
@@ -150,5 +151,94 @@ func TestQuantoMultiplierRoundTrip(t *testing.T) {
 	}
 	if filled != baseUnits {
 		t.Errorf("GetOrderFilledQty: expected %.0f base units, got %.0f", baseUnits, filled)
+	}
+}
+
+func TestEnsureOneWayMode_UsesJSONBody(t *testing.T) {
+	var gotPath string
+	var gotQuery string
+	var gotBody []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+
+		var err error
+		gotBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"in_dual_mode": false,
+		})
+	}))
+	defer srv.Close()
+
+	adapter := &Adapter{
+		client: NewClientWithBase(srv.URL + "/api/v4"),
+	}
+
+	if err := adapter.EnsureOneWayMode(); err != nil {
+		t.Fatalf("EnsureOneWayMode: %v", err)
+	}
+
+	if gotPath != "/api/v4/futures/usdt/dual_mode" {
+		t.Fatalf("expected path /api/v4/futures/usdt/dual_mode, got %s", gotPath)
+	}
+	if gotQuery != "" {
+		t.Fatalf("expected no query string, got %q", gotQuery)
+	}
+
+	var payload struct {
+		DualMode bool `json:"dual_mode"`
+	}
+	if err := json.Unmarshal(gotBody, &payload); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	if payload.DualMode {
+		t.Fatalf("expected dual_mode=false, got true")
+	}
+}
+
+func TestGetSpotMarginOrder_ClosedIOCPartialIsNotMarkedFilled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v4/spot/orders/1852454420" {
+			http.NotFound(w, r)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":             "1852454420",
+			"status":         "closed",
+			"finish_as":      "ioc",
+			"currency_pair":  "BTC_USDT",
+			"filled_amount":  "0.4",
+			"avg_deal_price": "101.5",
+		})
+	}))
+	defer srv.Close()
+
+	adapter := &Adapter{
+		client: NewClientWithBase(srv.URL + "/api/v4"),
+	}
+
+	status, err := adapter.GetSpotMarginOrder("1852454420", "BTCUSDT")
+	if err != nil {
+		t.Fatalf("GetSpotMarginOrder: %v", err)
+	}
+	if status == nil {
+		t.Fatal("expected order status")
+	}
+	if status.Status != "cancelled" {
+		t.Fatalf("status = %q, want cancelled", status.Status)
+	}
+	if status.FilledQty != 0.4 {
+		t.Fatalf("filled qty = %.2f, want 0.4", status.FilledQty)
+	}
+	if status.AvgPrice != 101.5 {
+		t.Fatalf("avg price = %.2f, want 101.5", status.AvgPrice)
 	}
 }

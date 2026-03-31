@@ -114,6 +114,72 @@ func (a *Adapter) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (s
 	return resp.OrderID, nil
 }
 
+// GetSpotMarginOrder returns the native spot order state from Bybit UTA.
+func (a *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarginOrderStatus, error) {
+	params := map[string]string{
+		"category": "spot",
+		"symbol":   symbol,
+		"orderId":  orderID,
+	}
+	status, err := a.getSpotMarginOrderFromPath("/v5/order/realtime", params)
+	if err != nil {
+		return nil, fmt.Errorf("bybit GetSpotMarginOrder: %w", err)
+	}
+	if status != nil {
+		return status, nil
+	}
+
+	// Filled/cancelled unified-account orders may disappear from realtime after
+	// Bybit service restarts; fall back to order history for reconciliation.
+	status, err = a.getSpotMarginOrderFromPath("/v5/order/history", params)
+	if err != nil {
+		return nil, fmt.Errorf("bybit GetSpotMarginOrder history: %w", err)
+	}
+	return status, nil
+}
+
+func (a *Adapter) getSpotMarginOrderFromPath(path string, params map[string]string) (*exchange.SpotMarginOrderStatus, error) {
+	result, err := a.client.Get(path, params)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		List []struct {
+			OrderID     string `json:"orderId"`
+			Symbol      string `json:"symbol"`
+			OrderStatus string `json:"orderStatus"`
+			CumExecQty  string `json:"cumExecQty"`
+			AvgPrice    string `json:"avgPrice"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if len(resp.List) == 0 {
+		return nil, nil
+	}
+
+	qty, _ := strconv.ParseFloat(resp.List[0].CumExecQty, 64)
+	avgPrice, _ := strconv.ParseFloat(resp.List[0].AvgPrice, 64)
+	status := strings.ToLower(resp.List[0].OrderStatus)
+	switch status {
+	case "new":
+		status = "live"
+	case "partiallyfilled":
+		status = "partially_filled"
+	case "partiallyfilledcanceled":
+		status = "cancelled"
+	}
+
+	return &exchange.SpotMarginOrderStatus{
+		OrderID:   resp.List[0].OrderID,
+		Symbol:    resp.List[0].Symbol,
+		Status:    status,
+		FilledQty: qty,
+		AvgPrice:  avgPrice,
+	}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Spot Margin: Interest Rate
 // ---------------------------------------------------------------------------

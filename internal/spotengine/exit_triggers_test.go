@@ -12,7 +12,10 @@ import (
 )
 
 // priceStubExchange is a minimal exchange.Exchange that returns a fixed orderbook price.
-type priceStubExchange struct{ price float64 }
+type priceStubExchange struct {
+	price       float64
+	marginRatio float64
+}
 
 func (s priceStubExchange) Name() string { return "stub" }
 func (s priceStubExchange) GetOrderbook(string, int) (*exchange.Orderbook, error) {
@@ -35,20 +38,20 @@ func (s priceStubExchange) LoadAllContracts() (map[string]exchange.ContractInfo,
 func (s priceStubExchange) GetFundingRate(string) (*exchange.FundingRate, error) { return nil, nil }
 func (s priceStubExchange) GetFundingInterval(string) (time.Duration, error)     { return 0, nil }
 func (s priceStubExchange) GetFuturesBalance() (*exchange.Balance, error) {
-	return &exchange.Balance{}, nil
+	return &exchange.Balance{MarginRatio: s.marginRatio}, nil
 }
-func (s priceStubExchange) GetSpotBalance() (*exchange.Balance, error)           { return nil, nil }
+func (s priceStubExchange) GetSpotBalance() (*exchange.Balance, error) { return nil, nil }
 func (s priceStubExchange) Withdraw(exchange.WithdrawParams) (*exchange.WithdrawResult, error) {
 	return nil, nil
 }
-func (s priceStubExchange) TransferToSpot(string, string) error    { return nil }
-func (s priceStubExchange) TransferToFutures(string, string) error { return nil }
-func (s priceStubExchange) StartPriceStream([]string)              {}
-func (s priceStubExchange) SubscribeSymbol(string) bool            { return false }
-func (s priceStubExchange) GetBBO(string) (exchange.BBO, bool)     { return exchange.BBO{}, false }
-func (s priceStubExchange) GetPriceStore() *sync.Map               { return nil }
-func (s priceStubExchange) SubscribeDepth(string) bool             { return false }
-func (s priceStubExchange) UnsubscribeDepth(string) bool           { return false }
+func (s priceStubExchange) TransferToSpot(string, string) error         { return nil }
+func (s priceStubExchange) TransferToFutures(string, string) error      { return nil }
+func (s priceStubExchange) StartPriceStream([]string)                   {}
+func (s priceStubExchange) SubscribeSymbol(string) bool                 { return false }
+func (s priceStubExchange) GetBBO(string) (exchange.BBO, bool)          { return exchange.BBO{}, false }
+func (s priceStubExchange) GetPriceStore() *sync.Map                    { return nil }
+func (s priceStubExchange) SubscribeDepth(string) bool                  { return false }
+func (s priceStubExchange) UnsubscribeDepth(string) bool                { return false }
 func (s priceStubExchange) GetDepth(string) (*exchange.Orderbook, bool) { return nil, false }
 func (s priceStubExchange) StartPrivateStream()                         {}
 func (s priceStubExchange) GetOrderUpdate(string) (exchange.OrderUpdate, bool) {
@@ -82,6 +85,24 @@ func newPriceSpikeEngine(currentPrice float64) *SpotEngine {
 		log: utils.NewLogger("test"),
 	}
 }
+
+type marginStubExchange struct {
+	available float64
+}
+
+func (s *marginStubExchange) MarginBorrow(exchange.MarginBorrowParams) error { return nil }
+func (s *marginStubExchange) MarginRepay(exchange.MarginRepayParams) error   { return nil }
+func (s *marginStubExchange) PlaceSpotMarginOrder(exchange.SpotMarginOrderParams) (string, error) {
+	return "", nil
+}
+func (s *marginStubExchange) GetMarginInterestRate(string) (*exchange.MarginInterestRate, error) {
+	return nil, nil
+}
+func (s *marginStubExchange) GetMarginBalance(string) (*exchange.MarginBalance, error) {
+	return &exchange.MarginBalance{Available: s.available}, nil
+}
+func (s *marginStubExchange) TransferToMargin(string, string) error   { return nil }
+func (s *marginStubExchange) TransferFromMargin(string, string) error { return nil }
 
 // TestCapitalForExchange verifies that separate-account exchanges get lower
 // capital limits than unified-account exchanges.
@@ -206,11 +227,11 @@ func TestNegativeYieldSinceTransitions(t *testing.T) {
 	past := time.Now().Add(-10 * time.Minute)
 
 	tests := []struct {
-		name            string
-		negativeYield   bool
-		priorSince      *time.Time // NegativeYieldSince before this tick
-		wantSinceNil    bool       // expected: NegativeYieldSince == nil after tick
-		wantSinceIsNew  bool       // expected: NegativeYieldSince was just set (not the prior value)
+		name           string
+		negativeYield  bool
+		priorSince     *time.Time // NegativeYieldSince before this tick
+		wantSinceNil   bool       // expected: NegativeYieldSince == nil after tick
+		wantSinceIsNew bool       // expected: NegativeYieldSince was just set (not the prior value)
 	}{
 		{"starts timer on first negative", true, nil, false, true},
 		{"preserves timer on sustained negative", true, &past, false, false},
@@ -353,17 +374,17 @@ func TestPnLCalculation(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			pos := &models.SpotFuturesPosition{
-				Direction:        tc.direction,
-				FuturesSide:      tc.futSide,
-				SpotEntryPrice:   tc.spotEntry,
-				SpotExitPrice:    tc.spotExit,
-				SpotSize:         tc.spotSize,
-				FuturesEntry:     tc.futEntry,
-				FuturesExit:      tc.futExit,
-				FuturesSize:      tc.futSize,
+				Direction:         tc.direction,
+				FuturesSide:       tc.futSide,
+				SpotEntryPrice:    tc.spotEntry,
+				SpotExitPrice:     tc.spotExit,
+				SpotSize:          tc.spotSize,
+				FuturesEntry:      tc.futEntry,
+				FuturesExit:       tc.futExit,
+				FuturesSize:       tc.futSize,
 				BorrowCostAccrued: tc.borrow,
-				EntryFees:        tc.fees / 2,
-				ExitFees:         tc.fees / 2,
+				EntryFees:         tc.fees / 2,
+				ExitFees:          tc.fees / 2,
 			}
 
 			isDirA := pos.Direction == "borrow_sell_long"
@@ -390,10 +411,10 @@ func TestPnLCalculation(t *testing.T) {
 // TestPriceSpikeTriggers verifies that price-spike exits fire on the correct
 // direction for both Direction A and Direction B.
 //
-// Canonical rule: UP moves are adverse for BOTH directions.
-//   - Direction A: long futures, short spot — UP move increases borrow buy-back cost.
+// Canonical rule:
+//   - Direction A: long futures, short spot — UP and DOWN moves are both adverse.
 //   - Direction B: short futures, long spot — UP move risks futures liquidation.
-//   - DOWN moves do NOT trigger price-spike exits for either direction.
+//   - DOWN moves do NOT trigger price-spike exits for Direction B.
 func TestPriceSpikeTriggers(t *testing.T) {
 	const entry = 100.0
 
@@ -425,9 +446,22 @@ func TestPriceSpikeTriggers(t *testing.T) {
 			wantReason:   "",
 		},
 		{
-			name:         "DirA: -25% down move does NOT trigger",
+			name:         "DirA: -25% down move triggers normal price_spike_exit",
 			direction:    "borrow_sell_long",
 			currentPrice: 75.0, // -25%
+			wantReason:   "price_spike_exit",
+		},
+		{
+			name:          "DirA: -35% down move triggers emergency_price_spike",
+			direction:     "borrow_sell_long",
+			currentPrice:  65.0, // -35%
+			wantReason:    "emergency_price_spike",
+			wantEmergency: true,
+		},
+		{
+			name:         "DirA: -15% down move no trigger (below threshold)",
+			direction:    "borrow_sell_long",
+			currentPrice: 85.0, // -15% > -20% threshold
 			wantReason:   "",
 		},
 
@@ -484,5 +518,44 @@ func TestPriceSpikeTriggers(t *testing.T) {
 				t.Errorf("emergency = %v, want %v", emergency, tc.wantEmergency)
 			}
 		})
+	}
+}
+
+func TestMarginHealthTriggers_DirectionAFuturesMargin(t *testing.T) {
+	e := &SpotEngine{
+		cfg: &config.Config{
+			SpotFuturesMarginExitPct:      85.0,
+			SpotFuturesMarginEmergencyPct: 95.0,
+			SpotFuturesPriceExitPct:       999.0,
+			SpotFuturesPriceEmergencyPct:  999.0,
+		},
+		exchanges: map[string]exchange.Exchange{
+			"testexch": priceStubExchange{marginRatio: 0.90},
+		},
+		spotMargin: map[string]exchange.SpotMarginExchange{
+			"testexch": &marginStubExchange{available: 100},
+		},
+		log: utils.NewLogger("test"),
+	}
+
+	pos := &models.SpotFuturesPosition{
+		Symbol:         "TESTUSDT",
+		BaseCoin:       "TEST",
+		Exchange:       "testexch",
+		Direction:      "borrow_sell_long",
+		Status:         "active",
+		BorrowAmount:   1,
+		SpotEntryPrice: 100,
+	}
+
+	reason, emergency := e.checkExitTriggers(pos)
+	if reason != "margin_health_exit" {
+		t.Fatalf("reason = %q, want %q", reason, "margin_health_exit")
+	}
+	if emergency {
+		t.Fatalf("emergency = %v, want false", emergency)
+	}
+	if pos.MarginUtilizationPct != 90 {
+		t.Fatalf("MarginUtilizationPct = %.1f, want 90.0", pos.MarginUtilizationPct)
 	}
 }

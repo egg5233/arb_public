@@ -117,6 +117,52 @@ func (a *Adapter) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (s
 	return resp.ID, nil
 }
 
+// GetSpotMarginOrder returns the native unified spot order state from Gate.io.
+func (a *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarginOrderStatus, error) {
+	pair := toGateSymbol(symbol)
+	data, err := a.client.Get("/spot/orders/"+orderID, map[string]string{
+		"currency_pair": pair,
+		"account":       "unified",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("GetSpotMarginOrder: %w", err)
+	}
+
+	var resp struct {
+		ID           string `json:"id"`
+		Status       string `json:"status"`
+		FinishAs     string `json:"finish_as"`
+		CurrencyPair string `json:"currency_pair"`
+		FilledAmount string `json:"filled_amount"`
+		AvgDealPrice string `json:"avg_deal_price"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("GetSpotMarginOrder unmarshal: %w", err)
+	}
+
+	qty, _ := strconv.ParseFloat(resp.FilledAmount, 64)
+	avgPrice, _ := strconv.ParseFloat(resp.AvgDealPrice, 64)
+	status := strings.ToLower(resp.Status)
+	switch status {
+	case "open":
+		status = "live"
+	case "closed":
+		if strings.ToLower(resp.FinishAs) == "filled" {
+			status = "filled"
+		} else {
+			status = "cancelled"
+		}
+	}
+
+	return &exchange.SpotMarginOrderStatus{
+		OrderID:   resp.ID,
+		Symbol:    resp.CurrencyPair,
+		Status:    status,
+		FilledQty: qty,
+		AvgPrice:  avgPrice,
+	}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Spot Margin: Interest Rate
 // ---------------------------------------------------------------------------
@@ -169,11 +215,11 @@ func (a *Adapter) GetMarginBalance(coin string) (*exchange.MarginBalance, error)
 
 	var acctResp struct {
 		Balances map[string]struct {
-			Available   string `json:"available"`
-			Freeze      string `json:"freeze"`
-			Borrowed    string `json:"borrowed"`
-			TotalLiab   string `json:"total_liab"`
-			Equity      string `json:"equity"`
+			Available    string `json:"available"`
+			Freeze       string `json:"freeze"`
+			Borrowed     string `json:"borrowed"`
+			TotalLiab    string `json:"total_liab"`
+			Equity       string `json:"equity"`
 			NegativeLiab string `json:"negative_liab"`
 		} `json:"balances"`
 	}

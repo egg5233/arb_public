@@ -46,6 +46,13 @@ func (e *SpotEngine) monitorTick() {
 	}
 
 	for _, pos := range positions {
+		if pos.Status == models.SpotStatusPending {
+			if pos.ExitReason == spotEntryManualRecoveryReason {
+				continue
+			}
+			e.reconcilePendingEntry(pos)
+			continue
+		}
 		if pos.Status == models.SpotStatusExiting && pos.PendingRepay {
 			// Skip retry if deferred until a specific time (e.g. Bybit blackout).
 			if pos.PendingRepayRetryAt != nil && time.Now().UTC().Before(*pos.PendingRepayRetryAt) {
@@ -67,7 +74,7 @@ func (e *SpotEngine) monitorTick() {
 				isEmergency := pos.ExitRetryCount+1 >= 5
 				e.log.Warn("monitor: retrying stuck exit for %s (retry #%d, emergency=%v)",
 					pos.ID, pos.ExitRetryCount+1, isEmergency)
-				go e.initiateExit(pos, pos.ExitReason, isEmergency)
+				e.launchExit(pos, pos.ExitReason, isEmergency)
 			}
 			continue
 		}
@@ -121,6 +128,9 @@ func (e *SpotEngine) monitorPosition(pos *models.SpotFuturesPosition) {
 	// Check exit triggers for all directions.
 	// ---------------------------------------------------------------
 	reason, isEmergency := e.checkExitTriggers(latest)
+	if reason == "" {
+		reason, isEmergency = e.evaluateBorrowRateSpike(latest, time.Now().UTC())
+	}
 
 	// Persist tracking metrics updated by checkExitTriggers (best-effort).
 	if latest.PeakPriceMovePct > 0 || latest.MarginUtilizationPct > 0 {
@@ -140,7 +150,7 @@ func (e *SpotEngine) monitorPosition(pos *models.SpotFuturesPosition) {
 
 	if reason != "" {
 		if !e.isExiting(latest.ID) {
-			go e.initiateExit(latest, reason, isEmergency)
+			e.launchExit(latest, reason, isEmergency)
 		}
 	}
 }
@@ -303,9 +313,13 @@ func (e *SpotEngine) retryPendingRepay(pos *models.SpotFuturesPosition) {
 				return
 			}
 
-			// Confirm fill via the futures exchange adapter (has WS/REST order tracking).
+			// Confirm fill via the shared WS cache plus native spot order query.
 			if futExch, fOk := e.exchanges[pos.Exchange]; fOk {
-				filled, _ := e.confirmSpotFill(futExch, orderID, pos.Symbol, deficitWithBuffer)
+				filled, _, confirmed, confErr := e.confirmSpotFill(smExch, futExch, orderID, pos.Symbol, deficitWithBuffer)
+				if !confirmed {
+					e.log.Warn("retryPendingRepay: deficit buy %s unconfirmed for %s: %v — will retry next tick", orderID, pos.ID, confErr)
+					return
+				}
 				e.log.Info("retryPendingRepay: deficit buy filled %.6f %s for %s", filled, pos.BaseCoin, pos.ID)
 			}
 		}
