@@ -23,7 +23,7 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 	exchName = strings.ToLower(strings.TrimSpace(exchName))
 	direction = strings.TrimSpace(direction)
 
-	acquired, err := e.db.AcquireLock(spotEntryLockKey, 5*time.Minute)
+	lock, acquired, err := e.db.AcquireOwnedLock(spotEntryLockKey, 5*time.Minute)
 	if err != nil {
 		return fmt.Errorf("failed to acquire spot entry lock: %w", err)
 	}
@@ -31,7 +31,7 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		return errors.New("spot entry already in progress")
 	}
 	defer func() {
-		if err := e.db.ReleaseLock(spotEntryLockKey); err != nil {
+		if err := lock.Release(); err != nil {
 			e.log.Warn("ManualOpen: release entry lock: %v", err)
 		}
 	}()
