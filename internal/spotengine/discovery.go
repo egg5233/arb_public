@@ -140,11 +140,13 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 			continue
 		}
 
-		// Parse funding APR from the APR field (e.g. "43.21%").
+		spotSymbol := normalizeSymbol(item.Symbol)
+		isActive := activeKeys[spotSymbol+":"+exchName+":"+direction]
+
+		// Parse funding APR from the APR field (e.g. "43.21%"). Keep zero/negative
+		// funding rows in the cache as filtered so active positions still expose
+		// live economics to monitor/exit paths.
 		fundingAPR := parsePercent(item.APR)
-		if fundingAPR <= 0 {
-			continue
-		}
 
 		// Calculate fee APR (4 taker legs, annualized over assumed hold).
 		takerFee := spotFees[exchName]
@@ -154,12 +156,12 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 		totalRoundTripFee := takerFee * 4
 		feeAPR := totalRoundTripFee * (365.0 / assumedHoldDays)
 
-		spotSymbol := normalizeSymbol(item.Symbol)
-		isActive := activeKeys[spotSymbol+":"+exchName+":"+direction]
-
 		// --- Entry filters: mark failures in FilterStatus instead of skipping ---
 		var filterStatus string
 		var borrowAPR float64
+		if fundingAPR <= 0 {
+			filterStatus = fmt.Sprintf("funding %.1f%% <= 0", fundingAPR*100)
+		}
 
 		if direction == "borrow_sell_long" {
 			smExch := e.spotMargin[exchName]
