@@ -1,4 +1,4 @@
-import { useState, useEffect, type FC } from 'react';
+import { useState, type FC } from 'react';
 import type { Position, Stats, ExchangeInfo, SpotPosition } from '../types.ts';
 import StatusBadge from '../components/StatusBadge.tsx';
 import { useLocale } from '../i18n/index.ts';
@@ -9,8 +9,6 @@ interface OverviewProps {
   exchanges: ExchangeInfo[];
   onDiagnose?: () => Promise<{ analysis: string }>;
   spotPositions?: SpotPosition[];
-  getSpotAutoConfig?: () => Promise<{ auto_enabled: boolean; dry_run: boolean; persistence_scans: number; max_positions: number; capital_per_position: number; separate_acct_max_usdt: number; unified_acct_max_usdt: number }>;
-  updateSpotAutoConfig?: (data: { enabled?: boolean; dry_run?: boolean }) => Promise<unknown>;
 }
 
 function formatFundingCountdown(next: string | undefined): string {
@@ -25,44 +23,11 @@ function formatFundingCountdown(next: string | undefined): string {
   return `${hours}h ${mins % 60}m`;
 }
 
-const Overview: FC<OverviewProps> = ({ positions, stats, exchanges, onDiagnose, spotPositions = [], getSpotAutoConfig, updateSpotAutoConfig }) => {
+const Overview: FC<OverviewProps> = ({ positions, stats, exchanges, onDiagnose, spotPositions = [] }) => {
   const { t } = useLocale();
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagnosis, setDiagnosis] = useState<string | null>(null);
   const [diagError, setDiagError] = useState<string | null>(null);
-
-  // Spot-futures auto-mode state
-  const [spotAutoEnabled, setSpotAutoEnabled] = useState(false);
-  const [spotDryRun, setSpotDryRun] = useState(true);
-  const [spotConfigLoaded, setSpotConfigLoaded] = useState(false);
-
-  useEffect(() => {
-    if (getSpotAutoConfig) {
-      getSpotAutoConfig()
-        .then((cfg) => {
-          setSpotAutoEnabled(cfg.auto_enabled);
-          setSpotDryRun(cfg.dry_run);
-          setSpotConfigLoaded(true);
-        })
-        .catch(() => {});
-    }
-  }, [getSpotAutoConfig]);
-
-  const toggleSpotAuto = async (enabled: boolean) => {
-    if (!updateSpotAutoConfig) return;
-    try {
-      await updateSpotAutoConfig({ enabled });
-      setSpotAutoEnabled(enabled);
-    } catch { /* ignore */ }
-  };
-
-  const toggleSpotDryRun = async (dryRun: boolean) => {
-    if (!updateSpotAutoConfig) return;
-    try {
-      await updateSpotAutoConfig({ dry_run: dryRun });
-      setSpotDryRun(dryRun);
-    } catch { /* ignore */ }
-  };
 
   const activeSpotPositions = spotPositions.filter((p) => p.status === 'active' || p.status === 'exiting');
 
@@ -194,96 +159,69 @@ const Overview: FC<OverviewProps> = ({ positions, stats, exchanges, onDiagnose, 
         )}
       </div>
 
-      {/* Spot-Futures Section */}
-      {spotConfigLoaded && (
+      {/* Spot-Futures Active Positions */}
+      {activeSpotPositions.length > 0 && (
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-semibold text-gray-400">Spot-Futures Auto Mode</h3>
-            <div className="flex items-center gap-3">
-              <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
-                <span>Dry Run</span>
-                <button
-                  onClick={() => toggleSpotDryRun(!spotDryRun)}
-                  className={`w-8 h-4 rounded-full transition-colors relative ${spotDryRun ? 'bg-yellow-600' : 'bg-gray-600'}`}
-                >
-                  <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${spotDryRun ? 'left-4' : 'left-0.5'}`} />
-                </button>
-              </label>
-              <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
-                <span>Auto</span>
-                <button
-                  onClick={() => toggleSpotAuto(!spotAutoEnabled)}
-                  className={`w-8 h-4 rounded-full transition-colors relative ${spotAutoEnabled ? 'bg-green-600' : 'bg-gray-600'}`}
-                >
-                  <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${spotAutoEnabled ? 'left-4' : 'left-0.5'}`} />
-                </button>
-              </label>
-            </div>
-          </div>
-
-          {activeSpotPositions.length === 0 ? (
-            <p className="text-gray-500 text-sm">No active spot-futures positions</p>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {activeSpotPositions.map((pos) => {
-                const netYield = pos.yield_data_source && pos.yield_data_source !== 'entry_fallback'
-                  ? pos.current_net_yield_apr
-                  : pos.funding_apr - pos.current_borrow_apr;
-                const isFallback = pos.yield_data_source === 'entry_fallback';
-                const duration = Math.floor((Date.now() - new Date(pos.created_at).getTime()) / 3600000);
-                const dir = pos.direction === 'borrow_sell_long' ? 'A' : 'B';
-                return (
-                  <div key={pos.id} className="bg-gray-800/50 rounded-md px-3 py-2 space-y-1">
-                    <div className="flex items-center justify-between">
-                      <span className="font-mono text-sm text-gray-100">{pos.symbol}</span>
-                      <span className={`text-xs px-1.5 py-0.5 rounded ${pos.status === 'exiting' ? 'bg-red-900/50 text-red-400' : 'bg-green-900/50 text-green-400'}`}>
-                        {pos.status} (Dir {dir})
+          <h3 className="text-sm font-semibold text-gray-400 mb-3">Spot-Futures Positions</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {activeSpotPositions.map((pos) => {
+              const netYield = pos.yield_data_source && pos.yield_data_source !== 'entry_fallback'
+                ? pos.current_net_yield_apr
+                : pos.funding_apr - pos.current_borrow_apr;
+              const isFallback = pos.yield_data_source === 'entry_fallback';
+              const duration = Math.floor((Date.now() - new Date(pos.created_at).getTime()) / 3600000);
+              const dir = pos.direction === 'borrow_sell_long' ? 'A' : 'B';
+              return (
+                <div key={pos.id} className="bg-gray-800/50 rounded-md px-3 py-2 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-sm text-gray-100">{pos.symbol}</span>
+                    <span className={`text-xs px-1.5 py-0.5 rounded ${pos.status === 'exiting' ? 'bg-red-900/50 text-red-400' : 'bg-green-900/50 text-green-400'}`}>
+                      {pos.status} (Dir {dir})
+                    </span>
+                  </div>
+                  <div className="text-xs text-gray-400 capitalize">{pos.exchange} &middot; {duration}h held</div>
+                  <div className="grid grid-cols-2 gap-x-3 text-xs">
+                    <div>
+                      <span className="text-gray-500">Borrow APR</span>
+                      <span className={`ml-1 font-mono ${pos.current_borrow_apr > 0.3 ? 'text-red-400' : 'text-gray-300'}`}>
+                        {(pos.current_borrow_apr * 100).toFixed(1)}%
                       </span>
                     </div>
-                    <div className="text-xs text-gray-400 capitalize">{pos.exchange} &middot; {duration}h held</div>
-                    <div className="grid grid-cols-2 gap-x-3 text-xs">
-                      <div>
-                        <span className="text-gray-500">Borrow APR</span>
-                        <span className={`ml-1 font-mono ${pos.current_borrow_apr > 0.3 ? 'text-red-400' : 'text-gray-300'}`}>
-                          {(pos.current_borrow_apr * 100).toFixed(1)}%
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-gray-500">Net Yield{isFallback ? ' *' : ''}</span>
-                        <span className={`ml-1 font-mono ${netYield < 0 ? 'text-red-400' : 'text-green-400'}`} title={isFallback ? 'Entry-time estimate (live scan unavailable)' : 'Live scan'}>
-                          {(netYield * 100).toFixed(1)}%
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-gray-500">Borrow Cost</span>
-                        <span className="ml-1 font-mono text-gray-300">${pos.borrow_cost_accrued.toFixed(2)}</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-500">Notional</span>
-                        <span className="ml-1 font-mono text-gray-300">${pos.notional_usdt.toFixed(0)}</span>
-                      </div>
-                      {pos.margin_utilization_pct > 0 && (
-                        <div>
-                          <span className="text-gray-500">Margin</span>
-                          <span className={`ml-1 font-mono ${pos.margin_utilization_pct > 85 ? 'text-red-400' : pos.margin_utilization_pct > 70 ? 'text-yellow-400' : 'text-gray-300'}`}>
-                            {pos.margin_utilization_pct.toFixed(0)}%
-                          </span>
-                        </div>
-                      )}
-                      {pos.peak_price_move_pct > 5 && (
-                        <div>
-                          <span className="text-gray-500">Peak Move</span>
-                          <span className={`ml-1 font-mono ${pos.peak_price_move_pct > 20 ? 'text-red-400' : 'text-yellow-400'}`}>
-                            {pos.peak_price_move_pct.toFixed(1)}%
-                          </span>
-                        </div>
-                      )}
+                    <div>
+                      <span className="text-gray-500">Net Yield{isFallback ? ' *' : ''}</span>
+                      <span className={`ml-1 font-mono ${netYield < 0 ? 'text-red-400' : 'text-green-400'}`} title={isFallback ? 'Entry-time estimate (live scan unavailable)' : 'Live scan'}>
+                        {(netYield * 100).toFixed(1)}%
+                      </span>
                     </div>
+                    <div>
+                      <span className="text-gray-500">Borrow Cost</span>
+                      <span className="ml-1 font-mono text-gray-300">${pos.borrow_cost_accrued.toFixed(2)}</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-500">Notional</span>
+                      <span className="ml-1 font-mono text-gray-300">${pos.notional_usdt.toFixed(0)}</span>
+                    </div>
+                    {pos.margin_utilization_pct > 0 && (
+                      <div>
+                        <span className="text-gray-500">Margin</span>
+                        <span className={`ml-1 font-mono ${pos.margin_utilization_pct > 85 ? 'text-red-400' : pos.margin_utilization_pct > 70 ? 'text-yellow-400' : 'text-gray-300'}`}>
+                          {pos.margin_utilization_pct.toFixed(0)}%
+                        </span>
+                      </div>
+                    )}
+                    {pos.peak_price_move_pct > 5 && (
+                      <div>
+                        <span className="text-gray-500">Peak Move</span>
+                        <span className={`ml-1 font-mono ${pos.peak_price_move_pct > 20 ? 'text-red-400' : 'text-yellow-400'}`}>
+                          {pos.peak_price_move_pct.toFixed(1)}%
+                        </span>
+                      </div>
+                    )}
                   </div>
-                );
-              })}
-            </div>
-          )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 

@@ -136,8 +136,6 @@ function App() {
             exchanges={exchanges}
             onDiagnose={api.diagnose}
             spotPositions={ws.spotPositions}
-            getSpotAutoConfig={api.getSpotAutoConfig}
-            updateSpotAutoConfig={api.updateSpotAutoConfig}
           />
         );
       case 'opportunities':

@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.34] - 2026-03-31
+
+### Added
+- **[dashboard] Spot-futures config tabs in Config page** — Config page now has a Perp-Perp / Spot-Futures strategy toggle; spot-futures mode exposes 4 sub-tabs (General, Sizing, Discovery, Exit & Risk) covering all 21 spot_futures config parameters with i18n support (en + zh-TW); auto-trade toggles moved from Overview to Config General tab; Overview retains only spot position cards (`Config.tsx`, `Overview.tsx`, `App.tsx`, `en.ts`, `zh-TW.ts`)
+
 ## [0.22.33] - 2026-03-31
 
 ### Added
