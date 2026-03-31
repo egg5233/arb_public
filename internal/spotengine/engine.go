@@ -35,7 +35,8 @@ type SpotEngine struct {
 
 	// lastSeen tracks which symbols were present in the previous scan
 	// so we can delete Redis persistence counters for symbols that disappeared.
-	lastSeen map[string]bool
+	lastSeenMu sync.RWMutex
+	lastSeen   map[string]bool
 
 	// posMu provides per-position locking for read-modify-write operations.
 	posMu sync.Map // posID → *sync.Mutex
@@ -108,9 +109,11 @@ func (e *SpotEngine) discoveryLoop() {
 	if syms, err := e.db.ListSpotPersistenceSymbols(); err != nil {
 		e.log.Error("failed to seed lastSeen from Redis: %v", err)
 	} else if len(syms) > 0 {
+		e.lastSeenMu.Lock()
 		for _, s := range syms {
 			e.lastSeen[s] = true
 		}
+		e.lastSeenMu.Unlock()
 		e.log.Info("seeded lastSeen with %d symbols from Redis persistence keys", len(syms))
 	}
 
@@ -198,14 +201,18 @@ func (e *SpotEngine) updatePersistenceCounts(opps []SpotArbOpportunity) {
 	}
 
 	// Delete counters for symbols that disappeared since last scan.
-	for key := range e.lastSeen {
+	e.lastSeenMu.Lock()
+	prevSeen := e.lastSeen
+	e.lastSeen = seen
+	e.lastSeenMu.Unlock()
+
+	for key := range prevSeen {
 		if !seen[key] {
 			if err := e.db.DeleteSpotPersistence(key); err != nil {
 				e.log.Error("persist del %s: %v", key, err)
 			}
 		}
 	}
-	e.lastSeen = seen
 }
 
 // getPersistenceCount returns how many consecutive scans a symbol has appeared in.
