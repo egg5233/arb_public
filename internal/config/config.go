@@ -1045,31 +1045,28 @@ func (c *Config) SaveJSON() error {
 		}
 	}
 
-	// Spot-futures settings — only persist when enabled
-	if c.SpotFuturesEnabled {
-		sf := getMap(raw, "spot_futures")
-		sf["enabled"] = c.SpotFuturesEnabled
-		sf["max_positions"] = c.SpotFuturesMaxPositions
-		sf["capital_per_position"] = c.SpotFuturesCapitalPerPosition
-		sf["leverage"] = c.SpotFuturesLeverage
-		sf["monitor_interval_sec"] = c.SpotFuturesMonitorIntervalSec
-		sf["min_net_yield_apr"] = c.SpotFuturesMinNetYieldAPR
-		sf["max_borrow_apr"] = c.SpotFuturesMaxBorrowAPR
-		sf["exchanges"] = c.SpotFuturesExchanges
-		sf["scan_interval_min"] = c.SpotFuturesScanIntervalMin
-		sf["borrow_grace_min"] = c.SpotFuturesBorrowGraceMin
-		sf["price_exit_pct"] = c.SpotFuturesPriceExitPct
-		sf["price_emergency_pct"] = c.SpotFuturesPriceEmergencyPct
-		sf["margin_exit_pct"] = c.SpotFuturesMarginExitPct
-		sf["margin_emergency_pct"] = c.SpotFuturesMarginEmergencyPct
-		sf["loss_cooldown_hours"] = c.SpotFuturesLossCooldownHours
-		sf["auto_enabled"] = c.SpotFuturesAutoEnabled
-		sf["auto_dry_run"] = c.SpotFuturesDryRun
-		sf["persistence_scans"] = c.SpotFuturesPersistenceScans
-		sf["profit_transfer_enabled"] = c.SpotFuturesProfitTransferEnabled
-		sf["separate_acct_max_usdt"] = c.SpotFuturesSeparateAcctMaxUSDT
-		sf["unified_acct_max_usdt"] = c.SpotFuturesUnifiedAcctMaxUSDT
-	}
+	sf := getMap(raw, "spot_futures")
+	sf["enabled"] = c.SpotFuturesEnabled
+	sf["max_positions"] = c.SpotFuturesMaxPositions
+	sf["capital_per_position"] = c.SpotFuturesCapitalPerPosition
+	sf["leverage"] = c.SpotFuturesLeverage
+	sf["monitor_interval_sec"] = c.SpotFuturesMonitorIntervalSec
+	sf["min_net_yield_apr"] = c.SpotFuturesMinNetYieldAPR
+	sf["max_borrow_apr"] = c.SpotFuturesMaxBorrowAPR
+	sf["exchanges"] = c.SpotFuturesExchanges
+	sf["scan_interval_min"] = c.SpotFuturesScanIntervalMin
+	sf["borrow_grace_min"] = c.SpotFuturesBorrowGraceMin
+	sf["price_exit_pct"] = c.SpotFuturesPriceExitPct
+	sf["price_emergency_pct"] = c.SpotFuturesPriceEmergencyPct
+	sf["margin_exit_pct"] = c.SpotFuturesMarginExitPct
+	sf["margin_emergency_pct"] = c.SpotFuturesMarginEmergencyPct
+	sf["loss_cooldown_hours"] = c.SpotFuturesLossCooldownHours
+	sf["auto_enabled"] = c.SpotFuturesAutoEnabled
+	sf["auto_dry_run"] = c.SpotFuturesDryRun
+	sf["persistence_scans"] = c.SpotFuturesPersistenceScans
+	sf["profit_transfer_enabled"] = c.SpotFuturesProfitTransferEnabled
+	sf["separate_acct_max_usdt"] = c.SpotFuturesSeparateAcctMaxUSDT
+	sf["unified_acct_max_usdt"] = c.SpotFuturesUnifiedAcctMaxUSDT
 
 	out, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
