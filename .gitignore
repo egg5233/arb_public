@@ -33,4 +33,4 @@ validate-docs
 spotarb
 paperclip*
 .agents/skills/*
-doc/exchange
+config.json.*
