@@ -214,6 +214,10 @@ func (s *Server) handleSpotManualOpen(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, Response{Error: errMsg})
 		} else if strings.Contains(errMsg, "already") || strings.Contains(errMsg, "capacity") {
 			writeJSON(w, http.StatusConflict, Response{Error: errMsg})
+		} else if strings.Contains(errMsg, "is filtered") {
+			writeJSON(w, http.StatusUnprocessableEntity, Response{Error: errMsg})
+		} else if strings.Contains(errMsg, "pending confirmation") {
+			writeJSON(w, http.StatusAccepted, Response{OK: true, Data: map[string]string{"status": "pending", "message": errMsg}})
 		} else if strings.Contains(errMsg, "dry run") {
 			writeJSON(w, http.StatusUnprocessableEntity, Response{Error: errMsg})
 		} else {

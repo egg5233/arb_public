@@ -46,6 +46,10 @@ func (e *SpotEngine) monitorTick() {
 	}
 
 	for _, pos := range positions {
+		if pos.Status == models.SpotStatusPending {
+			e.reconcilePendingEntry(pos)
+			continue
+		}
 		if pos.Status == models.SpotStatusExiting && pos.PendingRepay {
 			// Skip retry if deferred until a specific time (e.g. Bybit blackout).
 			if pos.PendingRepayRetryAt != nil && time.Now().UTC().Before(*pos.PendingRepayRetryAt) {

@@ -412,3 +412,120 @@ func TestManualOpen_FailsClosedWhenEntryLockIsLost(t *testing.T) {
 		t.Fatalf("active positions = %d, want 0", len(active))
 	}
 }
+
+func TestManualOpen_PersistsPendingEntryUntilSpotConfirmationRecovers(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	engine.cfg = &config.Config{
+		SpotFuturesMaxPositions:       1,
+		SpotFuturesLeverage:           3,
+		SpotFuturesUnifiedAcctMaxUSDT: 100,
+	}
+	engine.api = api.NewServer(engine.db, engine.cfg, nil)
+
+	futExch := &closeTestExchange{
+		orderUpdates: map[string]exchange.OrderUpdate{
+			"fut-close-1": {
+				OrderID:      "fut-close-1",
+				Status:       "filled",
+				FilledVolume: 1,
+				AvgPrice:     100,
+			},
+		},
+		orderbook: &exchange.Orderbook{
+			Bids: []exchange.PriceLevel{{Price: 99, Quantity: 1}},
+			Asks: []exchange.PriceLevel{{Price: 101, Quantity: 1}},
+		},
+	}
+	smExch := &closeTestSpotMargin{
+		queryErrs: []error{errors.New("temporary spot query failure")},
+		queryStates: []*exchange.SpotMarginOrderStatus{
+			{
+				OrderID:   "spot-close-1",
+				Symbol:    "BTCUSDT",
+				Status:    "filled",
+				FilledQty: 1,
+				AvgPrice:  100,
+			},
+		},
+	}
+
+	engine.exchanges = map[string]exchange.Exchange{"stub": futExch}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{"stub": smExch}
+	engine.latestOpps = []SpotArbOpportunity{
+		{
+			Symbol:    "BTCUSDT",
+			BaseCoin:  "BTC",
+			Exchange:  "stub",
+			Direction: "buy_spot_short",
+		},
+	}
+
+	err := engine.ManualOpen("BTCUSDT", "stub", "buy_spot_short")
+	if err == nil {
+		t.Fatal("expected ManualOpen to return pending confirmation")
+	}
+	if !strings.Contains(err.Error(), "pending confirmation") {
+		t.Fatalf("ManualOpen error = %v, want pending confirmation", err)
+	}
+	if futExch.placeCalls != 0 {
+		t.Fatalf("futures place calls after pending entry = %d, want 0", futExch.placeCalls)
+	}
+
+	active, err := engine.db.GetActiveSpotPositions()
+	if err != nil {
+		t.Fatalf("GetActiveSpotPositions after pending entry: %v", err)
+	}
+	if len(active) != 1 {
+		t.Fatalf("active positions after pending entry = %d, want 1", len(active))
+	}
+	if active[0].Status != models.SpotStatusPending {
+		t.Fatalf("pending position status = %q, want %q", active[0].Status, models.SpotStatusPending)
+	}
+	if active[0].PendingEntryOrderID != "spot-close-1" {
+		t.Fatalf("pending entry order id = %q, want %q", active[0].PendingEntryOrderID, "spot-close-1")
+	}
+
+	engine.monitorTick()
+
+	recovered, err := engine.db.GetSpotPosition(active[0].ID)
+	if err != nil {
+		t.Fatalf("GetSpotPosition after recovery: %v", err)
+	}
+	if recovered.Status != models.SpotStatusActive {
+		t.Fatalf("recovered position status = %q, want %q", recovered.Status, models.SpotStatusActive)
+	}
+	if recovered.PendingEntryOrderID != "" {
+		t.Fatalf("pending entry order id should be cleared, got %q", recovered.PendingEntryOrderID)
+	}
+	if recovered.FuturesSize != 1 {
+		t.Fatalf("futures size = %.2f, want 1", recovered.FuturesSize)
+	}
+	if futExch.placeCalls != 1 {
+		t.Fatalf("futures place calls after recovery = %d, want 1", futExch.placeCalls)
+	}
+}
+
+func TestManualOpen_RejectsFilteredOpportunity(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	engine.latestOpps = []SpotArbOpportunity{
+		{
+			Symbol:       "BTCUSDT",
+			BaseCoin:     "BTC",
+			Exchange:     "stub",
+			Direction:    "buy_spot_short",
+			FilterStatus: "margin unavailable",
+		},
+	}
+
+	err := engine.ManualOpen("BTCUSDT", "stub", "buy_spot_short")
+	if err == nil {
+		t.Fatal("expected filtered opportunity to be rejected")
+	}
+	if !strings.Contains(err.Error(), "is filtered") {
+		t.Fatalf("ManualOpen error = %v, want filtered rejection", err)
+	}
+}

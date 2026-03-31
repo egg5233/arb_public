@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -229,5 +230,53 @@ func TestHandleSpotAutoConfig_POST_EchoesWidenedPayload(t *testing.T) {
 	}
 	if resp.Data["capital_per_position"] != float64(200) {
 		t.Errorf("expected capital_per_position=200, got %v", resp.Data["capital_per_position"])
+	}
+}
+
+func TestHandleSpotManualOpen_RejectsFilteredOpportunity(t *testing.T) {
+	s, mr := newTestServer(t)
+	defer mr.Close()
+
+	s.spotOpenPosition = func(string, string, string) error {
+		return errors.New("opportunity BTCUSDT on stub (buy_spot_short) is filtered: margin unavailable")
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/spot/open", strings.NewReader(`{"symbol":"BTCUSDT","exchange":"stub","direction":"buy_spot_short"}`))
+	w := httptest.NewRecorder()
+	s.handleSpotManualOpen(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleSpotManualOpen_ReturnsAcceptedForPendingConfirmation(t *testing.T) {
+	s, mr := newTestServer(t)
+	defer mr.Close()
+
+	s.spotOpenPosition = func(string, string, string) error {
+		return errors.New("spot entry pending confirmation on order spot-123")
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/spot/open", strings.NewReader(`{"symbol":"BTCUSDT","exchange":"stub","direction":"buy_spot_short"}`))
+	w := httptest.NewRecorder()
+	s.handleSpotManualOpen(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		OK   bool                   `json:"ok"`
+		Data map[string]interface{} `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.OK {
+		t.Fatal("expected ok=true")
+	}
+	if resp.Data["status"] != "pending" {
+		t.Fatalf("expected pending status, got %v", resp.Data["status"])
 	}
 }
