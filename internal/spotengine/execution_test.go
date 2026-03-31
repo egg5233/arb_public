@@ -2,6 +2,7 @@ package spotengine
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"sync"
@@ -91,6 +92,9 @@ func (s *closeTestExchange) GetFundingFees(string, time.Time) ([]exchange.Fundin
 }
 func (s *closeTestExchange) GetClosePnL(string, time.Time) ([]exchange.ClosePnL, error) {
 	return nil, nil
+}
+func (s *closeTestExchange) GetWithdrawFee(string, string) (float64, error) {
+	return 0, fmt.Errorf("not implemented")
 }
 func (s *closeTestExchange) EnsureOneWayMode() error { return nil }
 func (s *closeTestExchange) Close()                  {}

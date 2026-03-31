@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.45] - 2026-03-31
+
+### Added
+- **GetWithdrawFee API** — all 6 exchange adapters query actual withdrawal fees from exchange APIs instead of hardcoded 5% buffer
+  - Binance: `/sapi/v1/capital/config/getall`
+  - BingX: `/openApi/wallets/v1/capital/config/getall`
+  - Bitget: `/api/v2/spot/public/coins` (includes extraWithdrawFee)
+  - Bybit: `/v5/asset/coin/query-info` (rejects percentage fees)
+  - Gate.io: `/api/v4/wallet/withdraw_status` (rejects percentage fees)
+  - OKX: `/api/v5/asset/currencies` (reads `fee` field)
+
+### Fixed
+- **Rebalance cross-exchange transfer** — uses actual withdrawal fee; futures→spot transfers exact deficit + fee; withdraw sends net amount only
+- **Withdraw failure rollback** — tracks movedToSpot; skips no-op TransferToSpot (Binance/Gate.io); rolls back OKX/Bybit real transfers
+- **Donor exclusion on rollback failure** — excludes donor from rest of rebalance pass
+
 ## [0.22.44] - 2026-03-31
 
 ### Fixed

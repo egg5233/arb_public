@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -58,6 +59,9 @@ func (s stubExchange) EnsureOneWayMode() error { return nil }
 func (s stubExchange) Close()                   {}
 func (s stubExchange) GetClosePnL(string, time.Time) ([]exchange.ClosePnL, error) {
 	return nil, nil
+}
+func (s stubExchange) GetWithdrawFee(string, string) (float64, error) {
+	return 0, fmt.Errorf("not implemented")
 }
 
 // makeNilExchangeMap builds a map[string]exchange.Exchange with stub implementations.

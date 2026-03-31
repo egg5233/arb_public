@@ -38,6 +38,8 @@ type Exchange interface {
 	GetSpotBalance() (*Balance, error)
 	// Withdraw & Transfer
 	Withdraw(params WithdrawParams) (*WithdrawResult, error)
+	// GetWithdrawFee queries the exchange API for the withdrawal fee of a coin on a given chain.
+	GetWithdrawFee(coin, chain string) (float64, error)
 	// TransferToSpot moves funds from the trading/futures account to the
 	// spot/funding account so they can be withdrawn. No-op on exchanges
 	// where withdrawals already come from the main balance (e.g. Binance, Gate.io).

@@ -678,6 +678,57 @@ func (a *Adapter) Withdraw(params exchange.WithdrawParams) (*exchange.WithdrawRe
 	}, nil
 }
 
+// GetWithdrawFee queries the BingX API for the withdrawal fee of a coin on a given chain.
+func (a *Adapter) GetWithdrawFee(coin, chain string) (float64, error) {
+	network := mapChainToBingXNetwork(chain)
+	params := map[string]string{
+		"coin": coin,
+	}
+	data, err := a.client.Get("/openApi/wallets/v1/capital/config/getall", params)
+	if err != nil {
+		return 0, fmt.Errorf("bingx GetWithdrawFee: %w", err)
+	}
+
+	var coins []struct {
+		Coin        string `json:"coin"`
+		NetworkList []struct {
+			Network     string `json:"network"`
+			WithdrawFee string `json:"withdrawFee"`
+		} `json:"networkList"`
+	}
+	if err := json.Unmarshal(data, &coins); err != nil {
+		return 0, fmt.Errorf("bingx GetWithdrawFee unmarshal: %w", err)
+	}
+
+	for _, c := range coins {
+		if !strings.EqualFold(c.Coin, coin) {
+			continue
+		}
+		for _, n := range c.NetworkList {
+			if strings.EqualFold(n.Network, network) {
+				fee, err := strconv.ParseFloat(n.WithdrawFee, 64)
+				if err != nil {
+					return 0, fmt.Errorf("bingx GetWithdrawFee parse fee: %w", err)
+				}
+				return fee, nil
+			}
+		}
+		return 0, fmt.Errorf("bingx GetWithdrawFee: network %s not found for %s", network, coin)
+	}
+	return 0, fmt.Errorf("bingx GetWithdrawFee: coin %s not found", coin)
+}
+
+func mapChainToBingXNetwork(chain string) string {
+	switch chain {
+	case "APT":
+		return "APT"
+	case "BEP20":
+		return "BEP20"
+	default:
+		return chain
+	}
+}
+
 func mapChainToBingX(chain string) string {
 	switch chain {
 	case "BEP20":
