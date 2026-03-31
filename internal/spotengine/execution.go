@@ -13,6 +13,8 @@ import (
 	"arb/pkg/utils"
 )
 
+const spotEntryLockKey = "spot_entry"
+
 // ManualOpen executes a spot-futures arbitrage entry for the given symbol,
 // exchange, and direction. It runs synchronously (blocking) and returns an
 // error if any pre-check or execution step fails.
@@ -20,6 +22,19 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 	symbol = strings.ToUpper(strings.TrimSpace(symbol))
 	exchName = strings.ToLower(strings.TrimSpace(exchName))
 	direction = strings.TrimSpace(direction)
+
+	acquired, err := e.db.AcquireLock(spotEntryLockKey, 5*time.Minute)
+	if err != nil {
+		return fmt.Errorf("failed to acquire spot entry lock: %w", err)
+	}
+	if !acquired {
+		return errors.New("spot entry already in progress")
+	}
+	defer func() {
+		if err := e.db.ReleaseLock(spotEntryLockKey); err != nil {
+			e.log.Warn("ManualOpen: release entry lock: %v", err)
+		}
+	}()
 
 	e.log.Info("ManualOpen: %s on %s direction=%s", symbol, exchName, direction)
 
