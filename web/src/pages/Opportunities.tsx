@@ -1,16 +1,20 @@
 import { useState, useEffect, useCallback, type FC } from 'react';
-import type { Opportunity } from '../types.ts';
+import type { Opportunity, SpotOpportunity } from '../types.ts';
 import { useLocale } from '../i18n/index.ts';
 import { ExchangeLink } from '../utils/tradingUrl.tsx';
 
+type Tab = 'perp' | 'spot';
+
 interface OpportunitiesProps {
   opportunities: Opportunity[];
+  spotOpportunities?: SpotOpportunity[];
   onOpen?: (symbol: string, longExchange: string, shortExchange: string, force?: boolean) => Promise<void>;
+  onSpotOpen?: (symbol: string, exchange: string, direction: string) => Promise<void>;
 }
 
 function scoreColor(score: number): string {
-  if (score >= 70) return 'bg-green-500/5';
-  if (score >= 40) return 'bg-yellow-500/5';
+  if (score >= 70) return 'bg-emerald-500/5';
+  if (score >= 40) return 'bg-amber-500/5';
   return 'bg-red-500/5';
 }
 
@@ -38,13 +42,13 @@ function formatTimestamp(ts?: string): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-const Opportunities: FC<OpportunitiesProps> = ({ opportunities, onOpen }) => {
+const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunities = [], onOpen, onSpotOpen }) => {
   const { t } = useLocale();
+  const [tab, setTab] = useState<Tab>('perp');
   const [openingOpp, setOpeningOpp] = useState<Opportunity | null>(null);
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
 
-  // Dismiss modal on Escape key
   const dismissModal = useCallback(() => { if (!opening) setOpeningOpp(null); }, [opening]);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') dismissModal(); };
@@ -53,6 +57,7 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, onOpen }) => {
   }, [dismissModal]);
 
   const sorted = [...opportunities].sort((a, b) => b.score - a.score);
+  const spotPassed = spotOpportunities.filter((o) => !o.filter_status);
 
   const handleConfirmOpen = async (force = false) => {
     if (!openingOpp || !onOpen) return;
@@ -69,63 +74,200 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, onOpen }) => {
   };
 
   return (
-    <div className="space-y-6">
-      <h2 className="text-xl font-bold text-gray-100">
-        {t('opp.title')}
-        <span className="ml-2 text-sm font-normal text-gray-500">{sorted.length} {t('opp.found')}</span>
-      </h2>
-      <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-gray-400 text-left border-b border-gray-800">
-              <th className="pb-2">#</th>
-              <th className="pb-2">{t('opp.symbol')}</th>
-              <th className="pb-2">{t('opp.long')}</th>
-              <th className="pb-2">{t('opp.short')}</th>
-              <th className="pb-2 text-right">{t('opp.longRate')}</th>
-              <th className="pb-2 text-right">{t('opp.shortRate')}</th>
-              <th className="pb-2 text-right">{t('opp.spread')}</th>
-              <th className="pb-2 text-right">{t('opp.interval')}</th>
-              <th className="pb-2 text-right">{t('opp.nextFund')}</th>
-              <th className="pb-2 text-right">{t('opp.oi')}</th>
-              <th className="pb-2 text-right">{t('opp.updated')}</th>
-              <th className="pb-2"></th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-800">
-            {sorted.map((opp, i) => (
-              <tr key={`${opp.symbol}-${opp.long_exchange}-${opp.short_exchange}`} className={`text-gray-100 ${scoreColor(opp.score)}`}>
-                <td className="py-2 font-mono text-gray-500">{i + 1}</td>
-                <td className="py-2 font-mono">{opp.symbol}</td>
-                <td className="py-2 text-green-400"><ExchangeLink exchange={opp.long_exchange} symbol={opp.symbol} /></td>
-                <td className="py-2 text-red-400"><ExchangeLink exchange={opp.short_exchange} symbol={opp.symbol} /></td>
-                <td className="py-2 text-right font-mono text-gray-400">{opp.long_rate.toFixed(2)}</td>
-                <td className="py-2 text-right font-mono text-gray-400">{opp.short_rate.toFixed(2)}</td>
-                <td className="py-2 text-right font-mono font-semibold">{opp.spread.toFixed(1)} bps/h</td>
-                <td className="py-2 text-right font-mono text-gray-400">{formatInterval(opp.interval_hours)}</td>
-                <td className="py-2 text-right font-mono text-gray-400 text-xs">{formatFundingCountdown(opp.next_funding)}</td>
-                <td className="py-2 text-right font-mono">{opp.oi_rank}</td>
-                <td className="py-2 text-right font-mono text-gray-500 text-xs">{formatTimestamp(opp.timestamp)}</td>
-                <td className="px-2 py-1">
-                  {onOpen && (
-                    <button onClick={() => { setOpeningOpp(opp); setOpenError(null); }} disabled={opening}
-                      className="px-2 py-0.5 text-xs bg-green-600/20 text-green-400 rounded hover:bg-green-600/40 disabled:opacity-50">
-                      {t('opp.open')}
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {sorted.length === 0 && (
-              <tr>
-                <td colSpan={12} className="py-4 text-center text-gray-500">{t('opp.noOpportunities')}</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+    <div className="space-y-4">
+      {/* Header with segmented toggle */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-bold text-gray-100">{t('opp.title')}</h2>
+
+        {/* Strategy toggle */}
+        <div className="flex bg-gray-900 border border-gray-700 rounded-lg p-0.5 gap-0.5">
+          <button
+            onClick={() => setTab('perp')}
+            className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all duration-150 ${
+              tab === 'perp'
+                ? 'bg-gray-800 text-gray-100 shadow-sm shadow-black/30'
+                : 'text-gray-500 hover:text-gray-300'
+            }`}
+          >
+            Perp-Perp
+            <span className={`ml-1.5 font-mono ${tab === 'perp' ? 'text-emerald-400' : 'text-gray-600'}`}>
+              {sorted.length}
+            </span>
+          </button>
+          <button
+            onClick={() => setTab('spot')}
+            className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all duration-150 ${
+              tab === 'spot'
+                ? 'bg-gray-800 text-gray-100 shadow-sm shadow-black/30'
+                : 'text-gray-500 hover:text-gray-300'
+            }`}
+          >
+            Spot-Futures
+            <span className={`ml-1.5 font-mono ${tab === 'spot' ? 'text-emerald-400' : 'text-gray-600'}`}>
+              {spotPassed.length}/{spotOpportunities.length}
+            </span>
+          </button>
+        </div>
       </div>
 
-      {/* Open confirmation dialog */}
+      {/* Perp-Perp Tab */}
+      {tab === 'perp' && (
+        <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-gray-400 text-left border-b border-gray-800">
+                <th className="pb-2">#</th>
+                <th className="pb-2">{t('opp.symbol')}</th>
+                <th className="pb-2">{t('opp.long')}</th>
+                <th className="pb-2">{t('opp.short')}</th>
+                <th className="pb-2 text-right">{t('opp.longRate')}</th>
+                <th className="pb-2 text-right">{t('opp.shortRate')}</th>
+                <th className="pb-2 text-right">{t('opp.spread')}</th>
+                <th className="pb-2 text-right">{t('opp.interval')}</th>
+                <th className="pb-2 text-right">{t('opp.nextFund')}</th>
+                <th className="pb-2 text-right">{t('opp.oi')}</th>
+                <th className="pb-2 text-right">{t('opp.updated')}</th>
+                <th className="pb-2"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800">
+              {sorted.map((opp, i) => (
+                <tr key={`${opp.symbol}-${opp.long_exchange}-${opp.short_exchange}`} className={`text-gray-100 ${scoreColor(opp.score)}`}>
+                  <td className="py-2 font-mono text-gray-500">{i + 1}</td>
+                  <td className="py-2 font-mono">{opp.symbol}</td>
+                  <td className="py-2 text-green-400"><ExchangeLink exchange={opp.long_exchange} symbol={opp.symbol} /></td>
+                  <td className="py-2 text-red-400"><ExchangeLink exchange={opp.short_exchange} symbol={opp.symbol} /></td>
+                  <td className="py-2 text-right font-mono text-gray-400">{opp.long_rate.toFixed(2)}</td>
+                  <td className="py-2 text-right font-mono text-gray-400">{opp.short_rate.toFixed(2)}</td>
+                  <td className="py-2 text-right font-mono font-semibold">{opp.spread.toFixed(1)} bps/h</td>
+                  <td className="py-2 text-right font-mono text-gray-400">{formatInterval(opp.interval_hours)}</td>
+                  <td className="py-2 text-right font-mono text-gray-400 text-xs">{formatFundingCountdown(opp.next_funding)}</td>
+                  <td className="py-2 text-right font-mono">{opp.oi_rank}</td>
+                  <td className="py-2 text-right font-mono text-gray-500 text-xs">{formatTimestamp(opp.timestamp)}</td>
+                  <td className="px-2 py-1">
+                    {onOpen && (
+                      <button onClick={() => { setOpeningOpp(opp); setOpenError(null); }} disabled={opening}
+                        className="px-2 py-0.5 text-xs bg-green-600/20 text-green-400 rounded hover:bg-green-600/40 disabled:opacity-50">
+                        {t('opp.open')}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {sorted.length === 0 && (
+                <tr>
+                  <td colSpan={12} className="py-8 text-center text-gray-500">{t('opp.noOpportunities')}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Spot-Futures Tab */}
+      {tab === 'spot' && (
+        <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 overflow-x-auto">
+          {/* Summary bar */}
+          <div className="flex items-center gap-4 mb-3 text-xs text-gray-500">
+            <span>
+              <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 mr-1.5" />
+              {spotPassed.length} actionable
+            </span>
+            <span>
+              <span className="inline-block w-2 h-2 rounded-full bg-gray-600 mr-1.5" />
+              {spotOpportunities.length - spotPassed.length} filtered
+            </span>
+          </div>
+
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-gray-400 text-left border-b border-gray-800">
+                <th className="pb-2">#</th>
+                <th className="pb-2">Symbol</th>
+                <th className="pb-2">Exchange</th>
+                <th className="pb-2">Dir</th>
+                <th className="pb-2 text-right">Funding</th>
+                <th className="pb-2 text-right">Borrow</th>
+                <th className="pb-2 text-right">Fees</th>
+                <th className="pb-2 text-right">Net APR</th>
+                <th className="pb-2">Status</th>
+                <th className="pb-2"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800/50">
+              {spotOpportunities.map((opp, i) => {
+                const filtered = !!opp.filter_status;
+                const dirLabel = opp.direction === 'borrow_sell_long' ? 'A' : 'B';
+                return (
+                  <tr
+                    key={`${opp.symbol}-${opp.exchange}-${opp.direction}`}
+                    className={filtered ? 'text-gray-600' : 'text-gray-100'}
+                  >
+                    <td className="py-2 font-mono text-gray-500">{i + 1}</td>
+                    <td className="py-2 font-mono">{opp.symbol}</td>
+                    <td className="py-2 capitalize">
+                      {filtered
+                        ? opp.exchange
+                        : <ExchangeLink exchange={opp.exchange} symbol={opp.symbol} className="text-gray-100" />
+                      }
+                    </td>
+                    <td className={`py-2 font-mono ${
+                      filtered ? '' : opp.direction === 'borrow_sell_long' ? 'text-blue-400' : 'text-purple-400'
+                    }`}>
+                      {dirLabel}
+                    </td>
+                    <td className={`py-2 text-right font-mono ${filtered ? '' : 'text-emerald-400'}`}>
+                      {(opp.funding_apr * 100).toFixed(1)}%
+                    </td>
+                    <td className={`py-2 text-right font-mono ${filtered ? '' : 'text-amber-400'}`}>
+                      {opp.borrow_apr > 0 ? `${(opp.borrow_apr * 100).toFixed(1)}%` : '-'}
+                    </td>
+                    <td className={`py-2 text-right font-mono ${filtered ? '' : 'text-gray-400'}`}>
+                      {(opp.fee_apr * 100).toFixed(1)}%
+                    </td>
+                    <td className={`py-2 text-right font-mono font-semibold ${
+                      filtered ? '' : opp.net_apr >= 0 ? 'text-emerald-400' : 'text-red-400'
+                    }`}>
+                      {(opp.net_apr * 100).toFixed(1)}%
+                    </td>
+                    <td className="py-2">
+                      {filtered ? (
+                        <span className="text-xs text-gray-600 truncate max-w-[180px] inline-block" title={opp.filter_status}>
+                          {opp.filter_status}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-xs text-emerald-400">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                          ready
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-2 py-1">
+                      {onSpotOpen && !filtered && (
+                        <button
+                          onClick={() => onSpotOpen(opp.symbol, opp.exchange, opp.direction)}
+                          className="px-2 py-0.5 text-xs bg-emerald-600/20 text-emerald-400 rounded hover:bg-emerald-600/40 transition-colors"
+                        >
+                          Open
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+              {spotOpportunities.length === 0 && (
+                <tr>
+                  <td colSpan={10} className="py-8 text-center text-gray-500">
+                    No spot-futures opportunities — waiting for next discovery scan
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Open confirmation dialog (perp-perp only) */}
       {openingOpp && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
           <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 max-w-md w-full mx-4">

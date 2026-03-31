@@ -136,8 +136,6 @@ function App() {
             exchanges={exchanges}
             onDiagnose={api.diagnose}
             spotPositions={ws.spotPositions}
-            spotOpportunities={ws.spotOpportunities}
-            onSpotOpen={api.spotManualOpen}
             getSpotAutoConfig={api.getSpotAutoConfig}
             updateSpotAutoConfig={api.updateSpotAutoConfig}
           />
@@ -146,7 +144,9 @@ function App() {
         return (
           <Opportunities
             opportunities={ws.opportunities}
+            spotOpportunities={ws.spotOpportunities}
             onOpen={api.openPosition}
+            onSpotOpen={api.spotManualOpen}
           />
         );
       case 'positions':
