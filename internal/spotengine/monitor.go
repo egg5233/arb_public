@@ -303,9 +303,13 @@ func (e *SpotEngine) retryPendingRepay(pos *models.SpotFuturesPosition) {
 				return
 			}
 
-			// Confirm fill via the futures exchange adapter (has WS/REST order tracking).
+			// Confirm fill via the shared WS cache plus native spot order query.
 			if futExch, fOk := e.exchanges[pos.Exchange]; fOk {
-				filled, _ := e.confirmSpotFill(futExch, orderID, pos.Symbol, deficitWithBuffer)
+				filled, _, confirmed, confErr := e.confirmSpotFill(smExch, futExch, orderID, pos.Symbol, deficitWithBuffer)
+				if !confirmed {
+					e.log.Warn("retryPendingRepay: deficit buy %s unconfirmed for %s: %v — will retry next tick", orderID, pos.ID, confErr)
+					return
+				}
 				e.log.Info("retryPendingRepay: deficit buy filled %.6f %s for %s", filled, pos.BaseCoin, pos.ID)
 			}
 		}

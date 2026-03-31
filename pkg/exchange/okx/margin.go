@@ -100,6 +100,47 @@ func (a *Adapter) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (s
 	return resp[0].OrdID, nil
 }
 
+// GetSpotMarginOrder returns the native spot/margin order state from OKX.
+func (a *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarginOrderStatus, error) {
+	params := map[string]string{
+		"instId": toOKXSpotInstID(symbol),
+		"ordId":  orderID,
+	}
+	data, err := a.client.Get("/api/v5/trade/order", params)
+	if err != nil {
+		return nil, fmt.Errorf("GetSpotMarginOrder: %w", err)
+	}
+
+	var resp []struct {
+		OrdID     string `json:"ordId"`
+		InstID    string `json:"instId"`
+		State     string `json:"state"`
+		AccFillSz string `json:"accFillSz"`
+		AvgPx     string `json:"avgPx"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("GetSpotMarginOrder unmarshal: %w", err)
+	}
+	if len(resp) == 0 {
+		return nil, nil
+	}
+
+	qty, _ := strconv.ParseFloat(resp[0].AccFillSz, 64)
+	avgPrice, _ := strconv.ParseFloat(resp[0].AvgPx, 64)
+	status := resp[0].State
+	if status == "canceled" {
+		status = "cancelled"
+	}
+
+	return &exchange.SpotMarginOrderStatus{
+		OrderID:   resp[0].OrdID,
+		Symbol:    resp[0].InstID,
+		Status:    status,
+		FilledQty: qty,
+		AvgPrice:  avgPrice,
+	}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Spot Margin: Interest Rate
 // ---------------------------------------------------------------------------

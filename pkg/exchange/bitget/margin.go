@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"time"
 
 	"arb/pkg/exchange"
 )
@@ -108,6 +109,72 @@ func (a *Adapter) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (s
 		return "", fmt.Errorf("PlaceSpotMarginOrder failed: code=%s msg=%s", resp.Code, resp.Msg)
 	}
 	return resp.Data.OrderId, nil
+}
+
+// GetSpotMarginOrder returns the native cross-margin order state from Bitget.
+func (a *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarginOrderStatus, error) {
+	startTime := strconv.FormatInt(time.Now().Add(-24*time.Hour).UnixMilli(), 10)
+	order, err := a.getSpotMarginOrder("/api/v2/margin/crossed/open-orders", orderID, symbol, startTime)
+	if err != nil {
+		return nil, err
+	}
+	if order != nil {
+		return order, nil
+	}
+	return a.getSpotMarginOrder("/api/v2/margin/crossed/history-orders", orderID, symbol, startTime)
+}
+
+func (a *Adapter) getSpotMarginOrder(path, orderID, symbol, startTime string) (*exchange.SpotMarginOrderStatus, error) {
+	raw, err := a.client.Get(path, map[string]string{
+		"symbol":    symbol,
+		"orderId":   orderID,
+		"startTime": startTime,
+		"limit":     "100",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("GetSpotMarginOrder GET error: %w", err)
+	}
+
+	var resp struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			OrderList []struct {
+				OrderID  string `json:"orderId"`
+				Symbol   string `json:"symbol"`
+				Status   string `json:"status"`
+				Size     string `json:"size"`
+				PriceAvg string `json:"priceAvg"`
+			} `json:"orderList"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		return nil, fmt.Errorf("GetSpotMarginOrder unmarshal: %w", err)
+	}
+	if resp.Code != "00000" {
+		return nil, fmt.Errorf("GetSpotMarginOrder failed: code=%s msg=%s", resp.Code, resp.Msg)
+	}
+	if len(resp.Data.OrderList) == 0 {
+		return nil, nil
+	}
+
+	qty, _ := strconv.ParseFloat(resp.Data.OrderList[0].Size, 64)
+	avgPrice, _ := strconv.ParseFloat(resp.Data.OrderList[0].PriceAvg, 64)
+	status := resp.Data.OrderList[0].Status
+	switch status {
+	case "partial_fill", "partially_fill":
+		status = "partially_filled"
+	case "reject":
+		status = "rejected"
+	}
+
+	return &exchange.SpotMarginOrderStatus{
+		OrderID:   resp.Data.OrderList[0].OrderID,
+		Symbol:    resp.Data.OrderList[0].Symbol,
+		Status:    status,
+		FilledQty: qty,
+		AvgPrice:  avgPrice,
+	}, nil
 }
 
 // GetMarginInterestRate returns the current borrow interest rate for a coin.

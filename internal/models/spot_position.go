@@ -37,11 +37,11 @@ type SpotFuturesPosition struct {
 	FeeAPR              float64    `json:"fee_apr"`     // entry-time annualized fee cost for yield comparison
 
 	// Live economics snapshot (updated by monitorLoop each tick)
-	CurrentFundingAPR   float64    `json:"current_funding_apr"`
-	CurrentFeeAPR       float64    `json:"current_fee_apr"`
-	CurrentNetYieldAPR  float64    `json:"current_net_yield_apr"`
-	YieldDataSource     string     `json:"yield_data_source"`      // "live_scan" or "entry_fallback"
-	YieldSnapshotAt     *time.Time `json:"yield_snapshot_at,omitempty"`
+	CurrentFundingAPR  float64    `json:"current_funding_apr"`
+	CurrentFeeAPR      float64    `json:"current_fee_apr"`
+	CurrentNetYieldAPR float64    `json:"current_net_yield_apr"`
+	YieldDataSource    string     `json:"yield_data_source"` // "live_scan" or "entry_fallback"
+	YieldSnapshotAt    *time.Time `json:"yield_snapshot_at,omitempty"`
 
 	// P&L tracking
 	FundingCollected float64 `json:"funding_collected"`
@@ -51,14 +51,16 @@ type SpotFuturesPosition struct {
 	NotionalUSDT     float64 `json:"notional_usdt"`
 
 	// Exit tracking
-	ExitReason           string     `json:"exit_reason,omitempty"`
-	ExitTriggeredAt      *time.Time `json:"exit_triggered_at,omitempty"`
-	ExitCompletedAt      *time.Time `json:"exit_completed_at,omitempty"`
-	PeakPriceMovePct     float64    `json:"peak_price_move_pct"`
-	MarginUtilizationPct float64    `json:"margin_utilization_pct"`
-	PendingRepay         bool       `json:"pending_repay,omitempty"`          // true when trade legs closed but margin repay still outstanding
-	PendingRepayRetryAt  *time.Time `json:"pending_repay_retry_at,omitempty"` // earliest time to retry repay (e.g. after Bybit blackout)
-	ExitRetryCount       int        `json:"exit_retry_count,omitempty"`       // number of monitor-initiated exit retries
+	ExitReason             string     `json:"exit_reason,omitempty"`
+	ExitTriggeredAt        *time.Time `json:"exit_triggered_at,omitempty"`
+	ExitCompletedAt        *time.Time `json:"exit_completed_at,omitempty"`
+	PeakPriceMovePct       float64    `json:"peak_price_move_pct"`
+	MarginUtilizationPct   float64    `json:"margin_utilization_pct"`
+	SpotExitFilled         bool       `json:"spot_exit_filled,omitempty"`           // true once the spot exit order is confirmed filled, even if avg price backfill is still pending
+	PendingSpotExitOrderID string     `json:"pending_spot_exit_order_id,omitempty"` // accepted spot exit order being reconciled; prevents duplicate close orders on retry
+	PendingRepay           bool       `json:"pending_repay,omitempty"`              // true when trade legs closed but margin repay still outstanding
+	PendingRepayRetryAt    *time.Time `json:"pending_repay_retry_at,omitempty"`     // earliest time to retry repay (e.g. after Bybit blackout)
+	ExitRetryCount         int        `json:"exit_retry_count,omitempty"`           // number of monitor-initiated exit retries
 
 	// Timing
 	CreatedAt time.Time `json:"created_at"`

@@ -88,6 +88,50 @@ func (b *Adapter) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (s
 	return strconv.FormatInt(resp.OrderID, 10), nil
 }
 
+// GetSpotMarginOrder returns the native margin order state for a spot margin order.
+func (b *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarginOrderStatus, error) {
+	reqParams := map[string]string{
+		"symbol":     symbol,
+		"isIsolated": "FALSE",
+		"orderId":    orderID,
+	}
+	body, err := b.client.SpotGet("/sapi/v1/margin/order", reqParams)
+	if err != nil {
+		return nil, fmt.Errorf("GetSpotMarginOrder: %w", err)
+	}
+
+	var resp struct {
+		OrderID            int64  `json:"orderId"`
+		Symbol             string `json:"symbol"`
+		Status             string `json:"status"`
+		ExecutedQty        string `json:"executedQty"`
+		CumulativeQuoteQty string `json:"cummulativeQuoteQty"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("GetSpotMarginOrder unmarshal: %w", err)
+	}
+
+	qty, _ := strconv.ParseFloat(resp.ExecutedQty, 64)
+	quoteQty, _ := strconv.ParseFloat(resp.CumulativeQuoteQty, 64)
+	avgPrice := 0.0
+	if qty > 0 && quoteQty > 0 {
+		avgPrice = quoteQty / qty
+	}
+
+	status := strings.ToLower(resp.Status)
+	if status == "canceled" {
+		status = "cancelled"
+	}
+
+	return &exchange.SpotMarginOrderStatus{
+		OrderID:   strconv.FormatInt(resp.OrderID, 10),
+		Symbol:    resp.Symbol,
+		Status:    status,
+		FilledQty: qty,
+		AvgPrice:  avgPrice,
+	}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Spot Margin: Interest Rate
 // ---------------------------------------------------------------------------

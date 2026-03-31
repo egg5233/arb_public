@@ -1,6 +1,7 @@
 package spotengine
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"time"
@@ -270,10 +271,16 @@ func (e *SpotEngine) initiateExit(pos *models.SpotFuturesPosition, reason string
 		// The close methods checkpoint each leg individually, but this
 		// catches any edge case where in-memory state advanced without
 		// a prior checkpoint write.
-		if pos.FuturesExit > 0 || pos.SpotExitPrice > 0 {
+		if pos.FuturesExit > 0 || pos.SpotExitPrice > 0 || pos.SpotExitFilled || pos.PendingSpotExitOrderID != "" {
 			if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
 				e.log.Error("initiateExit: fallback checkpoint failed for %s: %v", pos.ID, cpErr)
 			}
+		}
+		var pendingErr *pendingSpotExitError
+		if errors.As(err, &pendingErr) {
+			e.log.Warn("initiateExit: %s awaiting spot exit confirmation on order %s: %v",
+				pos.ID, pendingErr.orderID, pendingErr.err)
+			return
 		}
 		e.log.Error("CRITICAL: ClosePosition failed for %s (%s): %v — position stuck in 'exiting', manual intervention required",
 			pos.ID, pos.Symbol, err)
@@ -288,6 +295,8 @@ func (e *SpotEngine) initiateExit(pos *models.SpotFuturesPosition, reason string
 			p.PendingRepayRetryAt = pos.PendingRepayRetryAt
 			p.FuturesExit = pos.FuturesExit
 			p.SpotExitPrice = pos.SpotExitPrice
+			p.SpotExitFilled = pos.SpotExitFilled
+			p.PendingSpotExitOrderID = pos.PendingSpotExitOrderID
 			p.ExitFees = pos.ExitFees
 			return true
 		}); err != nil {
@@ -316,8 +325,16 @@ func (e *SpotEngine) persistExitCheckpoint(pos *models.SpotFuturesPosition) erro
 			p.FuturesExit = pos.FuturesExit
 			changed = true
 		}
+		if pos.SpotExitFilled && !p.SpotExitFilled {
+			p.SpotExitFilled = true
+			changed = true
+		}
 		if pos.SpotExitPrice > 0 && p.SpotExitPrice == 0 {
 			p.SpotExitPrice = pos.SpotExitPrice
+			changed = true
+		}
+		if pos.PendingSpotExitOrderID != p.PendingSpotExitOrderID {
+			p.PendingSpotExitOrderID = pos.PendingSpotExitOrderID
 			changed = true
 		}
 		if pos.ExitFees > 0 {
@@ -369,7 +386,9 @@ func (e *SpotEngine) completeExit(pos *models.SpotFuturesPosition, reason string
 		p.RealizedPnL = totalPnL
 		p.ExitCompletedAt = &now
 		p.FuturesExit = pos.FuturesExit
+		p.SpotExitFilled = pos.SpotExitFilled
 		p.SpotExitPrice = pos.SpotExitPrice
+		p.PendingSpotExitOrderID = ""
 		p.PeakPriceMovePct = pos.PeakPriceMovePct
 		p.MarginUtilizationPct = pos.MarginUtilizationPct
 		return true

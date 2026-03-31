@@ -236,7 +236,10 @@ func (e *SpotEngine) executeBorrowSellLong(
 	e.log.Info("ManualOpen [borrow_sell_long] step 2: spot order placed: %s", spotOrderID)
 
 	// Confirm spot fill.
-	spotFilled, spotAvg = e.confirmSpotFill(futExch, spotOrderID, symbol, size)
+	spotFilled, spotAvg, confirmed, confErr := e.confirmSpotFill(smExch, futExch, spotOrderID, symbol, size)
+	if !confirmed {
+		return 0, 0, 0, 0, 0, fmt.Errorf("spot sell confirmation failed after order %s was accepted: %w", spotOrderID, confErr)
+	}
 	if spotFilled <= 0 {
 		e.log.Error("ManualOpen [borrow_sell_long] step 2: spot order got 0 fill — rolling back borrow")
 		e.rollbackBorrow(smExch, baseCoin, sizeStr)
@@ -299,7 +302,10 @@ func (e *SpotEngine) executeBuySpotShort(
 	e.log.Info("ManualOpen [buy_spot_short] step 1: spot order placed: %s", spotOrderID)
 
 	// Confirm spot fill.
-	spotFilled, spotAvg = e.confirmSpotFill(futExch, spotOrderID, symbol, size)
+	spotFilled, spotAvg, confirmed, confErr := e.confirmSpotFill(smExch, futExch, spotOrderID, symbol, size)
+	if !confirmed {
+		return 0, 0, 0, 0, fmt.Errorf("spot buy confirmation failed after order %s was accepted: %w", spotOrderID, confErr)
+	}
 	if spotFilled <= 0 {
 		return 0, 0, 0, 0, fmt.Errorf("spot buy got 0 fill (order %s)", spotOrderID)
 	}
@@ -391,11 +397,26 @@ func (e *SpotEngine) confirmFuturesFill(exch exchange.Exchange, orderID, symbol 
 	return restFilled, 0
 }
 
+type pendingSpotExitError struct {
+	orderID string
+	err     error
+}
+
+func (e *pendingSpotExitError) Error() string {
+	if e.err == nil {
+		return fmt.Sprintf("spot exit order %s awaiting confirmation", e.orderID)
+	}
+	return fmt.Sprintf("spot exit order %s awaiting confirmation: %v", e.orderID, e.err)
+}
+
+func (*pendingSpotExitError) nonRetryable() bool { return true }
+
 // confirmSpotFill confirms a spot margin order fill. Spot margin orders may
-// not appear in the futures WS private stream, so we wait briefly then fall
-// back to REST via GetOrderFilledQty. We also try GetOrderUpdate in case
-// the exchange routes spot fills through the same WS.
-func (e *SpotEngine) confirmSpotFill(exch exchange.Exchange, orderID, symbol string, expectedQty float64) (filledQty, avgPrice float64) {
+// not appear in the futures WS private stream, so we wait briefly, try the
+// shared WS cache, then fall back to the exchange's native spot margin order
+// query. The third return value distinguishes "unconfirmed" from a confirmed
+// zero fill.
+func (e *SpotEngine) confirmSpotFill(smExch exchange.SpotMarginExchange, exch exchange.Exchange, orderID, symbol string, expectedQty float64) (filledQty, avgPrice float64, confirmed bool, err error) {
 	// Wait a moment for the order to settle.
 	time.Sleep(2 * time.Second)
 
@@ -403,25 +424,57 @@ func (e *SpotEngine) confirmSpotFill(exch exchange.Exchange, orderID, symbol str
 	if upd, ok := exch.GetOrderUpdate(orderID); ok {
 		if upd.FilledVolume > 0 {
 			e.log.Info("confirmSpotFill: WS %s: filled=%.6f avg=%.8f", orderID, upd.FilledVolume, upd.AvgPrice)
-			return upd.FilledVolume, upd.AvgPrice
+			return upd.FilledVolume, upd.AvgPrice, true, nil
+		}
+		switch strings.ToLower(upd.Status) {
+		case "filled", "cancelled", "closed", "rejected":
+			e.log.Info("confirmSpotFill: WS terminal %s: status=%s filled=%.6f avg=%.8f",
+				orderID, upd.Status, upd.FilledVolume, upd.AvgPrice)
+			return upd.FilledVolume, upd.AvgPrice, true, nil
 		}
 	}
 
-	// REST fallback — GetOrderFilledQty works for futures orders; for spot
-	// margin orders it may or may not work depending on the exchange adapter.
-	// This is best-effort for Phase 3a.
-	restFilled, err := exch.GetOrderFilledQty(orderID, symbol)
-	if err != nil {
-		e.log.Warn("confirmSpotFill: REST query %s failed: %v — returning 0 (unconfirmed)", orderID, err)
-		return 0, 0
+	querier, ok := smExch.(exchange.SpotMarginOrderQuerier)
+	if !ok {
+		err := fmt.Errorf("spot margin order query unsupported for %s", symbol)
+		e.log.Warn("confirmSpotFill: %s", err)
+		return 0, 0, false, err
 	}
-	e.log.Info("confirmSpotFill: REST %s filled=%.6f", orderID, restFilled)
 
-	// Try WS for avg price.
-	if upd, ok := exch.GetOrderUpdate(orderID); ok && upd.AvgPrice > 0 {
-		return restFilled, upd.AvgPrice
+	status, err := querier.GetSpotMarginOrder(orderID, symbol)
+	if err != nil {
+		e.log.Warn("confirmSpotFill: native query %s failed: %v", orderID, err)
+		return 0, 0, false, err
 	}
-	return restFilled, 0
+	if status == nil {
+		err := fmt.Errorf("spot margin order %s not found", orderID)
+		e.log.Warn("confirmSpotFill: %v", err)
+		return 0, 0, false, err
+	}
+
+	e.log.Info("confirmSpotFill: native %s status=%s filled=%.6f avg=%.8f",
+		orderID, status.Status, status.FilledQty, status.AvgPrice)
+
+	switch status.Status {
+	case "live", "new", "open":
+		if status.FilledQty <= 0 {
+			err := fmt.Errorf("spot order %s still active with no fill", orderID)
+			return 0, 0, false, err
+		}
+	case "partial_fill", "partially_filled":
+		if status.FilledQty <= 0 {
+			err := fmt.Errorf("spot order %s still partially filled with no executed quantity", orderID)
+			return 0, 0, false, err
+		}
+	}
+
+	avg := status.AvgPrice
+	if avg <= 0 {
+		if upd, ok := exch.GetOrderUpdate(orderID); ok && upd.AvgPrice > 0 {
+			avg = upd.AvgPrice
+		}
+	}
+	return status.FilledQty, avg, true, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -470,6 +523,9 @@ func (e *SpotEngine) retryLeg(name string, maxRetries int, delay time.Duration, 
 	for i := 0; i < maxRetries; i++ {
 		if err := fn(); err != nil {
 			lastErr = err
+			if nonRetryable, ok := err.(interface{ nonRetryable() bool }); ok && nonRetryable.nonRetryable() {
+				return err
+			}
 			e.log.Warn("retryLeg %s attempt %d/%d failed: %v", name, i+1, maxRetries, err)
 			if i < maxRetries-1 {
 				time.Sleep(delay)
@@ -573,27 +629,46 @@ func (e *SpotEngine) closeDirectionA(
 	}
 
 	// Step 2: Buy back spot (to return borrowed coin) — with retry
-	if pos.SpotExitPrice > 0 {
+	if pos.SpotExitFilled || pos.SpotExitPrice > 0 {
 		e.log.Info("ClosePosition [Dir A] step 2: spot already closed (exit=%.6f), skipping", pos.SpotExitPrice)
 	} else {
 		e.log.Info("ClosePosition [Dir A] step 2: buy back spot BUY %s %s", pos.Symbol, spotSizeStr)
 		var spotFilled, spotAvg float64
 		err := e.retryLeg("dirA-spot-buyback", 3, 2*time.Second, func() error {
-			orderID, placeErr := smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
-				Symbol:    pos.Symbol,
-				Side:      exchange.SideBuy,
-				OrderType: "market",
-				Size:      spotSizeStr,
-				Force:     "ioc",
-			})
-			if placeErr != nil {
-				return fmt.Errorf("spot buyback failed: %w", placeErr)
+			orderID := pos.PendingSpotExitOrderID
+			if orderID == "" {
+				var placeErr error
+				orderID, placeErr = smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
+					Symbol:    pos.Symbol,
+					Side:      exchange.SideBuy,
+					OrderType: "market",
+					Size:      spotSizeStr,
+					Force:     "ioc",
+				})
+				if placeErr != nil {
+					return fmt.Errorf("spot buyback failed: %w", placeErr)
+				}
+				pos.PendingSpotExitOrderID = orderID
+				if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
+					e.log.Error("ClosePosition [Dir A]: failed to checkpoint pending spot exit order %s: %v", orderID, cpErr)
+				}
+			} else {
+				e.log.Warn("ClosePosition [Dir A]: reconciling existing spot exit order %s", orderID)
 			}
-			filled, avg := e.confirmSpotFill(futExch, orderID, pos.Symbol, pos.SpotSize)
+
+			filled, avg, confirmed, confErr := e.confirmSpotFill(smExch, futExch, orderID, pos.Symbol, pos.SpotSize)
+			if !confirmed {
+				return &pendingSpotExitError{orderID: orderID, err: confErr}
+			}
+			pos.PendingSpotExitOrderID = ""
 			if filled <= 0 {
+				if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
+					e.log.Error("ClosePosition [Dir A]: failed to clear pending spot exit order %s: %v", orderID, cpErr)
+				}
 				return fmt.Errorf("spot buyback got 0 fill (order %s)", orderID)
 			}
 			spotFilled, spotAvg = filled, avg
+			pos.SpotExitFilled = true
 			return nil
 		})
 		if err != nil {
@@ -609,8 +684,8 @@ func (e *SpotEngine) closeDirectionA(
 			pos.SpotExitPrice = spotAvg
 		}
 		e.log.Info("ClosePosition [Dir A] step 2: spot buyback fill=%.6f avg=%.6f", spotFilled, spotAvg)
-		// Checkpoint: persist SpotExitPrice immediately after confirmed fill.
-		if spotAvg > 0 {
+		// Checkpoint: persist confirmed spot leg state immediately after fill.
+		if pos.SpotExitFilled || pos.SpotExitPrice > 0 {
 			if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
 				e.log.Error("ClosePosition [Dir A]: failed to checkpoint spot exit: %v", cpErr)
 			}
@@ -706,27 +781,46 @@ func (e *SpotEngine) closeDirectionB(
 	}
 
 	// Step 2: Sell spot — with retry
-	if pos.SpotExitPrice > 0 {
+	if pos.SpotExitFilled || pos.SpotExitPrice > 0 {
 		e.log.Info("ClosePosition [Dir B] step 2: spot already closed (exit=%.6f), skipping", pos.SpotExitPrice)
 	} else {
 		e.log.Info("ClosePosition [Dir B] step 2: sell spot SELL %s %s", pos.Symbol, spotSizeStr)
 		var spotFilled, spotAvg float64
 		err := e.retryLeg("dirB-spot-sell", 3, 2*time.Second, func() error {
-			orderID, placeErr := smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
-				Symbol:    pos.Symbol,
-				Side:      exchange.SideSell,
-				OrderType: "market",
-				Size:      spotSizeStr,
-				Force:     "ioc",
-			})
-			if placeErr != nil {
-				return fmt.Errorf("spot sell failed: %w", placeErr)
+			orderID := pos.PendingSpotExitOrderID
+			if orderID == "" {
+				var placeErr error
+				orderID, placeErr = smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
+					Symbol:    pos.Symbol,
+					Side:      exchange.SideSell,
+					OrderType: "market",
+					Size:      spotSizeStr,
+					Force:     "ioc",
+				})
+				if placeErr != nil {
+					return fmt.Errorf("spot sell failed: %w", placeErr)
+				}
+				pos.PendingSpotExitOrderID = orderID
+				if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
+					e.log.Error("ClosePosition [Dir B]: failed to checkpoint pending spot exit order %s: %v", orderID, cpErr)
+				}
+			} else {
+				e.log.Warn("ClosePosition [Dir B]: reconciling existing spot exit order %s", orderID)
 			}
-			filled, avg := e.confirmSpotFill(futExch, orderID, pos.Symbol, pos.SpotSize)
+
+			filled, avg, confirmed, confErr := e.confirmSpotFill(smExch, futExch, orderID, pos.Symbol, pos.SpotSize)
+			if !confirmed {
+				return &pendingSpotExitError{orderID: orderID, err: confErr}
+			}
+			pos.PendingSpotExitOrderID = ""
 			if filled <= 0 {
+				if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
+					e.log.Error("ClosePosition [Dir B]: failed to clear pending spot exit order %s: %v", orderID, cpErr)
+				}
 				return fmt.Errorf("spot sell got 0 fill (order %s)", orderID)
 			}
 			spotFilled, spotAvg = filled, avg
+			pos.SpotExitFilled = true
 			return nil
 		})
 		if err != nil {
@@ -742,8 +836,8 @@ func (e *SpotEngine) closeDirectionB(
 			pos.SpotExitPrice = spotAvg
 		}
 		e.log.Info("ClosePosition [Dir B] step 2: spot sold fill=%.6f avg=%.6f", spotFilled, spotAvg)
-		// Checkpoint: persist SpotExitPrice immediately after confirmed fill.
-		if spotAvg > 0 {
+		// Checkpoint: persist confirmed spot leg state immediately after fill.
+		if pos.SpotExitFilled || pos.SpotExitPrice > 0 {
 			if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
 				e.log.Error("ClosePosition [Dir B]: failed to checkpoint spot exit: %v", cpErr)
 			}
@@ -831,11 +925,24 @@ func (e *SpotEngine) emergencyClose(
 			ch <- result{leg: "spot", err: fmt.Errorf("spot close: %w", err)}
 			return
 		}
-		filled, avg := e.confirmSpotFill(futExch, orderID, pos.Symbol, pos.SpotSize)
+		pos.PendingSpotExitOrderID = orderID
+		if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
+			e.log.Error("EMERGENCY: failed to checkpoint pending spot exit order %s: %v", orderID, cpErr)
+		}
+		filled, avg, confirmed, confErr := e.confirmSpotFill(smExch, futExch, orderID, pos.Symbol, pos.SpotSize)
+		if !confirmed {
+			ch <- result{leg: "spot", err: &pendingSpotExitError{orderID: orderID, err: confErr}}
+			return
+		}
+		pos.PendingSpotExitOrderID = ""
 		if filled <= 0 {
+			if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
+				e.log.Error("EMERGENCY: failed to clear pending spot exit order %s: %v", orderID, cpErr)
+			}
 			ch <- result{leg: "spot", err: fmt.Errorf("spot close got 0 fill (order %s)", orderID)}
 			return
 		}
+		pos.SpotExitFilled = true
 		ch <- result{leg: "spot", avg: avg}
 	}()
 
@@ -919,7 +1026,7 @@ func (e *SpotEngine) emergencyClose(
 	}
 
 	// Checkpoint: persist whatever legs succeeded plus fees and repay state.
-	if pos.FuturesExit > 0 || pos.SpotExitPrice > 0 {
+	if pos.FuturesExit > 0 || pos.SpotExitPrice > 0 || pos.SpotExitFilled || pos.PendingSpotExitOrderID != "" {
 		if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
 			e.log.Error("EMERGENCY: failed to checkpoint exit progress: %v", cpErr)
 		}
