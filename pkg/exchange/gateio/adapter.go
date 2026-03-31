@@ -148,7 +148,7 @@ func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 
 	orderReq := map[string]interface{}{
 		"contract": contract,
-		"size":     strconv.FormatInt(size, 10),
+		"size":     size,
 		"price":    req.Price,
 		"tif":      tif,
 	}
