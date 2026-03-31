@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.39] - 2026-03-31
+
+### Added
+- **[spot-futures] Borrow rate spike detection** — new `RateVelocityDetector` tracks a bounded sliding window of borrow APR samples per position; fires a one-shot exit trigger when the rate multiplies beyond a configurable threshold within the lookback window; integrates into `monitorPosition` after standard exit triggers; disabled by default via `enable_borrow_spike_detection: false` (`internal/spotengine/rate_velocity.go`, `internal/spotengine/monitor.go`)
+- **[dashboard] Borrow spike detection config** — Spot-Futures Exit & Risk tab exposes toggle and 3 parameters (window, multiplier, min absolute move) with i18n for en + zh-TW (`Config.tsx`, `en.ts`, `zh-TW.ts`)
+
+### Changed
+- **[spot-futures] ManualOpen 2-phase commit** — pending checkpoint is saved before execution; on success, atomically promoted to active after both legs fill; on failure, `abandonPendingEntry` marks the record closed; prevents orphaned active records when execution fails mid-flight (`internal/spotengine/execution.go`)
+- **[spot-futures] Exit goroutines tracked via exitWG** — `launchExit` replaces bare `go initiateExit` so `Stop()` waits for all in-flight exits to drain before returning (`internal/spotengine/engine.go`, `internal/spotengine/exit_manager.go`, `internal/spotengine/monitor.go`)
+
+### Fixed
+- **[spot-futures] Abort-entry test alignment** — 5 ManualOpen abort-path tests fixed to match `confirmSpotFill` gate behavior: removed spurious first-query error from mocks, fixed `active positions` and allocator exposure assertions (`internal/spotengine/execution_test.go`)
+
 ## [0.22.38] - 2026-03-31
 
 ### Fixed
