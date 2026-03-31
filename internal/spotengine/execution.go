@@ -559,6 +559,7 @@ func (e *SpotEngine) abortAcceptedSpotEntry(
 		return newManualRecoveryPendingEntryError(
 			pos,
 			orderID,
+			"",
 			fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (cleanup could not reconcile order state: %v)",
 				orderID, persistErr, confErr),
 			expectedQty,
@@ -585,6 +586,7 @@ func (e *SpotEngine) abortAcceptedSpotEntry(
 			return newManualRecoveryPendingEntryError(
 				pos,
 				orderID,
+				"",
 				fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (cleanup could not %s %.6f: %v)",
 					orderID, persistErr, action, filledQty, err),
 				filledQty,
@@ -596,6 +598,7 @@ func (e *SpotEngine) abortAcceptedSpotEntry(
 			return newManualRecoveryPendingEntryError(
 				pos,
 				orderID,
+				reverseOrderID,
 				fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (cleanup order %s could not be confirmed flat after %s %.6f: %v; manual intervention required)",
 					orderID, persistErr, reverseOrderID, action, filledQty, cleanupErr),
 				filledQty,
@@ -606,6 +609,7 @@ func (e *SpotEngine) abortAcceptedSpotEntry(
 			return newManualRecoveryPendingEntryError(
 				pos,
 				orderID,
+				reverseOrderID,
 				fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (cleanup order %s only reconciled %.6f of %.6f after %s; manual intervention required)",
 					orderID, persistErr, reverseOrderID, cleanupFilled, filledQty, action),
 				spotRemainingQty(cleanupFilled, filledQty),
@@ -638,6 +642,7 @@ func (e *SpotEngine) abortAcceptedSpotEntry(
 func newManualRecoveryPendingEntryError(
 	pos *models.SpotFuturesPosition,
 	orderID string,
+	cleanupOrderID string,
 	cause error,
 	spotQty, spotAvg float64,
 ) error {
@@ -648,6 +653,7 @@ func newManualRecoveryPendingEntryError(
 	recoveryPos := *pos
 	recoveryPos.Status = models.SpotStatusPending
 	recoveryPos.PendingEntryOrderID = ""
+	recoveryPos.PendingSpotExitOrderID = cleanupOrderID
 	recoveryPos.ExitReason = spotEntryManualRecoveryReason
 	recoveryPos.FuturesSize = 0
 	recoveryPos.FuturesEntry = 0

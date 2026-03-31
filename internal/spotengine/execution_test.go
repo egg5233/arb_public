@@ -1049,6 +1049,9 @@ func TestManualOpen_PersistsManualRecoveryPositionWhenCleanupOnlyPartiallyFills(
 	if pos.PendingEntryOrderID != "" {
 		t.Fatalf("manual recovery pending entry order = %q, want empty", pos.PendingEntryOrderID)
 	}
+	if pos.PendingSpotExitOrderID != "spot-cleanup-1" {
+		t.Fatalf("manual recovery cleanup order = %q, want %q", pos.PendingSpotExitOrderID, "spot-cleanup-1")
+	}
 	if math.Abs(pos.SpotSize-0.6) > 1e-9 {
 		t.Fatalf("manual recovery spot size = %.6f, want 0.600000", pos.SpotSize)
 	}
@@ -1087,19 +1090,20 @@ func TestManualClose_ClearsManualRecoveryWhenExchangeIsFlat(t *testing.T) {
 	engine.allocator = risk.NewCapitalAllocator(engine.db, engine.cfg)
 
 	pos := &models.SpotFuturesPosition{
-		ID:             "manual-recovery-1",
-		Symbol:         "BTCUSDT",
-		BaseCoin:       "BTC",
-		Exchange:       "stub",
-		Direction:      "borrow_sell_long",
-		Status:         models.SpotStatusPending,
-		ExitReason:     spotEntryManualRecoveryReason,
-		SpotSize:       0.6,
-		BorrowAmount:   0.6,
-		NotionalUSDT:   60,
-		CreatedAt:      time.Now().UTC(),
-		UpdatedAt:      time.Now().UTC(),
-		SpotEntryPrice: 100,
+		ID:                     "manual-recovery-1",
+		Symbol:                 "BTCUSDT",
+		BaseCoin:               "BTC",
+		Exchange:               "stub",
+		Direction:              "borrow_sell_long",
+		Status:                 models.SpotStatusPending,
+		ExitReason:             spotEntryManualRecoveryReason,
+		SpotSize:               0.6,
+		BorrowAmount:           0.6,
+		NotionalUSDT:           60,
+		PendingSpotExitOrderID: "spot-cleanup-1",
+		CreatedAt:              time.Now().UTC(),
+		UpdatedAt:              time.Now().UTC(),
+		SpotEntryPrice:         100,
 	}
 	if err := engine.db.SaveSpotPosition(pos); err != nil {
 		t.Fatalf("SaveSpotPosition: %v", err)
@@ -1114,6 +1118,15 @@ func TestManualClose_ClearsManualRecoveryWhenExchangeIsFlat(t *testing.T) {
 
 	engine.spotMargin = map[string]exchange.SpotMarginExchange{
 		"stub": &closeTestSpotMargin{
+			queryStates: []*exchange.SpotMarginOrderStatus{
+				{
+					OrderID:   "spot-cleanup-1",
+					Symbol:    "BTCUSDT",
+					Status:    "cancelled",
+					FilledQty: 0.6,
+					AvgPrice:  100,
+				},
+			},
 			marginBal: &exchange.MarginBalance{},
 		},
 	}
@@ -1147,6 +1160,119 @@ func TestManualClose_ClearsManualRecoveryWhenExchangeIsFlat(t *testing.T) {
 	}
 	if got := summary.ByExchange["stub"]; got != 0 {
 		t.Fatalf("allocator exposure after clear = %.2f, want 0", got)
+	}
+}
+
+func TestManualClose_RejectsManualRecoveryWhileCleanupOrderIsLive(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	pos := &models.SpotFuturesPosition{
+		ID:                     "manual-recovery-live-order",
+		Symbol:                 "BTCUSDT",
+		BaseCoin:               "BTC",
+		Exchange:               "stub",
+		Direction:              "borrow_sell_long",
+		Status:                 models.SpotStatusPending,
+		ExitReason:             spotEntryManualRecoveryReason,
+		SpotSize:               0.6,
+		BorrowAmount:           0.6,
+		NotionalUSDT:           60,
+		PendingSpotExitOrderID: "spot-cleanup-live",
+		CreatedAt:              time.Now().UTC(),
+		UpdatedAt:              time.Now().UTC(),
+	}
+	if err := engine.db.SaveSpotPosition(pos); err != nil {
+		t.Fatalf("SaveSpotPosition: %v", err)
+	}
+
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{
+		"stub": &closeTestSpotMargin{
+			queryStates: []*exchange.SpotMarginOrderStatus{
+				{
+					OrderID:   "spot-cleanup-live",
+					Symbol:    "BTCUSDT",
+					Status:    "live",
+					FilledQty: 0,
+				},
+			},
+			marginBal: &exchange.MarginBalance{},
+		},
+	}
+
+	err := engine.ManualClose(pos.ID)
+	if err == nil {
+		t.Fatal("expected ManualClose to reject active cleanup order")
+	}
+	if !strings.Contains(err.Error(), "still active") {
+		t.Fatalf("ManualClose error = %v, want active cleanup order rejection", err)
+	}
+
+	stored, err := engine.db.GetSpotPosition(pos.ID)
+	if err != nil {
+		t.Fatalf("GetSpotPosition: %v", err)
+	}
+	if stored.Status != models.SpotStatusPending {
+		t.Fatalf("status = %q, want %q", stored.Status, models.SpotStatusPending)
+	}
+}
+
+func TestManualClose_RejectsManualRecoveryWhileBaseBalanceIsLocked(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	pos := &models.SpotFuturesPosition{
+		ID:                     "manual-recovery-locked-balance",
+		Symbol:                 "BTCUSDT",
+		BaseCoin:               "BTC",
+		Exchange:               "stub",
+		Direction:              "borrow_sell_long",
+		Status:                 models.SpotStatusPending,
+		ExitReason:             spotEntryManualRecoveryReason,
+		SpotSize:               0.6,
+		BorrowAmount:           0.6,
+		NotionalUSDT:           60,
+		PendingSpotExitOrderID: "spot-cleanup-locked",
+		CreatedAt:              time.Now().UTC(),
+		UpdatedAt:              time.Now().UTC(),
+	}
+	if err := engine.db.SaveSpotPosition(pos); err != nil {
+		t.Fatalf("SaveSpotPosition: %v", err)
+	}
+
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{
+		"stub": &closeTestSpotMargin{
+			queryStates: []*exchange.SpotMarginOrderStatus{
+				{
+					OrderID:   "spot-cleanup-locked",
+					Symbol:    "BTCUSDT",
+					Status:    "cancelled",
+					FilledQty: 0.4,
+				},
+			},
+			marginBal: &exchange.MarginBalance{
+				TotalBalance: 0.2,
+				Available:    0,
+				Borrowed:     0,
+				Interest:     0,
+			},
+		},
+	}
+
+	err := engine.ManualClose(pos.ID)
+	if err == nil {
+		t.Fatal("expected ManualClose to reject locked base balance")
+	}
+	if !strings.Contains(err.Error(), "manual recovery still open on exchange") {
+		t.Fatalf("ManualClose error = %v, want locked balance rejection", err)
+	}
+
+	stored, err := engine.db.GetSpotPosition(pos.ID)
+	if err != nil {
+		t.Fatalf("GetSpotPosition: %v", err)
+	}
+	if stored.Status != models.SpotStatusPending {
+		t.Fatalf("status = %q, want %q", stored.Status, models.SpotStatusPending)
 	}
 }
 

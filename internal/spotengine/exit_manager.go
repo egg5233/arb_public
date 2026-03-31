@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"arb/internal/models"
+	"arb/pkg/exchange"
 )
 
 // exitState tracks in-flight exits to prevent double-triggering.
@@ -556,15 +557,38 @@ func (e *SpotEngine) resolveManualRecovery(positionID string) error {
 		return fmt.Errorf("exchange %s does not support spot margin", pos.Exchange)
 	}
 
+	if pos.PendingSpotExitOrderID != "" {
+		querier, ok := smExch.(exchange.SpotMarginOrderQuerier)
+		if !ok {
+			return fmt.Errorf("manual recovery order query unsupported for %s", pos.Exchange)
+		}
+		status, err := querier.GetSpotMarginOrder(pos.PendingSpotExitOrderID, pos.Symbol)
+		if err != nil {
+			return fmt.Errorf("manual recovery cleanup order check failed: %w", err)
+		}
+		if status == nil {
+			return fmt.Errorf("manual recovery cleanup order %s not found", pos.PendingSpotExitOrderID)
+		}
+		if isActiveSpotOrderStatus(status.Status) {
+			return fmt.Errorf(
+				"manual recovery cleanup order %s still active: status=%s filled=%.6f",
+				pos.PendingSpotExitOrderID,
+				status.Status,
+				status.FilledQty,
+			)
+		}
+	}
+
 	bal, err := smExch.GetMarginBalance(pos.BaseCoin)
 	if err != nil {
 		return fmt.Errorf("manual recovery balance check failed: %w", err)
 	}
 
 	liability := bal.Borrowed + bal.Interest
-	if liability > spotQtyTolerance || bal.Available > spotQtyTolerance {
+	if math.Abs(liability) > spotQtyTolerance || math.Abs(bal.TotalBalance) > spotQtyTolerance {
 		return fmt.Errorf(
-			"manual recovery still open on exchange: available=%.6f borrowed=%.6f interest=%.6f",
+			"manual recovery still open on exchange: total=%.6f available=%.6f borrowed=%.6f interest=%.6f",
+			bal.TotalBalance,
 			bal.Available,
 			bal.Borrowed,
 			bal.Interest,
