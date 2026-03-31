@@ -673,6 +673,22 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {renderPersistenceField('cfg.field.spreadVolatilityMaxCV', 'cfg.desc.spreadVolatilityMaxCV', ['strategy', 'discovery', 'persistence', 'spread_volatility_max_cv'])}
           {renderPersistenceField('cfg.field.spreadVolatilityMinSamples', 'cfg.desc.spreadVolatilityMinSamples', ['strategy', 'discovery', 'persistence', 'spread_volatility_min_samples'])}
+          {renderPersistenceField('cfg.field.spreadStabilityAutoCVMultiplier', 'cfg.desc.spreadStabilityAutoCVMultiplier', ['strategy', 'discovery', 'persistence', 'spread_stability_auto_cv_multiplier'])}
+          <div className="bg-gray-950 rounded-lg border border-gray-800 px-3 py-2">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-xs text-gray-400">{t('cfg.field.spreadStabilityStricterForAuto')}</span>
+              <Tooltip text={t('cfg.desc.spreadStabilityStricterForAuto')} />
+            </div>
+            <div className="flex items-center gap-3">
+              <ToggleSwitch
+                on={getByPath(config, ['strategy', 'discovery', 'persistence', 'spread_stability_stricter_for_auto']) === true}
+                onChange={(v) => handleBoolChange(['strategy', 'discovery', 'persistence', 'spread_stability_stricter_for_auto'], v)}
+              />
+              <span className={`text-sm font-semibold ${getByPath(config, ['strategy', 'discovery', 'persistence', 'spread_stability_stricter_for_auto']) ? 'text-green-400' : 'text-red-400'}`}>
+                {getByPath(config, ['strategy', 'discovery', 'persistence', 'spread_stability_stricter_for_auto']) ? 'ON' : 'OFF'}
+              </span>
+            </div>
+          </div>
         </div>
       </Accordion>
     </div>

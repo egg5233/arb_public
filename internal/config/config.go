@@ -24,35 +24,35 @@ func normalizeChain(chain string) string {
 // Config holds all application configuration.
 type Config struct {
 	// Strategy parameters
-	MinHoldTime         time.Duration // timed exit hold duration (default 16h)
-	MaxCostRatio        float64       // max fees/revenue ratio for profitability filter (default 0.50)
-	MaxPositions        int           // max concurrent arb positions (default 1)
-	Leverage            int           // default leverage (default 3)
-	SlippageBPS         float64       // max acceptable orderbook slippage in bps (default 5)
-	RebalanceScanMinute int           // minute mark that triggers rebalance (default 20)
-	TopOpportunities    int           // max opportunities to return from scanner (default 5)
-	CapitalPerLeg       float64       // fixed USDT per leg; 0 = auto from balance (default 0)
-	PriceGapFreeBPS     float64       // below this gap, no check (default 40)
-	MaxPriceGapBPS      float64       // hard reject above this gap (default 250)
-	MaxGapRecoveryIntervals float64   // max funding intervals to recover gap (default 1.0)
-	MaxIntervalHours    float64       // max funding interval hours to accept (0=disabled, e.g. 1=only 1h)
-	AllowMixedIntervals bool          // allow cross-interval pairs in ranker (default false)
-	DryRun              bool          // if true, skip trade execution (log only)
+	MinHoldTime             time.Duration // timed exit hold duration (default 16h)
+	MaxCostRatio            float64       // max fees/revenue ratio for profitability filter (default 0.50)
+	MaxPositions            int           // max concurrent arb positions (default 1)
+	Leverage                int           // default leverage (default 3)
+	SlippageBPS             float64       // max acceptable orderbook slippage in bps (default 5)
+	RebalanceScanMinute     int           // minute mark that triggers rebalance (default 20)
+	TopOpportunities        int           // max opportunities to return from scanner (default 5)
+	CapitalPerLeg           float64       // fixed USDT per leg; 0 = auto from balance (default 0)
+	PriceGapFreeBPS         float64       // below this gap, no check (default 40)
+	MaxPriceGapBPS          float64       // hard reject above this gap (default 250)
+	MaxGapRecoveryIntervals float64       // max funding intervals to recover gap (default 1.0)
+	MaxIntervalHours        float64       // max funding interval hours to accept (0=disabled, e.g. 1=only 1h)
+	AllowMixedIntervals     bool          // allow cross-interval pairs in ranker (default false)
+	DryRun                  bool          // if true, skip trade execution (log only)
 
 	// Depth-driven entry execution
 	EntryTimeoutSec int     // max seconds for depth fill loop (default 60)
 	MinChunkUSDT    float64 // min notional per micro-order to avoid dust (default 5)
 
 	// Margin health thresholds (marginRatio values, 0-1 scale where 1.0 = liquidation)
-	MarginL3Threshold float64 // trigger fund transfer (default: 0.50)
-	MarginL4Threshold float64 // trigger position reduction (default: 0.80)
-	MarginL5Threshold float64 // trigger emergency close (default: 0.95)
-	L4ReduceFraction      float64 // fraction to reduce at L4 (default: 0.50)
+	MarginL3Threshold      float64 // trigger fund transfer (default: 0.50)
+	MarginL4Threshold      float64 // trigger position reduction (default: 0.80)
+	MarginL5Threshold      float64 // trigger emergency close (default: 0.95)
+	L4ReduceFraction       float64 // fraction to reduce at L4 (default: 0.50)
 	MarginSafetyMultiplier float64 // margin buffer multiplier for entry check (default: 2.0)
 
 	// Exit strategy
-	ExitDepthTimeoutSec  int     // depth-fill exit loop timeout before market fallback (default 300)
-	ExitMaxGapBPS        float64 // max cross-exchange gap at exit; ramps to 3x over timeout (default 10)
+	ExitDepthTimeoutSec int     // depth-fill exit loop timeout before market fallback (default 300)
+	ExitMaxGapBPS       float64 // max cross-exchange gap at exit; ramps to 3x over timeout (default 10)
 
 	// Risk monitor (log-only)
 	RiskMonitorIntervalSec int // interval between risk monitor checks in seconds (default: 300)
@@ -74,26 +74,28 @@ type Config struct {
 	SpreadStabilityOIRank8h int     // OI rank threshold for 8h (default 0, disabled)
 
 	// Exit tuning
-	EnableSpreadReversal      bool // enable spread reversal exit check (default true)
-	SpreadReversalTolerance   int  // allow N reversals before triggering exit (default 0 = exit on first)
-	ReversalResetOnRecover    bool // reset reversal count when spread recovers (default true)
-	ZeroSpreadTolerance     int // exit after N consecutive checks where both legs have equal funding rate (0=disabled)
+	EnableSpreadReversal    bool // enable spread reversal exit check (default true)
+	SpreadReversalTolerance int  // allow N reversals before triggering exit (default 0 = exit on first)
+	ReversalResetOnRecover  bool // reset reversal count when spread recovers (default true)
+	ZeroSpreadTolerance     int  // exit after N consecutive checks where both legs have equal funding rate (0=disabled)
 
 	// Anti-spike filters
-	SpreadVolatilityMaxCV      float64 // max stddev/mean for spread across scans (default 0.5, 0=disabled)
-	SpreadVolatilityMinSamples int     // min scan records to evaluate CV (default 3)
-	FundingWindowMin           int     // max minutes before funding to allow entry (default 30)
-	LossCooldownHours          float64 // hours to blacklist symbol after loss close (default 4.0)
-	ReEnterCooldownHours       float64 // hours to block re-entry on same symbol after any close (default 0, disabled)
-	BacktestDays               int     // days of historical funding to check (default 3, 0 = disabled)
-	BacktestMinProfit          float64 // minimum net profit to pass backtest filter (default 0)
-	DelistFilterEnabled        bool    // enable Binance delist monitoring & filtering (default true)
+	SpreadVolatilityMaxCV           float64 // max stddev/mean for spread across scans (default 0.5, 0=disabled)
+	SpreadVolatilityMinSamples      int     // min scan records to evaluate CV (default 3)
+	SpreadStabilityStricterForAuto  bool    // apply tighter spread CV threshold for automated entries (default true)
+	SpreadStabilityAutoCVMultiplier float64 // multiplier applied to CV threshold for automated entries (default 0.7)
+	FundingWindowMin                int     // max minutes before funding to allow entry (default 30)
+	LossCooldownHours               float64 // hours to blacklist symbol after loss close (default 4.0)
+	ReEnterCooldownHours            float64 // hours to block re-entry on same symbol after any close (default 0, disabled)
+	BacktestDays                    int     // days of historical funding to check (default 3, 0 = disabled)
+	BacktestMinProfit               float64 // minimum net profit to pass backtest filter (default 0)
+	DelistFilterEnabled             bool    // enable Binance delist monitoring & filtering (default true)
 
 	// Scan schedule
 	ScanMinutes      []int // minutes within each hour when scans fire (default [5,15,25,35,45,55])
-	EntryScanMinute    int // minute mark that triggers trade execution (default 35)
-	ExitScanMinute     int // minute mark that triggers exit checks (default 25)
-	RotateScanMinute   int // minute mark that triggers rotation checks (default 45)
+	EntryScanMinute  int   // minute mark that triggers trade execution (default 35)
+	ExitScanMinute   int   // minute mark that triggers exit checks (default 25)
+	RotateScanMinute int   // minute mark that triggers rotation checks (default 45)
 
 	// Leg rotation parameters
 	RotationThresholdBPS float64 // min spread improvement to trigger rotation (default: 20)
@@ -145,24 +147,24 @@ type Config struct {
 	SpotArbChromePath string
 
 	// Spot-futures arbitrage engine
-	SpotFuturesEnabled           bool
-	SpotFuturesMaxPositions      int
+	SpotFuturesEnabled            bool
+	SpotFuturesMaxPositions       int
 	SpotFuturesCapitalPerPosition float64
-	SpotFuturesLeverage          int
+	SpotFuturesLeverage           int
 	SpotFuturesMonitorIntervalSec int
-	SpotFuturesMinNetYieldAPR    float64  // minimum net APR after costs (decimal, e.g. 0.10 = 10%)
-	SpotFuturesMaxBorrowAPR      float64  // maximum borrow APR for Direction A (decimal, e.g. 0.50 = 50%)
-	SpotFuturesExchanges         []string // exchanges to consider (empty = all SpotMargin-capable)
-	SpotFuturesScanIntervalMin   int      // discovery scan interval in minutes
-	SpotFuturesBorrowGraceMin     int     // minutes of negative yield before exit (default: 30)
-	SpotFuturesPriceExitPct       float64 // price move % to trigger normal exit (default: 20.0)
-	SpotFuturesPriceEmergencyPct  float64 // price move % to trigger emergency exit (default: 30.0)
-	SpotFuturesMarginExitPct      float64 // margin utilization % for normal exit (default: 85.0)
-	SpotFuturesMarginEmergencyPct float64 // margin utilization % for emergency exit (default: 95.0)
-	SpotFuturesLossCooldownHours  int     // hours to cool down after a losing trade (default: 4)
-	SpotFuturesAutoEnabled      bool // enable automated spot-futures entry from discovery loop (default: false)
-	SpotFuturesDryRun           bool // if true, log auto-entry decisions but skip execution (default: true)
-	SpotFuturesPersistenceScans int  // consecutive scans a symbol must appear before auto-entry (default: 2)
+	SpotFuturesMinNetYieldAPR     float64  // minimum net APR after costs (decimal, e.g. 0.10 = 10%)
+	SpotFuturesMaxBorrowAPR       float64  // maximum borrow APR for Direction A (decimal, e.g. 0.50 = 50%)
+	SpotFuturesExchanges          []string // exchanges to consider (empty = all SpotMargin-capable)
+	SpotFuturesScanIntervalMin    int      // discovery scan interval in minutes
+	SpotFuturesBorrowGraceMin     int      // minutes of negative yield before exit (default: 30)
+	SpotFuturesPriceExitPct       float64  // price move % to trigger normal exit (default: 20.0)
+	SpotFuturesPriceEmergencyPct  float64  // price move % to trigger emergency exit (default: 30.0)
+	SpotFuturesMarginExitPct      float64  // margin utilization % for normal exit (default: 85.0)
+	SpotFuturesMarginEmergencyPct float64  // margin utilization % for emergency exit (default: 95.0)
+	SpotFuturesLossCooldownHours  int      // hours to cool down after a losing trade (default: 4)
+	SpotFuturesAutoEnabled        bool     // enable automated spot-futures entry from discovery loop (default: false)
+	SpotFuturesDryRun             bool     // if true, log auto-entry decisions but skip execution (default: true)
+	SpotFuturesPersistenceScans   int      // consecutive scans a symbol must appear before auto-entry (default: 2)
 
 	// Separate-account exchange support (Binance/Bitget)
 	SpotFuturesProfitTransferEnabled bool    // enable auto profit-to-margin transfers after exit (default: false)
@@ -177,14 +179,14 @@ type Config struct {
 // ---------- Nested JSON config structs ----------
 
 type jsonConfig struct {
-	DryRun    *bool                   `json:"dry_run"`
-	Exchanges map[string]jsonExchange `json:"exchanges"`
-	Redis     *jsonRedis              `json:"redis"`
-	Dashboard *jsonDashboard          `json:"dashboard"`
-	Strategy  *jsonStrategy           `json:"strategy"`
-	Fund      *jsonFund               `json:"fund"`
-	Risk      *jsonRisk               `json:"risk"`
-	AI        *jsonAI                 `json:"ai"`
+	DryRun      *bool                   `json:"dry_run"`
+	Exchanges   map[string]jsonExchange `json:"exchanges"`
+	Redis       *jsonRedis              `json:"redis"`
+	Dashboard   *jsonDashboard          `json:"dashboard"`
+	Strategy    *jsonStrategy           `json:"strategy"`
+	Fund        *jsonFund               `json:"fund"`
+	Risk        *jsonRisk               `json:"risk"`
+	AI          *jsonAI                 `json:"ai"`
 	SpotArb     *jsonSpotArb            `json:"spot_arb"`
 	SpotFutures *jsonSpotFutures        `json:"spot_futures"`
 	Telegram    *jsonTelegram           `json:"telegram"`
@@ -217,9 +219,9 @@ type jsonSpotFutures struct {
 	MarginExitPct      *float64 `json:"margin_exit_pct"`
 	MarginEmergencyPct *float64 `json:"margin_emergency_pct"`
 	LossCooldownHours  *int     `json:"loss_cooldown_hours"`
-	AutoEnabled      *bool `json:"auto_enabled"`
-	AutoDryRun       *bool `json:"auto_dry_run"`
-	PersistenceScans *int  `json:"persistence_scans"`
+	AutoEnabled        *bool    `json:"auto_enabled"`
+	AutoDryRun         *bool    `json:"auto_dry_run"`
+	PersistenceScans   *int     `json:"persistence_scans"`
 
 	ProfitTransferEnabled *bool    `json:"profit_transfer_enabled"`
 	SeparateAcctMaxUSDT   *float64 `json:"separate_acct_max_usdt"`
@@ -253,28 +255,28 @@ type jsonAI struct {
 }
 
 type jsonStrategy struct {
-	TopOpportunities *int           `json:"top_opportunities"`
-	ScanMinutes      []int          `json:"scan_minutes"`
+	TopOpportunities    *int           `json:"top_opportunities"`
+	ScanMinutes         []int          `json:"scan_minutes"`
 	EntryScanMinute     *int           `json:"entry_scan_minute"`
 	ExitScanMinute      *int           `json:"exit_scan_minute"`
 	RotateScanMinute    *int           `json:"rotate_scan_minute"`
 	RebalanceScanMinute *int           `json:"rebalance_scan_minute"`
-	Discovery        *jsonDiscovery `json:"discovery"`
-	Entry            *jsonEntry     `json:"entry"`
-	Exit             *jsonExit      `json:"exit"`
-	Rotation         *jsonRotation  `json:"rotation"`
+	Discovery           *jsonDiscovery `json:"discovery"`
+	Entry               *jsonEntry     `json:"entry"`
+	Exit                *jsonExit      `json:"exit"`
+	Rotation            *jsonRotation  `json:"rotation"`
 }
 
 type jsonDiscovery struct {
-	MinHoldTimeHours    *int             `json:"min_hold_time_hours"`
-	MaxCostRatio        *float64         `json:"max_cost_ratio"`
-	MaxPriceGapBPS      *float64         `json:"max_price_gap_bps"`
-	PriceGapFreeBPS     *float64         `json:"price_gap_free_bps"`
-	MaxGapRecoveryIntervals *float64     `json:"max_gap_recovery_intervals"`
-	MaxIntervalHours    *float64         `json:"max_interval_hours"`
-	AllowMixedIntervals *bool            `json:"allow_mixed_intervals"`
-	DelistFilter        *bool            `json:"delist_filter"`
-	Persistence         *jsonPersistence `json:"persistence"`
+	MinHoldTimeHours        *int             `json:"min_hold_time_hours"`
+	MaxCostRatio            *float64         `json:"max_cost_ratio"`
+	MaxPriceGapBPS          *float64         `json:"max_price_gap_bps"`
+	PriceGapFreeBPS         *float64         `json:"price_gap_free_bps"`
+	MaxGapRecoveryIntervals *float64         `json:"max_gap_recovery_intervals"`
+	MaxIntervalHours        *float64         `json:"max_interval_hours"`
+	AllowMixedIntervals     *bool            `json:"allow_mixed_intervals"`
+	DelistFilter            *bool            `json:"delist_filter"`
+	Persistence             *jsonPersistence `json:"persistence"`
 }
 
 type jsonPersistence struct {
@@ -292,9 +294,11 @@ type jsonPersistence struct {
 	SpreadStabilityRatio8h  *float64 `json:"spread_stability_ratio_8h"`
 	SpreadStabilityOIRank8h *int     `json:"spread_stability_oi_rank_8h"`
 
-	SpreadVolatilityMaxCV      *float64 `json:"spread_volatility_max_cv"`
-	SpreadVolatilityMinSamples *int     `json:"spread_volatility_min_samples"`
-	FundingWindowMin           *int     `json:"funding_window_min"`
+	SpreadVolatilityMaxCV           *float64 `json:"spread_volatility_max_cv"`
+	SpreadVolatilityMinSamples      *int     `json:"spread_volatility_min_samples"`
+	SpreadStabilityStricterForAuto  *bool    `json:"spread_stability_stricter_for_auto"`
+	SpreadStabilityAutoCVMultiplier *float64 `json:"spread_stability_auto_cv_multiplier"`
+	FundingWindowMin                *int     `json:"funding_window_min"`
 }
 
 type jsonEntry struct {
@@ -308,12 +312,12 @@ type jsonEntry struct {
 }
 
 type jsonExit struct {
-	DepthTimeoutSec         *int      `json:"depth_timeout_sec"`
-	EnableSpreadReversal    *bool     `json:"enable_spread_reversal"`
-	SpreadReversalTolerance *int      `json:"spread_reversal_tolerance"`
-	ReversalResetOnRecover  *bool     `json:"reversal_reset_on_recover"`
+	DepthTimeoutSec         *int     `json:"depth_timeout_sec"`
+	EnableSpreadReversal    *bool    `json:"enable_spread_reversal"`
+	SpreadReversalTolerance *int     `json:"spread_reversal_tolerance"`
+	ReversalResetOnRecover  *bool    `json:"reversal_reset_on_recover"`
 	ZeroSpreadTolerance     *int     `json:"zero_spread_tolerance"`
-	MaxGapBPS               *float64  `json:"max_gap_bps"`
+	MaxGapBPS               *float64 `json:"max_gap_bps"`
 }
 
 type jsonRotation struct {
@@ -325,17 +329,17 @@ type jsonFund struct {
 	MaxPositions        *int     `json:"max_positions"`
 	Leverage            *int     `json:"leverage"`
 	CapitalPerLeg       *float64 `json:"capital_per_leg"`
-	RebalanceScanMinute *int     `json:"rebalance_scan_minute"`  // legacy: also accepted here
-	RebalanceAdvanceMin *int     `json:"rebalance_advance_min"`  // deprecated alias
+	RebalanceScanMinute *int     `json:"rebalance_scan_minute"` // legacy: also accepted here
+	RebalanceAdvanceMin *int     `json:"rebalance_advance_min"` // deprecated alias
 }
 
 type jsonRisk struct {
 	MarginL3Threshold      *float64 `json:"margin_l3_threshold"`
 	MarginL4Threshold      *float64 `json:"margin_l4_threshold"`
 	MarginL5Threshold      *float64 `json:"margin_l5_threshold"`
-	L4ReduceFraction        *float64 `json:"l4_reduce_fraction"`
-	MarginSafetyMultiplier  *float64 `json:"margin_safety_multiplier"`
-	RiskMonitorIntervalSec  *int     `json:"risk_monitor_interval_sec"`
+	L4ReduceFraction       *float64 `json:"l4_reduce_fraction"`
+	MarginSafetyMultiplier *float64 `json:"margin_safety_multiplier"`
+	RiskMonitorIntervalSec *int     `json:"risk_monitor_interval_sec"`
 }
 
 // detectChromePath returns the first Chrome binary found in common locations.
@@ -358,75 +362,77 @@ func detectChromePath() string {
 // Priority: env var > config.json > default value.
 func Load() *Config {
 	c := &Config{
-		MinHoldTime:             16 * time.Hour,
-		MaxCostRatio:            0.50,
-		MaxPositions:            1,
-		Leverage:                3,
-		SlippageBPS:             50,
-		RebalanceScanMinute:     10,
-		TopOpportunities:        25,
-		PriceGapFreeBPS:         40,
-		MaxPriceGapBPS:          200,
-		MaxGapRecoveryIntervals: 1.0,
-		EntryTimeoutSec:         300,
-		MinChunkUSDT:            10,
-		MarginL3Threshold:       0.50,
-		MarginL4Threshold:       0.80,
-		MarginL5Threshold:       0.95,
-		L4ReduceFraction:           0.30,
-		MarginSafetyMultiplier:     2.0,
-		ExitDepthTimeoutSec:     300,
-		ExitMaxGapBPS:           10.0,
-		RiskMonitorIntervalSec:  300,
-		PersistLookback1h:       90 * time.Minute,
-		PersistMinCount1h:       1,
-		PersistLookback4h:       180 * time.Minute,
-		PersistMinCount4h:       1,
-		PersistLookback8h:       360 * time.Minute,
-		PersistMinCount8h:       1,
-		SpreadStabilityRatio1h:  0.5,
-		SpreadStabilityOIRank1h: 0,
-		SpreadVolatilityMaxCV:      0,
-		SpreadVolatilityMinSamples: 10,
-		FundingWindowMin:           30,
-		LossCooldownHours:          4.0,
-		BacktestDays:               3,
-		DelistFilterEnabled:        true,
-		ScanMinutes:             []int{10, 20, 30, 35, 40, 45, 50},
-		EntryScanMinute:         40,
-		ExitScanMinute:          30,
-		RotateScanMinute:        35,
-		RotationThresholdBPS:    100,
-		RotationCooldownMin:        180,
-		EnableSpreadReversal:       true,
-		SpreadReversalTolerance:    1,
-		ReversalResetOnRecover:     true,
-		ZeroSpreadTolerance:        2,
-		ReEnterCooldownHours:       1.0,
-		RedisAddr:               "localhost:6379",
-		RedisDB:                 2,
-		DashboardAddr:           ":8080",
-		AIModel:                 "gpt-5.4",
-		AIMaxTokens:             4096,
-		SpotArbSchedule:         "15,35",
-		SpotArbChromePath:       detectChromePath(),
-		SpotFuturesMaxPositions:       1,
-		SpotFuturesCapitalPerPosition: 200,
-		SpotFuturesLeverage:           3,
-		SpotFuturesMonitorIntervalSec: 60,
-		SpotFuturesMinNetYieldAPR:     0.10, // 10%
-		SpotFuturesMaxBorrowAPR:       0.50, // 50%
-		SpotFuturesScanIntervalMin:    10,
-		SpotFuturesBorrowGraceMin:     30,
-		SpotFuturesPriceExitPct:       20.0,
-		SpotFuturesPriceEmergencyPct:  30.0,
-		SpotFuturesMarginExitPct:      85.0,
-		SpotFuturesMarginEmergencyPct: 95.0,
-		SpotFuturesLossCooldownHours:  4,
-		SpotFuturesDryRun:                true,
-		SpotFuturesPersistenceScans:      2,
-		SpotFuturesSeparateAcctMaxUSDT:   200,
-		SpotFuturesUnifiedAcctMaxUSDT:    500,
+		MinHoldTime:                     16 * time.Hour,
+		MaxCostRatio:                    0.50,
+		MaxPositions:                    1,
+		Leverage:                        3,
+		SlippageBPS:                     50,
+		RebalanceScanMinute:             10,
+		TopOpportunities:                25,
+		PriceGapFreeBPS:                 40,
+		MaxPriceGapBPS:                  200,
+		MaxGapRecoveryIntervals:         1.0,
+		EntryTimeoutSec:                 300,
+		MinChunkUSDT:                    10,
+		MarginL3Threshold:               0.50,
+		MarginL4Threshold:               0.80,
+		MarginL5Threshold:               0.95,
+		L4ReduceFraction:                0.30,
+		MarginSafetyMultiplier:          2.0,
+		ExitDepthTimeoutSec:             300,
+		ExitMaxGapBPS:                   10.0,
+		RiskMonitorIntervalSec:          300,
+		PersistLookback1h:               90 * time.Minute,
+		PersistMinCount1h:               1,
+		PersistLookback4h:               180 * time.Minute,
+		PersistMinCount4h:               1,
+		PersistLookback8h:               360 * time.Minute,
+		PersistMinCount8h:               1,
+		SpreadStabilityRatio1h:          0.5,
+		SpreadStabilityOIRank1h:         0,
+		SpreadVolatilityMaxCV:           0,
+		SpreadVolatilityMinSamples:      10,
+		SpreadStabilityStricterForAuto:  true,
+		SpreadStabilityAutoCVMultiplier: 0.7,
+		FundingWindowMin:                30,
+		LossCooldownHours:               4.0,
+		BacktestDays:                    3,
+		DelistFilterEnabled:             true,
+		ScanMinutes:                     []int{10, 20, 30, 35, 40, 45, 50},
+		EntryScanMinute:                 40,
+		ExitScanMinute:                  30,
+		RotateScanMinute:                35,
+		RotationThresholdBPS:            100,
+		RotationCooldownMin:             180,
+		EnableSpreadReversal:            true,
+		SpreadReversalTolerance:         1,
+		ReversalResetOnRecover:          true,
+		ZeroSpreadTolerance:             2,
+		ReEnterCooldownHours:            1.0,
+		RedisAddr:                       "localhost:6379",
+		RedisDB:                         2,
+		DashboardAddr:                   ":8080",
+		AIModel:                         "gpt-5.4",
+		AIMaxTokens:                     4096,
+		SpotArbSchedule:                 "15,35",
+		SpotArbChromePath:               detectChromePath(),
+		SpotFuturesMaxPositions:         1,
+		SpotFuturesCapitalPerPosition:   200,
+		SpotFuturesLeverage:             3,
+		SpotFuturesMonitorIntervalSec:   60,
+		SpotFuturesMinNetYieldAPR:       0.10, // 10%
+		SpotFuturesMaxBorrowAPR:         0.50, // 50%
+		SpotFuturesScanIntervalMin:      10,
+		SpotFuturesBorrowGraceMin:       30,
+		SpotFuturesPriceExitPct:         20.0,
+		SpotFuturesPriceEmergencyPct:    30.0,
+		SpotFuturesMarginExitPct:        85.0,
+		SpotFuturesMarginEmergencyPct:   95.0,
+		SpotFuturesLossCooldownHours:    4,
+		SpotFuturesDryRun:               true,
+		SpotFuturesPersistenceScans:     2,
+		SpotFuturesSeparateAcctMaxUSDT:  200,
+		SpotFuturesUnifiedAcctMaxUSDT:   500,
 	}
 
 	// Load from JSON file
@@ -589,6 +595,12 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 				}
 				if p.SpreadVolatilityMinSamples != nil {
 					c.SpreadVolatilityMinSamples = *p.SpreadVolatilityMinSamples
+				}
+				if p.SpreadStabilityStricterForAuto != nil {
+					c.SpreadStabilityStricterForAuto = *p.SpreadStabilityStricterForAuto
+				}
+				if p.SpreadStabilityAutoCVMultiplier != nil {
+					c.SpreadStabilityAutoCVMultiplier = *p.SpreadStabilityAutoCVMultiplier
 				}
 				if p.FundingWindowMin != nil {
 					c.FundingWindowMin = *p.FundingWindowMin
@@ -947,6 +959,8 @@ func (c *Config) SaveJSON() error {
 	persist["spread_stability_oi_rank_8h"] = c.SpreadStabilityOIRank8h
 	persist["spread_volatility_max_cv"] = c.SpreadVolatilityMaxCV
 	persist["spread_volatility_min_samples"] = c.SpreadVolatilityMinSamples
+	persist["spread_stability_stricter_for_auto"] = c.SpreadStabilityStricterForAuto
+	persist["spread_stability_auto_cv_multiplier"] = c.SpreadStabilityAutoCVMultiplier
 	persist["funding_window_min"] = c.FundingWindowMin
 
 	entry := getMap(strategy, "entry")

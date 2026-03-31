@@ -390,9 +390,11 @@ type configPersistenceResponse struct {
 	SpreadStabilityRatio8h  float64 `json:"spread_stability_ratio_8h"`
 	SpreadStabilityOIRank8h int     `json:"spread_stability_oi_rank_8h"`
 
-	SpreadVolatilityMaxCV      float64 `json:"spread_volatility_max_cv"`
-	SpreadVolatilityMinSamples int     `json:"spread_volatility_min_samples"`
-	FundingWindowMin           int     `json:"funding_window_min"`
+	SpreadVolatilityMaxCV           float64 `json:"spread_volatility_max_cv"`
+	SpreadVolatilityMinSamples      int     `json:"spread_volatility_min_samples"`
+	SpreadStabilityStricterForAuto  bool    `json:"spread_stability_stricter_for_auto"`
+	SpreadStabilityAutoCVMultiplier float64 `json:"spread_stability_auto_cv_multiplier"`
+	FundingWindowMin                int     `json:"funding_window_min"`
 }
 
 type configEntryResponse struct {
@@ -495,15 +497,17 @@ func (s *Server) buildConfigResponse() configResponse {
 					SpreadStabilityRatio8h:  s.cfg.SpreadStabilityRatio8h,
 					SpreadStabilityOIRank8h: s.cfg.SpreadStabilityOIRank8h,
 
-					SpreadVolatilityMaxCV:      s.cfg.SpreadVolatilityMaxCV,
-					SpreadVolatilityMinSamples: s.cfg.SpreadVolatilityMinSamples,
-					FundingWindowMin:           s.cfg.FundingWindowMin,
+					SpreadVolatilityMaxCV:           s.cfg.SpreadVolatilityMaxCV,
+					SpreadVolatilityMinSamples:      s.cfg.SpreadVolatilityMinSamples,
+					SpreadStabilityStricterForAuto:  s.cfg.SpreadStabilityStricterForAuto,
+					SpreadStabilityAutoCVMultiplier: s.cfg.SpreadStabilityAutoCVMultiplier,
+					FundingWindowMin:                s.cfg.FundingWindowMin,
 				},
 			},
 			Entry: configEntryResponse{
 				SlippageLimitBPS:     s.cfg.SlippageBPS,
-				MinChunkUSDT:        s.cfg.MinChunkUSDT,
-				EntryTimeoutSec:     s.cfg.EntryTimeoutSec,
+				MinChunkUSDT:         s.cfg.MinChunkUSDT,
+				EntryTimeoutSec:      s.cfg.EntryTimeoutSec,
 				LossCooldownHours:    s.cfg.LossCooldownHours,
 				ReEnterCooldownHours: s.cfg.ReEnterCooldownHours,
 				BacktestDays:         s.cfg.BacktestDays,
@@ -682,9 +686,11 @@ type persistenceUpdate struct {
 	SpreadStabilityRatio8h  *float64 `json:"spread_stability_ratio_8h"`
 	SpreadStabilityOIRank8h *int     `json:"spread_stability_oi_rank_8h"`
 
-	SpreadVolatilityMaxCV      *float64 `json:"spread_volatility_max_cv"`
-	SpreadVolatilityMinSamples *int     `json:"spread_volatility_min_samples"`
-	FundingWindowMin           *int     `json:"funding_window_min"`
+	SpreadVolatilityMaxCV           *float64 `json:"spread_volatility_max_cv"`
+	SpreadVolatilityMinSamples      *int     `json:"spread_volatility_min_samples"`
+	SpreadStabilityStricterForAuto  *bool    `json:"spread_stability_stricter_for_auto"`
+	SpreadStabilityAutoCVMultiplier *float64 `json:"spread_stability_auto_cv_multiplier"`
+	FundingWindowMin                *int     `json:"funding_window_min"`
 }
 
 type entryUpdate struct {
@@ -824,6 +830,12 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 				}
 				if p.SpreadVolatilityMinSamples != nil && *p.SpreadVolatilityMinSamples >= 0 {
 					s.cfg.SpreadVolatilityMinSamples = *p.SpreadVolatilityMinSamples
+				}
+				if p.SpreadStabilityStricterForAuto != nil {
+					s.cfg.SpreadStabilityStricterForAuto = *p.SpreadStabilityStricterForAuto
+				}
+				if p.SpreadStabilityAutoCVMultiplier != nil && *p.SpreadStabilityAutoCVMultiplier >= 0 {
+					s.cfg.SpreadStabilityAutoCVMultiplier = *p.SpreadStabilityAutoCVMultiplier
 				}
 				if p.FundingWindowMin != nil && *p.FundingWindowMin > 0 {
 					s.cfg.FundingWindowMin = *p.FundingWindowMin
@@ -1090,57 +1102,59 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	snapshot := s.buildConfigResponse()
 
 	fields := map[string]interface{}{
-		"min_hold_time_hours":           strconv.Itoa(snapshot.Strategy.Discovery.MinHoldTimeHours),
-		"max_cost_ratio":                strconv.FormatFloat(snapshot.Strategy.Discovery.MaxCostRatio, 'f', -1, 64),
-		"max_positions":                 strconv.Itoa(snapshot.Fund.MaxPositions),
-		"leverage":                      strconv.Itoa(snapshot.Fund.Leverage),
-		"slippage_limit_bps":            strconv.FormatFloat(snapshot.Strategy.Entry.SlippageLimitBPS, 'f', -1, 64),
-		"rebalance_scan_minute":         strconv.Itoa(snapshot.Strategy.RebalanceScanMinute),
-		"top_opportunities":             strconv.Itoa(snapshot.Strategy.TopOpportunities),
-		"entry_scan_minute":             strconv.Itoa(snapshot.Strategy.EntryScanMinute),
-		"exit_scan_minute":              strconv.Itoa(snapshot.Strategy.ExitScanMinute),
-		"rotate_scan_minute":            strconv.Itoa(snapshot.Strategy.RotateScanMinute),
-		"capital_per_leg":               strconv.FormatFloat(snapshot.Fund.CapitalPerLeg, 'f', -1, 64),
-		"dry_run":                       strconv.FormatBool(snapshot.DryRun),
-		"entry_timeout_sec":             strconv.Itoa(snapshot.Strategy.Entry.EntryTimeoutSec),
-		"min_chunk_usdt":                strconv.FormatFloat(snapshot.Strategy.Entry.MinChunkUSDT, 'f', -1, 64),
-		"price_gap_free_bps":            strconv.FormatFloat(snapshot.Strategy.Discovery.PriceGapFreeBPS, 'f', -1, 64),
-		"max_price_gap_bps":             strconv.FormatFloat(snapshot.Strategy.Discovery.MaxPriceGapBPS, 'f', -1, 64),
-		"max_gap_recovery_intervals":    strconv.FormatFloat(snapshot.Strategy.Discovery.MaxGapRecoveryIntervals, 'f', -1, 64),
-		"max_interval_hours":            strconv.FormatFloat(snapshot.Strategy.Discovery.MaxIntervalHours, 'f', -1, 64),
-		"delist_filter":                 strconv.FormatBool(snapshot.Strategy.Discovery.DelistFilter),
-		"margin_l3_threshold":           strconv.FormatFloat(snapshot.Risk.MarginL3Threshold, 'f', -1, 64),
-		"margin_l4_threshold":           strconv.FormatFloat(snapshot.Risk.MarginL4Threshold, 'f', -1, 64),
-		"margin_l5_threshold":           strconv.FormatFloat(snapshot.Risk.MarginL5Threshold, 'f', -1, 64),
-		"l4_reduce_fraction":            strconv.FormatFloat(snapshot.Risk.L4ReduceFraction, 'f', -1, 64),
-		"margin_safety_multiplier":      strconv.FormatFloat(snapshot.Risk.MarginSafetyMultiplier, 'f', -1, 64),
-		"risk_monitor_interval_sec":     strconv.Itoa(snapshot.Risk.RiskMonitorIntervalSec),
-		"exit_depth_timeout_sec":        strconv.Itoa(snapshot.Strategy.Exit.DepthTimeoutSec),
-		"enable_spread_reversal":        strconv.FormatBool(snapshot.Strategy.Exit.EnableSpreadReversal),
-		"spread_reversal_tolerance":     strconv.Itoa(snapshot.Strategy.Exit.SpreadReversalTolerance),
-		"reversal_reset_on_recover":    strconv.FormatBool(snapshot.Strategy.Exit.ReversalResetOnRecover),
-		"zero_spread_tolerance":         strconv.Itoa(snapshot.Strategy.Exit.ZeroSpreadTolerance),
-		"rotation_threshold_bps":        strconv.FormatFloat(snapshot.Strategy.Rotation.ThresholdBPS, 'f', -1, 64),
-		"rotation_cooldown_min":         strconv.Itoa(snapshot.Strategy.Rotation.CooldownMin),
-		"persist_lookback_min_1h":       strconv.Itoa(snapshot.Strategy.Discovery.Persistence.LookbackMin1h),
-		"persist_min_count_1h":          strconv.Itoa(snapshot.Strategy.Discovery.Persistence.MinCount1h),
-		"persist_lookback_min_4h":       strconv.Itoa(snapshot.Strategy.Discovery.Persistence.LookbackMin4h),
-		"persist_min_count_4h":          strconv.Itoa(snapshot.Strategy.Discovery.Persistence.MinCount4h),
-		"persist_lookback_min_8h":       strconv.Itoa(snapshot.Strategy.Discovery.Persistence.LookbackMin8h),
-		"persist_min_count_8h":          strconv.Itoa(snapshot.Strategy.Discovery.Persistence.MinCount8h),
-		"spread_stability_ratio_1h":     strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadStabilityRatio1h, 'f', -1, 64),
-		"spread_stability_oi_rank_1h":   strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadStabilityOIRank1h),
-		"spread_stability_ratio_4h":     strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadStabilityRatio4h, 'f', -1, 64),
-		"spread_stability_oi_rank_4h":   strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadStabilityOIRank4h),
-		"spread_stability_ratio_8h":     strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadStabilityRatio8h, 'f', -1, 64),
-		"spread_stability_oi_rank_8h":   strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadStabilityOIRank8h),
-		"spread_volatility_max_cv":      strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadVolatilityMaxCV, 'f', -1, 64),
-		"spread_volatility_min_samples": strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadVolatilityMinSamples),
-		"funding_window_min":            strconv.Itoa(snapshot.Strategy.Discovery.Persistence.FundingWindowMin),
-		"loss_cooldown_hours":           strconv.FormatFloat(snapshot.Strategy.Entry.LossCooldownHours, 'f', -1, 64),
-		"re_enter_cooldown_hours":       strconv.FormatFloat(snapshot.Strategy.Entry.ReEnterCooldownHours, 'f', -1, 64),
-		"backtest_days":                 strconv.Itoa(snapshot.Strategy.Entry.BacktestDays),
-		"backtest_min_profit":           strconv.FormatFloat(snapshot.Strategy.Entry.BacktestMinProfit, 'f', -1, 64),
+		"min_hold_time_hours":                 strconv.Itoa(snapshot.Strategy.Discovery.MinHoldTimeHours),
+		"max_cost_ratio":                      strconv.FormatFloat(snapshot.Strategy.Discovery.MaxCostRatio, 'f', -1, 64),
+		"max_positions":                       strconv.Itoa(snapshot.Fund.MaxPositions),
+		"leverage":                            strconv.Itoa(snapshot.Fund.Leverage),
+		"slippage_limit_bps":                  strconv.FormatFloat(snapshot.Strategy.Entry.SlippageLimitBPS, 'f', -1, 64),
+		"rebalance_scan_minute":               strconv.Itoa(snapshot.Strategy.RebalanceScanMinute),
+		"top_opportunities":                   strconv.Itoa(snapshot.Strategy.TopOpportunities),
+		"entry_scan_minute":                   strconv.Itoa(snapshot.Strategy.EntryScanMinute),
+		"exit_scan_minute":                    strconv.Itoa(snapshot.Strategy.ExitScanMinute),
+		"rotate_scan_minute":                  strconv.Itoa(snapshot.Strategy.RotateScanMinute),
+		"capital_per_leg":                     strconv.FormatFloat(snapshot.Fund.CapitalPerLeg, 'f', -1, 64),
+		"dry_run":                             strconv.FormatBool(snapshot.DryRun),
+		"entry_timeout_sec":                   strconv.Itoa(snapshot.Strategy.Entry.EntryTimeoutSec),
+		"min_chunk_usdt":                      strconv.FormatFloat(snapshot.Strategy.Entry.MinChunkUSDT, 'f', -1, 64),
+		"price_gap_free_bps":                  strconv.FormatFloat(snapshot.Strategy.Discovery.PriceGapFreeBPS, 'f', -1, 64),
+		"max_price_gap_bps":                   strconv.FormatFloat(snapshot.Strategy.Discovery.MaxPriceGapBPS, 'f', -1, 64),
+		"max_gap_recovery_intervals":          strconv.FormatFloat(snapshot.Strategy.Discovery.MaxGapRecoveryIntervals, 'f', -1, 64),
+		"max_interval_hours":                  strconv.FormatFloat(snapshot.Strategy.Discovery.MaxIntervalHours, 'f', -1, 64),
+		"delist_filter":                       strconv.FormatBool(snapshot.Strategy.Discovery.DelistFilter),
+		"margin_l3_threshold":                 strconv.FormatFloat(snapshot.Risk.MarginL3Threshold, 'f', -1, 64),
+		"margin_l4_threshold":                 strconv.FormatFloat(snapshot.Risk.MarginL4Threshold, 'f', -1, 64),
+		"margin_l5_threshold":                 strconv.FormatFloat(snapshot.Risk.MarginL5Threshold, 'f', -1, 64),
+		"l4_reduce_fraction":                  strconv.FormatFloat(snapshot.Risk.L4ReduceFraction, 'f', -1, 64),
+		"margin_safety_multiplier":            strconv.FormatFloat(snapshot.Risk.MarginSafetyMultiplier, 'f', -1, 64),
+		"risk_monitor_interval_sec":           strconv.Itoa(snapshot.Risk.RiskMonitorIntervalSec),
+		"exit_depth_timeout_sec":              strconv.Itoa(snapshot.Strategy.Exit.DepthTimeoutSec),
+		"enable_spread_reversal":              strconv.FormatBool(snapshot.Strategy.Exit.EnableSpreadReversal),
+		"spread_reversal_tolerance":           strconv.Itoa(snapshot.Strategy.Exit.SpreadReversalTolerance),
+		"reversal_reset_on_recover":           strconv.FormatBool(snapshot.Strategy.Exit.ReversalResetOnRecover),
+		"zero_spread_tolerance":               strconv.Itoa(snapshot.Strategy.Exit.ZeroSpreadTolerance),
+		"rotation_threshold_bps":              strconv.FormatFloat(snapshot.Strategy.Rotation.ThresholdBPS, 'f', -1, 64),
+		"rotation_cooldown_min":               strconv.Itoa(snapshot.Strategy.Rotation.CooldownMin),
+		"persist_lookback_min_1h":             strconv.Itoa(snapshot.Strategy.Discovery.Persistence.LookbackMin1h),
+		"persist_min_count_1h":                strconv.Itoa(snapshot.Strategy.Discovery.Persistence.MinCount1h),
+		"persist_lookback_min_4h":             strconv.Itoa(snapshot.Strategy.Discovery.Persistence.LookbackMin4h),
+		"persist_min_count_4h":                strconv.Itoa(snapshot.Strategy.Discovery.Persistence.MinCount4h),
+		"persist_lookback_min_8h":             strconv.Itoa(snapshot.Strategy.Discovery.Persistence.LookbackMin8h),
+		"persist_min_count_8h":                strconv.Itoa(snapshot.Strategy.Discovery.Persistence.MinCount8h),
+		"spread_stability_ratio_1h":           strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadStabilityRatio1h, 'f', -1, 64),
+		"spread_stability_oi_rank_1h":         strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadStabilityOIRank1h),
+		"spread_stability_ratio_4h":           strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadStabilityRatio4h, 'f', -1, 64),
+		"spread_stability_oi_rank_4h":         strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadStabilityOIRank4h),
+		"spread_stability_ratio_8h":           strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadStabilityRatio8h, 'f', -1, 64),
+		"spread_stability_oi_rank_8h":         strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadStabilityOIRank8h),
+		"spread_volatility_max_cv":            strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadVolatilityMaxCV, 'f', -1, 64),
+		"spread_volatility_min_samples":       strconv.Itoa(snapshot.Strategy.Discovery.Persistence.SpreadVolatilityMinSamples),
+		"spread_stability_stricter_for_auto":  strconv.FormatBool(snapshot.Strategy.Discovery.Persistence.SpreadStabilityStricterForAuto),
+		"spread_stability_auto_cv_multiplier": strconv.FormatFloat(snapshot.Strategy.Discovery.Persistence.SpreadStabilityAutoCVMultiplier, 'f', -1, 64),
+		"funding_window_min":                  strconv.Itoa(snapshot.Strategy.Discovery.Persistence.FundingWindowMin),
+		"loss_cooldown_hours":                 strconv.FormatFloat(snapshot.Strategy.Entry.LossCooldownHours, 'f', -1, 64),
+		"re_enter_cooldown_hours":             strconv.FormatFloat(snapshot.Strategy.Entry.ReEnterCooldownHours, 'f', -1, 64),
+		"backtest_days":                       strconv.Itoa(snapshot.Strategy.Entry.BacktestDays),
+		"backtest_min_profit":                 strconv.FormatFloat(snapshot.Strategy.Entry.BacktestMinProfit, 'f', -1, 64),
 	}
 
 	if sf := snapshot.SpotFutures; sf != nil {

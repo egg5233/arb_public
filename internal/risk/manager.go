@@ -6,8 +6,8 @@ import (
 
 	"arb/internal/config"
 	"arb/internal/database"
-	"arb/pkg/exchange"
 	"arb/internal/models"
+	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
 
@@ -17,19 +17,21 @@ var _ models.RiskChecker = (*Manager)(nil)
 // Manager performs pre-trade risk assessment before entering positions.
 // It satisfies models.RiskChecker.
 type Manager struct {
-	exchanges map[string]exchange.Exchange
-	db        *database.Client
-	cfg       *config.Config
-	log       *utils.Logger
+	exchanges       map[string]exchange.Exchange
+	db              *database.Client
+	cfg             *config.Config
+	log             *utils.Logger
+	spreadStability *SpreadStabilityChecker
 }
 
 // NewManager creates a new risk Manager.
 func NewManager(exchanges map[string]exchange.Exchange, db *database.Client, cfg *config.Config) *Manager {
 	return &Manager{
-		exchanges: exchanges,
-		db:        db,
-		cfg:       cfg,
-		log:       utils.NewLogger("risk"),
+		exchanges:       exchanges,
+		db:              db,
+		cfg:             cfg,
+		log:             utils.NewLogger("risk"),
+		spreadStability: NewSpreadStabilityChecker(db, cfg),
 	}
 }
 
@@ -267,7 +269,14 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		m.log.Info("price gap %.1f bps for %s, recovery %.1f intervals (within %.1f limit, %.0fh interval)", gapBps, opp.Symbol, recoveryIntervals, m.cfg.MaxGapRecoveryIntervals, intervalHours)
 	}
 
-	// f. Per-exchange capital exposure cap
+	// f. Spread stability hard gate
+	if reason, err := m.spreadStability.Check(opp, reserved != nil); err != nil {
+		return nil, fmt.Errorf("spread stability check: %w", err)
+	} else if reason != "" {
+		return &models.RiskApproval{Approved: false, Reason: reason}, nil
+	}
+
+	// g. Per-exchange capital exposure cap
 	// Ensure that the proposed position doesn't push any single exchange
 	// beyond 60% of total capital deployed across all exchanges.
 	// NOTE: totalCapital is intentionally the sum of only the two candidate
@@ -304,7 +313,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		}
 	}
 
-	// g. Exchange concentration — soft warning only
+	// h. Exchange concentration — soft warning only
 	if IsExchangeOverexposed(opp.LongExchange, active) {
 		m.log.Warn("exchange %s has >60%% of active positions (long leg)", opp.LongExchange)
 	}

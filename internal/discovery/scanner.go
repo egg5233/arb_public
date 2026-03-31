@@ -13,8 +13,8 @@ import (
 
 	"arb/internal/config"
 	"arb/internal/database"
-	"arb/pkg/exchange"
 	"arb/internal/models"
+	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
 
@@ -72,8 +72,8 @@ type Scanner struct {
 	intervalsMu        sync.RWMutex
 
 	// Backtest prefetch rate limiting.
-	prefetchMu       sync.Mutex
-	lorisBackoffMu   sync.RWMutex
+	prefetchMu        sync.Mutex
+	lorisBackoffMu    sync.RWMutex
 	lorisBackoffUntil time.Time
 
 	oppChan  chan ScanResult
@@ -435,10 +435,9 @@ func oppKey(opp models.Opportunity) string {
 
 // recordScanHistory records that each opportunity was seen in this scan cycle.
 func (s *Scanner) recordScanHistory(opps []models.Opportunity) {
-	s.scanHistoryMu.Lock()
-	defer s.scanHistoryMu.Unlock()
-
 	now := time.Now()
+
+	s.scanHistoryMu.Lock()
 	for _, opp := range opps {
 		key := oppKey(opp)
 		s.scanHistory[key] = append(s.scanHistory[key], scanRecord{Time: now, Spread: opp.Spread})
@@ -456,6 +455,13 @@ func (s *Scanner) recordScanHistory(opps []models.Opportunity) {
 			delete(s.scanHistory, key)
 		} else if i > 0 {
 			s.scanHistory[key] = records[i:]
+		}
+	}
+	s.scanHistoryMu.Unlock()
+
+	if s.db != nil {
+		if err := s.db.AddSpreadHistoryBatch(opps, now); err != nil {
+			s.log.Error("failed to persist spread history: %v", err)
 		}
 	}
 }
