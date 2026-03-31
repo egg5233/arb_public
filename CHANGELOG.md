@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.36] - 2026-03-31
+
+### Fixed
+- **[risk] Spread stability gate now requires `enable_spread_stability_gate: true` to activate** — added top-level `EnableSpreadStabilityGate` config toggle (default `false`) so the gate is fully inert until explicitly enabled; prevents accidental filtering on rollout; dashboard Config page exposes the toggle (`internal/config/config.go`, `internal/risk/spread_stability.go`, `internal/api/handlers.go`, `web/src/pages/Config.tsx`)
+- **[risk] Spread stability gate now rejects on insufficient history** — previously `len(spreads) < minSamples` was a silent pass; now returns a rejection reason `"insufficient spread history (n=X < Y)"` so thin-history slots are blocked rather than waved through (`internal/risk/spread_stability.go`)
+- **[risk] Capital allocator `UpdatePosition` helper** — adds atomic `UpdatePosition(positionID, exposures)` to `CapitalAllocator` so callers can atomically adjust per-exchange committed amounts when a position's exposure changes, without release+reserve races (`internal/risk/allocator.go`)
+- **[spot-futures] Pending spot entries survive restart** — `ManualOpen` now persists a `SpotStatusPending` position record before execution begins; a new `recoverPendingSpotEntries` path on startup detects in-flight entries, checks order fill status, and either promotes to active or cleans up stale entries; capital commitment is preserved across the pending→active transition (`internal/spotengine/execution.go`, `internal/models/spot_position.go`, `internal/api/spot_handlers.go`)
+- **[spot-futures] ManualOpen rejects filtered opportunities** — `ManualOpen` now checks `opp.FilterStatus != ""` before proceeding and returns an explicit error, preventing manual entry on opportunities the discovery layer has already flagged as non-viable (`internal/spotengine/execution.go`)
+- **[spot-futures] Bybit pending exposure includes borrow open orders** — `GetPendingExposure` now sums unfilled borrow/margin open orders into the returned exposure value so the pre-trade gate accurately accounts for in-flight spot entries on Bybit (`pkg/exchange/bybit/margin.go`)
+
 ## [0.22.35] - 2026-03-31
 
 ### Added
