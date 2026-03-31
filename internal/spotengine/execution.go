@@ -556,8 +556,17 @@ func (e *SpotEngine) abortAcceptedSpotEntry(
 			return fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (cleanup could not %s %.6f: %v)",
 				orderID, persistErr, action, filledQty, err)
 		}
-		e.log.Warn("ManualOpen: pending entry save failed after accepted spot order %s; cleanup %s order placed: %s qty=%.6f",
-			orderID, action, reverseOrderID, filledQty)
+		cleanupFilled, _, cleanupConfirmed, cleanupErr := e.confirmSpotFill(smExch, futExch, reverseOrderID, symbol, filledQty)
+		if !cleanupConfirmed {
+			return fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (cleanup order %s could not be confirmed flat after %s %.6f: %v; manual intervention required)",
+				orderID, persistErr, reverseOrderID, action, filledQty, cleanupErr)
+		}
+		if !spotQtyComplete(cleanupFilled, filledQty) {
+			return fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (cleanup order %s only reconciled %.6f of %.6f after %s; manual intervention required)",
+				orderID, persistErr, reverseOrderID, cleanupFilled, filledQty, action)
+		}
+		e.log.Warn("ManualOpen: pending entry save failed after accepted spot order %s; cleanup %s order %s confirmed %.6f",
+			orderID, action, reverseOrderID, cleanupFilled)
 	}
 
 	if pos.Direction == "borrow_sell_long" && pos.BorrowAmount > 0 {

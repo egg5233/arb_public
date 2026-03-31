@@ -727,10 +727,18 @@ func TestManualOpen_CleansUpAcceptedSpotOrderWhenPendingEntrySaveFails(t *testin
 		},
 	}
 	smExch := &closeTestSpotMargin{
+		orderIDs:  []string{"spot-entry-1", "spot-cleanup-1"},
 		queryErrs: []error{errors.New("temporary spot query failure")},
 		queryStates: []*exchange.SpotMarginOrderStatus{
 			{
-				OrderID:   "spot-close-1",
+				OrderID:   "spot-entry-1",
+				Symbol:    "BTCUSDT",
+				Status:    "filled",
+				FilledQty: 1,
+				AvgPrice:  100,
+			},
+			{
+				OrderID:   "spot-cleanup-1",
 				Symbol:    "BTCUSDT",
 				Status:    "filled",
 				FilledQty: 1,
@@ -803,10 +811,18 @@ func TestManualOpen_ReversesAndRepaysBorrowWhenPendingEntrySaveFails(t *testing.
 		},
 	}
 	smExch := &closeTestSpotMargin{
+		orderIDs:  []string{"spot-entry-1", "spot-cleanup-1"},
 		queryErrs: []error{errors.New("temporary spot query failure")},
 		queryStates: []*exchange.SpotMarginOrderStatus{
 			{
-				OrderID:   "spot-close-1",
+				OrderID:   "spot-entry-1",
+				Symbol:    "BTCUSDT",
+				Status:    "filled",
+				FilledQty: 1,
+				AvgPrice:  100,
+			},
+			{
+				OrderID:   "spot-cleanup-1",
 				Symbol:    "BTCUSDT",
 				Status:    "filled",
 				FilledQty: 1,
@@ -854,6 +870,81 @@ func TestManualOpen_ReversesAndRepaysBorrowWhenPendingEntrySaveFails(t *testing.
 	}
 	if len(active) != 0 {
 		t.Fatalf("active positions = %d, want 0", len(active))
+	}
+}
+
+func TestManualOpen_ReportsManualInterventionWhenCleanupOrderOnlyPartiallyFills(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	failRedis := miniredis.RunT(t)
+	failingDB, err := database.New(failRedis.Addr(), "", 0)
+	if err != nil {
+		t.Fatalf("database.New failingDB: %v", err)
+	}
+	failRedis.Close()
+
+	engine.cfg = &config.Config{
+		SpotFuturesMaxPositions:       1,
+		SpotFuturesLeverage:           3,
+		SpotFuturesUnifiedAcctMaxUSDT: 100,
+	}
+
+	futExch := &closeTestExchange{
+		orderbook: &exchange.Orderbook{
+			Bids: []exchange.PriceLevel{{Price: 99, Quantity: 1}},
+			Asks: []exchange.PriceLevel{{Price: 101, Quantity: 1}},
+		},
+	}
+	smExch := &closeTestSpotMargin{
+		orderIDs:  []string{"spot-entry-1", "spot-cleanup-1"},
+		queryErrs: []error{errors.New("temporary spot query failure")},
+		queryStates: []*exchange.SpotMarginOrderStatus{
+			{
+				OrderID:   "spot-entry-1",
+				Symbol:    "BTCUSDT",
+				Status:    "filled",
+				FilledQty: 1,
+				AvgPrice:  100,
+			},
+			{
+				OrderID:   "spot-cleanup-1",
+				Symbol:    "BTCUSDT",
+				Status:    "cancelled",
+				FilledQty: 0.4,
+				AvgPrice:  100,
+			},
+		},
+		onPlace: func(call int, _ exchange.SpotMarginOrderParams) {
+			if call == 1 {
+				engine.db = failingDB
+			}
+		},
+	}
+
+	engine.exchanges = map[string]exchange.Exchange{"stub": futExch}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{"stub": smExch}
+	engine.latestOpps = []SpotArbOpportunity{
+		{
+			Symbol:    "BTCUSDT",
+			BaseCoin:  "BTC",
+			Exchange:  "stub",
+			Direction: "borrow_sell_long",
+		},
+	}
+
+	err = engine.ManualOpen("BTCUSDT", "stub", "borrow_sell_long")
+	if err == nil {
+		t.Fatal("expected ManualOpen to fail when cleanup order only partially fills")
+	}
+	if !strings.Contains(err.Error(), "manual intervention required") {
+		t.Fatalf("ManualOpen error = %v, want manual intervention requirement", err)
+	}
+	if smExch.placeCalls != 2 {
+		t.Fatalf("spot place calls = %d, want 2 (entry + cleanup)", smExch.placeCalls)
+	}
+	if smExch.repayCalls != 0 {
+		t.Fatalf("repay calls = %d, want 0 when cleanup is incomplete", smExch.repayCalls)
 	}
 }
 
