@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.44] - 2026-03-31
+
+### Fixed
+- **[gateio] Fix PlaceOrder quanto contract sizing** — order `size` field was serialized as a JSON string instead of a number, causing the Gate.io API to receive `"88"` instead of `88`; for quanto contracts (e.g. IRUSDT with multiplier=10) the base-to-contract conversion was silently lost; now sends `size` as a JSON integer (`pkg/exchange/gateio/adapter.go`)
+
 ## [0.22.43] - 2026-03-31
 
 ### Added
