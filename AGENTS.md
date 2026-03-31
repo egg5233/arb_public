@@ -19,7 +19,7 @@ Delta-neutral funding rate arbitrage across 6 CEXes: Binance, Bybit, Gate.io, Bi
 
 ## Key Architecture
 
-- `internal/exchange/` — 6 exchange adapters, each with adapter.go, client.go, ws.go, ws_private.go
+- `pkg/exchange/` — 6 exchange adapters, each with adapter.go, client.go, ws.go, ws_private.go
 - `internal/engine/` — Trade execution, exit logic, position consolidation
 - `internal/discovery/` — Opportunity scanning, ranking, filtering pipeline
 - `internal/risk/` — Pre-trade risk checks, margin health monitoring
@@ -69,7 +69,7 @@ When reviewing code, check for:
 
 Before starting any review, read these files for full context:
 
-- **`ARCHITECTURE.md`** — READ THIS FIRST. Contains full system design, data flow diagrams, Exchange interface spec (31 methods), config parameter table, Redis schema, exit strategy flow, and risk management details.
+- **`ARCHITECTURE.md`** — READ THIS FIRST. Contains full system design, data flow diagrams, Exchange interface spec (35 methods), config parameter table, Redis schema, exit strategy flow, and risk management details.
 - **`CHANGELOG.md`** — Recent version history with detailed change descriptions. Read to understand what changed recently.
 - **`CLAUDE.md`** — Build commands and project structure.
 

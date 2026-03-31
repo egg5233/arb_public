@@ -362,11 +362,13 @@ internal/
     state.go                       Positions, history, funding snapshots, stats, transfers
     locks.go                       Distributed locking (SET NX + TTL)
   risk/
-    manager.go                     11-point pre-trade risk approval, position sizing
+    manager.go                     11-point pre-trade risk approval, position sizing (includes spread stability gate)
     monitor.go                     5-dimension active position monitoring (30s)
     health.go                      5-tier margin health system (L0–L5), protective actions
     limits.go                      Hard constraints: 5x leverage, 60% exposure, 10 USDT floor
     health_test.go                 Health level tests
+    spread_stability.go            Redis-backed spread CV gate (SpreadStabilityChecker) called at entry time
+    spread_stability_test.go       Spread stability gate tests
   models/
     interfaces.go                  Discoverer, RiskChecker, StateStore abstractions
     opportunity.go                 Opportunity struct (with IntervalHours, Source)
@@ -374,15 +376,20 @@ internal/
     funding.go                     FundingRate, FundingSnapshot, LorisResponse, CoinGlassResponse
   api/
     server.go                      HTTP + WebSocket server
-    handlers.go                    REST endpoints (positions, history, config, exchanges, transfers)
+    handlers.go                    REST endpoints (positions, history, config, exchanges, transfers, check-update)
+    handlers_test.go               Tests: check-update semver comparison, versionNewer helper
+    config_handlers_test.go        Config endpoint tests
+    drift_monitor.go               Binary drift monitor: detects stale process after deploy, triggers systemd restart
     ws.go                          WebSocket hub & client management
     auth.go                        Session-based auth (24h TTL tokens)
     frontend.go                    React SPA embedding & routing
+    spot_handlers.go               Spot-futures REST + WebSocket endpoints
+    spot_stats_test.go             Spot stats cold-start / partial-hash regression tests
 web/
   embed.go                         React dist embedding via go:embed
 pkg/
   exchange/                        Reusable exchange adapter package (importable by external projects)
-    exchange.go                    Unified Exchange interface (33 methods)
+    exchange.go                    Unified Exchange interface (35 methods)
     types.go                       Shared types (Order, Position, Balance, Orderbook, etc.)
     factory.go                     Exchange factory (logic in cmd/main.go to avoid cycles)
     binance/                       adapter.go, client.go, ws.go, ws_private.go, margin.go
@@ -396,7 +403,7 @@ pkg/
     logging.go                     Structured logging with module context + file output + daily rotation
 ```
 
-**Total**: 64 Go files (~19,000 LOC) + 17 TS/TSX frontend files (~1,400 LOC)
+**Total**: 107 Go files + 21 TS/TSX frontend files
 
 ### 2.2 Data Flow
 
@@ -688,11 +695,15 @@ arb:reEnterCooldown:{symbol}        STRING  Re-entry cooldown flag (auto-expires
 | GET | `/api/exchanges` | Exchange balances |
 | POST | `/api/positions/close` | Manual close active position |
 | POST | `/api/positions/open` | Manual open from opportunity |
+| GET | `/api/positions/{id}/funding` | Funding history for a position |
 | POST | `/api/transfer` | Execute cross-exchange withdrawal |
 | GET | `/api/transfers` | Transfer history |
 | GET | `/api/addresses` | Deposit addresses |
 | GET | `/api/permissions` | API key permission check results |
-| GET | `/api/check-update` | Compare local vs remote VERSION |
+| GET | `/api/logs` | Recent log lines |
+| GET | `/api/rejections` | Recent trade rejection log |
+| GET | `/api/diagnose` | System diagnostics snapshot |
+| GET | `/api/check-update` | Compare local vs remote VERSION; returns semver `hasUpdate`, `binaryDrift` bool, and full `runtime` provenance (pid, exePath, binaryModTime, driftReason, restartSupported) |
 | POST | `/api/update` | Git pull + make build + restart |
 
 **WebSocket Messages** (`/ws`):
@@ -701,6 +712,7 @@ arb:reEnterCooldown:{symbol}        STRING  Re-entry cooldown flag (auto-expires
 - `opportunities` — discovery results
 - `stats` — PnL stats
 - `alert` — risk alerts
+- `binary_drift` — broadcast when drift monitor detects stale running binary
 
 ### 2.8 Startup Sequence (cmd/main.go)
 
@@ -711,9 +723,10 @@ arb:reEnterCooldown:{symbol}        STRING  Re-entry cooldown flag (auto-expires
 5. Start WebSocket streams (public + private)
 6. Initialize: Scanner, RiskManager, RiskMonitor, HealthMonitor, API Server, Engine
 7. Start balance refresh goroutine (60s)
-8. Start all components: Scanner → RiskMon → HealthMon → API → Engine (incl. Consolidator)
+8. Start all components: Scanner → RiskMon → HealthMon → API (incl. binary drift monitor) → Engine (incl. Consolidator)
 9. If `SpotFuturesEnabled`: create and start SpotEngine
 10. Wait for SIGINT/SIGTERM → graceful shutdown (reverse order, SpotEngine stops first)
+    - If drift monitor triggered the shutdown: exit non-zero so systemd `Restart=on-failure` fires
 
 ---
 
@@ -804,9 +817,13 @@ Env overrides: `SPOT_FUTURES_ENABLED`, `SPOT_FUTURES_MAX_POSITIONS`, `SPOT_FUTUR
 | `/api/spot/positions` | GET | Active spot-futures positions |
 | `/api/spot/history` | GET | Closed positions (default limit 50) |
 | `/api/spot/stats` | GET | Win/loss/PnL counters |
-| `/api/spot/opportunities` | GET | Latest discovery scan results |
+| `/api/spot/opportunities` | GET | Latest discovery scan results with `filter_status` reason per row |
+| `/api/spot/open` | POST | Manual open a spot-futures position |
+| `/api/spot/close` | POST | Manual close a spot-futures position |
+| `/api/spot/positions/{id}/health` | GET | Live health snapshot: `last_borrow_rate_check`, `negative_yield_since`, current margin utilization |
+| `/api/spot/config/auto` | GET/POST | View/update auto-entry config; response includes `max_positions` and `capital_per_position` guardrail fields |
 
-WebSocket event: `spot_position_update` (single position), `spot_positions` (full active list).
+WebSocket events: `spot_position_update` (single position), `spot_positions` (full active list), `spot_opportunities` (discovery results broadcast), `spot_position_health` (real-time health tick).
 
 ### 3.6 Exit Flow
 
