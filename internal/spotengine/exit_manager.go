@@ -448,6 +448,7 @@ func (e *SpotEngine) completeExit(pos *models.SpotFuturesPosition, reason string
 		e.log.Error("completeExit: failed to update stats for %s: %v", pos.ID, err)
 	}
 	e.releaseSpotPosition(pos.ID)
+	e.borrowVelocity.Delete(pos.ID)
 
 	// Set cooldown on loss.
 	if totalPnL < 0 {
@@ -463,7 +464,7 @@ func (e *SpotEngine) completeExit(pos *models.SpotFuturesPosition, reason string
 	}
 
 	// Broadcast final update.
-	if updated != nil {
+	if updated != nil && e.api != nil {
 		e.api.BroadcastSpotPositionUpdate(updated)
 	}
 
@@ -609,6 +610,7 @@ func (e *SpotEngine) resolveManualRecovery(positionID string) error {
 	}
 
 	e.releaseSpotPosition(pos.ID)
+	e.borrowVelocity.Delete(pos.ID)
 	if e.api != nil {
 		e.api.BroadcastSpotPositionUpdate(pos)
 	}

@@ -74,7 +74,7 @@ func (e *SpotEngine) monitorTick() {
 				isEmergency := pos.ExitRetryCount+1 >= 5
 				e.log.Warn("monitor: retrying stuck exit for %s (retry #%d, emergency=%v)",
 					pos.ID, pos.ExitRetryCount+1, isEmergency)
-				go e.initiateExit(pos, pos.ExitReason, isEmergency)
+				e.launchExit(pos, pos.ExitReason, isEmergency)
 			}
 			continue
 		}
@@ -128,6 +128,9 @@ func (e *SpotEngine) monitorPosition(pos *models.SpotFuturesPosition) {
 	// Check exit triggers for all directions.
 	// ---------------------------------------------------------------
 	reason, isEmergency := e.checkExitTriggers(latest)
+	if reason == "" {
+		reason, isEmergency = e.evaluateBorrowRateSpike(latest, time.Now().UTC())
+	}
 
 	// Persist tracking metrics updated by checkExitTriggers (best-effort).
 	if latest.PeakPriceMovePct > 0 || latest.MarginUtilizationPct > 0 {
@@ -147,7 +150,7 @@ func (e *SpotEngine) monitorPosition(pos *models.SpotFuturesPosition) {
 
 	if reason != "" {
 		if !e.isExiting(latest.ID) {
-			go e.initiateExit(latest, reason, isEmergency)
+			e.launchExit(latest, reason, isEmergency)
 		}
 	}
 }

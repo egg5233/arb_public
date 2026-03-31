@@ -26,6 +26,7 @@ type SpotEngine struct {
 	log        *utils.Logger
 	stopCh     chan struct{}
 	wg         sync.WaitGroup
+	exitWG     sync.WaitGroup
 
 	// latestOpps caches the most recent discovery scan results for ManualOpen lookups.
 	oppsMu     sync.RWMutex
@@ -42,6 +43,9 @@ type SpotEngine struct {
 
 	// posMu provides per-position locking for read-modify-write operations.
 	posMu sync.Map // posID → *sync.Mutex
+
+	// borrowVelocity tracks recent borrow APR samples per position for spike detection.
+	borrowVelocity *RateVelocityDetector
 
 	// telegram sends trade lifecycle alerts. Nil if unconfigured.
 	telegram *notify.TelegramNotifier
@@ -64,17 +68,18 @@ func NewSpotEngine(
 	}
 
 	return &SpotEngine{
-		exchanges:  exchanges,
-		spotMargin: sm,
-		db:         db,
-		api:        apiSrv,
-		cfg:        cfg,
-		allocator:  allocator,
-		log:        utils.NewLogger("spot-engine"),
-		stopCh:     make(chan struct{}),
-		exitState:  exitState{exiting: make(map[string]bool)},
-		lastSeen:   make(map[string]bool),
-		telegram:   notify.NewTelegram(cfg.TelegramBotToken, cfg.TelegramChatID),
+		exchanges:      exchanges,
+		spotMargin:     sm,
+		db:             db,
+		api:            apiSrv,
+		cfg:            cfg,
+		allocator:      allocator,
+		log:            utils.NewLogger("spot-engine"),
+		stopCh:         make(chan struct{}),
+		exitState:      exitState{exiting: make(map[string]bool)},
+		lastSeen:       make(map[string]bool),
+		borrowVelocity: NewRateVelocityDetector(),
+		telegram:       notify.NewTelegram(cfg.TelegramBotToken, cfg.TelegramChatID),
 	}
 }
 
@@ -94,7 +99,18 @@ func (e *SpotEngine) Stop() {
 	e.log.Info("Spot-futures engine stopping...")
 	close(e.stopCh)
 	e.wg.Wait()
+	e.exitWG.Wait()
 	e.log.Info("Spot-futures engine stopped")
+}
+
+// launchExit runs an automated exit in the background and tracks it so Stop
+// waits for in-flight close sequences to finish before returning.
+func (e *SpotEngine) launchExit(pos *models.SpotFuturesPosition, reason string, isEmergency bool) {
+	e.exitWG.Add(1)
+	go func() {
+		defer e.exitWG.Done()
+		e.initiateExit(pos, reason, isEmergency)
+	}()
 }
 
 // discoveryLoop periodically scans for spot-futures arbitrage opportunities.

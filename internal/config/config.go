@@ -163,6 +163,10 @@ type Config struct {
 	SpotFuturesMonitorIntervalSec int
 	SpotFuturesMinNetYieldAPR     float64  // minimum net APR after costs (decimal, e.g. 0.10 = 10%)
 	SpotFuturesMaxBorrowAPR       float64  // maximum borrow APR for Direction A (decimal, e.g. 0.50 = 50%)
+	EnableBorrowSpikeDetection    bool     // if true, auto-exit on rapid borrow APR spikes (default: false)
+	BorrowSpikeWindowMin          int      // trailing window size for borrow spike detection (default: 60)
+	BorrowSpikeMultiplier         float64  // multiplier threshold for borrow spike detection (default: 2.0)
+	BorrowSpikeMinAbsolute        float64  // minimum absolute APR increase required to count as a spike (default: 0.10)
 	SpotFuturesExchanges          []string // exchanges to consider (empty = all SpotMargin-capable)
 	SpotFuturesScanIntervalMin    int      // discovery scan interval in minutes
 	SpotFuturesBorrowGraceMin     int      // minutes of negative yield before exit (default: 30)
@@ -213,24 +217,28 @@ type jsonSpotArb struct {
 }
 
 type jsonSpotFutures struct {
-	Enabled            *bool    `json:"enabled"`
-	MaxPositions       *int     `json:"max_positions"`
-	CapitalPerPosition *float64 `json:"capital_per_position"`
-	Leverage           *int     `json:"leverage"`
-	MonitorIntervalSec *int     `json:"monitor_interval_sec"`
-	MinNetYieldAPR     *float64 `json:"min_net_yield_apr"`
-	MaxBorrowAPR       *float64 `json:"max_borrow_apr"`
-	Exchanges          []string `json:"exchanges"`
-	ScanIntervalMin    *int     `json:"scan_interval_min"`
-	BorrowGraceMin     *int     `json:"borrow_grace_min"`
-	PriceExitPct       *float64 `json:"price_exit_pct"`
-	PriceEmergencyPct  *float64 `json:"price_emergency_pct"`
-	MarginExitPct      *float64 `json:"margin_exit_pct"`
-	MarginEmergencyPct *float64 `json:"margin_emergency_pct"`
-	LossCooldownHours  *int     `json:"loss_cooldown_hours"`
-	AutoEnabled        *bool    `json:"auto_enabled"`
-	AutoDryRun         *bool    `json:"auto_dry_run"`
-	PersistenceScans   *int     `json:"persistence_scans"`
+	Enabled                    *bool    `json:"enabled"`
+	MaxPositions               *int     `json:"max_positions"`
+	CapitalPerPosition         *float64 `json:"capital_per_position"`
+	Leverage                   *int     `json:"leverage"`
+	MonitorIntervalSec         *int     `json:"monitor_interval_sec"`
+	MinNetYieldAPR             *float64 `json:"min_net_yield_apr"`
+	MaxBorrowAPR               *float64 `json:"max_borrow_apr"`
+	EnableBorrowSpikeDetection *bool    `json:"enable_borrow_spike_detection"`
+	BorrowSpikeWindowMin       *int     `json:"borrow_spike_window_min"`
+	BorrowSpikeMultiplier      *float64 `json:"borrow_spike_multiplier"`
+	BorrowSpikeMinAbsolute     *float64 `json:"borrow_spike_min_absolute"`
+	Exchanges                  []string `json:"exchanges"`
+	ScanIntervalMin            *int     `json:"scan_interval_min"`
+	BorrowGraceMin             *int     `json:"borrow_grace_min"`
+	PriceExitPct               *float64 `json:"price_exit_pct"`
+	PriceEmergencyPct          *float64 `json:"price_emergency_pct"`
+	MarginExitPct              *float64 `json:"margin_exit_pct"`
+	MarginEmergencyPct         *float64 `json:"margin_emergency_pct"`
+	LossCooldownHours          *int     `json:"loss_cooldown_hours"`
+	AutoEnabled                *bool    `json:"auto_enabled"`
+	AutoDryRun                 *bool    `json:"auto_dry_run"`
+	PersistenceScans           *int     `json:"persistence_scans"`
 
 	ProfitTransferEnabled *bool    `json:"profit_transfer_enabled"`
 	SeparateAcctMaxUSDT   *float64 `json:"separate_acct_max_usdt"`
@@ -443,6 +451,10 @@ func Load() *Config {
 		SpotFuturesMonitorIntervalSec:   60,
 		SpotFuturesMinNetYieldAPR:       0.10, // 10%
 		SpotFuturesMaxBorrowAPR:         0.50, // 50%
+		EnableBorrowSpikeDetection:      false,
+		BorrowSpikeWindowMin:            60,
+		BorrowSpikeMultiplier:           2.0,
+		BorrowSpikeMinAbsolute:          0.10,
 		SpotFuturesScanIntervalMin:      10,
 		SpotFuturesBorrowGraceMin:       30,
 		SpotFuturesPriceExitPct:         20.0,
@@ -872,6 +884,18 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if sf.MaxBorrowAPR != nil {
 			c.SpotFuturesMaxBorrowAPR = *sf.MaxBorrowAPR
 		}
+		if sf.EnableBorrowSpikeDetection != nil {
+			c.EnableBorrowSpikeDetection = *sf.EnableBorrowSpikeDetection
+		}
+		if sf.BorrowSpikeWindowMin != nil {
+			c.BorrowSpikeWindowMin = *sf.BorrowSpikeWindowMin
+		}
+		if sf.BorrowSpikeMultiplier != nil {
+			c.BorrowSpikeMultiplier = *sf.BorrowSpikeMultiplier
+		}
+		if sf.BorrowSpikeMinAbsolute != nil {
+			c.BorrowSpikeMinAbsolute = *sf.BorrowSpikeMinAbsolute
+		}
 		if len(sf.Exchanges) > 0 {
 			c.SpotFuturesExchanges = sf.Exchanges
 		}
@@ -1102,6 +1126,10 @@ func (c *Config) SaveJSON() error {
 	sf["monitor_interval_sec"] = c.SpotFuturesMonitorIntervalSec
 	sf["min_net_yield_apr"] = c.SpotFuturesMinNetYieldAPR
 	sf["max_borrow_apr"] = c.SpotFuturesMaxBorrowAPR
+	sf["enable_borrow_spike_detection"] = c.EnableBorrowSpikeDetection
+	sf["borrow_spike_window_min"] = c.BorrowSpikeWindowMin
+	sf["borrow_spike_multiplier"] = c.BorrowSpikeMultiplier
+	sf["borrow_spike_min_absolute"] = c.BorrowSpikeMinAbsolute
 	sf["exchanges"] = c.SpotFuturesExchanges
 	sf["scan_interval_min"] = c.SpotFuturesScanIntervalMin
 	sf["borrow_grace_min"] = c.SpotFuturesBorrowGraceMin
@@ -1294,6 +1322,24 @@ func (c *Config) loadEnvOverrides() {
 	if v := os.Getenv("SPOT_FUTURES_MONITOR_INTERVAL"); v != "" {
 		if i, err := strconv.Atoi(v); err == nil {
 			c.SpotFuturesMonitorIntervalSec = i
+		}
+	}
+	if v := os.Getenv("SPOT_FUTURES_ENABLE_BORROW_SPIKE_DETECTION"); v != "" {
+		c.EnableBorrowSpikeDetection = v == "1" || v == "true" || v == "yes"
+	}
+	if v := os.Getenv("SPOT_FUTURES_BORROW_SPIKE_WINDOW_MIN"); v != "" {
+		if i, err := strconv.Atoi(v); err == nil {
+			c.BorrowSpikeWindowMin = i
+		}
+	}
+	if v := os.Getenv("SPOT_FUTURES_BORROW_SPIKE_MULTIPLIER"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			c.BorrowSpikeMultiplier = f
+		}
+	}
+	if v := os.Getenv("SPOT_FUTURES_BORROW_SPIKE_MIN_ABSOLUTE"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			c.BorrowSpikeMinAbsolute = f
 		}
 	}
 

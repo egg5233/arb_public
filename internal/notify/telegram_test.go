@@ -23,7 +23,7 @@ func TestNewTelegramNilOnEmpty(t *testing.T) {
 func TestNilSafeNotify(t *testing.T) {
 	// All notification methods should be safe to call on nil receiver.
 	var n *TelegramNotifier
-	n.NotifyAutoEntry(nil, 0.1)  // should not panic
+	n.NotifyAutoEntry(nil, 0.1) // should not panic
 	n.NotifyAutoExit(nil, "", 0, 0)
 	n.NotifyEmergencyClose(nil, "", 0)
 }
@@ -53,6 +53,7 @@ func TestFormatExitReason(t *testing.T) {
 		want   string
 	}{
 		{"borrow_cost_exceeded", "Borrow cost exceeded"},
+		{"borrow_rate_spike", "Borrow rate spike"},
 		{"yield_below_minimum", "Yield below minimum"},
 		{"price_spike_exit", "Price spike"},
 		{"emergency_price_spike", "Emergency price spike"},

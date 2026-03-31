@@ -182,6 +182,10 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		e.releaseSpotReservation(reservation)
 		return err
 	}
+	if err := e.persistPendingEntry(entryPos, ""); err != nil {
+		e.releaseSpotReservation(reservation)
+		return fmt.Errorf("failed to persist pending entry before execution: %w", err)
+	}
 
 	// ---------------------------------------------------------------
 	// 4. Set leverage on futures
@@ -216,11 +220,11 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 	if err != nil {
 		var pendingErr *pendingSpotEntryError
 		if errors.As(err, &pendingErr) {
+			recoverySaveFailed := false
 			if pendingErr.pendingPos != nil {
 				if saveErr := e.db.SaveSpotPosition(pendingErr.pendingPos); saveErr != nil {
 					e.log.Error("ManualOpen: failed to save pending spot recovery %s: %v", pendingErr.posID, saveErr)
-					return fmt.Errorf("%w (manual recovery position %s could not be persisted: %v; capital reservation left uncommitted)",
-						err, pendingErr.posID, saveErr)
+					recoverySaveFailed = true
 				} else if e.api != nil {
 					e.api.BroadcastSpotPositionUpdate(pendingErr.pendingPos)
 				}
@@ -232,8 +236,12 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 			if commitErr := e.commitSpotCapital(reservation, pendingErr.posID, amount); commitErr != nil {
 				e.log.Error("ManualOpen: capital commit failed for pending entry %s: %v", pendingErr.posID, commitErr)
 			}
+			if recoverySaveFailed {
+				return fmt.Errorf("%w (manual recovery position %s could not be persisted; existing pending record retained)", err, pendingErr.posID)
+			}
 			return err
 		}
+		e.abandonPendingEntry(entryPos, "entry_failed")
 		e.releaseSpotReservation(reservation)
 		return fmt.Errorf("execution failed: %w", err)
 	}
@@ -262,14 +270,21 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 	pos.EntryFees = entryFees
 	pos.PendingEntryOrderID = ""
 	pos.UpdatedAt = time.Now().UTC()
-
-	if err := e.db.SaveSpotPosition(pos); err != nil {
-		e.releaseSpotReservation(reservation)
-		e.log.Error("ManualOpen: failed to save position: %v", err)
-		return fmt.Errorf("position executed but failed to save: %w", err)
+	if err := e.persistPendingCheckpoint(pos); err != nil {
+		if commitErr := e.commitSpotCapital(reservation, posID, actualNotional); commitErr != nil {
+			e.log.Error("ManualOpen: capital commit failed after pending checkpoint save error: %v", commitErr)
+		}
+		e.log.Error("ManualOpen: failed to checkpoint executed position: %v", err)
+		return fmt.Errorf("position executed but failed to checkpoint pending state: %w", err)
 	}
 	if err := e.commitSpotCapital(reservation, posID, actualNotional); err != nil {
 		e.log.Error("ManualOpen: capital commit failed: %v", err)
+	}
+
+	pos.Status = models.SpotStatusActive
+	if err := e.db.SaveSpotPosition(pos); err != nil {
+		e.log.Error("ManualOpen: failed to save position: %v", err)
+		return fmt.Errorf("position executed and pending checkpoint saved, but failed to promote active: %w", err)
 	}
 
 	e.api.BroadcastSpotPositionUpdate(pos)
@@ -325,13 +340,13 @@ func (e *SpotEngine) executeBorrowSellLong(
 		return 0, 0, 0, 0, 0, fmt.Errorf("spot sell failed: %w", err)
 	}
 	e.log.Info("ManualOpen [borrow_sell_long] step 2: spot order placed: %s", spotOrderID)
+	if cpErr := e.persistPendingEntry(pos, spotOrderID); cpErr != nil {
+		return 0, 0, 0, 0, 0, e.abortAcceptedSpotEntry(smExch, futExch, pos, spotOrderID, symbol, size, cpErr)
+	}
 
 	// Confirm spot fill.
 	spotFilled, spotAvg, confirmed, confErr := e.confirmSpotFill(smExch, futExch, spotOrderID, symbol, size)
 	if !confirmed {
-		if cpErr := e.persistPendingEntry(pos, spotOrderID); cpErr != nil {
-			return 0, 0, 0, 0, 0, e.abortAcceptedSpotEntry(smExch, futExch, pos, spotOrderID, symbol, size, cpErr)
-		}
 		return 0, 0, 0, 0, 0, &pendingSpotEntryError{posID: pos.ID, orderID: spotOrderID, err: confErr}
 	}
 	if spotFilled <= 0 {
@@ -374,6 +389,13 @@ func (e *SpotEngine) executeBorrowSellLong(
 		return 0, 0, 0, 0, 0, fmt.Errorf("futures long got 0 fill (order %s)", futOrderID)
 	}
 	e.log.Info("ManualOpen [borrow_sell_long] step 3: futures fill=%.6f avg=%.6f", futFilled, futAvg)
+	pos.PendingEntryOrderID = ""
+	pos.SpotSize = spotFilled
+	pos.SpotEntryPrice = spotAvg
+	pos.FuturesSize = futFilled
+	pos.FuturesEntry = futAvg
+	pos.FuturesSide = "long"
+	pos.NotionalUSDT = spotFilled * spotAvg
 
 	return spotAvg, futAvg, spotFilled, futFilled, borrowAmt, nil
 }
@@ -404,13 +426,13 @@ func (e *SpotEngine) executeBuySpotShort(
 		return 0, 0, 0, 0, fmt.Errorf("spot buy failed: %w", err)
 	}
 	e.log.Info("ManualOpen [buy_spot_short] step 1: spot order placed: %s", spotOrderID)
+	if cpErr := e.persistPendingEntry(pos, spotOrderID); cpErr != nil {
+		return 0, 0, 0, 0, e.abortAcceptedSpotEntry(smExch, futExch, pos, spotOrderID, symbol, size, cpErr)
+	}
 
 	// Confirm spot fill.
 	spotFilled, spotAvg, confirmed, confErr := e.confirmSpotFill(smExch, futExch, spotOrderID, symbol, size)
 	if !confirmed {
-		if cpErr := e.persistPendingEntry(pos, spotOrderID); cpErr != nil {
-			return 0, 0, 0, 0, e.abortAcceptedSpotEntry(smExch, futExch, pos, spotOrderID, symbol, size, cpErr)
-		}
 		return 0, 0, 0, 0, &pendingSpotEntryError{posID: pos.ID, orderID: spotOrderID, err: confErr}
 	}
 	if spotFilled <= 0 {
@@ -448,6 +470,13 @@ func (e *SpotEngine) executeBuySpotShort(
 		return 0, 0, 0, 0, fmt.Errorf("futures short got 0 fill (order %s)", futOrderID)
 	}
 	e.log.Info("ManualOpen [buy_spot_short] step 2: futures fill=%.6f avg=%.6f", futFilled, futAvg)
+	pos.PendingEntryOrderID = ""
+	pos.SpotSize = spotFilled
+	pos.SpotEntryPrice = spotAvg
+	pos.FuturesSize = futFilled
+	pos.FuturesEntry = futAvg
+	pos.FuturesSide = "short"
+	pos.NotionalUSDT = spotFilled * spotAvg
 
 	return spotAvg, futAvg, spotFilled, futFilled, nil
 }
@@ -746,8 +775,12 @@ func applySpotExitFill(pos *models.SpotFuturesPosition, filledQty, avgPrice floa
 }
 
 func (e *SpotEngine) persistPendingEntry(pos *models.SpotFuturesPosition, orderID string) error {
-	pos.Status = models.SpotStatusPending
 	pos.PendingEntryOrderID = orderID
+	return e.persistPendingCheckpoint(pos)
+}
+
+func (e *SpotEngine) persistPendingCheckpoint(pos *models.SpotFuturesPosition) error {
+	pos.Status = models.SpotStatusPending
 	pos.UpdatedAt = time.Now().UTC()
 	if err := e.db.SaveSpotPosition(pos); err != nil {
 		return err
@@ -842,8 +875,44 @@ func (e *SpotEngine) reconcilePendingEntry(pos *models.SpotFuturesPosition) {
 		return
 	}
 
+	if pos.PendingEntryOrderID == "" && pos.SpotEntryPrice <= 0 && pos.FuturesSize <= 0 {
+		e.log.Warn("pending entry %s: awaiting durable spot-order checkpoint before recovery", pos.ID)
+		return
+	}
+
 	if pos.SpotSize <= 0 {
 		e.log.Warn("pending entry %s: no confirmed spot size yet", pos.ID)
+		return
+	}
+
+	futuresSide := "short"
+	switch pos.Direction {
+	case "borrow_sell_long":
+		futuresSide = "long"
+	case "buy_spot_short":
+		futuresSide = "short"
+	}
+	if existingSize, existingAvg, ok, err := pendingEntryFuturesPosition(futExch, pos.Symbol, futuresSide); err != nil {
+		e.log.Warn("pending entry %s: existing futures hedge check failed: %v", pos.ID, err)
+	} else if ok {
+		pos.FuturesSize = existingSize
+		pos.FuturesEntry = existingAvg
+		pos.FuturesSide = futuresSide
+		pos.Status = models.SpotStatusActive
+		takerFee := spotFees[pos.Exchange]
+		if takerFee == 0 {
+			takerFee = 0.0005
+		}
+		pos.EntryFees = (pos.SpotSize * pos.SpotEntryPrice * takerFee) + (existingSize * existingAvg * takerFee)
+		pos.UpdatedAt = time.Now().UTC()
+		if err := e.db.SaveSpotPosition(pos); err != nil {
+			e.log.Error("pending entry %s: failed to promote recovered futures hedge: %v", pos.ID, err)
+			return
+		}
+		if e.api != nil {
+			e.api.BroadcastSpotPositionUpdate(pos)
+		}
+		e.log.Info("pending entry %s recovered existing %s futures hedge on %s", pos.ID, futuresSide, pos.Exchange)
 		return
 	}
 
@@ -894,6 +963,25 @@ func (e *SpotEngine) reconcilePendingEntry(pos *models.SpotFuturesPosition) {
 		e.api.BroadcastSpotPositionUpdate(pos)
 	}
 	e.log.Info("pending entry %s recovered: %s on %s is now active", pos.ID, pos.Symbol, pos.Exchange)
+}
+
+func pendingEntryFuturesPosition(exch exchange.Exchange, symbol, side string) (filledQty, avgPrice float64, ok bool, err error) {
+	positions, err := exch.GetPosition(symbol)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	for _, p := range positions {
+		if p.HoldSide != side {
+			continue
+		}
+		qty, qtyErr := utils.ParseFloat(p.Total)
+		if qtyErr != nil || math.Abs(qty) <= spotQtyTolerance {
+			continue
+		}
+		avg, _ := utils.ParseFloat(p.AverageOpenPrice)
+		return qty, avg, true, nil
+	}
+	return 0, 0, false, nil
 }
 
 // confirmSpotFill confirms a spot margin order fill. Spot margin orders may

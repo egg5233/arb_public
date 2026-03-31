@@ -157,3 +157,114 @@ func TestHandleConfig_SpotFuturesAutoDryRunRoundTrip(t *testing.T) {
 		t.Fatalf("expected redis spot_futures_dry_run=false, got %q", persisted)
 	}
 }
+
+func TestHandleConfig_BorrowSpikeDetectionRoundTrip(t *testing.T) {
+	s, mr := newTestServer(t)
+	defer mr.Close()
+
+	s.cfg.SpotFuturesEnabled = true
+	s.cfg.EnableBorrowSpikeDetection = false
+	s.cfg.BorrowSpikeWindowMin = 60
+	s.cfg.BorrowSpikeMultiplier = 2.0
+	s.cfg.BorrowSpikeMinAbsolute = 0.10
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	initialConfig := `{
+  "spot_futures": {
+    "enabled": true,
+    "enable_borrow_spike_detection": false,
+    "borrow_spike_window_min": 60,
+    "borrow_spike_multiplier": 2.0,
+    "borrow_spike_min_absolute": 0.10
+  }
+}`
+	if err := os.WriteFile(configPath, []byte(initialConfig), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("CONFIG_FILE", configPath)
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	getW := httptest.NewRecorder()
+	s.handleGetConfig(getW, getReq)
+	if getW.Code != http.StatusOK {
+		t.Fatalf("GET expected 200, got %d: %s", getW.Code, getW.Body.String())
+	}
+
+	var getResp struct {
+		OK   bool                   `json:"ok"`
+		Data map[string]interface{} `json:"data"`
+	}
+	if err := json.NewDecoder(getW.Body).Decode(&getResp); err != nil {
+		t.Fatalf("decode GET response: %v", err)
+	}
+	spotFutures, ok := getResp.Data["spot_futures"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("spot_futures payload missing or wrong type: %#v", getResp.Data["spot_futures"])
+	}
+	if spotFutures["enable_borrow_spike_detection"] != false {
+		t.Fatalf("expected enable_borrow_spike_detection=false, got %#v", spotFutures["enable_borrow_spike_detection"])
+	}
+
+	postReq := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"spot_futures":{"enable_borrow_spike_detection":true,"borrow_spike_window_min":45,"borrow_spike_multiplier":1.8,"borrow_spike_min_absolute":0.06}}`))
+	postW := httptest.NewRecorder()
+	s.handlePostConfig(postW, postReq)
+	if postW.Code != http.StatusOK {
+		t.Fatalf("POST expected 200, got %d: %s", postW.Code, postW.Body.String())
+	}
+
+	if !s.cfg.EnableBorrowSpikeDetection {
+		t.Fatal("expected EnableBorrowSpikeDetection=true after POST")
+	}
+	if s.cfg.BorrowSpikeWindowMin != 45 {
+		t.Fatalf("expected BorrowSpikeWindowMin=45, got %d", s.cfg.BorrowSpikeWindowMin)
+	}
+	if s.cfg.BorrowSpikeMultiplier != 1.8 {
+		t.Fatalf("expected BorrowSpikeMultiplier=1.8, got %v", s.cfg.BorrowSpikeMultiplier)
+	}
+	if s.cfg.BorrowSpikeMinAbsolute != 0.06 {
+		t.Fatalf("expected BorrowSpikeMinAbsolute=0.06, got %v", s.cfg.BorrowSpikeMinAbsolute)
+	}
+
+	persistedToggle, err := s.db.GetConfigField("spot_futures_enable_borrow_spike_detection")
+	if err != nil {
+		t.Fatalf("redis get spot_futures_enable_borrow_spike_detection: %v", err)
+	}
+	if persistedToggle != "true" {
+		t.Fatalf("expected redis spot_futures_enable_borrow_spike_detection=true, got %q", persistedToggle)
+	}
+	persistedWindow, err := s.db.GetConfigField("spot_futures_borrow_spike_window_min")
+	if err != nil {
+		t.Fatalf("redis get spot_futures_borrow_spike_window_min: %v", err)
+	}
+	if persistedWindow != "45" {
+		t.Fatalf("expected redis spot_futures_borrow_spike_window_min=45, got %q", persistedWindow)
+	}
+	persistedMultiplier, err := s.db.GetConfigField("spot_futures_borrow_spike_multiplier")
+	if err != nil {
+		t.Fatalf("redis get spot_futures_borrow_spike_multiplier: %v", err)
+	}
+	if persistedMultiplier != "1.8" {
+		t.Fatalf("expected redis spot_futures_borrow_spike_multiplier=1.8, got %q", persistedMultiplier)
+	}
+	persistedAbsolute, err := s.db.GetConfigField("spot_futures_borrow_spike_min_absolute")
+	if err != nil {
+		t.Fatalf("redis get spot_futures_borrow_spike_min_absolute: %v", err)
+	}
+	if persistedAbsolute != "0.06" {
+		t.Fatalf("expected redis spot_futures_borrow_spike_min_absolute=0.06, got %q", persistedAbsolute)
+	}
+
+	reloaded := config.Load()
+	if !reloaded.EnableBorrowSpikeDetection {
+		t.Fatal("expected reloaded EnableBorrowSpikeDetection=true")
+	}
+	if reloaded.BorrowSpikeWindowMin != 45 {
+		t.Fatalf("expected reloaded BorrowSpikeWindowMin=45, got %d", reloaded.BorrowSpikeWindowMin)
+	}
+	if reloaded.BorrowSpikeMultiplier != 1.8 {
+		t.Fatalf("expected reloaded BorrowSpikeMultiplier=1.8, got %v", reloaded.BorrowSpikeMultiplier)
+	}
+	if reloaded.BorrowSpikeMinAbsolute != 0.06 {
+		t.Fatalf("expected reloaded BorrowSpikeMinAbsolute=0.06, got %v", reloaded.BorrowSpikeMinAbsolute)
+	}
+}

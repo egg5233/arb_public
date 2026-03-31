@@ -312,27 +312,31 @@ type configResponse struct {
 }
 
 type configSpotFuturesResponse struct {
-	Enabled               bool     `json:"enabled"`
-	MaxPositions          int      `json:"max_positions"`
-	CapitalPerPosition    float64  `json:"capital_per_position"`
-	Leverage              int      `json:"leverage"`
-	MonitorIntervalSec    int      `json:"monitor_interval_sec"`
-	MinNetYieldAPR        float64  `json:"min_net_yield_apr"`
-	MaxBorrowAPR          float64  `json:"max_borrow_apr"`
-	Exchanges             []string `json:"exchanges"`
-	ScanIntervalMin       int      `json:"scan_interval_min"`
-	BorrowGraceMin        int      `json:"borrow_grace_min"`
-	PriceExitPct          float64  `json:"price_exit_pct"`
-	PriceEmergencyPct     float64  `json:"price_emergency_pct"`
-	MarginExitPct         float64  `json:"margin_exit_pct"`
-	MarginEmergencyPct    float64  `json:"margin_emergency_pct"`
-	LossCooldownHours     int      `json:"loss_cooldown_hours"`
-	AutoEnabled           bool     `json:"auto_enabled"`
-	DryRun                bool     `json:"auto_dry_run"`
-	PersistenceScans      int      `json:"persistence_scans"`
-	ProfitTransferEnabled bool     `json:"profit_transfer_enabled"`
-	SeparateAcctMaxUSDT   float64  `json:"separate_acct_max_usdt"`
-	UnifiedAcctMaxUSDT    float64  `json:"unified_acct_max_usdt"`
+	Enabled                    bool     `json:"enabled"`
+	MaxPositions               int      `json:"max_positions"`
+	CapitalPerPosition         float64  `json:"capital_per_position"`
+	Leverage                   int      `json:"leverage"`
+	MonitorIntervalSec         int      `json:"monitor_interval_sec"`
+	MinNetYieldAPR             float64  `json:"min_net_yield_apr"`
+	MaxBorrowAPR               float64  `json:"max_borrow_apr"`
+	EnableBorrowSpikeDetection bool     `json:"enable_borrow_spike_detection"`
+	BorrowSpikeWindowMin       int      `json:"borrow_spike_window_min"`
+	BorrowSpikeMultiplier      float64  `json:"borrow_spike_multiplier"`
+	BorrowSpikeMinAbsolute     float64  `json:"borrow_spike_min_absolute"`
+	Exchanges                  []string `json:"exchanges"`
+	ScanIntervalMin            int      `json:"scan_interval_min"`
+	BorrowGraceMin             int      `json:"borrow_grace_min"`
+	PriceExitPct               float64  `json:"price_exit_pct"`
+	PriceEmergencyPct          float64  `json:"price_emergency_pct"`
+	MarginExitPct              float64  `json:"margin_exit_pct"`
+	MarginEmergencyPct         float64  `json:"margin_emergency_pct"`
+	LossCooldownHours          int      `json:"loss_cooldown_hours"`
+	AutoEnabled                bool     `json:"auto_enabled"`
+	DryRun                     bool     `json:"auto_dry_run"`
+	PersistenceScans           int      `json:"persistence_scans"`
+	ProfitTransferEnabled      bool     `json:"profit_transfer_enabled"`
+	SeparateAcctMaxUSDT        float64  `json:"separate_acct_max_usdt"`
+	UnifiedAcctMaxUSDT         float64  `json:"unified_acct_max_usdt"`
 }
 
 type configExchangeResponse struct {
@@ -561,27 +565,31 @@ func (s *Server) buildConfigResponse() configResponse {
 		Exchanges: s.buildExchangesResponse(),
 	}
 	resp.SpotFutures = &configSpotFuturesResponse{
-		Enabled:               s.cfg.SpotFuturesEnabled,
-		MaxPositions:          s.cfg.SpotFuturesMaxPositions,
-		CapitalPerPosition:    s.cfg.SpotFuturesCapitalPerPosition,
-		Leverage:              s.cfg.SpotFuturesLeverage,
-		MonitorIntervalSec:    s.cfg.SpotFuturesMonitorIntervalSec,
-		MinNetYieldAPR:        s.cfg.SpotFuturesMinNetYieldAPR,
-		MaxBorrowAPR:          s.cfg.SpotFuturesMaxBorrowAPR,
-		Exchanges:             s.cfg.SpotFuturesExchanges,
-		ScanIntervalMin:       s.cfg.SpotFuturesScanIntervalMin,
-		BorrowGraceMin:        s.cfg.SpotFuturesBorrowGraceMin,
-		PriceExitPct:          s.cfg.SpotFuturesPriceExitPct,
-		PriceEmergencyPct:     s.cfg.SpotFuturesPriceEmergencyPct,
-		MarginExitPct:         s.cfg.SpotFuturesMarginExitPct,
-		MarginEmergencyPct:    s.cfg.SpotFuturesMarginEmergencyPct,
-		LossCooldownHours:     s.cfg.SpotFuturesLossCooldownHours,
-		AutoEnabled:           s.cfg.SpotFuturesAutoEnabled,
-		DryRun:                s.cfg.SpotFuturesDryRun,
-		PersistenceScans:      s.cfg.SpotFuturesPersistenceScans,
-		ProfitTransferEnabled: s.cfg.SpotFuturesProfitTransferEnabled,
-		SeparateAcctMaxUSDT:   s.cfg.SpotFuturesSeparateAcctMaxUSDT,
-		UnifiedAcctMaxUSDT:    s.cfg.SpotFuturesUnifiedAcctMaxUSDT,
+		Enabled:                    s.cfg.SpotFuturesEnabled,
+		MaxPositions:               s.cfg.SpotFuturesMaxPositions,
+		CapitalPerPosition:         s.cfg.SpotFuturesCapitalPerPosition,
+		Leverage:                   s.cfg.SpotFuturesLeverage,
+		MonitorIntervalSec:         s.cfg.SpotFuturesMonitorIntervalSec,
+		MinNetYieldAPR:             s.cfg.SpotFuturesMinNetYieldAPR,
+		MaxBorrowAPR:               s.cfg.SpotFuturesMaxBorrowAPR,
+		EnableBorrowSpikeDetection: s.cfg.EnableBorrowSpikeDetection,
+		BorrowSpikeWindowMin:       s.cfg.BorrowSpikeWindowMin,
+		BorrowSpikeMultiplier:      s.cfg.BorrowSpikeMultiplier,
+		BorrowSpikeMinAbsolute:     s.cfg.BorrowSpikeMinAbsolute,
+		Exchanges:                  s.cfg.SpotFuturesExchanges,
+		ScanIntervalMin:            s.cfg.SpotFuturesScanIntervalMin,
+		BorrowGraceMin:             s.cfg.SpotFuturesBorrowGraceMin,
+		PriceExitPct:               s.cfg.SpotFuturesPriceExitPct,
+		PriceEmergencyPct:          s.cfg.SpotFuturesPriceEmergencyPct,
+		MarginExitPct:              s.cfg.SpotFuturesMarginExitPct,
+		MarginEmergencyPct:         s.cfg.SpotFuturesMarginEmergencyPct,
+		LossCooldownHours:          s.cfg.SpotFuturesLossCooldownHours,
+		AutoEnabled:                s.cfg.SpotFuturesAutoEnabled,
+		DryRun:                     s.cfg.SpotFuturesDryRun,
+		PersistenceScans:           s.cfg.SpotFuturesPersistenceScans,
+		ProfitTransferEnabled:      s.cfg.SpotFuturesProfitTransferEnabled,
+		SeparateAcctMaxUSDT:        s.cfg.SpotFuturesSeparateAcctMaxUSDT,
+		UnifiedAcctMaxUSDT:         s.cfg.SpotFuturesUnifiedAcctMaxUSDT,
 	}
 	return resp
 }
@@ -621,28 +629,32 @@ type configUpdate struct {
 }
 
 type spotFuturesUpdate struct {
-	Enabled               *bool    `json:"enabled"`
-	MaxPositions          *int     `json:"max_positions"`
-	CapitalPerPosition    *float64 `json:"capital_per_position"`
-	Leverage              *int     `json:"leverage"`
-	MonitorIntervalSec    *int     `json:"monitor_interval_sec"`
-	MinNetYieldAPR        *float64 `json:"min_net_yield_apr"`
-	MaxBorrowAPR          *float64 `json:"max_borrow_apr"`
-	Exchanges             []string `json:"exchanges"`
-	ScanIntervalMin       *int     `json:"scan_interval_min"`
-	BorrowGraceMin        *int     `json:"borrow_grace_min"`
-	PriceExitPct          *float64 `json:"price_exit_pct"`
-	PriceEmergencyPct     *float64 `json:"price_emergency_pct"`
-	MarginExitPct         *float64 `json:"margin_exit_pct"`
-	MarginEmergencyPct    *float64 `json:"margin_emergency_pct"`
-	LossCooldownHours     *int     `json:"loss_cooldown_hours"`
-	AutoEnabled           *bool    `json:"auto_enabled"`
-	DryRun                *bool    `json:"auto_dry_run"`
-	LegacyDryRun          *bool    `json:"dry_run"`
-	PersistenceScans      *int     `json:"persistence_scans"`
-	ProfitTransferEnabled *bool    `json:"profit_transfer_enabled"`
-	SeparateAcctMaxUSDT   *float64 `json:"separate_acct_max_usdt"`
-	UnifiedAcctMaxUSDT    *float64 `json:"unified_acct_max_usdt"`
+	Enabled                    *bool    `json:"enabled"`
+	MaxPositions               *int     `json:"max_positions"`
+	CapitalPerPosition         *float64 `json:"capital_per_position"`
+	Leverage                   *int     `json:"leverage"`
+	MonitorIntervalSec         *int     `json:"monitor_interval_sec"`
+	MinNetYieldAPR             *float64 `json:"min_net_yield_apr"`
+	MaxBorrowAPR               *float64 `json:"max_borrow_apr"`
+	EnableBorrowSpikeDetection *bool    `json:"enable_borrow_spike_detection"`
+	BorrowSpikeWindowMin       *int     `json:"borrow_spike_window_min"`
+	BorrowSpikeMultiplier      *float64 `json:"borrow_spike_multiplier"`
+	BorrowSpikeMinAbsolute     *float64 `json:"borrow_spike_min_absolute"`
+	Exchanges                  []string `json:"exchanges"`
+	ScanIntervalMin            *int     `json:"scan_interval_min"`
+	BorrowGraceMin             *int     `json:"borrow_grace_min"`
+	PriceExitPct               *float64 `json:"price_exit_pct"`
+	PriceEmergencyPct          *float64 `json:"price_emergency_pct"`
+	MarginExitPct              *float64 `json:"margin_exit_pct"`
+	MarginEmergencyPct         *float64 `json:"margin_emergency_pct"`
+	LossCooldownHours          *int     `json:"loss_cooldown_hours"`
+	AutoEnabled                *bool    `json:"auto_enabled"`
+	DryRun                     *bool    `json:"auto_dry_run"`
+	LegacyDryRun               *bool    `json:"dry_run"`
+	PersistenceScans           *int     `json:"persistence_scans"`
+	ProfitTransferEnabled      *bool    `json:"profit_transfer_enabled"`
+	SeparateAcctMaxUSDT        *float64 `json:"separate_acct_max_usdt"`
+	UnifiedAcctMaxUSDT         *float64 `json:"unified_acct_max_usdt"`
 }
 
 type exchangeUpdate struct {
@@ -1095,6 +1107,18 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		if sf.MaxBorrowAPR != nil && *sf.MaxBorrowAPR >= 0 {
 			s.cfg.SpotFuturesMaxBorrowAPR = *sf.MaxBorrowAPR
 		}
+		if sf.EnableBorrowSpikeDetection != nil {
+			s.cfg.EnableBorrowSpikeDetection = *sf.EnableBorrowSpikeDetection
+		}
+		if sf.BorrowSpikeWindowMin != nil && *sf.BorrowSpikeWindowMin > 0 {
+			s.cfg.BorrowSpikeWindowMin = *sf.BorrowSpikeWindowMin
+		}
+		if sf.BorrowSpikeMultiplier != nil && *sf.BorrowSpikeMultiplier > 0 {
+			s.cfg.BorrowSpikeMultiplier = *sf.BorrowSpikeMultiplier
+		}
+		if sf.BorrowSpikeMinAbsolute != nil && *sf.BorrowSpikeMinAbsolute >= 0 {
+			s.cfg.BorrowSpikeMinAbsolute = *sf.BorrowSpikeMinAbsolute
+		}
 		if sf.Exchanges != nil {
 			s.cfg.SpotFuturesExchanges = sf.Exchanges
 		}
@@ -1215,6 +1239,10 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		fields["spot_futures_monitor_interval_sec"] = strconv.Itoa(sf.MonitorIntervalSec)
 		fields["spot_futures_min_net_yield_apr"] = strconv.FormatFloat(sf.MinNetYieldAPR, 'f', -1, 64)
 		fields["spot_futures_max_borrow_apr"] = strconv.FormatFloat(sf.MaxBorrowAPR, 'f', -1, 64)
+		fields["spot_futures_enable_borrow_spike_detection"] = strconv.FormatBool(sf.EnableBorrowSpikeDetection)
+		fields["spot_futures_borrow_spike_window_min"] = strconv.Itoa(sf.BorrowSpikeWindowMin)
+		fields["spot_futures_borrow_spike_multiplier"] = strconv.FormatFloat(sf.BorrowSpikeMultiplier, 'f', -1, 64)
+		fields["spot_futures_borrow_spike_min_absolute"] = strconv.FormatFloat(sf.BorrowSpikeMinAbsolute, 'f', -1, 64)
 		fields["spot_futures_exchanges"] = strings.Join(sf.Exchanges, ",")
 		fields["spot_futures_scan_interval_min"] = strconv.Itoa(sf.ScanIntervalMin)
 		fields["spot_futures_borrow_grace_min"] = strconv.Itoa(sf.BorrowGraceMin)

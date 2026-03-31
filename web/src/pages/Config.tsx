@@ -1206,6 +1206,7 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
   // =========================================================================
   const renderSfExitTab = () => {
     const sfProfitTransfer = getByPath(config, ['spot_futures', 'profit_transfer_enabled']) === true;
+    const sfBorrowSpikeEnabled = getByPath(config, ['spot_futures', 'enable_borrow_spike_detection']) === true;
 
     return (
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1222,6 +1223,40 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
           value={getByPath(config, ['spot_futures', 'borrow_grace_min'])}
           unit="min"
           onChange={(v) => handleChange(['spot_futures', 'borrow_grace_min'], v)}
+        />
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.sf.borrowSpikeEnabled')}</label>
+            <Tooltip text={t('cfg.sf.borrowSpikeEnabledDesc')} />
+          </div>
+          <div className="flex items-center gap-3">
+            <ToggleSwitch
+              on={sfBorrowSpikeEnabled}
+              onChange={(v) => handleBoolChange(['spot_futures', 'enable_borrow_spike_detection'], v)}
+            />
+            <span className={`text-sm font-semibold ${sfBorrowSpikeEnabled ? 'text-green-400' : 'text-red-400'}`}>
+              {sfBorrowSpikeEnabled ? 'ON' : 'OFF'}
+            </span>
+          </div>
+        </div>
+        <NumberField
+          label={t('cfg.sf.borrowSpikeWindow')}
+          desc={t('cfg.sf.borrowSpikeWindowDesc')}
+          value={getByPath(config, ['spot_futures', 'borrow_spike_window_min'])}
+          unit="min"
+          onChange={(v) => handleChange(['spot_futures', 'borrow_spike_window_min'], v)}
+        />
+        <NumberField
+          label={t('cfg.sf.borrowSpikeMultiplier')}
+          desc={t('cfg.sf.borrowSpikeMultiplierDesc')}
+          value={getByPath(config, ['spot_futures', 'borrow_spike_multiplier'])}
+          onChange={(v) => handleChange(['spot_futures', 'borrow_spike_multiplier'], v)}
+        />
+        <NumberField
+          label={t('cfg.sf.borrowSpikeMinAbsolute')}
+          desc={t('cfg.sf.borrowSpikeMinAbsoluteDesc')}
+          value={getByPath(config, ['spot_futures', 'borrow_spike_min_absolute'])}
+          onChange={(v) => handleChange(['spot_futures', 'borrow_spike_min_absolute'], v)}
         />
         <NumberField
           label={t('cfg.sf.priceExit')}
