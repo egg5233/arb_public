@@ -298,7 +298,7 @@ func (e *SpotEngine) initiateExit(pos *models.SpotFuturesPosition, reason string
 		// The close methods checkpoint each leg individually, but this
 		// catches any edge case where in-memory state advanced without
 		// a prior checkpoint write.
-		if pos.FuturesExit > 0 || pos.SpotExitPrice > 0 || pos.SpotExitFilled || pos.PendingSpotExitOrderID != "" {
+		if pos.FuturesExit > 0 || pos.SpotExitFilledQty > 0 || pos.SpotExitPrice > 0 || pos.SpotExitFilled || pos.PendingSpotExitOrderID != "" {
 			if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
 				e.log.Error("initiateExit: fallback checkpoint failed for %s: %v", pos.ID, cpErr)
 			}
@@ -321,8 +321,9 @@ func (e *SpotEngine) initiateExit(pos *models.SpotFuturesPosition, reason string
 			p.PendingRepay = true
 			p.PendingRepayRetryAt = pos.PendingRepayRetryAt
 			p.FuturesExit = pos.FuturesExit
+			p.SpotExitFilledQty = pos.SpotExitFilledQty
 			p.SpotExitPrice = pos.SpotExitPrice
-			p.SpotExitFilled = pos.SpotExitFilled
+			p.SpotExitFilled = pos.SpotExitFilled || spotExitComplete(pos)
 			p.PendingSpotExitOrderID = pos.PendingSpotExitOrderID
 			p.ExitFees = pos.ExitFees
 			return true
@@ -352,11 +353,15 @@ func (e *SpotEngine) persistExitCheckpoint(pos *models.SpotFuturesPosition) erro
 			p.FuturesExit = pos.FuturesExit
 			changed = true
 		}
-		if pos.SpotExitFilled && !p.SpotExitFilled {
+		if pos.SpotExitFilledQty > p.SpotExitFilledQty {
+			p.SpotExitFilledQty = pos.SpotExitFilledQty
+			changed = true
+		}
+		if (pos.SpotExitFilled || spotQtyComplete(pos.SpotExitFilledQty, pos.SpotSize)) && !p.SpotExitFilled {
 			p.SpotExitFilled = true
 			changed = true
 		}
-		if pos.SpotExitPrice > 0 && p.SpotExitPrice == 0 {
+		if pos.SpotExitPrice > 0 && math.Abs(pos.SpotExitPrice-p.SpotExitPrice) > spotQtyTolerance {
 			p.SpotExitPrice = pos.SpotExitPrice
 			changed = true
 		}
@@ -413,7 +418,8 @@ func (e *SpotEngine) completeExit(pos *models.SpotFuturesPosition, reason string
 		p.RealizedPnL = totalPnL
 		p.ExitCompletedAt = &now
 		p.FuturesExit = pos.FuturesExit
-		p.SpotExitFilled = pos.SpotExitFilled
+		p.SpotExitFilledQty = pos.SpotExitFilledQty
+		p.SpotExitFilled = pos.SpotExitFilled || spotExitComplete(pos)
 		p.SpotExitPrice = pos.SpotExitPrice
 		p.PendingSpotExitOrderID = ""
 		p.PeakPriceMovePct = pos.PeakPriceMovePct

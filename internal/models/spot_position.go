@@ -57,7 +57,8 @@ type SpotFuturesPosition struct {
 	PeakPriceMovePct       float64    `json:"peak_price_move_pct"`
 	MarginUtilizationPct   float64    `json:"margin_utilization_pct"`
 	PendingEntryOrderID    string     `json:"pending_entry_order_id,omitempty"`     // accepted spot entry order awaiting confirmation / hedge completion
-	SpotExitFilled         bool       `json:"spot_exit_filled,omitempty"`           // true once the spot exit order is confirmed filled, even if avg price backfill is still pending
+	SpotExitFilledQty      float64    `json:"spot_exit_filled_qty,omitempty"`       // cumulative confirmed spot exit quantity across retries / partial IOC fills
+	SpotExitFilled         bool       `json:"spot_exit_filled,omitempty"`           // true once the entire spot exit quantity is confirmed flat
 	PendingSpotExitOrderID string     `json:"pending_spot_exit_order_id,omitempty"` // accepted spot exit order being reconciled; prevents duplicate close orders on retry
 	PendingRepay           bool       `json:"pending_repay,omitempty"`              // true when trade legs closed but margin repay still outstanding
 	PendingRepayRetryAt    *time.Time `json:"pending_repay_retry_at,omitempty"`     // earliest time to retry repay (e.g. after Bybit blackout)

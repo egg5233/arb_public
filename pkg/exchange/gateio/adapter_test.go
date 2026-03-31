@@ -203,3 +203,42 @@ func TestEnsureOneWayMode_UsesJSONBody(t *testing.T) {
 		t.Fatalf("expected dual_mode=false, got true")
 	}
 }
+
+func TestGetSpotMarginOrder_ClosedIOCPartialIsNotMarkedFilled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v4/spot/orders/1852454420" {
+			http.NotFound(w, r)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":             "1852454420",
+			"status":         "closed",
+			"finish_as":      "ioc",
+			"currency_pair":  "BTC_USDT",
+			"filled_amount":  "0.4",
+			"avg_deal_price": "101.5",
+		})
+	}))
+	defer srv.Close()
+
+	adapter := &Adapter{
+		client: NewClientWithBase(srv.URL + "/api/v4"),
+	}
+
+	status, err := adapter.GetSpotMarginOrder("1852454420", "BTCUSDT")
+	if err != nil {
+		t.Fatalf("GetSpotMarginOrder: %v", err)
+	}
+	if status == nil {
+		t.Fatal("expected order status")
+	}
+	if status.Status != "cancelled" {
+		t.Fatalf("status = %q, want cancelled", status.Status)
+	}
+	if status.FilledQty != 0.4 {
+		t.Fatalf("filled qty = %.2f, want 0.4", status.FilledQty)
+	}
+	if status.AvgPrice != 101.5 {
+		t.Fatalf("avg price = %.2f, want 101.5", status.AvgPrice)
+	}
+}

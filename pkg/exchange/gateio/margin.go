@@ -147,7 +147,7 @@ func (a *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarg
 	case "open":
 		status = "live"
 	case "closed":
-		if strings.ToLower(resp.FinishAs) == "filled" || qty > 0 {
+		if strings.ToLower(resp.FinishAs) == "filled" {
 			status = "filled"
 		} else {
 			status = "cancelled"

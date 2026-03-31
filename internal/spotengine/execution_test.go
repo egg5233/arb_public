@@ -2,6 +2,7 @@ package spotengine
 
 import (
 	"errors"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -95,6 +96,8 @@ func (s *closeTestExchange) Close()                  {}
 
 type closeTestSpotMargin struct {
 	placeCalls  int
+	placeSizes  []string
+	orderIDs    []string
 	queryCalls  int
 	queryErrs   []error
 	queryStates []*exchange.SpotMarginOrderStatus
@@ -102,8 +105,14 @@ type closeTestSpotMargin struct {
 
 func (s *closeTestSpotMargin) MarginBorrow(exchange.MarginBorrowParams) error { return nil }
 func (s *closeTestSpotMargin) MarginRepay(exchange.MarginRepayParams) error   { return nil }
-func (s *closeTestSpotMargin) PlaceSpotMarginOrder(exchange.SpotMarginOrderParams) (string, error) {
+func (s *closeTestSpotMargin) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (string, error) {
 	s.placeCalls++
+	s.placeSizes = append(s.placeSizes, params.Size)
+	if len(s.orderIDs) > 0 {
+		orderID := s.orderIDs[0]
+		s.orderIDs = s.orderIDs[1:]
+		return orderID, nil
+	}
 	return "spot-close-1", nil
 }
 func (s *closeTestSpotMargin) GetMarginInterestRate(string) (*exchange.MarginInterestRate, error) {
@@ -227,6 +236,101 @@ func TestClosePosition_ReusesPendingSpotExitOrderAfterQueryFailure(t *testing.T)
 	}
 	if stored.SpotExitPrice != 101 {
 		t.Fatalf("spot exit price = %.2f, want 101", stored.SpotExitPrice)
+	}
+}
+
+func TestClosePosition_RetriesOnlyRemainingSpotQtyAfterPartialExit(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	futExch := &closeTestExchange{
+		orderUpdates: map[string]exchange.OrderUpdate{
+			"fut-close-1": {
+				OrderID:      "fut-close-1",
+				Status:       "filled",
+				FilledVolume: 1,
+				AvgPrice:     100,
+			},
+		},
+		orderbook: &exchange.Orderbook{
+			Bids: []exchange.PriceLevel{{Price: 100, Quantity: 1}},
+			Asks: []exchange.PriceLevel{{Price: 102, Quantity: 1}},
+		},
+	}
+	smExch := &closeTestSpotMargin{
+		orderIDs: []string{"spot-close-1", "spot-close-2"},
+		queryStates: []*exchange.SpotMarginOrderStatus{
+			{
+				OrderID:   "spot-close-1",
+				Symbol:    "BTCUSDT",
+				Status:    "cancelled",
+				FilledQty: 0.4,
+				AvgPrice:  101,
+			},
+			{
+				OrderID:   "spot-close-2",
+				Symbol:    "BTCUSDT",
+				Status:    "filled",
+				FilledQty: 0.6,
+				AvgPrice:  102,
+			},
+		},
+	}
+
+	engine.exchanges = map[string]exchange.Exchange{"stub": futExch}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{"stub": smExch}
+
+	pos := &models.SpotFuturesPosition{
+		ID:          "pos-partial",
+		Symbol:      "BTCUSDT",
+		BaseCoin:    "BTC",
+		Exchange:    "stub",
+		Direction:   "buy_spot_short",
+		Status:      models.SpotStatusExiting,
+		SpotSize:    1,
+		FuturesSize: 1,
+		FuturesSide: "short",
+		CreatedAt:   time.Now().UTC(),
+		UpdatedAt:   time.Now().UTC(),
+	}
+	if err := engine.db.SaveSpotPosition(pos); err != nil {
+		t.Fatalf("SaveSpotPosition: %v", err)
+	}
+
+	if err := engine.ClosePosition(pos, "manual_close", false); err != nil {
+		t.Fatalf("ClosePosition: %v", err)
+	}
+	if smExch.placeCalls != 2 {
+		t.Fatalf("spot place calls = %d, want 2", smExch.placeCalls)
+	}
+	if len(smExch.placeSizes) != 2 {
+		t.Fatalf("spot place sizes len = %d, want 2", len(smExch.placeSizes))
+	}
+	if smExch.placeSizes[0] != "1" && smExch.placeSizes[0] != "1.000000" {
+		t.Fatalf("first spot place size = %q, want full size", smExch.placeSizes[0])
+	}
+	if smExch.placeSizes[1] != "0.6" && smExch.placeSizes[1] != "0.600000" {
+		t.Fatalf("second spot place size = %q, want remaining size 0.6", smExch.placeSizes[1])
+	}
+	if !pos.SpotExitFilled {
+		t.Fatal("spot exit should be fully marked after retry")
+	}
+	if pos.SpotExitFilledQty != 1 {
+		t.Fatalf("spot exit filled qty = %.2f, want 1", pos.SpotExitFilledQty)
+	}
+	if pos.PendingSpotExitOrderID != "" {
+		t.Fatalf("pending spot exit order should be cleared, got %q", pos.PendingSpotExitOrderID)
+	}
+	if math.Abs(pos.SpotExitPrice-101.6) > 1e-9 {
+		t.Fatalf("spot exit price = %.4f, want 101.6", pos.SpotExitPrice)
+	}
+
+	stored, err := engine.db.GetSpotPosition(pos.ID)
+	if err != nil {
+		t.Fatalf("GetSpotPosition: %v", err)
+	}
+	if stored.SpotExitFilledQty != 1 {
+		t.Fatalf("stored spot exit filled qty = %.2f, want 1", stored.SpotExitFilledQty)
 	}
 }
 
