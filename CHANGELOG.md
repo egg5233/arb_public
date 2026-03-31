@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.37] - 2026-03-31
+
+### Fixed
+- **[spot-futures] Partial spot exits tracked and retried correctly** — introduced `SpotExitFilledQty` field to accumulate partial fills across exit retries; `applySpotExitFill` computes VWAP-weighted exit price across multiple partial fills; `persistExitCheckpoint` and `completeExit` propagate partial fill progress; `spotExitComplete` guards completion via quantity tolerance rather than boolean; exit is no longer falsely marked complete when only partially filled (`internal/spotengine/execution.go`, `internal/spotengine/exit_manager.go`, `internal/models/spot_position.go`, `pkg/exchange/gateio/margin.go`)
+- **[spot-futures] Accepted spot entry unwound on checkpoint failure** — when `ManualOpen` accepts a spot order but Redis persistence fails before the pending-entry record is saved, `abortAcceptedSpotEntry` immediately reconciles the fill, places a reversal market IOC order, and repays any borrow so restart recovery never encounters an orphaned position without a Redis record (`internal/spotengine/execution.go`)
+- **[spot-futures] Cleanup IOC confirmed before aborting entry** — after placing the reversal IOC order in `abortAcceptedSpotEntry`, the engine calls `confirmSpotFill` on the cleanup order; if cleanup is unconfirmed or only partially filled, the error surfaces with explicit detail requiring manual intervention rather than silently leaving a residual position (`internal/spotengine/execution.go`)
+
 ## [0.22.36] - 2026-03-31
 
 ### Fixed
