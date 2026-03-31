@@ -150,7 +150,8 @@ T+?        EXIT (per exit mode, see §1.5)
 - **Leverage**: configurable, hard-capped at 5x
 - **Margin mode**: Cross, USDT-margined only
 - **Exchange diversity**: Soft preference — warn if >60% of positions on same exchange
-- **Capital exposure cap**: 60% of total capital per single exchange (hard limit)
+- **Capital exposure cap**: 60% of total capital per single exchange (hard limit); bypassed when the cross-strategy allocator is active
+- **Cross-strategy capital allocator** (`internal/risk/allocator.go`): optional Redis-backed module that enforces shared USDT budgets across perp-perp and spot-futures. Configure via `enable_capital_allocator` (default `false`). Supports `max_total_exposure_usdt`, per-strategy caps (`max_perp_perp_pct`, `max_spot_futures_pct`), per-exchange cap (`max_per_exchange_pct`), and configurable reservation TTL. Reserve → Commit → Release lifecycle; reservations auto-expire if a trade never commits.
 
 **Position Sizing** (two modes):
 1. **Fixed** (`CAPITAL_PER_LEG > 0`): `notional = capitalPerLeg * leverage`, clamped to available balance
@@ -584,8 +585,9 @@ Implemented by: Binance, Bybit, OKX, Gate.io (unified `/unified/*` cross margin 
 7. Margin per leg >= 10 USDT floor
 8. Slippage check on both exchanges (asks for long, bids for short) — if slippage exceeds the limit at full size, binary-searches for the largest tradeable size within slippage constraints (`findMaxSizeForSlippage`, ~10 iterations) instead of rejecting outright
 9. Cross-exchange price gap check (absolute gap hard cap + directional recovery limit)
-10. Per-exchange capital exposure cap (60% of total)
-11. Exchange concentration warning (>60% of positions)
+10. Per-exchange capital exposure cap (60% of total) — bypassed when cross-strategy allocator is active
+11. Cross-strategy capital allocator reserve (if `enable_capital_allocator` is true)
+12. Exchange concentration warning (>60% of positions)
 
 #### Active Monitoring: Risk Monitor (configurable interval, default 300s)
 
