@@ -56,6 +56,11 @@ type Config struct {
 
 	// Risk monitor (log-only)
 	RiskMonitorIntervalSec int // interval between risk monitor checks in seconds (default: 300)
+	EnableLiqTrendTracking bool
+	LiqProjectionMinutes   int
+	LiqWarningSlopeThresh  float64
+	LiqCriticalSlopeThresh float64
+	LiqMinSamples          int
 
 	// Cross-strategy capital allocator (default disabled for production safety)
 	EnableCapitalAllocator bool
@@ -358,6 +363,11 @@ type jsonRisk struct {
 	L4ReduceFraction       *float64 `json:"l4_reduce_fraction"`
 	MarginSafetyMultiplier *float64 `json:"margin_safety_multiplier"`
 	RiskMonitorIntervalSec *int     `json:"risk_monitor_interval_sec"`
+	EnableLiqTrendTracking *bool    `json:"enable_liq_trend_tracking"`
+	LiqProjectionMinutes   *int     `json:"liq_projection_minutes"`
+	LiqWarningSlopeThresh  *float64 `json:"liq_warning_slope_thresh"`
+	LiqCriticalSlopeThresh *float64 `json:"liq_critical_slope_thresh"`
+	LiqMinSamples          *int     `json:"liq_min_samples"`
 	EnableCapitalAllocator *bool    `json:"enable_capital_allocator"`
 	MaxTotalExposureUSDT   *float64 `json:"max_total_exposure_usdt"`
 	MaxPerpPerpPct         *float64 `json:"max_perp_perp_pct"`
@@ -406,6 +416,11 @@ func Load() *Config {
 		ExitDepthTimeoutSec:             300,
 		ExitMaxGapBPS:                   10.0,
 		RiskMonitorIntervalSec:          300,
+		EnableLiqTrendTracking:          false,
+		LiqProjectionMinutes:            15,
+		LiqWarningSlopeThresh:           0.002,
+		LiqCriticalSlopeThresh:          0.004,
+		LiqMinSamples:                   5,
 		MaxPerpPerpPct:                  0.60,
 		MaxSpotFuturesPct:               0.60,
 		MaxPerExchangePct:               0.60,
@@ -740,6 +755,21 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		}
 		if rk.RiskMonitorIntervalSec != nil {
 			c.RiskMonitorIntervalSec = *rk.RiskMonitorIntervalSec
+		}
+		if rk.EnableLiqTrendTracking != nil {
+			c.EnableLiqTrendTracking = *rk.EnableLiqTrendTracking
+		}
+		if rk.LiqProjectionMinutes != nil {
+			c.LiqProjectionMinutes = *rk.LiqProjectionMinutes
+		}
+		if rk.LiqWarningSlopeThresh != nil {
+			c.LiqWarningSlopeThresh = *rk.LiqWarningSlopeThresh
+		}
+		if rk.LiqCriticalSlopeThresh != nil {
+			c.LiqCriticalSlopeThresh = *rk.LiqCriticalSlopeThresh
+		}
+		if rk.LiqMinSamples != nil {
+			c.LiqMinSamples = *rk.LiqMinSamples
 		}
 		if rk.EnableCapitalAllocator != nil {
 			c.EnableCapitalAllocator = *rk.EnableCapitalAllocator
@@ -1079,6 +1109,11 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	risk["l4_reduce_fraction"] = c.L4ReduceFraction
 	risk["margin_safety_multiplier"] = c.MarginSafetyMultiplier
 	risk["risk_monitor_interval_sec"] = c.RiskMonitorIntervalSec
+	risk["enable_liq_trend_tracking"] = c.EnableLiqTrendTracking
+	risk["liq_projection_minutes"] = c.LiqProjectionMinutes
+	risk["liq_warning_slope_thresh"] = c.LiqWarningSlopeThresh
+	risk["liq_critical_slope_thresh"] = c.LiqCriticalSlopeThresh
+	risk["liq_min_samples"] = c.LiqMinSamples
 	risk["enable_capital_allocator"] = c.EnableCapitalAllocator
 	risk["max_total_exposure_usdt"] = c.MaxTotalExposureUSDT
 	risk["max_perp_perp_pct"] = c.MaxPerpPerpPct

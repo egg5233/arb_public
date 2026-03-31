@@ -269,6 +269,110 @@ func TestHandleConfig_BorrowSpikeDetectionRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHandleConfig_LiqTrendTrackingRoundTrip(t *testing.T) {
+	s, mr := newTestServer(t)
+	defer mr.Close()
+
+	s.cfg.EnableLiqTrendTracking = false
+	s.cfg.LiqProjectionMinutes = 15
+	s.cfg.LiqWarningSlopeThresh = 0.002
+	s.cfg.LiqCriticalSlopeThresh = 0.004
+	s.cfg.LiqMinSamples = 5
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	initialConfig := `{
+  "risk": {
+    "enable_liq_trend_tracking": false,
+    "liq_projection_minutes": 15,
+    "liq_warning_slope_thresh": 0.002,
+    "liq_critical_slope_thresh": 0.004,
+    "liq_min_samples": 5
+  }
+}`
+	if err := os.WriteFile(configPath, []byte(initialConfig), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("CONFIG_FILE", configPath)
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	getW := httptest.NewRecorder()
+	s.handleGetConfig(getW, getReq)
+	if getW.Code != http.StatusOK {
+		t.Fatalf("GET expected 200, got %d: %s", getW.Code, getW.Body.String())
+	}
+
+	var getResp struct {
+		OK   bool                   `json:"ok"`
+		Data map[string]interface{} `json:"data"`
+	}
+	if err := json.NewDecoder(getW.Body).Decode(&getResp); err != nil {
+		t.Fatalf("decode GET response: %v", err)
+	}
+	riskData, ok := getResp.Data["risk"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("risk payload missing or wrong type: %#v", getResp.Data["risk"])
+	}
+	if riskData["enable_liq_trend_tracking"] != false {
+		t.Fatalf("expected enable_liq_trend_tracking=false, got %#v", riskData["enable_liq_trend_tracking"])
+	}
+
+	postReq := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"risk":{"enable_liq_trend_tracking":true,"liq_projection_minutes":12,"liq_warning_slope_thresh":0.003,"liq_critical_slope_thresh":0.007,"liq_min_samples":6}}`))
+	postW := httptest.NewRecorder()
+	s.handlePostConfig(postW, postReq)
+	if postW.Code != http.StatusOK {
+		t.Fatalf("POST expected 200, got %d: %s", postW.Code, postW.Body.String())
+	}
+
+	if !s.cfg.EnableLiqTrendTracking {
+		t.Fatal("expected EnableLiqTrendTracking=true after POST")
+	}
+	if s.cfg.LiqProjectionMinutes != 12 {
+		t.Fatalf("expected LiqProjectionMinutes=12, got %d", s.cfg.LiqProjectionMinutes)
+	}
+	if s.cfg.LiqWarningSlopeThresh != 0.003 {
+		t.Fatalf("expected LiqWarningSlopeThresh=0.003, got %v", s.cfg.LiqWarningSlopeThresh)
+	}
+	if s.cfg.LiqCriticalSlopeThresh != 0.007 {
+		t.Fatalf("expected LiqCriticalSlopeThresh=0.007, got %v", s.cfg.LiqCriticalSlopeThresh)
+	}
+	if s.cfg.LiqMinSamples != 6 {
+		t.Fatalf("expected LiqMinSamples=6, got %d", s.cfg.LiqMinSamples)
+	}
+
+	for field, want := range map[string]string{
+		"enable_liq_trend_tracking": "true",
+		"liq_projection_minutes":    "12",
+		"liq_warning_slope_thresh":  "0.003",
+		"liq_critical_slope_thresh": "0.007",
+		"liq_min_samples":           "6",
+	} {
+		got, err := s.db.GetConfigField(field)
+		if err != nil {
+			t.Fatalf("redis get %s: %v", field, err)
+		}
+		if got != want {
+			t.Fatalf("expected redis %s=%s, got %q", field, want, got)
+		}
+	}
+
+	reloaded := config.Load()
+	if !reloaded.EnableLiqTrendTracking {
+		t.Fatal("expected reloaded EnableLiqTrendTracking=true")
+	}
+	if reloaded.LiqProjectionMinutes != 12 {
+		t.Fatalf("expected reloaded LiqProjectionMinutes=12, got %d", reloaded.LiqProjectionMinutes)
+	}
+	if reloaded.LiqWarningSlopeThresh != 0.003 {
+		t.Fatalf("expected reloaded LiqWarningSlopeThresh=0.003, got %v", reloaded.LiqWarningSlopeThresh)
+	}
+	if reloaded.LiqCriticalSlopeThresh != 0.007 {
+		t.Fatalf("expected reloaded LiqCriticalSlopeThresh=0.007, got %v", reloaded.LiqCriticalSlopeThresh)
+	}
+	if reloaded.LiqMinSamples != 6 {
+		t.Fatalf("expected reloaded LiqMinSamples=6, got %d", reloaded.LiqMinSamples)
+	}
+}
+
 func TestHandlePostConfig_IgnoresEmptyExchangeCredentialUpdates(t *testing.T) {
 	s, mr := newTestServer(t)
 	defer mr.Close()

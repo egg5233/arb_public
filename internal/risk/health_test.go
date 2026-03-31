@@ -90,7 +90,7 @@ func TestComputeLevel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := h.computeLevel(tt.bal, tt.pnl, tt.posCount)
+			got := h.computeLevel(h.normalizeMarginRatio(tt.bal), tt.pnl, tt.posCount)
 			if got != tt.want {
 				t.Errorf("computeLevel() = %s, want %s", got, tt.want)
 			}

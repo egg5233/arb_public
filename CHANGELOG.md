@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.43] - 2026-03-31
+
+### Added
+- **[risk] Liquidation trend tracking** — new `LiqTrendTracker` keeps a 30-sample ring buffer of exchange margin-ratio history, fits a linear-regression slope, filters single-tick spikes, and triggers pre-emptive reduce actions when the projected ratio trends into L4; feature ships default OFF behind `risk.enable_liq_trend_tracking` with 4 new tuning fields, plus API/dashboard config support and regression tests (`internal/risk/liq_trend.go`, `internal/risk/health.go`, `internal/api/handlers.go`, `internal/api/config_handlers_test.go`, `internal/config/config.go`, `web/src/pages/Config.tsx`, `web/src/i18n/en.ts`, `web/src/i18n/zh-TW.ts`)
+
 ## [0.22.42] - 2026-03-31
 
 ### Fixed

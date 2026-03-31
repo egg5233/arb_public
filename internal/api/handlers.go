@@ -439,6 +439,11 @@ type configRiskResponse struct {
 	L4ReduceFraction       float64 `json:"l4_reduce_fraction"`
 	MarginSafetyMultiplier float64 `json:"margin_safety_multiplier"`
 	RiskMonitorIntervalSec int     `json:"risk_monitor_interval_sec"`
+	EnableLiqTrendTracking bool    `json:"enable_liq_trend_tracking"`
+	LiqProjectionMinutes   int     `json:"liq_projection_minutes"`
+	LiqWarningSlopeThresh  float64 `json:"liq_warning_slope_thresh"`
+	LiqCriticalSlopeThresh float64 `json:"liq_critical_slope_thresh"`
+	LiqMinSamples          int     `json:"liq_min_samples"`
 	EnableCapitalAllocator bool    `json:"enable_capital_allocator"`
 	MaxTotalExposureUSDT   float64 `json:"max_total_exposure_usdt"`
 	MaxPerpPerpPct         float64 `json:"max_perp_perp_pct"`
@@ -550,6 +555,11 @@ func (s *Server) buildConfigResponse() configResponse {
 			L4ReduceFraction:       s.cfg.L4ReduceFraction,
 			MarginSafetyMultiplier: s.cfg.MarginSafetyMultiplier,
 			RiskMonitorIntervalSec: s.cfg.RiskMonitorIntervalSec,
+			EnableLiqTrendTracking: s.cfg.EnableLiqTrendTracking,
+			LiqProjectionMinutes:   s.cfg.LiqProjectionMinutes,
+			LiqWarningSlopeThresh:  s.cfg.LiqWarningSlopeThresh,
+			LiqCriticalSlopeThresh: s.cfg.LiqCriticalSlopeThresh,
+			LiqMinSamples:          s.cfg.LiqMinSamples,
 			EnableCapitalAllocator: s.cfg.EnableCapitalAllocator,
 			MaxTotalExposureUSDT:   s.cfg.MaxTotalExposureUSDT,
 			MaxPerpPerpPct:         s.cfg.MaxPerpPerpPct,
@@ -756,6 +766,11 @@ type riskUpdate struct {
 	L4ReduceFraction       *float64 `json:"l4_reduce_fraction"`
 	MarginSafetyMultiplier *float64 `json:"margin_safety_multiplier"`
 	RiskMonitorIntervalSec *int     `json:"risk_monitor_interval_sec"`
+	EnableLiqTrendTracking *bool    `json:"enable_liq_trend_tracking"`
+	LiqProjectionMinutes   *int     `json:"liq_projection_minutes"`
+	LiqWarningSlopeThresh  *float64 `json:"liq_warning_slope_thresh"`
+	LiqCriticalSlopeThresh *float64 `json:"liq_critical_slope_thresh"`
+	LiqMinSamples          *int     `json:"liq_min_samples"`
 	EnableCapitalAllocator *bool    `json:"enable_capital_allocator"`
 	MaxTotalExposureUSDT   *float64 `json:"max_total_exposure_usdt"`
 	MaxPerpPerpPct         *float64 `json:"max_perp_perp_pct"`
@@ -958,6 +973,21 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if rk.RiskMonitorIntervalSec != nil && *rk.RiskMonitorIntervalSec > 0 {
 			s.cfg.RiskMonitorIntervalSec = *rk.RiskMonitorIntervalSec
+		}
+		if rk.EnableLiqTrendTracking != nil {
+			s.cfg.EnableLiqTrendTracking = *rk.EnableLiqTrendTracking
+		}
+		if rk.LiqProjectionMinutes != nil && *rk.LiqProjectionMinutes > 0 {
+			s.cfg.LiqProjectionMinutes = *rk.LiqProjectionMinutes
+		}
+		if rk.LiqWarningSlopeThresh != nil && *rk.LiqWarningSlopeThresh >= 0 {
+			s.cfg.LiqWarningSlopeThresh = *rk.LiqWarningSlopeThresh
+		}
+		if rk.LiqCriticalSlopeThresh != nil && *rk.LiqCriticalSlopeThresh >= 0 {
+			s.cfg.LiqCriticalSlopeThresh = *rk.LiqCriticalSlopeThresh
+		}
+		if rk.LiqMinSamples != nil && *rk.LiqMinSamples > 0 {
+			s.cfg.LiqMinSamples = *rk.LiqMinSamples
 		}
 		if rk.EnableCapitalAllocator != nil {
 			s.cfg.EnableCapitalAllocator = *rk.EnableCapitalAllocator
@@ -1217,6 +1247,11 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"l4_reduce_fraction":                  strconv.FormatFloat(snapshot.Risk.L4ReduceFraction, 'f', -1, 64),
 		"margin_safety_multiplier":            strconv.FormatFloat(snapshot.Risk.MarginSafetyMultiplier, 'f', -1, 64),
 		"risk_monitor_interval_sec":           strconv.Itoa(snapshot.Risk.RiskMonitorIntervalSec),
+		"enable_liq_trend_tracking":           strconv.FormatBool(snapshot.Risk.EnableLiqTrendTracking),
+		"liq_projection_minutes":              strconv.Itoa(snapshot.Risk.LiqProjectionMinutes),
+		"liq_warning_slope_thresh":            strconv.FormatFloat(snapshot.Risk.LiqWarningSlopeThresh, 'f', -1, 64),
+		"liq_critical_slope_thresh":           strconv.FormatFloat(snapshot.Risk.LiqCriticalSlopeThresh, 'f', -1, 64),
+		"liq_min_samples":                     strconv.Itoa(snapshot.Risk.LiqMinSamples),
 		"enable_capital_allocator":            strconv.FormatBool(snapshot.Risk.EnableCapitalAllocator),
 		"max_total_exposure_usdt":             strconv.FormatFloat(snapshot.Risk.MaxTotalExposureUSDT, 'f', -1, 64),
 		"max_perp_perp_pct":                   strconv.FormatFloat(snapshot.Risk.MaxPerpPerpPct, 'f', -1, 64),

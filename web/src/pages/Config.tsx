@@ -862,6 +862,7 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
     const l4 = (getByPath(config, ['risk', 'margin_l4_threshold']) as number) ?? 0;
     const l5 = (getByPath(config, ['risk', 'margin_l5_threshold']) as number) ?? 0;
     const l4r = (getByPath(config, ['risk', 'l4_reduce_fraction']) as number) ?? 0;
+    const liqTrendEnabled = getByPath(config, ['risk', 'enable_liq_trend_tracking']) === true;
     const allocatorEnabled = getByPath(config, ['risk', 'enable_capital_allocator']) === true;
 
     return (
@@ -972,6 +973,54 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
             value={getByPath(config, ['risk', 'risk_monitor_interval_sec'])}
             unit="sec"
             onChange={(v) => handleChange(['risk', 'risk_monitor_interval_sec'], v)}
+          />
+
+          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+            <div className="flex items-center gap-2 mb-2">
+              <label className="text-sm font-medium">{t('cfg.field.enableLiqTrendTracking')}</label>
+              <Tooltip text={t('cfg.desc.enableLiqTrendTracking')} />
+            </div>
+            <div className="flex items-center gap-3">
+              <ToggleSwitch
+                on={liqTrendEnabled}
+                onChange={(v) => handleBoolChange(['risk', 'enable_liq_trend_tracking'], v)}
+              />
+              <span className={`text-sm font-semibold ${liqTrendEnabled ? 'text-green-400' : 'text-red-400'}`}>
+                {liqTrendEnabled ? 'ON' : 'OFF'}
+              </span>
+            </div>
+          </div>
+
+          <NumberField
+            label={t('cfg.field.liqProjectionMinutes')}
+            desc={t('cfg.desc.liqProjectionMinutes')}
+            value={getByPath(config, ['risk', 'liq_projection_minutes'])}
+            unit="min"
+            onChange={(v) => handleChange(['risk', 'liq_projection_minutes'], v)}
+          />
+
+          <NumberField
+            label={t('cfg.field.liqWarningSlopeThresh')}
+            desc={t('cfg.desc.liqWarningSlopeThresh')}
+            value={getByPath(config, ['risk', 'liq_warning_slope_thresh'])}
+            unit="/min"
+            onChange={(v) => handleChange(['risk', 'liq_warning_slope_thresh'], v)}
+          />
+
+          <NumberField
+            label={t('cfg.field.liqCriticalSlopeThresh')}
+            desc={t('cfg.desc.liqCriticalSlopeThresh')}
+            value={getByPath(config, ['risk', 'liq_critical_slope_thresh'])}
+            unit="/min"
+            onChange={(v) => handleChange(['risk', 'liq_critical_slope_thresh'], v)}
+          />
+
+          <NumberField
+            label={t('cfg.field.liqMinSamples')}
+            desc={t('cfg.desc.liqMinSamples')}
+            value={getByPath(config, ['risk', 'liq_min_samples'])}
+            unit="samples"
+            onChange={(v) => handleChange(['risk', 'liq_min_samples'], v)}
           />
 
           <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
