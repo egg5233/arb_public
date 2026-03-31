@@ -10,13 +10,12 @@ interface ConfigProps {
 // ---------------------------------------------------------------------------
 // Tab definitions
 // ---------------------------------------------------------------------------
-type Strategy = 'perp' | 'spot';
-type PerpTabId = 'exchanges' | 'fund' | 'schedule' | 'discovery' | 'persist' | 'entry' | 'exit' | 'risk';
+type Strategy = 'exchanges' | 'perp' | 'spot';
+type PerpTabId = 'fund' | 'schedule' | 'discovery' | 'persist' | 'entry' | 'exit' | 'risk';
 type SpotTabId = 'sf-general' | 'sf-sizing' | 'sf-discovery' | 'sf-exit';
 type TabId = PerpTabId | SpotTabId;
 
 const PERP_TABS: { id: PerpTabId; labelKey: TranslationKey }[] = [
-  { id: 'exchanges', labelKey: 'cfg.tab.exchanges' },
   { id: 'fund', labelKey: 'cfg.tab.fund' },
   { id: 'schedule', labelKey: 'cfg.tab.schedule' },
   { id: 'discovery', labelKey: 'cfg.tab.discovery' },
@@ -263,8 +262,8 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [dirty, setDirty] = useState(false);
-  const [strategy, setStrategy] = useState<Strategy>('perp');
-  const [activeTab, setActiveTab] = useState<TabId>('exchanges');
+  const [strategy, setStrategy] = useState<Strategy>('exchanges');
+  const [activeTab, setActiveTab] = useState<TabId>('fund');
   const tabBarRef = useRef<HTMLDivElement>(null);
 
   // Exchange overrides: only fields the user actually typed
@@ -1215,8 +1214,8 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
   // Render active tab content
   // =========================================================================
   const renderTabContent = () => {
+    if (strategy === 'exchanges') return renderExchangesTab();
     switch (activeTab) {
-      case 'exchanges': return renderExchangesTab();
       case 'fund': return renderFundTab();
       case 'schedule': return renderScheduleTab();
       case 'discovery': return renderDiscoveryTab();
@@ -1241,7 +1240,18 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
       <div className="flex bg-gray-900 border border-gray-700 rounded-lg p-0.5 gap-0.5 mb-4 w-fit">
         <button
           type="button"
-          onClick={() => { setStrategy('perp'); setActiveTab('exchanges'); }}
+          onClick={() => setStrategy('exchanges')}
+          className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all duration-150 ${
+            strategy === 'exchanges'
+              ? 'bg-gray-700 text-gray-100 shadow-sm'
+              : 'text-gray-500 hover:text-gray-300'
+          }`}
+        >
+          {t('cfg.tab.exchanges')}
+        </button>
+        <button
+          type="button"
+          onClick={() => { setStrategy('perp'); setActiveTab('fund'); }}
           className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all duration-150 ${
             strategy === 'perp'
               ? 'bg-gray-700 text-gray-100 shadow-sm'
@@ -1263,8 +1273,8 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
         </button>
       </div>
 
-      {/* Tab bar */}
-      <div
+      {/* Tab bar (hidden for exchanges — no sub-tabs) */}
+      {strategy !== 'exchanges' && <div
         ref={tabBarRef}
         className="flex gap-1 overflow-x-auto pb-3 mb-4 scrollbar-none"
         style={{ scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' }}
@@ -1283,7 +1293,7 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
             {t(tab.labelKey)}
           </button>
         ))}
-      </div>
+      </div>}
 
       {/* Tab content */}
       <form onSubmit={handleSubmit}>
