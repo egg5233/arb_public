@@ -1,4 +1,5 @@
 config.json
+!.planning/config.json
 arb
 *.log
 logs/
