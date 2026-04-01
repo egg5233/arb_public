@@ -822,8 +822,8 @@ func runTests(name string, exc exchange.Exchange, skipOrders bool, testMargin bo
 		} else {
 			// 25. MarginBorrow + MarginRepay with minimum USDT
 			res = runTest("25. MarginBorrow + MarginRepay (min amount)", func() (string, bool) {
-				// Borrow a tiny amount of USDT
-				borrowAmt := "1"
+				// Borrow a small amount of USDT (100 to meet exchange min borrow thresholds)
+				borrowAmt := "100"
 				err := marginExc.MarginBorrow(exchange.MarginBorrowParams{
 					Coin:   "USDT",
 					Amount: borrowAmt,
@@ -909,8 +909,8 @@ func runTests(name string, exc exchange.Exchange, skipOrders bool, testMargin bo
 				// --- Dir A: auto-borrow sell, then auto-repay buyback ---
 				fmt.Printf("   [Dir A] Auto-borrow SELL...\n")
 
-				// Calculate a small sell quantity: ~$5 worth
-				sellQty := 5.0 / testPrice
+				// Calculate sell quantity: ~$12 worth to meet exchange minimum notional
+				sellQty := 12.0 / testPrice
 				// Round up to a reasonable size (at least 1 for coins like SEI/DOGE)
 				if sellQty < 1 {
 					sellQty = 1
@@ -990,18 +990,36 @@ func runTests(name string, exc exchange.Exchange, skipOrders bool, testMargin bo
 				} else {
 					fmt.Printf("   [Dir A] Post-repay %s margin: Borrowed=%.4f\n", baseCoin, balAfter.Borrowed)
 					if balAfter.Borrowed > 0.01 {
-						fmt.Printf("   [Dir A] WARNING: Residual borrow %.4f — auto-repay may be incomplete\n", balAfter.Borrowed)
+						// Some exchanges (e.g., Bybit UTA) don't auto-repay via isLeverage=1 alone.
+						// Explicitly repay any residual borrow — this matches production behavior in
+						// closeDirectionA() which calls MarginRepay for residual debt.
+						repayAmt := strconv.FormatFloat(math.Ceil(balAfter.Borrowed), 'f', 0, 64)
+						fmt.Printf("   [Dir A] Residual borrow %.4f — explicit MarginRepay(%s %s)...\n", balAfter.Borrowed, repayAmt, baseCoin)
+						repayErr := marginExc.MarginRepay(exchange.MarginRepayParams{
+							Coin:   baseCoin,
+							Amount: repayAmt,
+						})
+						if repayErr != nil {
+							fmt.Printf("   [Dir A] MarginRepay WARNING: %v\n", repayErr)
+						} else {
+							fmt.Printf("   [Dir A] Explicit repay OK\n")
+							time.Sleep(1 * time.Second)
+							balFinal, _ := marginExc.GetMarginBalance(baseCoin)
+							if balFinal != nil {
+								fmt.Printf("   [Dir A] Final %s margin: Borrowed=%.4f\n", baseCoin, balFinal.Borrowed)
+							}
+						}
 					}
 				}
 
 				// --- Dir B: buy with QuoteSize, then sell back ---
-				fmt.Printf("   [Dir B] QuoteSize BUY ($5 USDT)...\n")
+				fmt.Printf("   [Dir B] QuoteSize BUY ($12 USDT)...\n")
 
 				dirBBuyOID, err := marginExc.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
 					Symbol:    testSymbol,
 					Side:      exchange.SideBuy,
 					OrderType: "market",
-					QuoteSize: "5",
+					QuoteSize: "12",
 				})
 				if err != nil {
 					return fmt.Sprintf("[Dir A] OK, [Dir B] PlaceSpotMarginOrder BUY ERROR: %v", err), false
@@ -1024,8 +1042,8 @@ func runTests(name string, exc exchange.Exchange, skipOrders bool, testMargin bo
 
 				// Sell back what we bought
 				if dirBFilledQty <= 0 {
-					// Estimate from $5 / price
-					dirBFilledQty = math.Floor(5.0 / testPrice)
+					// Estimate from $12 / price
+					dirBFilledQty = math.Floor(12.0 / testPrice)
 					if dirBFilledQty <= 0 {
 						dirBFilledQty = 1
 					}

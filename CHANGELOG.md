@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.50] - 2026-04-01
+
+### Added
+- **Livetest margin trade tests (27-28)** — two new tests in `cmd/livetest/main.go` gated behind `--test-margin`: Test 27 exercises `PlaceSpotMarginOrder` for Dir A (auto-borrow sell + auto-repay buyback with explicit residual repay) and Dir B (QuoteSize market buy + sell-back); Test 28 exercises `GetSpotMarginOrder` fill reconciliation via `SpotMarginOrderQuerier` type assertion
+- **Livetest now git-tracked** — `.gitignore` binary patterns changed from bare names to root-anchored (`/livetest`, `/gatetest`, etc.) so `cmd/livetest/main.go` and other CLI source under `cmd/` are no longer accidentally ignored
+
+### Fixed
+- **Livetest MarginBorrow amount too low** — test 25 increased from 1 USDT to 100 USDT to meet Bybit minimum borrow threshold (was: `code=34022011 msg=loan quantity cannot be less than minimum`)
+- **Livetest margin trade notional too low** — test 27 increased from $5 to $12 notional to meet Bybit spot minimum order value (was: `code=170140 msg=Order value exceeded lower limit`)
+
 ## [0.22.49] - 2026-04-01
 
 ### Fixed
