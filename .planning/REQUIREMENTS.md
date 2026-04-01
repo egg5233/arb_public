@@ -1,4 +1,4 @@
-# Requirements: Arb Bot — Unified Arbitrage System
+# Requirements: Arb Bot -- Unified Arbitrage System
 
 **Defined:** 2026-04-01
 **Core Value:** "I deposit USDT, select my risk preference, and the system automatically finds opportunities across both strategies, opens positions, collects funding, exits when profitable, and I can see exactly how much each position earned."
@@ -35,10 +35,10 @@ Requirements for Milestone 1. Each maps to roadmap phases.
 
 ### Capital Allocation
 
-- [ ] **CA-01**: Unified capital pool — single deposit, system allocates across both strategies and all exchanges
+- [ ] **CA-01**: Unified capital pool -- single deposit, system allocates across both strategies and all exchanges
 - [ ] **CA-02**: Risk preference profiles (conservative/balanced/aggressive) that bundle position size, max positions, entry thresholds, and allocation weights
 - [ ] **CA-03**: Strategy-weighted allocation dynamically adjusts perp-perp vs spot-futures split based on recent performance metrics
-- [ ] **CA-04**: Dynamic rebalancing shifts capital to available strategies when one strategy has no opportunities (e.g., spot-futures unavailable → increase perp-perp allocation)
+- [ ] **CA-04**: Dynamic rebalancing shifts capital to available strategies when one strategy has no opportunities (e.g., spot-futures unavailable -> increase perp-perp allocation)
 
 ## v2 Requirements
 
@@ -54,14 +54,14 @@ Deferred to next milestone. Tracked but not in current roadmap.
 
 - **BT-01**: Historical funding rate replay with configurable parameters against real Loris/CoinGlass data
 - **BT-02**: Paper trading mode with simulated order fills (Exchange interface wrapping)
-- **BT-03**: A/B config comparison — run two parameter profiles and compare results
+- **BT-03**: A/B config comparison -- run two parameter profiles and compare results
 - **BT-04**: Bias-aware backtest reporting (survivorship bias, look-ahead bias, fee model warnings)
 
 ## Out of Scope
 
 | Feature | Reason |
 |---------|--------|
-| Binance Portfolio Margin | Tried and reverted (v0.20.1) — too complex for limited benefit |
+| Binance Portfolio Margin | Tried and reverted (v0.20.1) -- too complex for limited benefit |
 | DEX/on-chain arbitrage | Entirely different architecture (MEV, gas, smart contracts) |
 | AI/ML rate prediction | Funding rates are regime-shifting; threshold-based entries outperform overfit models |
 | Triangular/statistical arbitrage | Different strategy, would dilute focus |
@@ -76,33 +76,33 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SF-01 | — | Pending |
-| SF-02 | — | Pending |
-| SF-03 | — | Pending |
-| SF-04 | — | Pending |
-| SF-05 | — | Pending |
-| SF-06 | — | Pending |
-| SF-07 | — | Pending |
-| PP-01 | — | Pending |
-| PP-02 | — | Pending |
-| PP-03 | — | Pending |
-| PP-04 | — | Pending |
-| AN-01 | — | Pending |
-| AN-02 | — | Pending |
-| AN-03 | — | Pending |
-| AN-04 | — | Pending |
-| AN-05 | — | Pending |
-| AN-06 | — | Pending |
-| CA-01 | — | Pending |
-| CA-02 | — | Pending |
-| CA-03 | — | Pending |
-| CA-04 | — | Pending |
+| SF-01 | Phase 1 | Pending |
+| SF-02 | Phase 1 | Pending |
+| SF-03 | Phase 1 | Pending |
+| SF-04 | Phase 2 | Pending |
+| SF-05 | Phase 2 | Pending |
+| SF-06 | Phase 2 | Pending |
+| SF-07 | Phase 2 | Pending |
+| PP-01 | Phase 3 | Pending |
+| PP-02 | Phase 3 | Pending |
+| PP-03 | Phase 3 | Pending |
+| PP-04 | Phase 4 | Pending |
+| AN-01 | Phase 4 | Pending |
+| AN-02 | Phase 4 | Pending |
+| AN-03 | Phase 4 | Pending |
+| AN-04 | Phase 4 | Pending |
+| AN-05 | Phase 4 | Pending |
+| AN-06 | Phase 4 | Pending |
+| CA-01 | Phase 5 | Pending |
+| CA-02 | Phase 5 | Pending |
+| CA-03 | Phase 5 | Pending |
+| CA-04 | Phase 5 | Pending |
 
 **Coverage:**
 - v1 requirements: 21 total
-- Mapped to phases: 0
-- Unmapped: 21 ⚠️ (awaiting roadmap creation)
+- Mapped to phases: 21
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-04-01*
-*Last updated: 2026-04-01 after initial definition*
+*Last updated: 2026-04-01 after roadmap creation*
