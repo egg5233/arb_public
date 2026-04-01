@@ -3,6 +3,7 @@ package okx
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -107,9 +108,11 @@ func (a *Adapter) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (s
 }
 
 // GetSpotMarginOrder returns the native spot/margin order state from OKX.
+// Also queries trade fills to populate FeeDeducted for BUY orders.
 func (a *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarginOrderStatus, error) {
+	instID := toOKXSpotInstID(symbol)
 	params := map[string]string{
-		"instId": toOKXSpotInstID(symbol),
+		"instId": instID,
 		"ordId":  orderID,
 	}
 	data, err := a.client.Get("/api/v5/trade/order", params)
@@ -138,13 +141,44 @@ func (a *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarg
 		status = "cancelled"
 	}
 
-	return &exchange.SpotMarginOrderStatus{
+	result := &exchange.SpotMarginOrderStatus{
 		OrderID:   resp[0].OrdID,
 		Symbol:    resp[0].InstID,
 		Status:    status,
 		FilledQty: qty,
 		AvgPrice:  avgPrice,
-	}, nil
+	}
+
+	// Query fills to get fee deducted from received coin on BUY orders.
+	if qty > 0 {
+		baseCoin := strings.TrimSuffix(symbol, "USDT")
+		fillParams := map[string]string{
+			"instType": "SPOT",
+			"ordId":    orderID,
+			"instId":   instID,
+		}
+		fillData, fillErr := a.client.Get("/api/v5/trade/fills", fillParams)
+		if fillErr == nil {
+			var fills []struct {
+				Fee    string `json:"fee"`
+				FeeCcy string `json:"feeCcy"`
+			}
+			if json.Unmarshal(fillData, &fills) == nil {
+				var totalFee float64
+				for _, f := range fills {
+					if strings.EqualFold(f.FeeCcy, baseCoin) {
+						fee, _ := strconv.ParseFloat(f.Fee, 64)
+						totalFee += fee
+					}
+				}
+				if totalFee != 0 {
+					result.FeeDeducted = math.Abs(totalFee)
+				}
+			}
+		}
+	}
+
+	return result, nil
 }
 
 // ---------------------------------------------------------------------------

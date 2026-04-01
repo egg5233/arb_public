@@ -451,15 +451,29 @@ func (e *SpotEngine) completeExit(pos *models.SpotFuturesPosition, reason string
 	e.releaseSpotPosition(pos.ID)
 	e.borrowVelocity.Delete(pos.ID)
 
-	// Transfer remaining USDT from margin back to futures for separate-account exchanges.
+	// Transfer remaining USDT back to futures for separate-account exchanges.
+	// Dir A used the margin account; Dir B used the spot account.
 	if needsMarginTransfer(pos.Exchange) {
 		if smExch, ok := e.spotMargin[pos.Exchange]; ok {
-			if mb, mbErr := smExch.GetMarginBalance("USDT"); mbErr == nil && mb.Available > 1.0 {
-				transferAmt := fmt.Sprintf("%.2f", mb.Available)
-				if tfErr := smExch.TransferFromMargin("USDT", transferAmt); tfErr != nil {
-					e.log.Warn("completeExit: TransferFromMargin(%s USDT) on %s: %v", transferAmt, pos.Exchange, tfErr)
-				} else {
-					e.log.Info("completeExit: transferred %s USDT from margin back to futures on %s", transferAmt, pos.Exchange)
+			if isDirA {
+				if mb, mbErr := smExch.GetMarginBalance("USDT"); mbErr == nil && mb.Available > 1.0 {
+					transferAmt := fmt.Sprintf("%.2f", mb.Available)
+					if tfErr := smExch.TransferFromMargin("USDT", transferAmt); tfErr != nil {
+						e.log.Warn("completeExit: TransferFromMargin(%s USDT) on %s: %v", transferAmt, pos.Exchange, tfErr)
+					} else {
+						e.log.Info("completeExit: transferred %s USDT from margin back to futures on %s", transferAmt, pos.Exchange)
+					}
+				}
+			} else {
+				// Dir B: USDT is in the spot account after selling.
+				// Use TransferToFutures (spot → futures) from the Exchange interface.
+				if exch, ok := e.exchanges[pos.Exchange]; ok {
+					transferAmt := fmt.Sprintf("%.2f", pos.NotionalUSDT*1.05)
+					if tfErr := exch.TransferToFutures("USDT", transferAmt); tfErr != nil {
+						e.log.Warn("completeExit: TransferToFutures(%s USDT) on %s: %v", transferAmt, pos.Exchange, tfErr)
+					} else {
+						e.log.Info("completeExit: transferred %s USDT from spot back to futures on %s", transferAmt, pos.Exchange)
+					}
 				}
 			}
 		}

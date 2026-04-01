@@ -164,6 +164,27 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 	baseCoin := opp.BaseCoin
 	rawSize := capital / midPrice
 
+	// For separate-account exchanges (Binance, Bitget), transfer USDT to the
+	// correct wallet BEFORE sizing. Dir A needs margin (for auto-borrow sell),
+	// Dir B needs spot (plain buy). Without this, MaxBorrowable is near-zero
+	// (Dir A) or spot has no USDT (Dir B).
+	if needsMarginTransfer(exchName) {
+		transferAmt := fmt.Sprintf("%.2f", capital*1.05) // 5% buffer for fees/slippage
+		if direction == "borrow_sell_long" {
+			// Dir A: USDT → margin account (for auto-borrow sell)
+			e.log.Info("ManualOpen: transferring %s USDT to margin (%s separate margin account)", transferAmt, exchName)
+			if tErr := smExch.TransferToMargin("USDT", transferAmt); tErr != nil {
+				e.log.Warn("ManualOpen: TransferToMargin(%s USDT): %v (may already have funds)", transferAmt, tErr)
+			}
+		} else {
+			// Dir B: USDT → spot account (plain spot buy, not margin)
+			e.log.Info("ManualOpen: transferring %s USDT to spot (%s separate accounts)", transferAmt, exchName)
+			if tErr := futExch.TransferToSpot("USDT", transferAmt); tErr != nil {
+				e.log.Warn("ManualOpen: TransferToSpot(%s USDT): %v (may already have funds)", transferAmt, tErr)
+			}
+		}
+	}
+
 	// For Direction A, cap by max borrowable.
 	if direction == "borrow_sell_long" {
 		mb, err := smExch.GetMarginBalance(baseCoin)
@@ -254,17 +275,7 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		// Non-fatal — some exchanges return error if already set.
 	}
 
-	// ---------------------------------------------------------------
-	// 4b. Transfer USDT to margin for exchanges with separate accounts
-	// ---------------------------------------------------------------
-	if needsMarginTransfer(exchName) {
-		transferAmt := fmt.Sprintf("%.2f", plannedNotional*1.05) // 5% buffer for fees/slippage
-		e.log.Info("ManualOpen: transferring %s USDT to margin (%s has separate margin account)", transferAmt, exchName)
-		if tErr := smExch.TransferToMargin("USDT", transferAmt); tErr != nil {
-			// Non-fatal: funds may already be in margin from a previous transfer
-			e.log.Warn("ManualOpen: TransferToMargin(%s USDT): %v (may already have funds)", transferAmt, tErr)
-		}
-	}
+	// (TransferToMargin moved to step 3, before MaxBorrowable check)
 
 	// ---------------------------------------------------------------
 	// 5. Execute based on direction
@@ -500,7 +511,20 @@ func (e *SpotEngine) executeBuySpotShort(
 	}
 	e.log.Info("ManualOpen [buy_spot_short] step 1: spot fill=%.6f avg=%.6f", spotFilled, spotAvg)
 
-	// Step 2: Short futures — re-round spot fill to futures step (handles partial fills).
+	// Query actual received amount: exchange deducts fee from received coin on BUY.
+	// Track the net for SpotSize (what we can sell on exit) but use gross for futures
+	// leg sizing — the fee is negligible and doesn't break delta neutrality.
+	spotNetReceived := spotFilled
+	if querier, ok := smExch.(exchange.SpotMarginOrderQuerier); ok {
+		if feeStatus, qErr := querier.GetSpotMarginOrder(spotOrderID, symbol); qErr == nil && feeStatus != nil && feeStatus.FeeDeducted > 0 {
+			spotNetReceived = spotFilled - feeStatus.FeeDeducted
+			// Floor to spot lot step (0.00001 = 5dp) so the exit sell passes LOT_SIZE.
+			spotNetReceived = math.Floor(spotNetReceived*1e5) / 1e5
+			e.log.Info("ManualOpen [buy_spot_short] step 1: fee deducted=%.8f net received=%.6f (gross=%.6f)", feeStatus.FeeDeducted, spotNetReceived, spotFilled)
+		}
+	}
+
+	// Step 2: Short futures — use gross fill (not net) for futures leg sizing.
 	futQty, futQtyStr := roundToFuturesStep(spotFilled, futStep, futDec)
 	spotFilledStr := utils.FormatSize(spotFilled, 6)
 	if futQty <= 0 || (futMin > 0 && futQty < futMin) {
@@ -537,14 +561,14 @@ func (e *SpotEngine) executeBuySpotShort(
 	}
 	e.log.Info("ManualOpen [buy_spot_short] step 2: futures fill=%.6f avg=%.6f", futFilled, futAvg)
 	pos.PendingEntryOrderID = ""
-	pos.SpotSize = spotFilled
+	pos.SpotSize = spotNetReceived // Net after fee — what we can actually sell on exit
 	pos.SpotEntryPrice = spotAvg
 	pos.FuturesSize = futFilled
 	pos.FuturesEntry = futAvg
 	pos.FuturesSide = "short"
-	pos.NotionalUSDT = spotFilled * spotAvg
+	pos.NotionalUSDT = spotFilled * spotAvg // Use gross for notional tracking
 
-	return spotAvg, futAvg, spotFilled, futFilled, nil
+	return spotAvg, futAvg, spotNetReceived, futFilled, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1286,10 +1310,40 @@ func (e *SpotEngine) closeDirectionA(
 		}
 	}
 
-	// Step 2: Buy back spot (to return borrowed coin) — with retry
+	// Step 2: Buy back spot (to return borrowed coin).
+	// Exchanges with flash-repay (Bitget) skip the buy order entirely — the exchange
+	// converts USDT collateral to repay the borrow directly.
 	if spotExitComplete(pos) {
 		e.log.Info("ClosePosition [Dir A] step 2: spot already closed (exit=%.6f), skipping", pos.SpotExitPrice)
+	} else if flasher, ok := smExch.(exchange.FlashRepayer); ok {
+		// Flash-repay path: no buy order, exchange handles conversion.
+		e.log.Info("ClosePosition [Dir A] step 2: flash-repay %s on %s (skipping spot buyback)", pos.BaseCoin, pos.Exchange)
+		repayID, err := flasher.FlashRepay(pos.BaseCoin)
+		if err != nil {
+			return fmt.Errorf("flash-repay failed: %w", err)
+		}
+		e.log.Info("ClosePosition [Dir A] step 2: flash-repay submitted repayId=%s", repayID)
+		// Wait for settlement, then verify borrow is cleared.
+		time.Sleep(3 * time.Second)
+		if mb, mbErr := smExch.GetMarginBalance(pos.BaseCoin); mbErr == nil && (mb.Borrowed+mb.Interest) > 0 {
+			e.log.Warn("ClosePosition [Dir A] step 2: flash-repay borrow not fully settled (remaining=%.8f), retrying", mb.Borrowed+mb.Interest)
+			time.Sleep(3 * time.Second)
+		}
+		// Use futures exit price as the spot exit price for PnL tracking.
+		pos.SpotExitFilledQty = pos.SpotSize
+		pos.SpotExitFilled = true
+		pos.SpotExitPrice = pos.FuturesExit
+		if pos.SpotExitPrice <= 0 {
+			if ob, obErr := futExch.GetOrderbook(pos.Symbol, 5); obErr == nil && len(ob.Bids) > 0 && len(ob.Asks) > 0 {
+				pos.SpotExitPrice = (ob.Bids[0].Price + ob.Asks[0].Price) / 2
+			}
+		}
+		e.log.Info("ClosePosition [Dir A] step 2: flash-repay complete, exit price=%.6f", pos.SpotExitPrice)
+		if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
+			e.log.Error("ClosePosition [Dir A]: failed to checkpoint flash-repay: %v", cpErr)
+		}
 	} else {
+		// Standard path: buy back spot with auto-repay.
 		e.log.Info("ClosePosition [Dir A] step 2: buy back spot BUY %s %s", pos.Symbol, utils.FormatSize(remainingSpotExitQty(pos), 6))
 		err := e.retryLeg("dirA-spot-buyback", 3, 2*time.Second, func() error {
 			orderID := pos.PendingSpotExitOrderID
@@ -1301,7 +1355,11 @@ func (e *SpotEngine) closeDirectionA(
 					return nil
 				}
 				remainingStr := utils.FormatSize(remaining, 6)
-				quoteEst := utils.FormatSize(remaining*pos.SpotEntryPrice*1.02, 2)
+				refPrice := pos.FuturesExit
+				if refPrice <= 0 {
+					refPrice = pos.SpotEntryPrice
+				}
+				quoteEst := utils.FormatSize(remaining*refPrice*1.01, 2)
 				var placeErr error
 				orderID, placeErr = smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
 					Symbol:    pos.Symbol,
@@ -1353,7 +1411,6 @@ func (e *SpotEngine) closeDirectionA(
 			}
 		}
 		e.log.Info("ClosePosition [Dir A] step 2: spot buyback fill=%.6f avg=%.6f", pos.SpotExitFilledQty, pos.SpotExitPrice)
-		// Checkpoint: persist confirmed spot leg state immediately after fill.
 		if pos.SpotExitFilledQty > 0 || pos.SpotExitPrice > 0 {
 			if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
 				e.log.Error("ClosePosition [Dir A]: failed to checkpoint spot exit: %v", cpErr)

@@ -647,9 +647,19 @@ func (b *Adapter) GetOrderbook(symbol string, depth int) (*exchange.Orderbook, e
 // Internal Transfer / Withdraw
 // ---------------------------------------------------------------------------
 
-// TransferToSpot is a no-op for Binance — Withdraw already handles
-// the futures→spot transfer internally when spot balance is insufficient.
-func (b *Adapter) TransferToSpot(coin string, amount string) error { return nil }
+// TransferToSpot moves funds from the futures (USDT-M) account to the spot account.
+func (b *Adapter) TransferToSpot(coin string, amount string) error {
+	params := map[string]string{
+		"asset":  coin,
+		"amount": amount,
+		"type":   "UMFUTURE_MAIN",
+	}
+	_, err := b.client.SpotPost("/sapi/v1/asset/transfer", params)
+	if err != nil {
+		return fmt.Errorf("TransferToSpot: %w", err)
+	}
+	return nil
+}
 
 // TransferToFutures moves funds from spot to futures account.
 func (b *Adapter) TransferToFutures(coin string, amount string) error {

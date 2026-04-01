@@ -3,7 +3,9 @@ package bitget
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"arb/pkg/exchange"
@@ -37,6 +39,34 @@ func (a *Adapter) MarginBorrow(params exchange.MarginBorrowParams) error {
 	return nil
 }
 
+// FlashRepay uses Bitget's flash-repay to convert USDT collateral and repay
+// borrow in one step. No buy order needed — exchange handles the conversion.
+func (a *Adapter) FlashRepay(coin string) (string, error) {
+	body := map[string]string{
+		"coin": coin,
+	}
+	raw, err := a.client.Post("/api/v2/margin/crossed/account/flash-repay", body)
+	if err != nil {
+		return "", fmt.Errorf("FlashRepay POST error: %w", err)
+	}
+
+	var resp struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			RepayID string `json:"repayId"`
+			Coin    string `json:"coin"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		return "", fmt.Errorf("FlashRepay unmarshal: %w", err)
+	}
+	if resp.Code != "00000" {
+		return "", fmt.Errorf("FlashRepay failed: code=%s msg=%s", resp.Code, resp.Msg)
+	}
+	return resp.Data.RepayID, nil
+}
+
 // MarginRepay repays a borrowed coin on cross spot margin.
 func (a *Adapter) MarginRepay(params exchange.MarginRepayParams) error {
 	body := map[string]string{
@@ -62,33 +92,88 @@ func (a *Adapter) MarginRepay(params exchange.MarginRepayParams) error {
 	return nil
 }
 
-// PlaceSpotMarginOrder places a buy or sell order on cross spot margin.
+// PlaceSpotMarginOrder places a buy or sell order on cross margin or regular spot.
+// When AutoBorrow or AutoRepay is set, uses the margin endpoint.
+// Otherwise, uses the regular spot endpoint so assets stay in the spot wallet —
+// required for Dir B (buy-spot-short) on Bitget's separate accounts.
 func (a *Adapter) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (string, error) {
-	// Determine loanType based on AutoBorrow / AutoRepay flags.
-	loanType := "normal"
-	if params.AutoBorrow && params.AutoRepay {
-		loanType = "autoLoanAndRepay"
-	} else if params.AutoBorrow {
-		loanType = "autoLoan"
-	} else if params.AutoRepay {
-		loanType = "autoRepay"
-	}
+	useMarginEndpoint := params.AutoBorrow || params.AutoRepay
 
 	body := map[string]string{
 		"symbol":    params.Symbol,
 		"side":      string(params.Side),
 		"orderType": params.OrderType,
-		"loanType":  loanType,
 	}
-	// Bitget margin: market BUY requires quoteSize (USDT amount),
-	// limit + market SELL require baseSize (coin quantity).
-	// force is invalid for market orders per Bitget docs.
-	if params.OrderType == "market" && params.Side == exchange.SideBuy {
-		body["quoteSize"] = params.QuoteSize
+
+	if useMarginEndpoint {
+		loanType := "normal"
+		if params.AutoBorrow && params.AutoRepay {
+			loanType = "autoLoanAndRepay"
+		} else if params.AutoBorrow {
+			loanType = "autoLoan"
+		} else if params.AutoRepay {
+			loanType = "autoRepay"
+		}
+		body["loanType"] = loanType
+	}
+
+	// Bitget: market BUY only accepts quoteSize (USDT), giving approximate fill.
+	// To get exact base qty on BUY, convert to limit IOC with the current ask
+	// price + 1% buffer. Querying the live ticker avoids stale-price issues that
+	// can exceed Bitget's ~2% price ceiling on limit orders.
+	if params.OrderType == "market" && params.Side == exchange.SideBuy && params.Size != "" {
+		limitPrice := 0.0
+		// Query live spot ticker for current price.
+		if raw, err := a.client.Get("/api/v2/spot/market/tickers", map[string]string{"symbol": params.Symbol}); err == nil {
+			var tickerResp struct {
+				Code string `json:"code"`
+				Data []struct {
+					AskPr string `json:"askPr"`
+				} `json:"data"`
+			}
+			if json.Unmarshal([]byte(raw), &tickerResp) == nil && tickerResp.Code == "00000" && len(tickerResp.Data) > 0 {
+				askPrice, _ := strconv.ParseFloat(tickerResp.Data[0].AskPr, 64)
+				if askPrice > 0 {
+					limitPrice = askPrice * 1.01 // 1% above current ask, well under 2% ceiling
+				}
+			}
+		}
+		// Fallback: derive from quoteSize/size if ticker failed.
+		if limitPrice <= 0 {
+			sz, _ := strconv.ParseFloat(params.Size, 64)
+			qs, _ := strconv.ParseFloat(params.QuoteSize, 64)
+			if sz > 0 && qs > 0 {
+				limitPrice = qs / sz
+			}
+		}
+		if limitPrice > 0 {
+			body["orderType"] = "limit"
+			body["force"] = "ioc"
+			body["price"] = strconv.FormatFloat(limitPrice, 'f', 2, 64)
+			if useMarginEndpoint {
+				body["baseSize"] = params.Size
+			} else {
+				body["size"] = params.Size
+			}
+		} else if useMarginEndpoint {
+			body["quoteSize"] = params.QuoteSize
+		} else {
+			body["size"] = params.QuoteSize
+		}
+	} else if params.OrderType == "market" && params.Side == exchange.SideBuy {
+		if useMarginEndpoint {
+			body["quoteSize"] = params.QuoteSize
+		} else {
+			body["size"] = params.QuoteSize
+		}
 	} else {
-		body["baseSize"] = params.Size
+		if useMarginEndpoint {
+			body["baseSize"] = params.Size
+		} else {
+			body["size"] = params.Size
+		}
 	}
-	if params.OrderType != "market" && params.Force != "" {
+	if body["orderType"] != "limit" && params.OrderType != "market" && params.Force != "" {
 		body["force"] = params.Force
 	}
 	if params.Price != "" {
@@ -98,7 +183,15 @@ func (a *Adapter) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (s
 		body["clientOid"] = params.ClientOid
 	}
 
-	raw, err := a.client.Post("/api/v2/margin/crossed/place-order", body)
+	var endpoint string
+	if useMarginEndpoint {
+		endpoint = "/api/v2/margin/crossed/place-order"
+	} else {
+		body["force"] = "gtc"
+		endpoint = "/api/v2/spot/trade/place-order"
+	}
+
+	raw, err := a.client.Post(endpoint, body)
 	if err != nil {
 		return "", fmt.Errorf("PlaceSpotMarginOrder POST error: %w", err)
 	}
@@ -120,17 +213,148 @@ func (a *Adapter) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (s
 	return resp.Data.OrderId, nil
 }
 
-// GetSpotMarginOrder returns the native cross-margin order state from Bitget.
+// GetSpotMarginOrder returns the native order state from Bitget.
+// Tries regular spot endpoints first (Dir B orders), falls back to margin endpoints (Dir A orders).
+// Also queries trade fills to populate FeeDeducted for BUY orders.
 func (a *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarginOrderStatus, error) {
 	startTime := strconv.FormatInt(time.Now().Add(-24*time.Hour).UnixMilli(), 10)
+
+	// Try regular spot endpoints first (Dir B orders placed on spot).
+	// Spot endpoints have different response format: data[] with baseVolume/priceAvg.
+	order := a.getSpotTradeOrder("/api/v2/spot/trade/unfilled-orders", orderID, symbol, startTime)
+	if order == nil {
+		order = a.getSpotTradeOrder("/api/v2/spot/trade/history-orders", orderID, symbol, startTime)
+	}
+	if order != nil {
+		a.populateBitgetFeeDeducted(order, orderID, symbol)
+		return order, nil
+	}
+
+	// Fall back to margin endpoints (Dir A orders placed on margin).
 	order, err := a.getSpotMarginOrder("/api/v2/margin/crossed/open-orders", orderID, symbol, startTime)
 	if err != nil {
 		return nil, err
 	}
 	if order != nil {
+		a.populateBitgetFeeDeducted(order, orderID, symbol)
 		return order, nil
 	}
-	return a.getSpotMarginOrder("/api/v2/margin/crossed/history-orders", orderID, symbol, startTime)
+	order, err = a.getSpotMarginOrder("/api/v2/margin/crossed/history-orders", orderID, symbol, startTime)
+	if order != nil {
+		a.populateBitgetFeeDeducted(order, orderID, symbol)
+	}
+	return order, err
+}
+
+// populateBitgetFeeDeducted queries spot or margin fills for an order and sets FeeDeducted
+// when the fee is paid in the base coin (i.e., deducted from the received coin on BUY orders).
+func (a *Adapter) populateBitgetFeeDeducted(order *exchange.SpotMarginOrderStatus, orderID, symbol string) {
+	if order == nil || order.FilledQty <= 0 {
+		return
+	}
+	baseCoin := strings.TrimSuffix(symbol, "USDT")
+
+	type fillResp struct {
+		Code string `json:"code"`
+		Data []struct {
+			FeeDetail struct {
+				FeeCoin  string `json:"feeCoin"`
+				TotalFee string `json:"totalFee"`
+			} `json:"feeDetail"`
+		} `json:"data"`
+	}
+
+	fillParams := map[string]string{
+		"symbol":  symbol,
+		"orderId": orderID,
+	}
+
+	var totalFee float64
+	var found bool
+
+	// Try spot fills first.
+	if raw, err := a.client.Get("/api/v2/spot/trade/fills", fillParams); err == nil {
+		var resp fillResp
+		if json.Unmarshal([]byte(raw), &resp) == nil && resp.Code == "00000" {
+			for _, f := range resp.Data {
+				if strings.EqualFold(f.FeeDetail.FeeCoin, baseCoin) {
+					fee, _ := strconv.ParseFloat(f.FeeDetail.TotalFee, 64)
+					totalFee += fee
+					found = true
+				}
+			}
+		}
+	}
+
+	// Try margin fills if spot fills returned nothing.
+	if !found {
+		if raw, err := a.client.Get("/api/v2/margin/crossed/fills", fillParams); err == nil {
+			var resp fillResp
+			if json.Unmarshal([]byte(raw), &resp) == nil && resp.Code == "00000" {
+				for _, f := range resp.Data {
+					if strings.EqualFold(f.FeeDetail.FeeCoin, baseCoin) {
+						fee, _ := strconv.ParseFloat(f.FeeDetail.TotalFee, 64)
+						totalFee += fee
+					}
+				}
+			}
+		}
+	}
+
+	if totalFee != 0 {
+		order.FeeDeducted = math.Abs(totalFee)
+	}
+}
+
+// getSpotTradeOrder queries Bitget's regular spot trade endpoints which return
+// data[] with baseVolume/priceAvg (different from margin's data.orderList[]).
+func (a *Adapter) getSpotTradeOrder(path, orderID, symbol, startTime string) *exchange.SpotMarginOrderStatus {
+	raw, err := a.client.Get(path, map[string]string{
+		"symbol":    symbol,
+		"orderId":   orderID,
+		"startTime": startTime,
+		"limit":     "100",
+	})
+	if err != nil {
+		return nil
+	}
+
+	var resp struct {
+		Code string `json:"code"`
+		Data []struct {
+			OrderID    string `json:"orderId"`
+			Symbol     string `json:"symbol"`
+			Status     string `json:"status"`
+			BaseVolume string `json:"baseVolume"`
+			PriceAvg   string `json:"priceAvg"`
+		} `json:"data"`
+	}
+	if json.Unmarshal([]byte(raw), &resp) != nil || resp.Code != "00000" || len(resp.Data) == 0 {
+		return nil
+	}
+
+	// Find the matching order.
+	for _, o := range resp.Data {
+		if o.OrderID == orderID {
+			qty, _ := strconv.ParseFloat(o.BaseVolume, 64)
+			avgPrice, _ := strconv.ParseFloat(o.PriceAvg, 64)
+			status := o.Status
+			switch status {
+			case "partial_fill", "partially_fill":
+				status = "partially_filled"
+			case "reject":
+				status = "rejected"
+			}
+			return &exchange.SpotMarginOrderStatus{
+				OrderID:   o.OrderID,
+				Symbol:    o.Symbol,
+				Status:    status,
+				FilledQty: qty,
+				AvgPrice:  avgPrice,
+			}
+		}
+	}
+	return nil
 }
 
 func (a *Adapter) getSpotMarginOrder(path, orderID, symbol, startTime string) (*exchange.SpotMarginOrderStatus, error) {

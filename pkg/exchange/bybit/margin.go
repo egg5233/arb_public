@@ -141,6 +141,7 @@ func (a *Adapter) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (s
 }
 
 // GetSpotMarginOrder returns the native spot order state from Bybit UTA.
+// Also queries execution list to populate FeeDeducted for BUY orders.
 func (a *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarginOrderStatus, error) {
 	params := map[string]string{
 		"category": "spot",
@@ -152,6 +153,7 @@ func (a *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarg
 		return nil, fmt.Errorf("bybit GetSpotMarginOrder: %w", err)
 	}
 	if status != nil {
+		a.populateBybitFeeDeducted(status, orderID, symbol)
 		return status, nil
 	}
 
@@ -161,7 +163,50 @@ func (a *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarg
 	if err != nil {
 		return nil, fmt.Errorf("bybit GetSpotMarginOrder history: %w", err)
 	}
+	if status != nil {
+		a.populateBybitFeeDeducted(status, orderID, symbol)
+	}
 	return status, nil
+}
+
+// populateBybitFeeDeducted queries the execution list and sets FeeDeducted when
+// fees are paid in the base coin (deducted from received coin on BUY orders).
+func (a *Adapter) populateBybitFeeDeducted(status *exchange.SpotMarginOrderStatus, orderID, symbol string) {
+	if status == nil || status.FilledQty <= 0 {
+		return
+	}
+	baseCoin := strings.TrimSuffix(symbol, "USDT")
+
+	execParams := map[string]string{
+		"category": "spot",
+		"orderId":  orderID,
+		"symbol":   symbol,
+	}
+	result, err := a.client.Get("/v5/execution/list", execParams)
+	if err != nil {
+		return
+	}
+
+	var resp struct {
+		List []struct {
+			ExecFee     string `json:"execFee"`
+			FeeCurrency string `json:"feeCurrency"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return
+	}
+
+	var totalFee float64
+	for _, exec := range resp.List {
+		if strings.EqualFold(exec.FeeCurrency, baseCoin) {
+			fee, _ := strconv.ParseFloat(exec.ExecFee, 64)
+			totalFee += fee
+		}
+	}
+	if totalFee != 0 {
+		status.FeeDeducted = math.Abs(totalFee)
+	}
 }
 
 func (a *Adapter) getSpotMarginOrderFromPath(path string, params map[string]string) (*exchange.SpotMarginOrderStatus, error) {

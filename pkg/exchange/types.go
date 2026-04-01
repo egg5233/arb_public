@@ -314,6 +314,9 @@ type SpotMarginOrderStatus struct {
 	Status    string
 	FilledQty float64
 	AvgPrice  float64
+	// Fee deducted from the received asset (e.g., BTC commission on a BTC buy).
+	// When > 0, actual received = FilledQty - FeeDeducted.
+	FeeDeducted float64
 }
 
 // SpotMarginExchange is an optional interface for exchanges that support
@@ -336,10 +339,12 @@ type SpotMarginExchange interface {
 	GetMarginBalance(coin string) (*MarginBalance, error)
 
 	// TransferToMargin moves funds from the main/futures account to the margin account.
+	// Used by Dir A (borrow-sell-long) on separate-account exchanges.
 	TransferToMargin(coin string, amount string) error
 
 	// TransferFromMargin moves funds from the margin account back to main/futures.
 	TransferFromMargin(coin string, amount string) error
+
 }
 
 // SpotMarginOrderQuerier is an optional interface for exchanges that can
@@ -348,4 +353,11 @@ type SpotMarginExchange interface {
 // order endpoints.
 type SpotMarginOrderQuerier interface {
 	GetSpotMarginOrder(orderID, symbol string) (*SpotMarginOrderStatus, error)
+}
+
+// FlashRepayer is an optional interface for exchanges that support flash-repay
+// (exchange converts collateral to repay borrow in one step, no buy order needed).
+// Used by Dir A close to skip the spot buyback entirely.
+type FlashRepayer interface {
+	FlashRepay(coin string) (repayID string, err error)
 }

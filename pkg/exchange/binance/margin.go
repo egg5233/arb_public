@@ -50,21 +50,27 @@ func (b *Adapter) MarginRepay(params exchange.MarginRepayParams) error {
 // Spot Margin: Order
 // ---------------------------------------------------------------------------
 
-// PlaceSpotMarginOrder places a buy or sell order on cross margin.
+// PlaceSpotMarginOrder places a buy or sell order on cross margin or regular spot.
+// When AutoBorrow or AutoRepay is set, uses the margin endpoint (/sapi/v1/margin/order).
+// Otherwise, uses the regular spot endpoint (/api/v3/order) so assets stay in the
+// spot wallet — required for Dir B (buy-spot-short) on Binance's separate accounts.
 func (b *Adapter) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (string, error) {
-	sideEffect := "NO_SIDE_EFFECT"
-	if params.AutoBorrow {
-		sideEffect = "AUTO_BORROW_REPAY"
-	} else if params.AutoRepay {
-		sideEffect = "AUTO_REPAY"
-	}
+	useMarginEndpoint := params.AutoBorrow || params.AutoRepay
 
 	reqParams := map[string]string{
-		"symbol":         params.Symbol,
-		"side":           mapSide(params.Side),
-		"type":           mapOrderType(params.OrderType),
-		"quantity":       params.Size,
-		"sideEffectType": sideEffect,
+		"symbol":   params.Symbol,
+		"side":     mapSide(params.Side),
+		"type":     mapOrderType(params.OrderType),
+		"quantity": params.Size,
+	}
+	if useMarginEndpoint {
+		sideEffect := "NO_SIDE_EFFECT"
+		if params.AutoBorrow {
+			sideEffect = "AUTO_BORROW_REPAY"
+		} else if params.AutoRepay {
+			sideEffect = "AUTO_REPAY"
+		}
+		reqParams["sideEffectType"] = sideEffect
 	}
 	// Binance market BUY requires quoteOrderQty (USDT amount), not quantity (base coin).
 	if strings.ToLower(params.OrderType) == "market" && params.Side == exchange.SideBuy && params.QuoteSize != "" {
@@ -79,7 +85,14 @@ func (b *Adapter) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (s
 		reqParams["newClientOrderId"] = params.ClientOid
 	}
 
-	body, err := b.client.SpotPost("/sapi/v1/margin/order", reqParams)
+	var endpoint string
+	if useMarginEndpoint {
+		endpoint = "/sapi/v1/margin/order"
+	} else {
+		endpoint = "/api/v3/order"
+	}
+
+	body, err := b.client.SpotPost(endpoint, reqParams)
 	if err != nil {
 		return "", fmt.Errorf("PlaceSpotMarginOrder: %w", err)
 	}
@@ -93,16 +106,27 @@ func (b *Adapter) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (s
 	return strconv.FormatInt(resp.OrderID, 10), nil
 }
 
-// GetSpotMarginOrder returns the native margin order state for a spot margin order.
+// GetSpotMarginOrder returns the native order state for a spot margin or regular spot order.
+// Tries the regular spot endpoint first, falls back to margin endpoint. This handles
+// Dir B orders (placed on /api/v3/order) and Dir A orders (placed on /sapi/v1/margin/order).
 func (b *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarginOrderStatus, error) {
-	reqParams := map[string]string{
-		"symbol":     symbol,
-		"isIsolated": "FALSE",
-		"orderId":    orderID,
+	// Try regular spot endpoint first (Dir B orders).
+	spotParams := map[string]string{
+		"symbol":  symbol,
+		"orderId": orderID,
 	}
-	body, err := b.client.SpotGet("/sapi/v1/margin/order", reqParams)
+	body, err := b.client.SpotGet("/api/v3/order", spotParams)
 	if err != nil {
-		return nil, fmt.Errorf("GetSpotMarginOrder: %w", err)
+		// Fall back to margin endpoint (Dir A orders).
+		marginParams := map[string]string{
+			"symbol":     symbol,
+			"isIsolated": "FALSE",
+			"orderId":    orderID,
+		}
+		body, err = b.client.SpotGet("/sapi/v1/margin/order", marginParams)
+		if err != nil {
+			return nil, fmt.Errorf("GetSpotMarginOrder: %w", err)
+		}
 	}
 
 	var resp struct {
@@ -128,13 +152,46 @@ func (b *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarg
 		status = "cancelled"
 	}
 
-	return &exchange.SpotMarginOrderStatus{
+	result := &exchange.SpotMarginOrderStatus{
 		OrderID:   strconv.FormatInt(resp.OrderID, 10),
 		Symbol:    resp.Symbol,
 		Status:    status,
 		FilledQty: qty,
 		AvgPrice:  avgPrice,
-	}, nil
+	}
+
+	// Query trades to get fee deducted from the received asset.
+	// For BUY orders, Binance deducts commission from the received coin (e.g., BTC).
+	if qty > 0 {
+		baseCoin := strings.TrimSuffix(symbol, "USDT")
+		tradeParams := map[string]string{
+			"symbol":  symbol,
+			"orderId": orderID,
+		}
+		// Try spot trades first, fall back to margin trades.
+		tradeBody, tradeErr := b.client.SpotGet("/api/v3/myTrades", tradeParams)
+		if tradeErr != nil {
+			tradeBody, tradeErr = b.client.SpotGet("/sapi/v1/margin/myTrades", tradeParams)
+		}
+		if tradeErr == nil {
+			var trades []struct {
+				Commission      string `json:"commission"`
+				CommissionAsset string `json:"commissionAsset"`
+			}
+			if json.Unmarshal(tradeBody, &trades) == nil {
+				var totalFee float64
+				for _, t := range trades {
+					if strings.EqualFold(t.CommissionAsset, baseCoin) {
+						fee, _ := strconv.ParseFloat(t.Commission, 64)
+						totalFee += fee
+					}
+				}
+				result.FeeDeducted = totalFee
+			}
+		}
+	}
+
+	return result, nil
 }
 
 // ---------------------------------------------------------------------------

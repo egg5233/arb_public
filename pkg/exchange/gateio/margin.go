@@ -3,6 +3,7 @@ package gateio
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -121,6 +122,7 @@ func (a *Adapter) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (s
 }
 
 // GetSpotMarginOrder returns the native unified spot order state from Gate.io.
+// Also queries trade fills to populate FeeDeducted for BUY orders.
 func (a *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarginOrderStatus, error) {
 	pair := toGateSymbol(symbol)
 	data, err := a.client.Get("/spot/orders/"+orderID, map[string]string{
@@ -157,13 +159,42 @@ func (a *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarg
 		}
 	}
 
-	return &exchange.SpotMarginOrderStatus{
+	result := &exchange.SpotMarginOrderStatus{
 		OrderID:   resp.ID,
 		Symbol:    resp.CurrencyPair,
 		Status:    status,
 		FilledQty: qty,
 		AvgPrice:  avgPrice,
-	}, nil
+	}
+
+	// Query fills to get fee deducted from received coin on BUY orders.
+	if qty > 0 {
+		baseCoin := strings.TrimSuffix(symbol, "USDT")
+		fillData, fillErr := a.client.Get("/spot/my_trades", map[string]string{
+			"currency_pair": pair,
+			"order_id":      orderID,
+		})
+		if fillErr == nil {
+			var fills []struct {
+				Fee         string `json:"fee"`
+				FeeCurrency string `json:"fee_currency"`
+			}
+			if json.Unmarshal(fillData, &fills) == nil {
+				var totalFee float64
+				for _, f := range fills {
+					if strings.EqualFold(f.FeeCurrency, baseCoin) {
+						fee, _ := strconv.ParseFloat(f.Fee, 64)
+						totalFee += fee
+					}
+				}
+				if totalFee != 0 {
+					result.FeeDeducted = math.Abs(totalFee)
+				}
+			}
+		}
+	}
+
+	return result, nil
 }
 
 // ---------------------------------------------------------------------------

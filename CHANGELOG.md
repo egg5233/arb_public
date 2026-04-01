@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.53] - 2026-04-01
+
+### Added
+- **[bitget] Flash-repay for Dir A close** — uses `/api/v2/margin/crossed/account/flash-repay` to convert USDT collateral and repay borrow in one step, bypassing spot buyback orders (no price ceilings, no LOT_SIZE, no dust)
+- **[all adapters] Fee deduction query** — all 5 adapters query trade fill endpoints and populate `FeeDeducted` on `SpotMarginOrderStatus`
+- **[types] FlashRepayer interface** — optional interface for exchanges supporting flash-repay
+- **[consolidator] Spot-futures orphan exclusion** — perp-perp consolidator skips active spot-futures futures legs
+
+### Fixed
+- **[binance/bitget] Spot vs margin endpoint routing** — `PlaceSpotMarginOrder` routes to regular spot endpoint when no auto-borrow/repay, keeping Dir B assets in spot wallet
+- **[binance/bitget] Dir B transfer routing** — `TransferToSpot` for entry, `TransferToFutures` for exit
+- **[binance] TransferToSpot** — was no-op, now does real UMFUTURE_MAIN transfer
+- **[binance/bitget] GetSpotMarginOrder dual-endpoint** — tries spot endpoints first, falls back to margin
+- **[bitget] Spot trade order parser** — handles spot response format (`data[].baseVolume`)
+- **[bitget] Dir A buyback** — queries live spot ticker for limit price instead of stale entry price
+- **[spot-futures] Dir B fee deduction** — stores net received (gross−fee) as SpotSize; futures leg uses gross for delta neutrality
+- **[spot-futures] TransferToMargin sequencing** — moved before MaxBorrowable check
+- **[spot-futures] Dir A buyback price** — uses futures exit price instead of stale entry price
+
 ## [0.22.52] - 2026-04-01
 
 ### Fixed

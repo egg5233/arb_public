@@ -128,6 +128,21 @@ func (e *Engine) consolidatePositions(missCount map[string]int) {
 		e.consolidatePosition(pos, siblingTotals, missCount)
 	}
 
+	// Build exclusion set from active spot-futures positions so the perp-perp
+	// consolidator doesn't flag their futures legs as orphans.
+	spotFuturesKeys := make(map[string]bool)
+	if spotPositions, sfErr := e.db.GetActiveSpotPositions(); sfErr == nil {
+		for _, sp := range spotPositions {
+			// Dir A = futures long, Dir B = futures short
+			side := "long"
+			if sp.Direction == "buy_spot_short" {
+				side = "short"
+			}
+			key := fmt.Sprintf("%s:%s:%s", sp.Exchange, sp.Symbol, side)
+			spotFuturesKeys[key] = true
+		}
+	}
+
 	// Check for orphan exchange positions not tracked by any local record.
 	for name, exch := range e.exchanges {
 		exchPositions, err := exch.GetAllPositions()
@@ -143,6 +158,10 @@ func (e *Engine) consolidatePositions(missCount map[string]int) {
 			if _, expected := expectedPositions[key]; !expected {
 				// Skip if this exchange:symbol is mid-entry or mid-exit.
 				if busySymbols[name+":"+ep.Symbol] {
+					continue
+				}
+				// Skip if this is a spot-futures position's futures leg.
+				if spotFuturesKeys[key] {
 					continue
 				}
 
