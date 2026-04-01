@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.47] - 2026-04-01
+
+### Fixed
+- **Rebalance withdraw fee not added to transfer amount** — withdraw now sends `netAmount + fee` so recipient receives the full `netAmount` after exchange deducts fee; previously recipient got `netAmount - fee`, causing spot→futures insufficient balance
+- **Outdated scan minute comments** — engine.go and i18n descriptions updated to reflect actual schedule (:10/:30/:35/:40)
+
 ## [0.22.46] - 2026-03-31
 
 ### Added
