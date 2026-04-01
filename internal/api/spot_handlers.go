@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"arb/internal/models"
+	"arb/pkg/exchange"
+	"arb/pkg/utils"
 )
 
 // handleGetSpotPositions returns all active spot-futures positions.
@@ -340,4 +342,308 @@ func (s *Server) spotAutoConfigResponse() map[string]interface{} {
 		"capital_separate_usdt": s.cfg.SpotFuturesCapitalSeparate,
 		"capital_unified_usdt":  s.cfg.SpotFuturesCapitalUnified,
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle test handler
+// ---------------------------------------------------------------------------
+
+// lifecycleStepResult records the outcome of a single open/close step.
+type lifecycleStepResult struct {
+	Status string `json:"status"` // "ok" or "error"
+	Error  string `json:"error"`
+}
+
+// lifecycleFuturesResult records the futures-position verification outcome.
+type lifecycleFuturesResult struct {
+	Found bool    `json:"found"`
+	Side  string  `json:"side"`
+	Size  float64 `json:"size"`
+}
+
+// lifecycleBorrowResult records the margin-borrowed verification outcome.
+type lifecycleBorrowResult struct {
+	Found  bool    `json:"found"`
+	Amount float64 `json:"amount"`
+}
+
+// lifecycleSpotResult records the spot-balance verification outcome.
+type lifecycleSpotResult struct {
+	Found  bool    `json:"found"`
+	Amount float64 `json:"amount"`
+}
+
+// lifecycleDirAResult holds the full Dir A verification report.
+type lifecycleDirAResult struct {
+	Open        *lifecycleStepResult    `json:"open"`
+	VerifyOpen  *lifecycleDirAOpenVfy   `json:"verify_open,omitempty"`
+	Close       *lifecycleStepResult    `json:"close,omitempty"`
+	VerifyClose *lifecycleDirACloseVfy  `json:"verify_close,omitempty"`
+}
+
+type lifecycleDirAOpenVfy struct {
+	Futures  lifecycleFuturesResult `json:"futures"`
+	Borrowed lifecycleBorrowResult  `json:"borrowed"`
+}
+
+type lifecycleDirACloseVfy struct {
+	Futures  lifecycleFuturesResult `json:"futures"`
+	Borrowed lifecycleBorrowResult  `json:"borrowed"`
+}
+
+// lifecycleDirBResult holds the full Dir B verification report.
+type lifecycleDirBResult struct {
+	Open        *lifecycleStepResult   `json:"open"`
+	VerifyOpen  *lifecycleDirBOpenVfy  `json:"verify_open,omitempty"`
+	Close       *lifecycleStepResult   `json:"close,omitempty"`
+	VerifyClose *lifecycleDirBCloseVfy `json:"verify_close,omitempty"`
+}
+
+type lifecycleDirBOpenVfy struct {
+	Futures     lifecycleFuturesResult `json:"futures"`
+	SpotBalance lifecycleSpotResult    `json:"spot_balance"`
+}
+
+type lifecycleDirBCloseVfy struct {
+	Futures     lifecycleFuturesResult `json:"futures"`
+	SpotBalance lifecycleSpotResult    `json:"spot_balance"`
+}
+
+// lifecycleReport is the top-level response payload.
+type lifecycleReport struct {
+	Exchange string               `json:"exchange"`
+	Symbol   string               `json:"symbol"`
+	DirA     lifecycleDirAResult  `json:"dir_a"`
+	DirB     lifecycleDirBResult  `json:"dir_b"`
+}
+
+// handleSpotTestLifecycle automates Dir A + Dir B lifecycle testing for a given
+// exchange and symbol, verifying exchange state after each open and close step.
+//
+// POST /api/spot/test-lifecycle
+// Body: {"symbol":"BTCUSDT","exchange":"bitget"}
+func (s *Server) handleSpotTestLifecycle(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Symbol   string `json:"symbol"`
+		Exchange string `json:"exchange"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Symbol == "" || req.Exchange == "" {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "symbol and exchange required"})
+		return
+	}
+
+	if s.spotInjectTestOpp == nil || s.spotOpenPosition == nil || s.spotClosePosition == nil {
+		writeJSON(w, http.StatusServiceUnavailable, Response{Error: "spot engine not available"})
+		return
+	}
+
+	exch, ok := s.exchanges[req.Exchange]
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "unknown exchange: " + req.Exchange})
+		return
+	}
+
+	symbol := strings.ToUpper(req.Symbol)
+	baseCoin := strings.TrimSuffix(symbol, "USDT")
+	report := lifecycleReport{
+		Exchange: req.Exchange,
+		Symbol:   symbol,
+	}
+
+	// Helper: find futures position for symbol with the given holdSide.
+	findFuturesPos := func(holdSide string) lifecycleFuturesResult {
+		res := lifecycleFuturesResult{}
+		positions, err := exch.GetAllPositions()
+		if err != nil {
+			return res
+		}
+		for _, p := range positions {
+			if strings.EqualFold(p.Symbol, symbol) && strings.EqualFold(p.HoldSide, holdSide) {
+				size, _ := utils.ParseFloat(p.Total)
+				if size > 0 {
+					res.Found = true
+					res.Side = strings.ToLower(holdSide)
+					res.Size = size
+					return res
+				}
+			}
+		}
+		return res
+	}
+
+	// Helper: check futures position is gone (size=0 or absent).
+	checkFuturesClosed := func() lifecycleFuturesResult {
+		res := lifecycleFuturesResult{}
+		positions, err := exch.GetAllPositions()
+		if err != nil {
+			return res
+		}
+		for _, p := range positions {
+			if strings.EqualFold(p.Symbol, symbol) {
+				size, _ := utils.ParseFloat(p.Total)
+				if size > 0 {
+					res.Found = true
+					res.Side = strings.ToLower(p.HoldSide)
+					res.Size = size
+					return res
+				}
+			}
+		}
+		return res // Found=false means closed
+	}
+
+	// Helper: get margin borrow amount.
+	getMarginBorrowed := func() lifecycleBorrowResult {
+		res := lifecycleBorrowResult{}
+		marginExch, ok := exch.(exchange.SpotMarginExchange)
+		if !ok {
+			return res
+		}
+		bal, err := marginExch.GetMarginBalance(baseCoin)
+		if err != nil {
+			return res
+		}
+		if bal.Borrowed > 0 {
+			res.Found = true
+			res.Amount = bal.Borrowed
+		}
+		return res
+	}
+
+	// Helper: get spot/margin base-coin total balance.
+	getSpotBalance := func() lifecycleSpotResult {
+		res := lifecycleSpotResult{}
+		marginExch, ok := exch.(exchange.SpotMarginExchange)
+		if !ok {
+			return res
+		}
+		bal, err := marginExch.GetMarginBalance(baseCoin)
+		if err != nil {
+			return res
+		}
+		if bal.TotalBalance > 0 {
+			res.Found = true
+			res.Amount = bal.TotalBalance
+		}
+		return res
+	}
+
+	// Helper: find active spot position for this symbol+exchange.
+	findActivePosition := func() string {
+		positions, err := s.db.GetActiveSpotPositions()
+		if err != nil {
+			return ""
+		}
+		for _, p := range positions {
+			if strings.EqualFold(p.Symbol, symbol) && strings.EqualFold(p.Exchange, req.Exchange) {
+				return p.ID
+			}
+		}
+		return ""
+	}
+
+	// -----------------------------------------------------------------------
+	// Dir A: borrow_sell_long
+	// -----------------------------------------------------------------------
+	s.log.Info("lifecycle test Dir A: inject opp %s/%s", symbol, req.Exchange)
+	s.spotInjectTestOpp(symbol, req.Exchange)
+
+	openStepA := &lifecycleStepResult{}
+	if err := s.spotOpenPosition(symbol, req.Exchange, "borrow_sell_long"); err != nil {
+		openStepA.Status = "error"
+		openStepA.Error = err.Error()
+		report.DirA.Open = openStepA
+		s.log.Error("lifecycle test Dir A open failed: %v", err)
+	} else {
+		openStepA.Status = "ok"
+		report.DirA.Open = openStepA
+
+		time.Sleep(5 * time.Second)
+
+		// Verify open
+		report.DirA.VerifyOpen = &lifecycleDirAOpenVfy{
+			Futures:  findFuturesPos("long"),
+			Borrowed: getMarginBorrowed(),
+		}
+
+		// Find and close
+		posID := findActivePosition()
+		if posID == "" {
+			report.DirA.Close = &lifecycleStepResult{Status: "error", Error: "position not found in DB after open"}
+		} else {
+			closeStepA := &lifecycleStepResult{}
+			if err := s.spotClosePosition(posID); err != nil {
+				closeStepA.Status = "error"
+				closeStepA.Error = err.Error()
+				s.log.Error("lifecycle test Dir A close failed: %v", err)
+			} else {
+				closeStepA.Status = "ok"
+			}
+			report.DirA.Close = closeStepA
+
+			time.Sleep(5 * time.Second)
+
+			// Verify close
+			report.DirA.VerifyClose = &lifecycleDirACloseVfy{
+				Futures:  checkFuturesClosed(),
+				Borrowed: getMarginBorrowed(),
+			}
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// Dir B: buy_spot_short
+	// -----------------------------------------------------------------------
+	s.log.Info("lifecycle test Dir B: inject opp %s/%s", symbol, req.Exchange)
+	s.spotInjectTestOpp(symbol, req.Exchange)
+
+	openStepB := &lifecycleStepResult{}
+	if err := s.spotOpenPosition(symbol, req.Exchange, "buy_spot_short"); err != nil {
+		openStepB.Status = "error"
+		openStepB.Error = err.Error()
+		report.DirB.Open = openStepB
+		s.log.Error("lifecycle test Dir B open failed: %v", err)
+	} else {
+		openStepB.Status = "ok"
+		report.DirB.Open = openStepB
+
+		time.Sleep(5 * time.Second)
+
+		// Verify open
+		report.DirB.VerifyOpen = &lifecycleDirBOpenVfy{
+			Futures:     findFuturesPos("short"),
+			SpotBalance: getSpotBalance(),
+		}
+
+		// Find and close
+		posID := findActivePosition()
+		if posID == "" {
+			report.DirB.Close = &lifecycleStepResult{Status: "error", Error: "position not found in DB after open"}
+		} else {
+			closeStepB := &lifecycleStepResult{}
+			if err := s.spotClosePosition(posID); err != nil {
+				closeStepB.Status = "error"
+				closeStepB.Error = err.Error()
+				s.log.Error("lifecycle test Dir B close failed: %v", err)
+			} else {
+				closeStepB.Status = "ok"
+			}
+			report.DirB.Close = closeStepB
+
+			time.Sleep(5 * time.Second)
+
+			// Verify close
+			report.DirB.VerifyClose = &lifecycleDirBCloseVfy{
+				Futures:     checkFuturesClosed(),
+				SpotBalance: getSpotBalance(),
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: report})
 }
