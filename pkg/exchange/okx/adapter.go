@@ -24,6 +24,16 @@ func (a *Adapter) getCtVal(symbol string) float64 {
 	return 1 // default: 1 contract = 1 base unit (safe for most USDT pairs)
 }
 
+// getLotSz returns the lot size (minimum contract quantity step) for a given symbol.
+// OKX contract quantities must be multiples of lotSz.
+func (a *Adapter) getLotSz(symbol string) float64 {
+	instID := toOKXInstID(symbol)
+	if v, ok := a.lotSzCache.Load(instID); ok {
+		return v.(float64)
+	}
+	return 1 // default: 1 contract step
+}
+
 // Adapter implements the exchange.Exchange interface for OKX USDT-margined perpetual swaps.
 type Adapter struct {
 	client     *Client
@@ -33,6 +43,8 @@ type Adapter struct {
 
 	// Contract value cache: instId -> ctVal (contract value per contract)
 	ctValCache sync.Map // string -> float64
+	// Lot size cache: instId -> lotSz (minimum contract quantity step)
+	lotSzCache sync.Map // string -> float64
 
 	// Price stream
 	priceStore sync.Map // internal symbol -> exchange.BBO
@@ -161,13 +173,21 @@ func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 	instID := toOKXInstID(req.Symbol)
 
 	// OKX sz is in contracts. Engine sends base units, so divide by ctVal.
+	// Contract quantities must be multiples of lotSz (which can be fractional,
+	// e.g., 0.01 for BTC-USDT-SWAP).
 	sz := req.Size
 	ctVal := a.getCtVal(req.Symbol)
 	if ctVal != 1 {
 		sizeF, err := strconv.ParseFloat(req.Size, 64)
 		if err == nil {
-			contracts := math.Round(sizeF / ctVal)
-			sz = strconv.FormatFloat(contracts, 'f', 0, 64)
+			contracts := sizeF / ctVal
+			lotSz := a.getLotSz(req.Symbol)
+			if lotSz > 0 {
+				contracts = math.Floor(contracts/lotSz) * lotSz
+			}
+			// Determine decimal places from lotSz for formatting
+			lotDec := countDecimalsFloat(lotSz)
+			sz = strconv.FormatFloat(contracts, 'f', lotDec, 64)
 		}
 	}
 
@@ -543,8 +563,9 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 		minSize := lotSz * ctVal
 		stepSize := stepLot * ctVal
 
-		// Cache contract value for sizing calculations
+		// Cache contract value and lot size for sizing calculations
 		a.ctValCache.Store(inst.InstID, ctVal)
+		a.lotSzCache.Store(inst.InstID, stepLot)
 
 		result[symbol] = exchange.ContractInfo{
 			Symbol:        symbol,

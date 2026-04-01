@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.54] - 2026-04-01
+
+### Added
+- **[okx] EnsureAutoLoan** -- account-level auto-loan configuration via `POST /api/v5/account/set-auto-loan`. In Multi-currency margin mode, enables automatic borrow/repay. In Futures mode, gracefully skipped (cross-margin orders handle borrows implicitly via `tdMode=cross` + `ccy=USDT`)
+- **[okx] lotSz cache** -- stores contract lot size alongside ctVal for proper fractional contract rounding
+
+### Fixed
+- **[gateio] Market order time-in-force** -- `PlaceSpotMarginOrder` now uses `ioc` for market orders; Gate.io rejects `gtc` on market orders
+- **[okx] PlaceSpotMarginOrder ccy parameter** -- adds `ccy=USDT` to cross-margin spot orders; required for OKX Futures mode accounts
+- **[okx] PlaceOrder contract sizing** -- rounds contract quantities to lotSz precision instead of integer; fixes BTC orders where lotSz=0.01 (previously rounded 0.17 contracts to 0)
+
 ## [0.22.53] - 2026-04-01
 
 ### Added

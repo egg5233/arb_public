@@ -72,6 +72,10 @@ func (a *Adapter) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (s
 	if params.Force != "" {
 		tif = strings.ToLower(params.Force)
 	}
+	// Gate.io does not support gtc for market orders — must use ioc.
+	if strings.ToLower(params.OrderType) == "market" && tif == "gtc" {
+		tif = "ioc"
+	}
 
 	orderReq := map[string]interface{}{
 		"currency_pair": pair,
