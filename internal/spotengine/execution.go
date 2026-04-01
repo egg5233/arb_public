@@ -483,15 +483,18 @@ func (e *SpotEngine) executeBuySpotShort(
 	if err := requireEntryLock("spot buy"); err != nil {
 		return 0, 0, 0, 0, err
 	}
-	// Use Size (base qty) for the market buy — not QuoteSize (USDT amount).
-	// QuoteSize gives approximate fill that may not align with futures step size.
-	// Size with marketUnit=baseCoin (Bybit) gives exact quantity matching futures.
-	e.log.Info("ManualOpen [buy_spot_short] step 1: PlaceSpotMarginOrder BUY %s size=%s", symbol, sizeStr)
+	// Pass both Size (base qty) and QuoteSize (USDT amount) for the market buy.
+	// Adapters that support base-qty market BUY (Bybit: marketUnit=baseCoin) use Size;
+	// adapters that only accept quote-qty (Gate.io, OKX, Binance, Bitget) use QuoteSize.
+	// Futures leg is sized from actual spot fill via roundToFuturesStep, so alignment is safe.
+	quoteSizeStr := fmt.Sprintf("%.2f", notionalUSDT)
+	e.log.Info("ManualOpen [buy_spot_short] step 1: PlaceSpotMarginOrder BUY %s size=%s quote=%s", symbol, sizeStr, quoteSizeStr)
 	spotOrderID, err := smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
 		Symbol:    symbol,
 		Side:      exchange.SideBuy,
 		OrderType: "market",
 		Size:      sizeStr,
+		QuoteSize: quoteSizeStr,
 	})
 	if err != nil {
 		return 0, 0, 0, 0, fmt.Errorf("spot buy failed: %w", err)

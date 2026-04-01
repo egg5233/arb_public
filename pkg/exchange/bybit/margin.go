@@ -106,13 +106,14 @@ func (a *Adapter) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (s
 		"timeInForce": toBybitTIF(params.Force),
 	}
 	// Bybit spot market orders: timeInForce is invalid; market BUY defaults
-	// qty to quote currency, so specify marketUnit or swap to QuoteSize.
+	// qty to quote currency. Prefer base-qty (marketUnit=baseCoin) for exact
+	// quantity matching; fall back to QuoteSize (USDT) if Size is absent.
 	if strings.ToLower(params.OrderType) == "market" {
 		delete(reqParams, "timeInForce") // invalid for market orders on Bybit
-		if params.Side == exchange.SideBuy && params.QuoteSize != "" {
-			reqParams["qty"] = params.QuoteSize
-		} else if params.Side == exchange.SideBuy {
+		if params.Side == exchange.SideBuy && params.Size != "" {
 			reqParams["marketUnit"] = "baseCoin"
+		} else if params.Side == exchange.SideBuy && params.QuoteSize != "" {
+			reqParams["qty"] = params.QuoteSize
 		}
 	}
 	if strings.ToLower(params.OrderType) == "limit" && params.Price != "" {

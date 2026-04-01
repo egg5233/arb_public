@@ -556,12 +556,16 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 			maxBase *= quantoMult
 		}
 
+		// Compute decimal places from quanto_multiplier so sizes in base-asset
+		// units are formatted correctly (e.g., BTC quanto=0.0001 → 4 decimals).
+		sizeDecimals := countDecimals(c.QuantoMultiplier)
+
 		ci := exchange.ContractInfo{
 			Symbol:        internalSymbol,
 			MinSize:       minBase,
 			StepSize:      stepSize,
 			MaxSize:       maxBase,
-			SizeDecimals:  0, // Gate.io uses integer contract sizes
+			SizeDecimals:  sizeDecimals,
 			PriceStep:     priceStep,
 			PriceDecimals: countDecimals(c.OrderPriceRound),
 		}

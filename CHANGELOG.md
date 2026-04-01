@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.55] - 2026-04-02
+
+### Fixed
+- **[gateio] SizeDecimals in LoadAllContracts** -- compute decimal places from `quanto_multiplier` instead of hardcoding 0; fixes BTC orders where `FormatSize(0.0014, 0)` produced "0"
+- **[spotengine] Dir B market BUY QuoteSize** -- pass both `Size` (base qty) and `QuoteSize` (USDT notional) to `PlaceSpotMarginOrder`; exchanges that only accept quote-qty for market BUY (Gate.io, OKX, Binance, Bitget) now work correctly
+- **[bybit] Prefer base-qty for market BUY** -- when both `Size` and `QuoteSize` are set, Bybit adapter uses `marketUnit=baseCoin` for exact quantity matching
+
 ## [0.22.54] - 2026-04-01
 
 ### Added
