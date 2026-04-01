@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.23.0] - 2026-04-01
+
+### Changed
+- Version bump to 0.23.0
+
 ## [0.22.48] - 2026-04-01
 
 ### Fixed
