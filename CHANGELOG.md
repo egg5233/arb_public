@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.49] - 2026-04-01
+
+### Fixed
+- **[spot-futures] Add `AutoRepay: true` to Direction A buyback and rollback orders** — four bugs from the Direction A auto-borrow refactor: (1) `closeDirectionA` spot buyback order was missing `AutoRepay: true`, leaving borrowed coins unrepaid until the separate `MarginRepay` call; Step 3 repay now only runs for residual liability after auto-repay; (2) `emergencyClose` parallel spot leg was missing `AutoRepay` for Direction A buyback, same residual-only fallback applied; (3) `rollbackSpotOrder` had no `autoRepay` parameter — added it and all 6 callers updated (Direction A passes `true`, Direction B passes `false`); (4) `reconcilePendingEntry` was calling `rollbackBorrow` unconditionally on zero-fill even though auto-borrow only borrows on actual fill — now checks `GetMarginBalance` for outstanding debt first (`internal/spotengine/execution.go`)
+
 ## [0.22.46] - 2026-03-31
 
 ### Fixed

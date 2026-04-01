@@ -161,21 +161,22 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 	if isDirA {
 		smExch, ok := e.spotMargin[pos.Exchange]
 		if ok && pos.BorrowAmount > 0 {
-			mb, err := smExch.GetMarginBalance(pos.BaseCoin)
+			// For borrow_sell_long, collateral is USDT (from selling borrowed coins),
+			// not the base coin (which is 0 after selling). Check USDT balance.
+			mb, err := smExch.GetMarginBalance("USDT")
 			if err == nil {
-				// utilization = borrowed value / available value * 100
 				price := pos.SpotEntryPrice
 				if price <= 0 {
 					price = pos.FuturesEntry
 				}
 				if price > 0 {
 					borrowedValue := pos.BorrowAmount * price
-					availableValue := mb.Available * price
+					availableValue := mb.Available
 					if availableValue <= 0 && borrowedValue > 0 {
-						// No available collateral with outstanding borrow = immediate emergency
+						// No USDT collateral with outstanding borrow = immediate emergency
 						pos.MarginUtilizationPct = 999.0
-						e.log.Error("exit trigger: %s EMERGENCY no available collateral for borrow (%.4f borrowed)",
-							pos.Symbol, pos.BorrowAmount)
+						e.log.Error("exit trigger: %s EMERGENCY no available USDT collateral for borrow (%.4f %s borrowed, value=%.2f)",
+							pos.Symbol, pos.BorrowAmount, pos.BaseCoin, borrowedValue)
 						return "margin_health_exit", true
 					}
 					if availableValue > 0 {
@@ -183,13 +184,13 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 						pos.MarginUtilizationPct = utilPct
 
 						if utilPct > marginEmergencyPct {
-							e.log.Error("exit trigger: %s EMERGENCY margin utilization %.1f%% > %.1f%%",
-								pos.Symbol, utilPct, marginEmergencyPct)
+							e.log.Error("exit trigger: %s EMERGENCY margin utilization %.1f%% > %.1f%% (borrowed=%.2f avail=%.2f USDT)",
+								pos.Symbol, utilPct, marginEmergencyPct, borrowedValue, availableValue)
 							return "margin_health_exit", true
 						}
 						if utilPct > marginExitPct {
-							e.log.Warn("exit trigger: %s margin utilization %.1f%% > %.1f%%",
-								pos.Symbol, utilPct, marginExitPct)
+							e.log.Warn("exit trigger: %s margin utilization %.1f%% > %.1f%% (borrowed=%.2f avail=%.2f USDT)",
+								pos.Symbol, utilPct, marginExitPct, borrowedValue, availableValue)
 							return "margin_health_exit", false
 						}
 					}

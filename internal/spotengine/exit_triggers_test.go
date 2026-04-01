@@ -523,6 +523,8 @@ func TestPriceSpikeTriggers(t *testing.T) {
 }
 
 func TestMarginHealthTriggers_DirectionAFuturesMargin(t *testing.T) {
+	// Dir A checks USDT balance as collateral. Set USDT available=111.11 so
+	// borrowedValue(100) / availableUSDT(111.11) = 90% utilization.
 	e := &SpotEngine{
 		cfg: &config.Config{
 			SpotFuturesMarginExitPct:      85.0,
@@ -534,7 +536,7 @@ func TestMarginHealthTriggers_DirectionAFuturesMargin(t *testing.T) {
 			"testexch": priceStubExchange{marginRatio: 0.90},
 		},
 		spotMargin: map[string]exchange.SpotMarginExchange{
-			"testexch": &marginStubExchange{available: 100},
+			"testexch": &marginStubExchange{available: 111.11},
 		},
 		log: utils.NewLogger("test"),
 	}
@@ -556,7 +558,7 @@ func TestMarginHealthTriggers_DirectionAFuturesMargin(t *testing.T) {
 	if emergency {
 		t.Fatalf("emergency = %v, want false", emergency)
 	}
-	if pos.MarginUtilizationPct != 90 {
-		t.Fatalf("MarginUtilizationPct = %.1f, want 90.0", pos.MarginUtilizationPct)
+	if pos.MarginUtilizationPct < 89.9 || pos.MarginUtilizationPct > 90.1 {
+		t.Fatalf("MarginUtilizationPct = %.1f, want ~90.0", pos.MarginUtilizationPct)
 	}
 }

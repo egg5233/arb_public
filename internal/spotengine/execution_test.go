@@ -868,8 +868,10 @@ func TestManualOpen_ReversesAndRepaysBorrowWhenPendingEntrySaveFails(t *testing.
 	if smExch.placeCalls != 2 {
 		t.Fatalf("spot place calls = %d, want 2 (entry + cleanup)", smExch.placeCalls)
 	}
-	if smExch.repayCalls != 1 {
-		t.Fatalf("repay calls = %d, want 1", smExch.repayCalls)
+	// With auto-borrow, repay is handled by the buyback order's AutoRepay flag,
+	// not a separate MarginRepay call.
+	if smExch.repayCalls != 0 {
+		t.Fatalf("repay calls = %d, want 0 (auto-repay via buyback order)", smExch.repayCalls)
 	}
 
 	active, err := workingDB.GetActiveSpotPositions()

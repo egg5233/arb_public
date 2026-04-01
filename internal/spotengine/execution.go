@@ -145,6 +145,15 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 	}
 	sizeStr := utils.FormatSize(size, 6)
 	plannedNotional := size * midPrice
+	// Reject if borrowable amount is less than 10% of the target capital —
+	// too small to be worth trading and likely to hit exchange minimums.
+	minNotional := capital * 0.10
+	if minNotional < 5.0 {
+		minNotional = 5.0
+	}
+	if plannedNotional < minNotional {
+		return fmt.Errorf("notional %.2f USDT too small (min %.0f USDT) for %s (size=%.6f price=%.6f)", plannedNotional, minNotional, symbol, size, midPrice)
+	}
 	e.log.Info("ManualOpen: %s size=%.6f (%s) notional=%.2f USDT", symbol, size, sizeStr, plannedNotional)
 
 	now := time.Now().UTC()
@@ -306,41 +315,24 @@ func (e *SpotEngine) executeBorrowSellLong(
 	pos *models.SpotFuturesPosition,
 ) (spotAvg, futAvg, spotFilled, futFilled, borrowAmt float64, err error) {
 
-	// Step 1: Borrow
-	if err := requireEntryLock("margin borrow"); err != nil {
+	// Step 1: Margin sell with auto-borrow (single API call handles borrow + sell).
+	// This lets the exchange manage the borrow internally, avoiding separate
+	// borrow API calls, integer precision issues, and risk limit rejections.
+	if err := requireEntryLock("margin sell (auto-borrow)"); err != nil {
 		return 0, 0, 0, 0, 0, err
 	}
-	e.log.Info("ManualOpen [borrow_sell_long] step 1: MarginBorrow %s %s", baseCoin, sizeStr)
-	err = smExch.MarginBorrow(exchange.MarginBorrowParams{
-		Coin:   baseCoin,
-		Amount: sizeStr,
-	})
-	if err != nil {
-		return 0, 0, 0, 0, 0, fmt.Errorf("MarginBorrow failed: %w", err)
-	}
-	borrowAmt = size
-	pos.BorrowAmount = borrowAmt
-	e.log.Info("ManualOpen [borrow_sell_long] step 1: borrowed %s %s", sizeStr, baseCoin)
-
-	// Step 2: Sell spot (margin order)
-	if err := requireEntryLock("spot sell"); err != nil {
-		e.rollbackBorrow(smExch, baseCoin, sizeStr)
-		return 0, 0, 0, 0, 0, err
-	}
-	e.log.Info("ManualOpen [borrow_sell_long] step 2: PlaceSpotMarginOrder SELL %s %s", symbol, sizeStr)
+	e.log.Info("ManualOpen [borrow_sell_long] step 1: PlaceSpotMarginOrder SELL %s %s (auto-borrow)", symbol, sizeStr)
 	spotOrderID, err := smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
-		Symbol:    symbol,
-		Side:      exchange.SideSell,
-		OrderType: "market",
-		Size:      sizeStr,
+		Symbol:     symbol,
+		Side:       exchange.SideSell,
+		OrderType:  "market",
+		Size:       sizeStr,
+		AutoBorrow: true,
 	})
 	if err != nil {
-		// Rollback: repay the borrow.
-		e.log.Error("ManualOpen [borrow_sell_long] step 2 FAILED: %v — rolling back borrow", err)
-		e.rollbackBorrow(smExch, baseCoin, sizeStr)
-		return 0, 0, 0, 0, 0, fmt.Errorf("spot sell failed: %w", err)
+		return 0, 0, 0, 0, 0, fmt.Errorf("margin sell (auto-borrow) failed: %w", err)
 	}
-	e.log.Info("ManualOpen [borrow_sell_long] step 2: spot order placed: %s", spotOrderID)
+	e.log.Info("ManualOpen [borrow_sell_long] step 1: spot order placed: %s", spotOrderID)
 	if cpErr := e.persistPendingEntry(pos, spotOrderID); cpErr != nil {
 		return 0, 0, 0, 0, 0, e.abortAcceptedSpotEntry(smExch, futExch, pos, spotOrderID, symbol, size, cpErr)
 	}
@@ -351,21 +343,20 @@ func (e *SpotEngine) executeBorrowSellLong(
 		return 0, 0, 0, 0, 0, &pendingSpotEntryError{posID: pos.ID, orderID: spotOrderID, err: confErr}
 	}
 	if spotFilled <= 0 {
-		e.log.Error("ManualOpen [borrow_sell_long] step 2: spot order got 0 fill — rolling back borrow")
-		e.rollbackBorrow(smExch, baseCoin, sizeStr)
 		return 0, 0, 0, 0, 0, fmt.Errorf("spot sell got 0 fill (order %s)", spotOrderID)
 	}
-	e.log.Info("ManualOpen [borrow_sell_long] step 2: spot fill=%.6f avg=%.6f", spotFilled, spotAvg)
+	borrowAmt = spotFilled // auto-borrow borrows exactly what was sold
+	pos.BorrowAmount = borrowAmt
+	e.log.Info("ManualOpen [borrow_sell_long] step 1: spot fill=%.6f avg=%.6f (borrowed=%.6f)", spotFilled, spotAvg, borrowAmt)
 
-	// Step 3: Long futures
+	// Step 2: Long futures
 	spotFilledStr := utils.FormatSize(spotFilled, 6)
 	buybackQuote := utils.FormatSize(spotFilled*spotAvg*1.02, 2) // 2% slippage buffer for rollback
 	if err := requireEntryLock("futures long"); err != nil {
-		e.rollbackSpotOrder(smExch, symbol, exchange.SideBuy, spotFilledStr, buybackQuote)
-		e.rollbackBorrow(smExch, baseCoin, sizeStr)
+		e.rollbackSpotOrder(smExch, symbol, exchange.SideBuy, spotFilledStr, buybackQuote, true)
 		return 0, 0, 0, 0, 0, err
 	}
-	e.log.Info("ManualOpen [borrow_sell_long] step 3: PlaceOrder futures BUY %s %s", symbol, spotFilledStr)
+	e.log.Info("ManualOpen [borrow_sell_long] step 2: PlaceOrder futures BUY %s %s", symbol, spotFilledStr)
 	futOrderID, err := futExch.PlaceOrder(exchange.PlaceOrderParams{
 		Symbol:    symbol,
 		Side:      exchange.SideBuy,
@@ -374,23 +365,21 @@ func (e *SpotEngine) executeBorrowSellLong(
 		Force:     "ioc",
 	})
 	if err != nil {
-		// Rollback: reverse the spot sell by buying back.
-		e.log.Error("ManualOpen [borrow_sell_long] step 3 FAILED: %v — rolling back spot sell", err)
-		e.rollbackSpotOrder(smExch, symbol, exchange.SideBuy, spotFilledStr, buybackQuote)
-		e.rollbackBorrow(smExch, baseCoin, sizeStr)
+		// Rollback: buy back spot (auto-repay will handle the borrow).
+		e.log.Error("ManualOpen [borrow_sell_long] step 2 FAILED: %v — rolling back spot sell", err)
+		e.rollbackSpotOrder(smExch, symbol, exchange.SideBuy, spotFilledStr, buybackQuote, true)
 		return 0, 0, 0, 0, 0, fmt.Errorf("futures long failed: %w", err)
 	}
-	e.log.Info("ManualOpen [borrow_sell_long] step 3: futures order placed: %s", futOrderID)
+	e.log.Info("ManualOpen [borrow_sell_long] step 2: futures order placed: %s", futOrderID)
 
 	// Confirm futures fill.
 	futFilled, futAvg = e.confirmFuturesFill(futExch, futOrderID, symbol)
 	if futFilled <= 0 {
-		e.log.Error("ManualOpen [borrow_sell_long] step 3: futures order got 0 fill — rolling back spot sell")
-		e.rollbackSpotOrder(smExch, symbol, exchange.SideBuy, spotFilledStr, buybackQuote)
-		e.rollbackBorrow(smExch, baseCoin, sizeStr)
+		e.log.Error("ManualOpen [borrow_sell_long] step 2: futures order got 0 fill — rolling back spot sell")
+		e.rollbackSpotOrder(smExch, symbol, exchange.SideBuy, spotFilledStr, buybackQuote, true)
 		return 0, 0, 0, 0, 0, fmt.Errorf("futures long got 0 fill (order %s)", futOrderID)
 	}
-	e.log.Info("ManualOpen [borrow_sell_long] step 3: futures fill=%.6f avg=%.6f", futFilled, futAvg)
+	e.log.Info("ManualOpen [borrow_sell_long] step 2: futures fill=%.6f avg=%.6f", futFilled, futAvg)
 	pos.PendingEntryOrderID = ""
 	pos.SpotSize = spotFilled
 	pos.SpotEntryPrice = spotAvg
@@ -446,7 +435,7 @@ func (e *SpotEngine) executeBuySpotShort(
 	// Step 2: Short futures
 	spotFilledStr := utils.FormatSize(spotFilled, 6)
 	if err := requireEntryLock("futures short"); err != nil {
-		e.rollbackSpotOrder(smExch, symbol, exchange.SideSell, spotFilledStr, "")
+		e.rollbackSpotOrder(smExch, symbol, exchange.SideSell, spotFilledStr, "", false)
 		return 0, 0, 0, 0, err
 	}
 	e.log.Info("ManualOpen [buy_spot_short] step 2: PlaceOrder futures SELL %s %s", symbol, spotFilledStr)
@@ -460,7 +449,7 @@ func (e *SpotEngine) executeBuySpotShort(
 	if err != nil {
 		// Rollback: sell the spot back.
 		e.log.Error("ManualOpen [buy_spot_short] step 2 FAILED: %v — rolling back spot buy", err)
-		e.rollbackSpotOrder(smExch, symbol, exchange.SideSell, spotFilledStr, "")
+		e.rollbackSpotOrder(smExch, symbol, exchange.SideSell, spotFilledStr, "", false)
 		return 0, 0, 0, 0, fmt.Errorf("futures short failed: %w", err)
 	}
 	e.log.Info("ManualOpen [buy_spot_short] step 2: futures order placed: %s", futOrderID)
@@ -469,7 +458,7 @@ func (e *SpotEngine) executeBuySpotShort(
 	futFilled, futAvg = e.confirmFuturesFill(futExch, futOrderID, symbol)
 	if futFilled <= 0 {
 		e.log.Error("ManualOpen [buy_spot_short] step 2: futures order got 0 fill — rolling back spot buy")
-		e.rollbackSpotOrder(smExch, symbol, exchange.SideSell, spotFilledStr, "")
+		e.rollbackSpotOrder(smExch, symbol, exchange.SideSell, spotFilledStr, "", false)
 		return 0, 0, 0, 0, fmt.Errorf("futures short got 0 fill (order %s)", futOrderID)
 	}
 	e.log.Info("ManualOpen [buy_spot_short] step 2: futures fill=%.6f avg=%.6f", futFilled, futAvg)
@@ -619,6 +608,7 @@ func (e *SpotEngine) abortAcceptedSpotEntry(
 			OrderType: "market",
 			Size:      reverseQty,
 			QuoteSize: reverseQuote,
+			AutoRepay: pos.Direction == "borrow_sell_long",
 		})
 		if err != nil {
 			return newManualRecoveryPendingEntryError(
@@ -658,16 +648,8 @@ func (e *SpotEngine) abortAcceptedSpotEntry(
 			orderID, action, reverseOrderID, cleanupFilled)
 	}
 
-	if pos.Direction == "borrow_sell_long" && pos.BorrowAmount > 0 {
-		repayAmount := utils.FormatSize(pos.BorrowAmount, 6)
-		if err := smExch.MarginRepay(exchange.MarginRepayParams{
-			Coin:   pos.BaseCoin,
-			Amount: repayAmount,
-		}); err != nil {
-			return fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (cleanup repay %s %s failed: %v)",
-				orderID, persistErr, repayAmount, pos.BaseCoin, err)
-		}
-	}
+	// With auto-borrow/auto-repay, the exchange handles repayment during
+	// the buyback order above — no separate MarginRepay call needed.
 
 	if filledQty > 0 {
 		return fmt.Errorf("spot entry order %s was accepted but pending entry save failed: %w (cleaned up %.6f spot fill before aborting entry)",
@@ -848,8 +830,12 @@ func (e *SpotEngine) reconcilePendingEntry(pos *models.SpotFuturesPosition) {
 
 		pos.PendingEntryOrderID = ""
 		if filled <= 0 {
-			if pos.Direction == "borrow_sell_long" && pos.BorrowAmount > 0 {
-				e.rollbackBorrow(smExch, pos.BaseCoin, utils.FormatSize(pos.BorrowAmount, 6))
+			// With auto-borrow, the exchange only borrows on actual fill.
+			// Check if there's actually outstanding debt before attempting repay.
+			if pos.Direction == "borrow_sell_long" {
+				if mb, mErr := smExch.GetMarginBalance(pos.BaseCoin); mErr == nil && (mb.Borrowed+mb.Interest) > 0 {
+					e.rollbackBorrow(smExch, pos.BaseCoin, utils.FormatSize(mb.Borrowed+mb.Interest, 6))
+				}
 			}
 			e.abandonPendingEntry(pos, "entry_unfilled")
 			return
@@ -1074,14 +1060,15 @@ func (e *SpotEngine) rollbackBorrow(smExch exchange.SpotMarginExchange, coin, am
 
 // rollbackSpotOrder attempts to reverse a spot order by placing an opposite market order.
 // quoteSizeStr is the USDT amount for market BUY orders (required by some exchanges like Bitget).
-func (e *SpotEngine) rollbackSpotOrder(smExch exchange.SpotMarginExchange, symbol string, side exchange.Side, sizeStr, quoteSizeStr string) {
-	e.log.Info("ROLLBACK: reversing spot — %s %s %s (quote=%s)", side, symbol, sizeStr, quoteSizeStr)
+func (e *SpotEngine) rollbackSpotOrder(smExch exchange.SpotMarginExchange, symbol string, side exchange.Side, sizeStr, quoteSizeStr string, autoRepay bool) {
+	e.log.Info("ROLLBACK: reversing spot — %s %s %s (quote=%s autoRepay=%v)", side, symbol, sizeStr, quoteSizeStr, autoRepay)
 	oid, err := smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
 		Symbol:    symbol,
 		Side:      side,
 		OrderType: "market",
 		Size:      sizeStr,
 		QuoteSize: quoteSizeStr,
+		AutoRepay: autoRepay,
 	})
 	if err != nil {
 		e.log.Error("ROLLBACK: spot reverse order FAILED: %v — manual intervention needed", err)
@@ -1230,6 +1217,7 @@ func (e *SpotEngine) closeDirectionA(
 					OrderType: "market",
 					Size:      remainingStr,
 					QuoteSize: quoteEst,
+					AutoRepay: true,
 				})
 				if placeErr != nil {
 					return fmt.Errorf("spot buyback failed: %w", placeErr)
@@ -1281,19 +1269,36 @@ func (e *SpotEngine) closeDirectionA(
 		}
 	}
 
-	// Step 3: Repay borrow
-	repayAmount := utils.FormatSize(pos.BorrowAmount, 6)
-	e.log.Info("ClosePosition [Dir A] step 3: repay borrow %s %s", repayAmount, pos.BaseCoin)
-	if err := smExch.MarginRepay(exchange.MarginRepayParams{
-		Coin:   pos.BaseCoin,
-		Amount: repayAmount,
-	}); err != nil {
-		e.log.Error("ClosePosition [Dir A] repay FAILED: %v — will retry on next monitor tick for %s %s",
-			err, repayAmount, pos.BaseCoin)
-		pos.PendingRepay = true
-		var blackout *exchange.ErrRepayBlackout
-		if errors.As(err, &blackout) {
-			pos.PendingRepayRetryAt = &blackout.RetryAfter
+	// Step 3: Repay residual borrow (auto-repay should have handled most/all).
+	if mb, mbErr := smExch.GetMarginBalance(pos.BaseCoin); mbErr == nil && (mb.Borrowed+mb.Interest) > 0 {
+		repayAmount := utils.FormatSize(mb.Borrowed+mb.Interest, 6)
+		e.log.Info("ClosePosition [Dir A] step 3: repay residual borrow %s %s", repayAmount, pos.BaseCoin)
+		if err := smExch.MarginRepay(exchange.MarginRepayParams{
+			Coin:   pos.BaseCoin,
+			Amount: repayAmount,
+		}); err != nil {
+			e.log.Error("ClosePosition [Dir A] repay FAILED: %v — will retry on next monitor tick for %s %s",
+				err, repayAmount, pos.BaseCoin)
+			pos.PendingRepay = true
+			var blackout *exchange.ErrRepayBlackout
+			if errors.As(err, &blackout) {
+				pos.PendingRepayRetryAt = &blackout.RetryAfter
+			}
+		}
+	} else if mbErr != nil {
+		e.log.Warn("ClosePosition [Dir A] step 3: GetMarginBalance failed (%v), falling back to full repay", mbErr)
+		repayAmount := utils.FormatSize(pos.BorrowAmount, 6)
+		if err := smExch.MarginRepay(exchange.MarginRepayParams{
+			Coin:   pos.BaseCoin,
+			Amount: repayAmount,
+		}); err != nil {
+			e.log.Error("ClosePosition [Dir A] repay FAILED: %v — will retry on next monitor tick for %s %s",
+				err, repayAmount, pos.BaseCoin)
+			pos.PendingRepay = true
+			var blackout *exchange.ErrRepayBlackout
+			if errors.As(err, &blackout) {
+				pos.PendingRepayRetryAt = &blackout.RetryAfter
+			}
 		}
 	}
 
@@ -1529,6 +1534,7 @@ func (e *SpotEngine) emergencyClose(
 			OrderType: "market",
 			Size:      remainingStr,
 			QuoteSize: quoteEst,
+			AutoRepay: pos.Direction == "borrow_sell_long",
 		})
 		if err != nil {
 			ch <- result{leg: "spot", err: fmt.Errorf("spot close: %w", err)}
@@ -1625,19 +1631,35 @@ func (e *SpotEngine) emergencyClose(
 		pos.ExitFees += pos.SpotSize * pos.SpotExitPrice * takerFeeEmerg
 	}
 
-	// Repay borrow if Direction A
-	if pos.Direction == "borrow_sell_long" && pos.BorrowAmount > 0 {
-		repayAmount := utils.FormatSize(pos.BorrowAmount, 6)
-		e.log.Info("EMERGENCY: repaying borrow %s %s", repayAmount, pos.BaseCoin)
-		if err := smExch.MarginRepay(exchange.MarginRepayParams{
-			Coin:   pos.BaseCoin,
-			Amount: repayAmount,
-		}); err != nil {
-			e.log.Error("EMERGENCY: repay FAILED: %v — will retry on next monitor tick", err)
-			pos.PendingRepay = true
-			var blackout *exchange.ErrRepayBlackout
-			if errors.As(err, &blackout) {
-				pos.PendingRepayRetryAt = &blackout.RetryAfter
+	// Repay residual borrow if Direction A (auto-repay should have handled most/all).
+	if pos.Direction == "borrow_sell_long" {
+		if mb, mbErr := smExch.GetMarginBalance(pos.BaseCoin); mbErr == nil && (mb.Borrowed+mb.Interest) > 0 {
+			residual := utils.FormatSize(mb.Borrowed+mb.Interest, 6)
+			e.log.Info("EMERGENCY: repaying residual borrow %s %s", residual, pos.BaseCoin)
+			if err := smExch.MarginRepay(exchange.MarginRepayParams{
+				Coin:   pos.BaseCoin,
+				Amount: residual,
+			}); err != nil {
+				e.log.Error("EMERGENCY: repay FAILED: %v — will retry on next monitor tick", err)
+				pos.PendingRepay = true
+				var blackout *exchange.ErrRepayBlackout
+				if errors.As(err, &blackout) {
+					pos.PendingRepayRetryAt = &blackout.RetryAfter
+				}
+			}
+		} else if mbErr != nil {
+			e.log.Warn("EMERGENCY: GetMarginBalance failed (%v), falling back to full repay", mbErr)
+			repayAmount := utils.FormatSize(pos.BorrowAmount, 6)
+			if err := smExch.MarginRepay(exchange.MarginRepayParams{
+				Coin:   pos.BaseCoin,
+				Amount: repayAmount,
+			}); err != nil {
+				e.log.Error("EMERGENCY: repay FAILED: %v — will retry on next monitor tick", err)
+				pos.PendingRepay = true
+				var blackout *exchange.ErrRepayBlackout
+				if errors.As(err, &blackout) {
+					pos.PendingRepayRetryAt = &blackout.RetryAfter
+				}
 			}
 		}
 	}

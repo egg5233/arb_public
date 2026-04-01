@@ -3,6 +3,7 @@ package bybit
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -19,9 +20,18 @@ var _ exchange.SpotMarginExchange = (*Adapter)(nil)
 
 // MarginBorrow borrows a coin on spot margin via the unified account.
 func (a *Adapter) MarginBorrow(params exchange.MarginBorrowParams) error {
+	// Bybit requires borrow amounts as whole numbers for most coins.
+	// Floor to integer to avoid "precision must be an integer multiple" error.
+	amt, _ := strconv.ParseFloat(params.Amount, 64)
+	if amt > 0 {
+		amt = math.Floor(amt)
+	}
+	if amt <= 0 {
+		return fmt.Errorf("bybit MarginBorrow: amount %s rounds to 0", params.Amount)
+	}
 	reqParams := map[string]string{
 		"coin":   params.Coin,
-		"amount": params.Amount,
+		"amount": strconv.FormatFloat(amt, 'f', 0, 64),
 	}
 	_, err := a.client.Post("/v5/account/borrow", reqParams)
 	if err != nil {
