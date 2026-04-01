@@ -424,6 +424,42 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 	for name, need := range needs {
 		bal := balances[name]
 		if bal.futures >= need {
+			// Futures covers the need, but check if post-trade margin ratio would be too high.
+			// If so, top up from spot to bring ratio down.
+			if bal.spot > 0 && bal.marginRatio > 0 {
+				projectedAvail := bal.futures - need
+				if projectedAvail < 0 {
+					projectedAvail = 0
+				}
+				projectedRatio := 1 - projectedAvail/bal.futures
+				if bal.futures > 0 && projectedRatio >= e.cfg.MarginL4Threshold {
+					// Transfer just enough from spot to bring ratio below L4
+					// Target: (futures + extra - need) / (futures + extra) >= (1 - L4)
+					// => extra = (need - futures*(1-L4)) / (1-L4)
+					targetFreeRatio := 1 - e.cfg.MarginL4Threshold
+					if targetFreeRatio > 0 {
+						extra := (need - bal.futures*targetFreeRatio) / targetFreeRatio
+						if extra > bal.spot {
+							extra = bal.spot
+						}
+						if extra >= 1.0 {
+							amtStr := fmt.Sprintf("%.4f", extra)
+							e.log.Info("rebalance: %s spot→futures %s USDT (margin ratio relief, projected=%.2f L4=%.2f)",
+								name, amtStr, projectedRatio, e.cfg.MarginL4Threshold)
+							if !e.cfg.DryRun {
+								if err := e.exchanges[name].TransferToFutures("USDT", amtStr); err != nil {
+									e.log.Error("rebalance: %s spot→futures failed: %v", name, err)
+								} else {
+									bi := balances[name]
+									bi.futures += extra
+									bi.spot -= extra
+									balances[name] = bi
+								}
+							}
+						}
+					}
+				}
+			}
 			continue
 		}
 		shortfall := need - bal.futures
@@ -1149,6 +1185,12 @@ func (e *Engine) handleEmergencyClose(action risk.HealthAction) {
 		e.cancelExitGoroutine(pos.ID)
 
 		e.log.Error("L5 EMERGENCY CLOSE: position %s (exchange=%s)", pos.ID, action.Exchange)
+		reason := fmt.Sprintf("L5 emergency close: %s margin critical", action.Exchange)
+		_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+			fresh.ExitReason = reason
+			return true
+		})
+		pos.ExitReason = reason
 		if err := e.closePositionEmergency(pos); err != nil {
 			e.log.Error("L5 emergency close %s failed: %v", pos.ID, err)
 		}

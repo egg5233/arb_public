@@ -575,11 +575,16 @@ func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 			total, _ := strconv.ParseFloat(b.Equity, 64)
 			available, _ := strconv.ParseFloat(b.AvailableMargin, 64)
 			used, _ := strconv.ParseFloat(b.UsedMargin, 64)
+			var marginRatio float64
+			if total > 0 && available >= 0 {
+				marginRatio = 1 - available/total // consistent with health monitor fallback
+			}
 			return &exchange.Balance{
-				Total:     total,
-				Available: available,
-				Frozen:    used,
-				Currency:  "USDT",
+				Total:       total,
+				Available:   available,
+				Frozen:      used,
+				Currency:    "USDT",
+				MarginRatio: marginRatio,
 			}, nil
 		}
 	}

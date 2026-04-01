@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.48] - 2026-04-01
+
+### Fixed
+- **BingX MarginRatio was always 0** — adapter now calculates `1 - available/total`, consistent with health monitor; all 6 exchanges now report MarginRatio
+- **Risk approval post-trade margin ratio check** — rejects entries when projected margin ratio would exceed L4 threshold after opening; prevents L5 emergency close cascade
+- **closeFullyWithRetry quantity=0 bug** — dust guard skips order when rounded size <= 0 instead of sending invalid API request
+- **L5 emergency close exit reason** — now records "L5 emergency close: {exchange} margin critical" in position history
+- **Rebalance margin ratio relief** — when futures covers need but post-trade ratio would exceed L4, transfers minimum required from spot to bring ratio below threshold
+
 ## [0.22.47] - 2026-04-01
 
 ### Fixed
