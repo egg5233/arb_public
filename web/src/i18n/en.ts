@@ -87,6 +87,7 @@ const en = {
   'spot.fees': 'Fees',
   'spot.netApr': 'Net APR',
   'spot.status': 'Status',
+  'spot.reason': 'Reason',
   'spot.ready': 'ready',
   'spot.noOpportunities': 'No spot-futures opportunities — waiting for next discovery scan',
 

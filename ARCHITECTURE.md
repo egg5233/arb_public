@@ -568,6 +568,30 @@ type SpotMarginExchange interface {
 
 Implemented by: Binance, Bybit, OKX, Gate.io (unified `/unified/*` cross margin endpoints), Bitget.
 
+#### FlashRepayer (optional interface)
+
+Optional interface for exchanges that support one-step collateral conversion and borrow repayment. Used by Direction A close to skip the spot buyback order entirely — the exchange converts USDT collateral and repays the borrow in one atomic step, avoiding price-ceiling and LOT_SIZE constraints.
+
+```go
+type FlashRepayer interface {
+    FlashRepay(coin string) (repayID string, err error)
+}
+```
+
+Implemented by: Bitget (via `/api/v2/margin/crossed/account/flash-repay`). Use type assertion `exch.(exchange.FlashRepayer)` to check support.
+
+#### SpotMarginOrderQuerier (optional interface)
+
+Optional interface for querying the status of a spot margin order after placement. Allows the engine to reconcile fill quantities and fee deductions (`FeeDeducted` field on `SpotMarginOrderStatus`).
+
+```go
+type SpotMarginOrderQuerier interface {
+    GetSpotMarginOrder(orderID, symbol string) (*SpotMarginOrderStatus, error)
+}
+```
+
+Implemented by: all five `SpotMarginExchange` adapters. Use type assertion `exch.(exchange.SpotMarginOrderQuerier)` to check support.
+
 **Gate.io quanto multiplier**: Gate.io uses contract-based sizing. The adapter converts between base units and contracts using `quanto_multiplier` in PlaceOrder (divide), GetPosition/GetOrderFilledQty (multiply), and WS order updates (multiply). All other code works in base asset units.
 
 **Gate.io unified account**: On startup, the adapter detects unified account mode via `GET /unified/unified_mode`. In unified mode, `GetFuturesBalance` reads from `/unified/accounts` instead of `/futures/usdt/accounts`, and `TransferToFutures` is a no-op (funds are shared). Falls back to classic mode if detection fails.
@@ -824,6 +848,8 @@ Env overrides: `SPOT_FUTURES_ENABLED`, `SPOT_FUTURES_MAX_POSITIONS`, `SPOT_FUTUR
 | `/api/spot/close` | POST | Manual close a spot-futures position |
 | `/api/spot/positions/{id}/health` | GET | Live health snapshot: `last_borrow_rate_check`, `negative_yield_since`, current margin utilization |
 | `/api/spot/config/auto` | GET/POST | View/update auto-entry config; response includes `max_positions`, `capital_separate_usdt`, and `capital_unified_usdt` guardrail fields |
+| `/api/spot/test-inject` | POST | Inject synthetic Dir A + Dir B opportunities for lifecycle testing when no real opportunity is available |
+| `/api/spot/test-lifecycle` | POST | Automated Dir A + Dir B lifecycle verification: opens two test positions, waits for fills, closes both, and returns a structured pass/fail report |
 
 WebSocket events: `spot_position_update` (single position), `spot_positions` (full active list), `spot_opportunities` (discovery results broadcast), `spot_position_health` (real-time health tick).
 

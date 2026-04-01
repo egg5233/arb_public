@@ -38,12 +38,14 @@ created: 2026-04-01
 
 | Task ID | Plan | Wave | Requirement | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|-----------|-------------------|-------------|--------|
-| 01-01-01 | 01 | 1 | SF-01 | integration (live) | `go run ./cmd/livetest/ --exchange bybit --test-margin` | ✅ (tests 23-26) | ⬜ pending |
-| 01-02-01 | 02 | 2 | SF-01, SF-02 | integration (live) | `go run ./cmd/livetest/ --exchange binance --test-margin` | ✅ (tests 23-26) | ⬜ pending |
-| 01-02-02 | 02 | 2 | SF-03 | integration (live) | Manual Dir A/B trades on Binance | ❌ manual | ⬜ pending |
-| 01-03-01 | 03 | 3 | SF-01, SF-02 | integration (live) | `go run ./cmd/livetest/ --exchange bitget --test-margin` | ✅ (tests 23-26) | ⬜ pending |
-| 01-04-01 | 04 | 4 | SF-01, SF-02 | integration (live) | `go run ./cmd/livetest/ --exchange gateio --test-margin` | ✅ (tests 23-26) | ⬜ pending |
-| 01-05-01 | 05 | 5 | SF-01, SF-02, SF-03 | integration (live) | `go run ./cmd/livetest/ --exchange okx --test-margin` | ✅ (tests 23-26) | ⬜ pending |
+| 01-01-01 | 01 | 1 | SF-01, SF-02, SF-03 | integration (live) | `go run ./cmd/livetest/ --exchange bybit --test-margin` | ✅ (tests 23-28, Plan 01 adds 27-28) | ⬜ pending |
+| 01-01-02 | 01 | 1 | SF-01, SF-02 | manual (live trades) | Manual Dir A/B trades on Bybit | ❌ manual | ⬜ pending |
+| 01-02-01 | 02 | 2 | SF-01, SF-02 | integration (live) | `go run ./cmd/livetest/ --exchange binance --test-margin` | ✅ (tests 23-28) | ⬜ pending |
+| 01-02-02 | 02 | 2 | SF-01, SF-02 | integration (live) | `go run ./cmd/livetest/ --exchange bitget --test-margin` | ✅ (tests 23-28) | ⬜ pending |
+| 01-02-03 | 02 | 2 | SF-01, SF-02, SF-03 | manual (live trades) | Manual Dir A/B trades on Binance + Bitget | ❌ manual | ⬜ pending |
+| 01-03-01 | 03 | 3 | SF-01, SF-02 | integration (live) | `go run ./cmd/livetest/ --exchange gateio --test-margin` | ✅ (tests 23-28) | ⬜ pending |
+| 01-03-02 | 03 | 3 | SF-01, SF-02, SF-03 | integration (live) | `go run ./cmd/livetest/ --exchange okx --test-margin` | ✅ (tests 23-28) | ⬜ pending |
+| 01-03-03 | 03 | 3 | SF-01, SF-02, SF-03 | manual (live trades) | Manual Dir A/B trades on Gate.io + OKX | ❌ manual | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 

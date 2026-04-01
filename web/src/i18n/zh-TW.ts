@@ -89,6 +89,7 @@ const zhTW: Record<TranslationKey, string> = {
   'spot.fees': '手續費',
   'spot.netApr': '淨年化',
   'spot.status': '狀態',
+  'spot.reason': '原因',
   'spot.ready': '就緒',
   'spot.noOpportunities': '無現貨-合約機會 — 等待下次掃描',
 
