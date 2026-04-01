@@ -585,12 +585,12 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			e.log.Error("rebalance: %s get spot balance failed: %v", bestDonor, err)
 			continue
 		}
-		withdrawAmt := netAmount
-		if donorSpotBal.Available < netAmount+fee {
-			// Not enough to cover net + fee; withdraw what we can minus fee
-			withdrawAmt = donorSpotBal.Available - fee
+		withdrawAmt := netAmount + fee // gross amount: exchange deducts fee, recipient receives netAmount
+		if donorSpotBal.Available < withdrawAmt {
+			// Not enough to cover net + fee; withdraw everything we have
+			withdrawAmt = donorSpotBal.Available
 		}
-		if withdrawAmt < 10 {
+		if withdrawAmt-fee < 10 {
 			e.log.Warn("rebalance: %s spot balance too low to withdraw (available=%.2f, fee=%.4f)", bestDonor, donorSpotBal.Available, fee)
 			continue
 		}
@@ -616,14 +616,14 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			}
 			continue
 		}
-		e.log.Info("rebalance: withdraw from %s txid=%s (%.2f USDT net) → %s",
-			bestDonor, result.TxID, withdrawAmt, def.exchange)
+		e.log.Info("rebalance: withdraw from %s txid=%s (%.2f USDT gross, %.2f net after fee) → %s",
+			bestDonor, result.TxID, withdrawAmt, withdrawAmt-fee, def.exchange)
 		e.recordTransfer(bestDonor, def.exchange, "USDT", chain, amtStr, result.Fee, result.TxID, "completed", "rebalance")
 
 		if _, exists := pendingStartBal[def.exchange]; !exists {
 			pendingStartBal[def.exchange] = balances[def.exchange].spot
 		}
-		pendingDeposits[def.exchange] += withdrawAmt // track net amount (what will arrive)
+		pendingDeposits[def.exchange] += withdrawAmt - fee // track net amount (what will actually arrive after fee deduction)
 		surplus[bestDonor] -= requiredSpot
 	}
 
