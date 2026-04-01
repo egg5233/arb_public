@@ -19,6 +19,19 @@ const spotEntryManualRecoveryReason = "manual_intervention_required"
 
 var spotEntryLockTTL = 5 * time.Minute
 
+// needsMarginTransfer returns true for exchanges with separate margin accounts
+// that require explicit fund transfers between futures and margin accounts.
+// Binance and Bitget have separate cross-margin accounts; Bybit UTA, OKX, and
+// Gate.io have unified accounts where funds are shared.
+func needsMarginTransfer(exchName string) bool {
+	switch exchName {
+	case "binance", "bitget":
+		return true
+	default:
+		return false
+	}
+}
+
 // futuresStepSize looks up the futures contract step size for symbol on the
 // given exchange. Returns 0 if contracts are unavailable (caller should skip
 // rounding).
@@ -239,6 +252,18 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 	if err := futExch.SetLeverage(symbol, leverageStr, ""); err != nil {
 		e.log.Warn("ManualOpen: SetLeverage(%s, %s) warning: %v", symbol, leverageStr, err)
 		// Non-fatal — some exchanges return error if already set.
+	}
+
+	// ---------------------------------------------------------------
+	// 4b. Transfer USDT to margin for exchanges with separate accounts
+	// ---------------------------------------------------------------
+	if needsMarginTransfer(exchName) {
+		transferAmt := fmt.Sprintf("%.2f", plannedNotional*1.05) // 5% buffer for fees/slippage
+		e.log.Info("ManualOpen: transferring %s USDT to margin (%s has separate margin account)", transferAmt, exchName)
+		if tErr := smExch.TransferToMargin("USDT", transferAmt); tErr != nil {
+			// Non-fatal: funds may already be in margin from a previous transfer
+			e.log.Warn("ManualOpen: TransferToMargin(%s USDT): %v (may already have funds)", transferAmt, tErr)
+		}
 	}
 
 	// ---------------------------------------------------------------

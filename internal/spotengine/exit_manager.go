@@ -451,6 +451,20 @@ func (e *SpotEngine) completeExit(pos *models.SpotFuturesPosition, reason string
 	e.releaseSpotPosition(pos.ID)
 	e.borrowVelocity.Delete(pos.ID)
 
+	// Transfer remaining USDT from margin back to futures for separate-account exchanges.
+	if needsMarginTransfer(pos.Exchange) {
+		if smExch, ok := e.spotMargin[pos.Exchange]; ok {
+			if mb, mbErr := smExch.GetMarginBalance("USDT"); mbErr == nil && mb.Available > 1.0 {
+				transferAmt := fmt.Sprintf("%.2f", mb.Available)
+				if tfErr := smExch.TransferFromMargin("USDT", transferAmt); tfErr != nil {
+					e.log.Warn("completeExit: TransferFromMargin(%s USDT) on %s: %v", transferAmt, pos.Exchange, tfErr)
+				} else {
+					e.log.Info("completeExit: transferred %s USDT from margin back to futures on %s", transferAmt, pos.Exchange)
+				}
+			}
+		}
+	}
+
 	// Set cooldown on loss.
 	if totalPnL < 0 {
 		cooldownHours := e.cfg.SpotFuturesLossCooldownHours

@@ -276,7 +276,14 @@ func (a *Adapter) GetMarginBalance(coin string) (*exchange.MarginBalance, error)
 		}
 	}
 	if !found {
-		return nil, fmt.Errorf("GetMarginBalance: no data for coin %s", coin)
+		// Coin not in margin account — return zero balance. This is normal for
+		// exchanges with separate margin accounts when no funds have been
+		// transferred or borrowed yet.
+		maxBorrowable, _ := a.fetchMaxBorrowable(coin)
+		return &exchange.MarginBalance{
+			Coin:          coin,
+			MaxBorrowable: maxBorrowable,
+		}, nil
 	}
 
 	totalBalance, _ := strconv.ParseFloat(entry.TotalAmount, 64)

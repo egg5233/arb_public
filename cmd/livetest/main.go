@@ -431,8 +431,19 @@ func runTests(name string, exc exchange.Exchange, skipOrders bool, testMargin bo
 			}
 			priceStr := strconv.FormatFloat(safePrice, 'f', btcContract.PriceDecimals, 64)
 
-			// Use minimum contract size
-			sizeStr := strconv.FormatFloat(btcContract.MinSize, 'f', btcContract.SizeDecimals, 64)
+			// Ensure order notional meets exchange minimum (Binance requires >= 100 USDT).
+			minOrderSize := btcContract.MinSize
+			if safePrice > 0 {
+				minNotional := 110.0 // 110 USDT to have margin above 100 minimum
+				minSizeForNotional := minNotional / safePrice
+				if btcContract.StepSize > 0 {
+					minSizeForNotional = math.Ceil(minSizeForNotional/btcContract.StepSize) * btcContract.StepSize
+				}
+				if minSizeForNotional > minOrderSize {
+					minOrderSize = minSizeForNotional
+				}
+			}
+			sizeStr := strconv.FormatFloat(minOrderSize, 'f', btcContract.SizeDecimals, 64)
 
 			fmt.Printf("   Placing limit buy: price=%s size=%s\n", priceStr, sizeStr)
 
@@ -820,6 +831,23 @@ func runTests(name string, exc exchange.Exchange, skipOrders bool, testMargin bo
 				results = append(results, r)
 			}
 		} else {
+			// For exchanges with separate margin accounts (binance, bitget),
+			// transfer USDT to margin so there's collateral for borrow/order tests.
+			// This is a prerequisite — without collateral, borrow will fail with
+			// "maximum borrow amount exceeded" (0 collateral = 0 borrowable).
+			separateMarginExchanges := map[string]bool{"binance": true, "bitget": true}
+			var marginTestTransferred bool
+			if separateMarginExchanges[name] {
+				fmt.Printf("\n   [Pre-margin] Transferring 200 USDT to margin for %s (separate account)...\n", name)
+				if tErr := marginExc.TransferToMargin("USDT", "200"); tErr != nil {
+					fmt.Printf("   [Pre-margin] TransferToMargin WARNING: %v — margin tests may fail\n", tErr)
+				} else {
+					marginTestTransferred = true
+					fmt.Printf("   [Pre-margin] 200 USDT transferred to margin\n")
+					time.Sleep(1 * time.Second)
+				}
+			}
+
 			// 25. MarginBorrow + MarginRepay with minimum USDT
 			res = runTest("25. MarginBorrow + MarginRepay (min amount)", func() (string, bool) {
 				// Borrow a small amount of USDT (100 to meet exchange min borrow thresholds)
@@ -1101,6 +1129,22 @@ func runTests(name string, exc exchange.Exchange, skipOrders bool, testMargin bo
 				return detail, passed
 			})
 			results = append(results, res)
+
+			// Cleanup: transfer USDT back from margin to futures if we moved it earlier.
+			if marginTestTransferred {
+				fmt.Printf("\n   [Post-margin] Transferring USDT back from margin to futures...\n")
+				// Query remaining margin balance and transfer it all back.
+				if mb, mbErr := marginExc.GetMarginBalance("USDT"); mbErr == nil && mb.Available > 0.01 {
+					transferBack := strconv.FormatFloat(math.Floor(mb.Available*100)/100, 'f', 2, 64)
+					if tfErr := marginExc.TransferFromMargin("USDT", transferBack); tfErr != nil {
+						fmt.Printf("   [Post-margin] TransferFromMargin WARNING: %v\n", tfErr)
+					} else {
+						fmt.Printf("   [Post-margin] Transferred %s USDT back to futures\n", transferBack)
+					}
+				} else if mbErr != nil {
+					fmt.Printf("   [Post-margin] GetMarginBalance WARNING: %v — manual cleanup may be needed\n", mbErr)
+				}
+			}
 		}
 	}
 

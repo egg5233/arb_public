@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.52] - 2026-04-01
+
+### Fixed
+- **[bitget] GetMarginBalance zero-balance handling** -- Bitget API returns empty array when no funds are in margin account; adapter now returns zero-balance struct instead of error, matching engine expectations for exchanges with separate margin accounts
+- **[livetest] Test 11 minimum notional** -- PlaceOrder test now calculates size to meet 100 USDT minimum notional requirement (Binance raised minimum from ~$65 to $100 for BTCUSDT)
+
+### Added
+- **[spotengine] TransferToMargin/TransferFromMargin for separate-account exchanges** -- engine now automatically transfers USDT to margin before entry and back to futures after exit for Binance and Bitget (which have separate cross-margin accounts); `needsMarginTransfer()` helper identifies these exchanges; non-fatal on failure (funds may already be in correct account)
+- **[livetest] Pre-margin transfer for separate-account exchanges** -- Tests 25-28 now transfer 200 USDT to margin before borrow/order tests on Binance and Bitget, and transfer remaining USDT back after tests complete; fixes "maximum borrow amount exceeded" errors caused by 0 collateral in margin account
+
 ## [0.22.51] - 2026-04-01
 
 ### Fixed
