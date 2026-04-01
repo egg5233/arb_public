@@ -325,8 +325,13 @@ func (e *Engine) Start() {
 // rebalanceFunds analyzes upcoming opportunities and ensures each exchange
 // has enough margin. Performs same-exchange spot→futures transfers first,
 // then cross-exchange withdrawals for remaining deficits.
-func (e *Engine) rebalanceFunds() {
-	opps := e.discovery.GetOpportunities()
+func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
+	var opps []models.Opportunity
+	if len(passedOpps) > 0 && len(passedOpps[0]) > 0 {
+		opps = passedOpps[0]
+	} else {
+		opps = e.discovery.GetOpportunities()
+	}
 	if len(opps) == 0 {
 		e.log.Info("rebalance: no opportunities, skipping")
 		return
@@ -731,25 +736,24 @@ func (e *Engine) run() {
 
 			switch result.Type {
 			case discovery.RebalanceScan:
-				if e.cfg.RebalanceAfterExit {
-					e.log.Info("rebalance: skipped (RebalanceAfterExit enabled, will run after exit)")
-				} else {
-					e.rebalanceFunds()
-				}
+				e.rebalanceFunds()
 				e.log.Info("run loop: rebalanceScan handler done")
 			case discovery.ExitScan:
-				// When RebalanceAfterExit is enabled, run rebalance BEFORE exit checks.
-				// This ensures rebalance sees the current slot count and balances
-				// without interference from exit goroutines still in flight.
-				if e.cfg.RebalanceAfterExit {
-					e.log.Info("rebalance: running on exit scan (before exit checks)")
-					e.rebalanceFunds()
-				}
 				e.checkIntervalChanges()
 				e.checkExitsV2()
 				e.log.Info("run loop: exitScan handler done")
 			case discovery.RotateScan:
 				e.checkRotations()
+				if e.cfg.RebalanceAfterExit && len(result.Opps) > 0 {
+					// V2 rebalance: apply all 6 entry-level filters via scanner
+					v2Opps := e.discovery.FilterForEntry(result.Opps)
+					if len(v2Opps) > 0 {
+						e.log.Info("v2 rebalance: %d/%d opps passed 6 entry filters, running sequential allocation", len(v2Opps), len(result.Opps))
+						e.rebalanceFunds(v2Opps)
+					} else {
+						e.log.Info("v2 rebalance: 0/%d opps passed entry filters, skipping", len(result.Opps))
+					}
+				}
 				e.log.Info("run loop: rotateScan handler done")
 			case discovery.EntryScan:
 				if len(result.Opps) > 0 {

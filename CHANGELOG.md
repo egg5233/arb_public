@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.46] - 2026-03-31
+
+### Added
+- **Scanner.FilterForEntry()** — new public method applies all 6 entry-level filters (persistence, volatility, cooldown, interval, funding window, backtest) to any opportunity list (`scanner.go`)
+
+### Changed
+- **V2 rebalance as independent event after RotateScan** — when `RebalanceAfterExit` is enabled, RotateScan passes its opportunity list through `FilterForEntry()` (6 filters), then feeds the filtered list to `rebalanceFunds()` for sequential allocation at :35, 5 minutes before entry (`engine.go`)
+- **rebalanceFunds accepts optional opps** — variadic `passedOpps ...[]models.Opportunity`; V2 path passes pre-filtered list, existing callers unaffected (`engine.go`)
+- **RebalanceScan always runs** — removed `RebalanceAfterExit` skip guard on :10; rebalance runs on both :10 and :35 independently (`engine.go`)
+- **ExitScan no longer runs rebalance** — :30 exitScan only does exit checks, rebalance moved to :35 (`engine.go`)
+
 ## [0.22.45] - 2026-03-31
 
 ### Added

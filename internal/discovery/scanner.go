@@ -230,6 +230,71 @@ func (s *Scanner) Scan() []models.Opportunity {
 	return s.GetOpportunities()
 }
 
+// FilterForEntry applies the same 6 entry-level filters to an opportunity list.
+// Used by V2 rebalance to ensure parity with entryScan filtering.
+func (s *Scanner) FilterForEntry(opps []models.Opportunity) []models.Opportunity {
+	// 1. Persistence
+	var filtered []models.Opportunity
+	for _, opp := range opps {
+		if reason := s.isPersistent(opp); reason == "" {
+			filtered = append(filtered, opp)
+		}
+	}
+
+	// 2. Volatility
+	var stable []models.Opportunity
+	for _, opp := range filtered {
+		if reason := s.isSpreadVolatile(opp); reason == "" {
+			stable = append(stable, opp)
+		}
+	}
+	filtered = stable
+
+	// 3. Cooldown
+	var notCooling []models.Opportunity
+	for _, opp := range filtered {
+		if reason := s.isSymbolCoolingDown(opp.Symbol); reason == "" {
+			notCooling = append(notCooling, opp)
+		}
+	}
+	filtered = notCooling
+
+	// 4. Interval
+	if s.cfg.MaxIntervalHours > 0 {
+		var intervalOK []models.Opportunity
+		for _, opp := range filtered {
+			if opp.IntervalHours > 0 && opp.IntervalHours > s.cfg.MaxIntervalHours {
+				continue
+			}
+			intervalOK = append(intervalOK, opp)
+		}
+		filtered = intervalOK
+	}
+
+	// 5. Funding window
+	maxWindow := time.Duration(s.cfg.FundingWindowMin) * time.Minute
+	var imminent []models.Opportunity
+	for _, opp := range filtered {
+		if opp.NextFunding.IsZero() || time.Until(opp.NextFunding) <= maxWindow {
+			imminent = append(imminent, opp)
+		}
+	}
+	filtered = imminent
+
+	// 6. Backtest
+	if s.cfg.BacktestDays > 0 {
+		var backtested []models.Opportunity
+		for _, opp := range filtered {
+			if pass, _ := s.backtestFundingHistory(opp); pass {
+				backtested = append(backtested, opp)
+			}
+		}
+		filtered = backtested
+	}
+
+	return filtered
+}
+
 // GetOpportunities returns the latest ranked opportunities (thread-safe).
 func (s *Scanner) GetOpportunities() []models.Opportunity {
 	s.mu.RLock()
