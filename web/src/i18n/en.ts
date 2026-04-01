@@ -303,7 +303,7 @@ const en = {
   'cfg.desc.reEnterCooldownHours': 'After closing any position (win or loss), block re-entry on the same symbol for this many hours. 0 = disabled',
   'cfg.desc.backtestDays': 'Days of historical funding data to check before entry. Rejects coins with unprofitable funding spread history. 0 = disabled',
   'cfg.desc.backtestMinProfit': 'Minimum cumulative net profit from historical funding to pass the backtest filter',
-  'cfg.desc.rebalanceAfterExit': 'Run V2 fund rebalancing on rotate scan (:35) with 6 entry filters, instead of standalone rebalance scan (:10). Prepares funds closer to entry time.',
+  'cfg.desc.rebalanceAfterExit': 'Run additional V2 fund rebalancing on rotate scan (:35) with 6 entry filters. Standalone rebalance scan (:10) still runs independently. Prepares funds closer to entry time.',
   'cfg.desc.rebalanceScanMinute': 'Minute mark within each hour that triggers fund rebalancing across exchanges',
   'cfg.desc.exitScanMinute': 'Minute mark that triggers exit condition checks on active positions',
   'cfg.desc.entryScanMinute': 'Minute mark that triggers trade execution for qualified opportunities',

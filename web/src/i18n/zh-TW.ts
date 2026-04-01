@@ -305,7 +305,7 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.desc.reEnterCooldownHours': '任何平倉（無論盈虧）後，封鎖該幣種重新進場的時數。0 = 停用',
   'cfg.desc.backtestDays': '進場前檢查的歷史資金費率天數。拒絕歷史資金費率差不利的幣種。0 = 停用',
   'cfg.desc.backtestMinProfit': '歷史資金費率淨利潤最低門檻，低於此值不通過回測篩選',
-  'cfg.desc.rebalanceAfterExit': '在輪換掃描(:35)時執行 V2 資金再平衡（含6項進場過濾），取代獨立的再平衡掃描(:10)。更接近進場時間準備資金。',
+  'cfg.desc.rebalanceAfterExit': '在輪換掃描(:35)時額外執行 V2 資金再平衡（含6項進場過濾）。獨立再平衡掃描(:10)仍照常運行。更接近進場時間準備資金。',
   'cfg.desc.rebalanceScanMinute': '每小時中觸發跨交易所資金再平衡的分鐘標記',
   'cfg.desc.exitScanMinute': '觸發活躍持倉退出條件檢查的分鐘標記',
   'cfg.desc.entryScanMinute': '觸發合格機會交易執行的分鐘標記',
