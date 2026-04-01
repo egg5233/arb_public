@@ -289,6 +289,7 @@ func main() {
 		spotEng = spotengine.NewSpotEngine(exchanges, db, apiSrv, cfg, allocator)
 		apiSrv.SetSpotOpenHandler(spotEng.ManualOpen)
 		apiSrv.SetSpotCloseHandler(spotEng.ManualClose)
+		apiSrv.SetSpotTestInjectHandler(spotEng.InjectTestOpportunity)
 		spotEng.Start()
 		log.Info("Spot-futures engine started")
 	}

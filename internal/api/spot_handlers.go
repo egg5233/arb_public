@@ -229,6 +229,31 @@ func (s *Server) handleSpotManualOpen(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, Response{OK: true})
 }
 
+// handleSpotTestInject injects synthetic test opportunities for lifecycle verification.
+func (s *Server) handleSpotTestInject(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Symbol   string `json:"symbol"`
+		Exchange string `json:"exchange"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Symbol == "" || req.Exchange == "" {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "symbol and exchange required"})
+		return
+	}
+	if s.spotInjectTestOpp == nil {
+		writeJSON(w, http.StatusServiceUnavailable, Response{Error: "spot engine not available"})
+		return
+	}
+	s.spotInjectTestOpp(req.Symbol, req.Exchange)
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: map[string]string{
+		"status": "injected",
+		"symbol": strings.ToUpper(req.Symbol),
+	}})
+}
+
 // handleSpotAutoConfig handles GET and POST for spot-futures auto-entry configuration.
 // GET returns current auto-entry settings; POST updates them and persists to Redis.
 func (s *Server) handleSpotAutoConfig(w http.ResponseWriter, r *http.Request) {

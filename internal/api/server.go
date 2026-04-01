@@ -31,8 +31,9 @@ type Server struct {
 	permissions       map[string]exchange.PermissionResult
 	scorer            *risk.ExchangeScorer
 	spotOpps          atomic.Value // []interface{}
-	spotOpenPosition  func(symbol, exchange, direction string) error
-	spotClosePosition func(positionID string) error
+	spotOpenPosition   func(symbol, exchange, direction string) error
+	spotClosePosition  func(positionID string) error
+	spotInjectTestOpp  func(symbol, exchange string)
 }
 
 // NewServer creates a new Dashboard server.
@@ -108,6 +109,7 @@ func (s *Server) Start() {
 	mux.HandleFunc("/api/spot/close", s.cors(s.authMiddleware(s.handleSpotManualClose)))
 	mux.HandleFunc("GET /api/spot/positions/{id}/health", s.cors(s.authMiddleware(s.handleSpotPositionHealth)))
 	mux.HandleFunc("/api/spot/config/auto", s.cors(s.authMiddleware(s.handleSpotAutoConfig)))
+	mux.HandleFunc("/api/spot/test-inject", s.cors(s.authMiddleware(s.handleSpotTestInject)))
 
 	// System update
 	mux.HandleFunc("/api/check-update", s.cors(s.authMiddleware(s.handleCheckUpdate)))
@@ -253,6 +255,11 @@ func (s *Server) SetSpotOpenHandler(fn func(symbol, exchange, direction string) 
 // SetSpotCloseHandler registers the spot-futures engine's manual close callback.
 func (s *Server) SetSpotCloseHandler(fn func(positionID string) error) {
 	s.spotClosePosition = fn
+}
+
+// SetSpotTestInjectHandler registers the spot-futures engine's test inject callback.
+func (s *Server) SetSpotTestInjectHandler(fn func(symbol, exchange string)) {
+	s.spotInjectTestOpp = fn
 }
 
 // SetPermissions stores the startup permission check results.

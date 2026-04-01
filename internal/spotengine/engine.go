@@ -1,6 +1,7 @@
 package spotengine
 
 import (
+	"strings"
 	"sync"
 	"time"
 
@@ -196,6 +197,58 @@ func (e *SpotEngine) getLatestOpps() []SpotArbOpportunity {
 	out := make([]SpotArbOpportunity, len(e.latestOpps))
 	copy(out, e.latestOpps)
 	return out
+}
+
+// InjectTestOpportunity adds synthetic Dir A and Dir B opportunities for the
+// given symbol and exchange into the cached opportunity list. Used for manual
+// lifecycle testing when no real opportunity is available.
+func (e *SpotEngine) InjectTestOpportunity(symbol, exchName string) {
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	exchName = strings.ToLower(strings.TrimSpace(exchName))
+	baseCoin := strings.TrimSuffix(symbol, "USDT")
+
+	now := time.Now()
+	testOpps := []SpotArbOpportunity{
+		{
+			Symbol:    symbol,
+			BaseCoin:  baseCoin,
+			Exchange:  exchName,
+			Direction: "borrow_sell_long",
+			FundingAPR: 0.10,
+			BorrowAPR:  0.05,
+			FeeAPR:     0.002,
+			NetAPR:     0.048,
+			Source:     "test-inject",
+			Timestamp:  now,
+		},
+		{
+			Symbol:    symbol,
+			BaseCoin:  baseCoin,
+			Exchange:  exchName,
+			Direction: "buy_spot_short",
+			FundingAPR: 0.10,
+			BorrowAPR:  0,
+			FeeAPR:     0.002,
+			NetAPR:     0.098,
+			Source:     "test-inject",
+			Timestamp:  now,
+		},
+	}
+
+	e.oppsMu.Lock()
+	e.latestOpps = append(e.latestOpps, testOpps...)
+	e.oppsMu.Unlock()
+
+	// Broadcast to dashboard.
+	items := make([]interface{}, len(e.latestOpps))
+	opps := e.getLatestOpps()
+	for i, o := range opps {
+		items[i] = o
+	}
+	e.api.SetSpotOpportunities(items)
+	e.api.BroadcastSpotOpportunities(items)
+
+	e.log.Info("InjectTestOpportunity: added %s on %s (Dir A + Dir B) — %d total opps", symbol, exchName, len(opps))
 }
 
 // isExiting returns true if the given position is currently being exited.

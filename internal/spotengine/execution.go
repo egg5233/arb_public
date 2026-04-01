@@ -19,6 +19,30 @@ const spotEntryManualRecoveryReason = "manual_intervention_required"
 
 var spotEntryLockTTL = 5 * time.Minute
 
+// futuresStepSize looks up the futures contract step size for symbol on the
+// given exchange. Returns 0 if contracts are unavailable (caller should skip
+// rounding).
+func (e *SpotEngine) futuresStepSize(futExch exchange.Exchange, symbol string) (stepSize float64, minSize float64, decimals int) {
+	contracts, err := futExch.LoadAllContracts()
+	if err != nil {
+		return 0, 0, 6
+	}
+	ci, ok := contracts[symbol]
+	if !ok {
+		return 0, 0, 6
+	}
+	return ci.StepSize, ci.MinSize, ci.SizeDecimals
+}
+
+// roundToFuturesStep rounds qty down to futures step size. Returns the rounded
+// quantity and its string representation. If step is 0, uses 6 decimal places.
+func roundToFuturesStep(qty, stepSize float64, decimals int) (float64, string) {
+	if stepSize > 0 {
+		qty = utils.RoundToStep(qty, stepSize)
+	}
+	return qty, utils.FormatSize(qty, decimals)
+}
+
 // ManualOpen executes a spot-futures arbitrage entry for the given symbol,
 // exchange, and direction. It runs synchronously (blocking) and returns an
 // error if any pre-check or execution step fails.
@@ -138,12 +162,19 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		}
 	}
 
-	// Round size to 6 decimal places (safe default for Phase 3a).
-	size := math.Floor(rawSize*1e6) / 1e6
-	if size <= 0 {
-		return fmt.Errorf("computed size is 0 for %s (capital=%.2f price=%.6f)", symbol, capital, midPrice)
+	// Round size to futures contract step size so both legs match exactly.
+	futStep, futMin, futDec := e.futuresStepSize(futExch, symbol)
+	var size float64
+	if futStep > 0 {
+		size = utils.RoundToStep(rawSize, futStep)
+	} else {
+		size = math.Floor(rawSize*1e6) / 1e6
 	}
-	sizeStr := utils.FormatSize(size, 6)
+	if size <= 0 || (futMin > 0 && size < futMin) {
+		e.log.Warn("ManualOpen: computed size %.6f (raw=%.6f step=%.6f min=%.6f) too small for %s", size, rawSize, futStep, futMin, symbol)
+		return fmt.Errorf("computed size %.6f too small for %s (step=%.6f min=%.6f)", size, symbol, futStep, futMin)
+	}
+	sizeStr := utils.FormatSize(size, futDec)
 	plannedNotional := size * midPrice
 	// Reject if borrowable amount is less than 10% of the target capital —
 	// too small to be worth trading and likely to hit exchange minimums.
@@ -152,6 +183,7 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		minNotional = 5.0
 	}
 	if plannedNotional < minNotional {
+		e.log.Warn("ManualOpen: notional %.2f USDT too small (min %.0f USDT) for %s — MaxBorrowable may be too low (size=%.6f price=%.6f)", plannedNotional, minNotional, symbol, size, midPrice)
 		return fmt.Errorf("notional %.2f USDT too small (min %.0f USDT) for %s (size=%.6f price=%.6f)", plannedNotional, minNotional, symbol, size, midPrice)
 	}
 	e.log.Info("ManualOpen: %s size=%.6f (%s) notional=%.2f USDT", symbol, size, sizeStr, plannedNotional)
@@ -219,10 +251,10 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 
 	switch direction {
 	case "borrow_sell_long":
-		spotEntryPrice, futuresEntryPrice, spotFilledQty, futuresFilledQty, borrowAmount, err = e.executeBorrowSellLong(smExch, futExch, symbol, baseCoin, sizeStr, size, requireEntryLock, entryPos)
+		spotEntryPrice, futuresEntryPrice, spotFilledQty, futuresFilledQty, borrowAmount, err = e.executeBorrowSellLong(smExch, futExch, symbol, baseCoin, sizeStr, size, futStep, futMin, futDec, requireEntryLock, entryPos)
 		futuresSide = "long"
 	case "buy_spot_short":
-		spotEntryPrice, futuresEntryPrice, spotFilledQty, futuresFilledQty, err = e.executeBuySpotShort(smExch, futExch, symbol, sizeStr, size, plannedNotional, requireEntryLock, entryPos)
+		spotEntryPrice, futuresEntryPrice, spotFilledQty, futuresFilledQty, err = e.executeBuySpotShort(smExch, futExch, symbol, sizeStr, size, plannedNotional, futStep, futMin, futDec, requireEntryLock, entryPos)
 		futuresSide = "short"
 	}
 
@@ -311,6 +343,8 @@ func (e *SpotEngine) executeBorrowSellLong(
 	futExch exchange.Exchange,
 	symbol, baseCoin, sizeStr string,
 	size float64,
+	futStep, futMin float64,
+	futDec int,
 	requireEntryLock func(string) error,
 	pos *models.SpotFuturesPosition,
 ) (spotAvg, futAvg, spotFilled, futFilled, borrowAmt float64, err error) {
@@ -349,25 +383,31 @@ func (e *SpotEngine) executeBorrowSellLong(
 	pos.BorrowAmount = borrowAmt
 	e.log.Info("ManualOpen [borrow_sell_long] step 1: spot fill=%.6f avg=%.6f (borrowed=%.6f)", spotFilled, spotAvg, borrowAmt)
 
-	// Step 2: Long futures
+	// Step 2: Long futures — re-round spot fill to futures step (handles partial fills).
+	futQty, futQtyStr := roundToFuturesStep(spotFilled, futStep, futDec)
 	spotFilledStr := utils.FormatSize(spotFilled, 6)
 	buybackQuote := utils.FormatSize(spotFilled*spotAvg*1.02, 2) // 2% slippage buffer for rollback
+	if futQty <= 0 || (futMin > 0 && futQty < futMin) {
+		e.log.Error("ManualOpen [borrow_sell_long] step 2: spot fill %.6f rounds to futures qty %.6f (step=%.6f min=%.6f) — too small, rolling back", spotFilled, futQty, futStep, futMin)
+		e.rollbackBorrowSell(smExch, symbol, baseCoin, spotFilledStr, buybackQuote, spotFilled)
+		return 0, 0, 0, 0, 0, fmt.Errorf("spot fill %.6f too small for futures (step=%.6f min=%.6f)", spotFilled, futStep, futMin)
+	}
 	if err := requireEntryLock("futures long"); err != nil {
-		e.rollbackSpotOrder(smExch, symbol, exchange.SideBuy, spotFilledStr, buybackQuote, true)
+		e.rollbackBorrowSell(smExch, symbol, baseCoin, spotFilledStr, buybackQuote, spotFilled)
 		return 0, 0, 0, 0, 0, err
 	}
-	e.log.Info("ManualOpen [borrow_sell_long] step 2: PlaceOrder futures BUY %s %s", symbol, spotFilledStr)
+	e.log.Info("ManualOpen [borrow_sell_long] step 2: PlaceOrder futures BUY %s %s (spot=%.6f step=%.6f)", symbol, futQtyStr, spotFilled, futStep)
 	futOrderID, err := futExch.PlaceOrder(exchange.PlaceOrderParams{
 		Symbol:    symbol,
 		Side:      exchange.SideBuy,
 		OrderType: "market",
-		Size:      spotFilledStr,
+		Size:      futQtyStr,
 		Force:     "ioc",
 	})
 	if err != nil {
-		// Rollback: buy back spot (auto-repay will handle the borrow).
+		// Rollback: buy back spot + explicitly repay borrow (auto-repay unreliable on some exchanges).
 		e.log.Error("ManualOpen [borrow_sell_long] step 2 FAILED: %v — rolling back spot sell", err)
-		e.rollbackSpotOrder(smExch, symbol, exchange.SideBuy, spotFilledStr, buybackQuote, true)
+		e.rollbackBorrowSell(smExch, symbol, baseCoin, spotFilledStr, buybackQuote, spotFilled)
 		return 0, 0, 0, 0, 0, fmt.Errorf("futures long failed: %w", err)
 	}
 	e.log.Info("ManualOpen [borrow_sell_long] step 2: futures order placed: %s", futOrderID)
@@ -397,6 +437,8 @@ func (e *SpotEngine) executeBuySpotShort(
 	futExch exchange.Exchange,
 	symbol, sizeStr string,
 	size, notionalUSDT float64,
+	futStep, futMin float64,
+	futDec int,
 	requireEntryLock func(string) error,
 	pos *models.SpotFuturesPosition,
 ) (spotAvg, futAvg, spotFilled, futFilled float64, err error) {
@@ -405,14 +447,15 @@ func (e *SpotEngine) executeBuySpotShort(
 	if err := requireEntryLock("spot buy"); err != nil {
 		return 0, 0, 0, 0, err
 	}
-	quoteSizeStr := utils.FormatSize(notionalUSDT, 2)
-	e.log.Info("ManualOpen [buy_spot_short] step 1: PlaceSpotMarginOrder BUY %s base=%s quote=%s", symbol, sizeStr, quoteSizeStr)
+	// Use Size (base qty) for the market buy — not QuoteSize (USDT amount).
+	// QuoteSize gives approximate fill that may not align with futures step size.
+	// Size with marketUnit=baseCoin (Bybit) gives exact quantity matching futures.
+	e.log.Info("ManualOpen [buy_spot_short] step 1: PlaceSpotMarginOrder BUY %s size=%s", symbol, sizeStr)
 	spotOrderID, err := smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
 		Symbol:    symbol,
 		Side:      exchange.SideBuy,
 		OrderType: "market",
 		Size:      sizeStr,
-		QuoteSize: quoteSizeStr,
 	})
 	if err != nil {
 		return 0, 0, 0, 0, fmt.Errorf("spot buy failed: %w", err)
@@ -432,18 +475,24 @@ func (e *SpotEngine) executeBuySpotShort(
 	}
 	e.log.Info("ManualOpen [buy_spot_short] step 1: spot fill=%.6f avg=%.6f", spotFilled, spotAvg)
 
-	// Step 2: Short futures
+	// Step 2: Short futures — re-round spot fill to futures step (handles partial fills).
+	futQty, futQtyStr := roundToFuturesStep(spotFilled, futStep, futDec)
 	spotFilledStr := utils.FormatSize(spotFilled, 6)
+	if futQty <= 0 || (futMin > 0 && futQty < futMin) {
+		e.log.Error("ManualOpen [buy_spot_short] step 2: spot fill %.6f rounds to futures qty %.6f (step=%.6f min=%.6f) — too small, rolling back", spotFilled, futQty, futStep, futMin)
+		e.rollbackSpotOrder(smExch, symbol, exchange.SideSell, spotFilledStr, "", false)
+		return 0, 0, 0, 0, fmt.Errorf("spot fill %.6f too small for futures (step=%.6f min=%.6f)", spotFilled, futStep, futMin)
+	}
 	if err := requireEntryLock("futures short"); err != nil {
 		e.rollbackSpotOrder(smExch, symbol, exchange.SideSell, spotFilledStr, "", false)
 		return 0, 0, 0, 0, err
 	}
-	e.log.Info("ManualOpen [buy_spot_short] step 2: PlaceOrder futures SELL %s %s", symbol, spotFilledStr)
+	e.log.Info("ManualOpen [buy_spot_short] step 2: PlaceOrder futures SELL %s %s (spot=%.6f step=%.6f)", symbol, futQtyStr, spotFilled, futStep)
 	futOrderID, err := futExch.PlaceOrder(exchange.PlaceOrderParams{
 		Symbol:    symbol,
 		Side:      exchange.SideSell,
 		OrderType: "market",
-		Size:      spotFilledStr,
+		Size:      futQtyStr,
 		Force:     "ioc",
 	})
 	if err != nil {
@@ -1077,6 +1126,24 @@ func (e *SpotEngine) rollbackSpotOrder(smExch exchange.SpotMarginExchange, symbo
 	}
 }
 
+// rollbackBorrowSell reverses a Dir A (borrow-sell-long) spot order: buys back
+// the asset and explicitly repays the margin borrow. AutoRepay is unreliable on
+// some exchanges (e.g., Bybit UTA does not auto-repay on buy).
+func (e *SpotEngine) rollbackBorrowSell(smExch exchange.SpotMarginExchange, symbol, baseCoin, sizeStr, quoteSizeStr string, borrowAmt float64) {
+	// Step 1: buy back spot.
+	e.rollbackSpotOrder(smExch, symbol, exchange.SideBuy, sizeStr, quoteSizeStr, true)
+
+	// Step 2: explicitly repay borrow (auto-repay unreliable).
+	time.Sleep(2 * time.Second) // let settlement propagate
+	repayStr := utils.FormatSize(borrowAmt, 8)
+	e.log.Info("ROLLBACK: explicit MarginRepay(%s %s) after buyback", repayStr, baseCoin)
+	if err := smExch.MarginRepay(exchange.MarginRepayParams{Coin: baseCoin, Amount: repayStr}); err != nil {
+		e.log.Error("ROLLBACK: MarginRepay(%s %s) FAILED: %v — check manually", repayStr, baseCoin, err)
+	} else {
+		e.log.Info("ROLLBACK: MarginRepay(%s %s) succeeded — borrow cleared", repayStr, baseCoin)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Position close (exit execution)
 // ---------------------------------------------------------------------------
@@ -1269,7 +1336,10 @@ func (e *SpotEngine) closeDirectionA(
 		}
 	}
 
-	// Step 3: Repay residual borrow (auto-repay should have handled most/all).
+	// Step 3: Repay residual borrow.
+	// Wait for exchange settlement — some exchanges (Bybit UTA) auto-settle
+	// borrows after buyback but need a few seconds to process.
+	time.Sleep(3 * time.Second)
 	if mb, mbErr := smExch.GetMarginBalance(pos.BaseCoin); mbErr == nil && (mb.Borrowed+mb.Interest) > 0 {
 		repayAmount := utils.FormatSize(mb.Borrowed+mb.Interest, 6)
 		e.log.Info("ClosePosition [Dir A] step 3: repay residual borrow %s %s", repayAmount, pos.BaseCoin)
@@ -1277,14 +1347,31 @@ func (e *SpotEngine) closeDirectionA(
 			Coin:   pos.BaseCoin,
 			Amount: repayAmount,
 		}); err != nil {
-			e.log.Error("ClosePosition [Dir A] repay FAILED: %v — will retry on next monitor tick for %s %s",
-				err, repayAmount, pos.BaseCoin)
-			pos.PendingRepay = true
-			var blackout *exchange.ErrRepayBlackout
-			if errors.As(err, &blackout) {
-				pos.PendingRepayRetryAt = &blackout.RetryAfter
+			// Re-check balance: borrow may have auto-settled, or we may hold enough
+			// to cover it (Bybit UTA reconciles implicit isLeverage=1 borrows internally).
+			if mb2, mb2Err := smExch.GetMarginBalance(pos.BaseCoin); mb2Err == nil {
+				if mb2.Borrowed <= 0 && mb2.Interest <= 0 {
+					e.log.Info("ClosePosition [Dir A] step 3: borrow cleared by auto-settlement (was %s, now 0)", repayAmount)
+				} else if mb2.TotalBalance >= mb2.Borrowed+mb2.Interest {
+					e.log.Info("ClosePosition [Dir A] step 3: repay endpoint failed but balance covers liability (balance=%.8f >= borrowed=%.8f) — exchange will auto-settle",
+						mb2.TotalBalance, mb2.Borrowed+mb2.Interest)
+				} else {
+					e.log.Error("ClosePosition [Dir A] repay FAILED: %v — will retry on next monitor tick for %s %s",
+						err, repayAmount, pos.BaseCoin)
+					pos.PendingRepay = true
+					var blackout *exchange.ErrRepayBlackout
+					if errors.As(err, &blackout) {
+						pos.PendingRepayRetryAt = &blackout.RetryAfter
+					}
+				}
+			} else {
+				e.log.Error("ClosePosition [Dir A] repay FAILED: %v — will retry on next monitor tick for %s %s",
+					err, repayAmount, pos.BaseCoin)
+				pos.PendingRepay = true
 			}
 		}
+	} else if mbErr == nil {
+		e.log.Info("ClosePosition [Dir A] step 3: borrow already settled (borrowed=0) — no repay needed")
 	} else if mbErr != nil {
 		e.log.Warn("ClosePosition [Dir A] step 3: GetMarginBalance failed (%v), falling back to full repay", mbErr)
 		repayAmount := utils.FormatSize(pos.BorrowAmount, 6)

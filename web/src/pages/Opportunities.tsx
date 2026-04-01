@@ -48,6 +48,8 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
   const [openingOpp, setOpeningOpp] = useState<Opportunity | null>(null);
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
+  const [spotOpening, setSpotOpening] = useState<string | null>(null);
+  const [spotError, setSpotError] = useState<string | null>(null);
 
   const dismissModal = useCallback(() => { if (!opening) setOpeningOpp(null); }, [opening]);
   useEffect(() => {
@@ -179,6 +181,13 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
             </span>
           </div>
 
+          {spotError && (
+            <div className="flex items-center justify-between bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 text-sm text-red-400">
+              <span>{spotError}</span>
+              <button onClick={() => setSpotError(null)} className="ml-2 text-red-500 hover:text-red-300">&times;</button>
+            </div>
+          )}
+
           <table className="w-full text-sm">
             <thead>
               <tr className="text-gray-400 text-left border-b border-gray-800">
@@ -191,6 +200,7 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
                 <th className="pb-2 text-right">{t('spot.fees')}</th>
                 <th className="pb-2 text-right">{t('spot.netApr')}</th>
                 <th className="pb-2">{t('spot.status')}</th>
+                <th className="pb-2">{t('spot.reason')}</th>
                 <th className="pb-2"></th>
               </tr>
             </thead>
@@ -198,6 +208,7 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
               {spotOpportunities.map((opp, i) => {
                 const filtered = !!opp.filter_status;
                 const isA = opp.direction === 'borrow_sell_long';
+                const oppKey = `${opp.symbol}-${opp.exchange}-${opp.direction}`;
                 const dirLabel = isA ? t('spot.dirA') : t('spot.dirB');
                 const dirDesc = isA ? t('spot.dirADesc') : t('spot.dirBDesc');
                 return (
@@ -234,8 +245,9 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
                     </td>
                     <td className="py-2">
                       {filtered ? (
-                        <span className="text-xs text-gray-600 truncate max-w-[180px] inline-block" title={opp.filter_status}>
-                          {opp.filter_status}
+                        <span className="inline-flex items-center gap-1 text-xs text-gray-600">
+                          <span className="w-1.5 h-1.5 rounded-full bg-gray-600" />
+                          {t('spot.filtered')}
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1 text-xs text-emerald-400">
@@ -244,13 +256,35 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
                         </span>
                       )}
                     </td>
+                    <td className="py-2">
+                      {filtered && (
+                        <span className="text-xs text-gray-600 truncate max-w-[200px] inline-block" title={opp.filter_status}>
+                          {opp.filter_status}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-2 py-1">
                       {onSpotOpen && !filtered && (
                         <button
-                          onClick={() => onSpotOpen(opp.symbol, opp.exchange, opp.direction)}
-                          className="px-2 py-0.5 text-xs bg-emerald-600/20 text-emerald-400 rounded hover:bg-emerald-600/40 transition-colors"
+                          disabled={spotOpening === oppKey}
+                          onClick={async () => {
+                            setSpotOpening(oppKey);
+                            setSpotError(null);
+                            try {
+                              await onSpotOpen(opp.symbol, opp.exchange, opp.direction);
+                              setSpotOpening(null);
+                            } catch (err: unknown) {
+                              setSpotError(err instanceof Error ? err.message : 'Open failed');
+                              setSpotOpening(null);
+                            }
+                          }}
+                          className={`px-2 py-0.5 text-xs rounded transition-colors ${
+                            spotOpening === oppKey
+                              ? 'bg-gray-700 text-gray-400 cursor-wait'
+                              : 'bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/40'
+                          }`}
                         >
-                          Open
+                          {spotOpening === oppKey ? 'Opening...' : 'Open'}
                         </button>
                       )}
                     </td>
@@ -259,7 +293,7 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
               })}
               {spotOpportunities.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="py-8 text-center text-gray-500">
+                  <td colSpan={11} className="py-8 text-center text-gray-500">
                     {t('spot.noOpportunities')}
                   </td>
                 </tr>

@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.51] - 2026-04-01
+
+### Fixed
+- **[spot-futures] Futures qty step size alignment** — spot and futures legs now use the same step-aligned size from the start, preventing "Qty invalid" errors when spot fill doesn't match futures contract step (e.g., 0.001456 BTC rejected by Bybit futures with step=0.001)
+- **[spot-futures] Dir A rollback explicit repay** — `rollbackBorrowSell()` now buys back spot AND explicitly calls `MarginRepay` after failed entries, fixing unreturned borrows when Bybit's auto-repay is unreliable on buy orders
+- **[spot-futures] Dir B exact quantity buy** — Dir B spot buy now uses base quantity (`Size`) instead of quote amount (`QuoteSize`), ensuring exact fill matching the futures step size
+- **[bybit] MarginRepay omit amount** — Bybit's `/v5/account/no-convert-repay` now called without `amount` parameter; Bybit repays `min(spot available, liability)` automatically, fixing "remaining quota insufficient" errors when UTA locks spot balance during settlement
+- **[spot-futures] Repay monitor deficit check** — `retryPendingRepay` now uses `TotalBalance` instead of `Available` to detect coin deficit, preventing false deficit buys when Bybit UTA locks assets during settlement
+- **[spot-futures] Auto-settlement detection** — `closeDirectionA` adds 3s settlement delay and detects when balance covers liability (exchange auto-settles), preventing stuck `PendingRepay` loops
+- **[spot-futures] Monitor auto-settle detection** — `retryPendingRepay` detects `borrowed=0` (already cleared) and re-checks after failed repay to detect late auto-settlement
+
+### Added
+- **[api] Test inject endpoint** — `POST /api/spot/test-inject` injects synthetic Dir A + Dir B opportunities for lifecycle testing when no real opportunity is available
+- **[api] Spot open error display** — dashboard spot Open button now shows loading state and error banner instead of silently swallowing API errors
+- **[spot-futures] Silent rejection logging** — `ManualOpen` now logs warnings when entries are rejected due to notional too small or size=0, making rejections visible in logs
+
 ## [0.22.50] - 2026-04-01
 
 ### Added

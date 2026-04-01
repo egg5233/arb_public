@@ -288,12 +288,32 @@ func (e *SpotEngine) retryPendingRepay(pos *models.SpotFuturesPosition) {
 	// Query actual liability (principal + accrued interest) and available balance.
 	bal, balErr := smExch.GetMarginBalance(pos.BaseCoin)
 	repayAmount := utils.FormatSize(pos.BorrowAmount, 6) // fallback
+	if balErr == nil && bal.Borrowed <= 0 && bal.Interest <= 0 {
+		// Borrow already cleared (e.g. Bybit auto-repay). Skip repay and complete exit.
+		e.log.Info("retryPendingRepay: borrow already cleared for %s (borrowed=%.8f interest=%.8f) — completing exit", pos.ID, bal.Borrowed, bal.Interest)
+		if err := e.lockedUpdatePosition(pos.ID, func(p *models.SpotFuturesPosition) bool {
+			p.PendingRepay = false
+			p.PendingRepayRetryAt = nil
+			return true
+		}); err != nil {
+			e.log.Error("retryPendingRepay: failed to clear PendingRepay for %s: %v", pos.ID, err)
+		}
+		updated, err := e.db.GetSpotPosition(pos.ID)
+		if err != nil {
+			e.log.Error("retryPendingRepay: failed to re-read position %s: %v", pos.ID, err)
+			return
+		}
+		e.completeExit(updated, updated.ExitReason)
+		return
+	}
 	if balErr == nil && bal.Borrowed > 0 {
 		liability := bal.Borrowed + bal.Interest
 		repayAmount = utils.FormatSize(liability, 6)
 
-		// If we don't hold enough coin, buy the shortfall.
-		deficit := liability - bal.Available
+		// Check if we actually hold enough coin. Use TotalBalance (not Available)
+		// because Bybit UTA locks coin against borrow during settlement, making
+		// Available appear low even when the account has sufficient assets.
+		deficit := liability - bal.TotalBalance
 		if deficit > 0 {
 			// Add 0.5% buffer for slippage on the market buy.
 			deficitWithBuffer := deficit * 1.005
@@ -344,8 +364,14 @@ func (e *SpotEngine) retryPendingRepay(pos *models.SpotFuturesPosition) {
 			})
 			return
 		}
-		e.log.Warn("retryPendingRepay: repay still failing for %s: %v — will retry next tick", pos.ID, err)
-		return
+		// Re-check: exchange may have auto-settled during the repay call.
+		if mb2, mb2Err := smExch.GetMarginBalance(pos.BaseCoin); mb2Err == nil && mb2.Borrowed <= 0 && mb2.Interest <= 0 {
+			e.log.Info("retryPendingRepay: borrow auto-settled for %s — completing exit", pos.ID)
+			// Fall through to success path below.
+		} else {
+			e.log.Warn("retryPendingRepay: repay still failing for %s: %v (borrowed=%.8f) — will retry next tick", pos.ID, err, bal.Borrowed)
+			return
+		}
 	}
 
 	e.log.Info("retryPendingRepay: repay succeeded for %s — completing exit", pos.ID)

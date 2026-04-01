@@ -40,7 +40,11 @@ func (a *Adapter) MarginBorrow(params exchange.MarginBorrowParams) error {
 	return nil
 }
 
-// MarginRepay repays a borrowed coin without asset conversion.
+// MarginRepay repays a borrowed coin via no-convert-repay (safe, won't touch other assets).
+// Omits the amount parameter — Bybit repays min(spot available, liability). When a specific
+// amount exceeds the "lossLessRepaymentAmount" (spot available balance), Bybit rejects it
+// with "remaining quota insufficient." Omitting amount lets Bybit repay what it can; the
+// monitor retries until borrowed reaches 0.
 // Bybit blocks repayment during minutes 04:00–05:30 of each hour UTC.
 func (a *Adapter) MarginRepay(params exchange.MarginRepayParams) error {
 	now := time.Now().UTC()
@@ -56,9 +60,11 @@ func (a *Adapter) MarginRepay(params exchange.MarginRepayParams) error {
 		}
 	}
 
+	// Omit amount — let Bybit repay whatever spot balance is available.
+	// This avoids "remaining quota insufficient" when the requested amount
+	// exceeds the lossLessRepaymentAmount (spot available after UTA settlement).
 	reqParams := map[string]string{
-		"coin":   params.Coin,
-		"amount": params.Amount,
+		"coin": params.Coin,
 	}
 	result, err := a.client.Post("/v5/account/no-convert-repay", reqParams)
 	if err != nil {
