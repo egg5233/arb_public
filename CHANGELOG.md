@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.23.0] - 2026-04-01
+
+### Changed
+- Version bump to 0.23.0
+
 ## [0.22.55] - 2026-04-02
 
 ### Fixed
@@ -80,7 +85,31 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - **[spot-futures] Add `AutoRepay: true` to Direction A buyback and rollback orders** — four bugs from the Direction A auto-borrow refactor: (1) `closeDirectionA` spot buyback order was missing `AutoRepay: true`, leaving borrowed coins unrepaid until the separate `MarginRepay` call; Step 3 repay now only runs for residual liability after auto-repay; (2) `emergencyClose` parallel spot leg was missing `AutoRepay` for Direction A buyback, same residual-only fallback applied; (3) `rollbackSpotOrder` had no `autoRepay` parameter — added it and all 6 callers updated (Direction A passes `true`, Direction B passes `false`); (4) `reconcilePendingEntry` was calling `rollbackBorrow` unconditionally on zero-fill even though auto-borrow only borrows on actual fill — now checks `GetMarginBalance` for outstanding debt first (`internal/spotengine/execution.go`)
 
+## [0.22.48] - 2026-04-01
+
+### Fixed
+- **BingX MarginRatio was always 0** — adapter now calculates `1 - available/total`, consistent with health monitor; all 6 exchanges now report MarginRatio
+- **Risk approval post-trade margin ratio check** — rejects entries when projected margin ratio would exceed L4 threshold after opening; prevents L5 emergency close cascade
+- **closeFullyWithRetry quantity=0 bug** — dust guard skips order when rounded size <= 0 instead of sending invalid API request
+- **L5 emergency close exit reason** — now records "L5 emergency close: {exchange} margin critical" in position history
+- **Rebalance margin ratio relief** — when futures covers need but post-trade ratio would exceed L4, transfers minimum required from spot to bring ratio below threshold
+
+## [0.22.47] - 2026-04-01
+
+### Fixed
+- **Rebalance withdraw fee not added to transfer amount** — withdraw now sends `netAmount + fee` so recipient receives the full `netAmount` after exchange deducts fee; previously recipient got `netAmount - fee`, causing spot→futures insufficient balance
+- **Outdated scan minute comments** — engine.go and i18n descriptions updated to reflect actual schedule (:10/:30/:35/:40)
+
 ## [0.22.46] - 2026-03-31
+
+### Added
+- **Scanner.FilterForEntry()** — new public method applies all 6 entry-level filters (persistence, volatility, cooldown, interval, funding window, backtest) to any opportunity list (`scanner.go`)
+
+### Changed
+- **V2 rebalance as independent event after RotateScan** — when `RebalanceAfterExit` is enabled, RotateScan passes its opportunity list through `FilterForEntry()` (6 filters), then feeds the filtered list to `rebalanceFunds()` for sequential allocation at :35, 5 minutes before entry (`engine.go`)
+- **rebalanceFunds accepts optional opps** — variadic `passedOpps ...[]models.Opportunity`; V2 path passes pre-filtered list, existing callers unaffected (`engine.go`)
+- **RebalanceScan always runs** — removed `RebalanceAfterExit` skip guard on :10; rebalance runs on both :10 and :35 independently (`engine.go`)
+- **ExitScan no longer runs rebalance** — :30 exitScan only does exit checks, rebalance moved to :35 (`engine.go`)
 
 ### Fixed
 - **[spot-futures] Market BUY sends quote currency on all 5 margin adapters** — all 5 `PlaceSpotMarginOrder` implementations (Binance, Bybit, Gate.io, Bitget, OKX) were sending base currency quantity for market BUY orders instead of the required quote currency (USDT) amount; added `QuoteSize` field to `SpotMarginOrderParams` and updated each adapter: Binance uses `quoteOrderQty`, Bybit uses `qty` with quote-currency default, Gate.io sends `amount` as quote, Bitget sends `quoteSize`, OKX uses `tgtCcy: "quote_ccy"` with `sz` as quote amount; all `PlaceSpotMarginOrder` callers in execution and monitor updated to populate `QuoteSize` for market BUY orders (`pkg/exchange/types.go`, `pkg/exchange/binance/margin.go`, `pkg/exchange/bybit/margin.go`, `pkg/exchange/gateio/margin.go`, `pkg/exchange/bitget/margin.go`, `pkg/exchange/okx/margin.go`, `internal/spotengine/execution.go`, `internal/spotengine/monitor.go`)
@@ -88,8 +117,22 @@ All notable changes to this project will be documented in this file.
 
 ## [0.22.45] - 2026-03-31
 
+### Added
+- **GetWithdrawFee API** — all 6 exchange adapters query actual withdrawal fees from exchange APIs instead of hardcoded 5% buffer
+  - Binance: `/sapi/v1/capital/config/getall`
+  - BingX: `/openApi/wallets/v1/capital/config/getall`
+  - Bitget: `/api/v2/spot/public/coins` (includes extraWithdrawFee)
+  - Bybit: `/v5/asset/coin/query-info` (rejects percentage fees)
+  - Gate.io: `/api/v4/wallet/withdraw_status` (rejects percentage fees)
+  - OKX: `/api/v5/asset/currencies` (reads `fee` field)
+
 ### Changed
 - **[dashboard] Move global risk controls to dedicated strategy section** — Config page reorganized: monolithic "Risk Control" tab removed from Perp-Perp section; new top-level "Global Risk" strategy section (amber-tinted) added alongside Exchanges / Perp-Perp / Spot-Futures with 3 sub-tabs: **Margins** (L3–L5 thresholds, reduce fraction, safety multiplier, risk monitor interval), **Liquidation** (liq trend tracking toggle + projection/slope/sample params), **Allocator** (capital allocator toggle, exchange health scoring, max total exposure, per-strategy budget shares, per-exchange cap, reservation TTL); `max_spot_futures_pct` no longer misplaced under perp-perp (`web/src/pages/Config.tsx`, `web/src/i18n/en.ts`, `web/src/i18n/zh-TW.ts`)
+
+### Fixed
+- **Rebalance cross-exchange transfer** — uses actual withdrawal fee; futures→spot transfers exact deficit + fee; withdraw sends net amount only
+- **Withdraw failure rollback** — tracks movedToSpot; skips no-op TransferToSpot (Binance/Gate.io); rolls back OKX/Bybit real transfers
+- **Donor exclusion on rollback failure** — excludes donor from rest of rebalance pass
 
 ## [0.22.44] - 2026-03-31
 

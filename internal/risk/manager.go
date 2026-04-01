@@ -164,6 +164,29 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("insufficient margin buffer on %s: need %.2f (including %.0f%% safety buffer), have %.2f", opp.ShortExchange, requiredWithBuffer, safetyPct, effectiveShortAvail)}, nil
 	}
 
+	// Post-trade margin ratio projection check (uses effective avail after batch reservations)
+	for _, leg := range []struct {
+		exchange      string
+		bal           *exchange.Balance
+		effectiveAvail float64
+	}{
+		{opp.LongExchange, longBal, effectiveLongAvail},
+		{opp.ShortExchange, shortBal, effectiveShortAvail},
+	} {
+		if leg.bal.Total > 0 {
+			projectedAvail := leg.effectiveAvail - requiredMarginPerLeg
+			if projectedAvail < 0 {
+				projectedAvail = 0
+			}
+			projectedRatio := 1 - projectedAvail/leg.bal.Total
+			if projectedRatio >= m.cfg.MarginL4Threshold {
+				return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf(
+					"post-trade margin ratio would reach %.2f on %s (L4 threshold: %.2f)",
+					projectedRatio, leg.exchange, m.cfg.MarginL4Threshold)}, nil
+			}
+		}
+	}
+
 	// d. Orderbook depth / slippage check on both exchanges
 	shortOB, err := shortExch.GetOrderbook(opp.Symbol, 20)
 	if err != nil {

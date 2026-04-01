@@ -769,6 +769,69 @@ func (a *Adapter) Withdraw(params exchange.WithdrawParams) (*exchange.WithdrawRe
 	}, nil
 }
 
+// GetWithdrawFee queries the Bybit API for the withdrawal fee of a coin on a given chain.
+func (a *Adapter) GetWithdrawFee(coin, chain string) (float64, error) {
+	if a.client == nil || a.cfg.ApiKey == "" {
+		return 0, fmt.Errorf("bybit GetWithdrawFee: API key not configured")
+	}
+
+	network := mapChainToBybitNetwork(chain)
+	params := map[string]string{
+		"coin": coin,
+	}
+	data, err := a.client.Get("/v5/asset/coin/query-info", params)
+	if err != nil {
+		return 0, fmt.Errorf("bybit GetWithdrawFee: %w", err)
+	}
+
+	var resp struct {
+		Rows []struct {
+			Coin   string `json:"coin"`
+			Chains []struct {
+				Chain                string `json:"chain"`
+				WithdrawFee          string `json:"withdrawFee"`
+				WithdrawPercentageFee string `json:"withdrawPercentageFee"`
+			} `json:"chains"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return 0, fmt.Errorf("bybit GetWithdrawFee unmarshal: %w", err)
+	}
+
+	for _, row := range resp.Rows {
+		if !strings.EqualFold(row.Coin, coin) {
+			continue
+		}
+		for _, ch := range row.Chains {
+			if strings.EqualFold(ch.Chain, network) {
+				if ch.WithdrawPercentageFee != "" {
+					if pct, err := strconv.ParseFloat(ch.WithdrawPercentageFee, 64); err == nil && pct > 0 {
+						return 0, fmt.Errorf("bybit GetWithdrawFee: percentage-based fee not supported (chain=%s, pct=%s)", network, ch.WithdrawPercentageFee)
+					}
+				}
+				fee, err := strconv.ParseFloat(ch.WithdrawFee, 64)
+				if err != nil {
+					return 0, fmt.Errorf("bybit GetWithdrawFee parse fee: %w", err)
+				}
+				return fee, nil
+			}
+		}
+		return 0, fmt.Errorf("bybit GetWithdrawFee: chain %s not found for %s", network, coin)
+	}
+	return 0, fmt.Errorf("bybit GetWithdrawFee: coin %s not found", coin)
+}
+
+func mapChainToBybitNetwork(chain string) string {
+	switch chain {
+	case "BEP20":
+		return "BSC"
+	case "APT":
+		return "APTOS"
+	default:
+		return chain
+	}
+}
+
 func mapChainToBybit(chain string) string {
 	switch chain {
 	case "BEP20":

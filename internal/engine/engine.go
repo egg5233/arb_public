@@ -325,8 +325,13 @@ func (e *Engine) Start() {
 // rebalanceFunds analyzes upcoming opportunities and ensures each exchange
 // has enough margin. Performs same-exchange spot→futures transfers first,
 // then cross-exchange withdrawals for remaining deficits.
-func (e *Engine) rebalanceFunds() {
-	opps := e.discovery.GetOpportunities()
+func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
+	var opps []models.Opportunity
+	if len(passedOpps) > 0 && len(passedOpps[0]) > 0 {
+		opps = passedOpps[0]
+	} else {
+		opps = e.discovery.GetOpportunities()
+	}
 	if len(opps) == 0 {
 		e.log.Info("rebalance: no opportunities, skipping")
 		return
@@ -419,6 +424,42 @@ func (e *Engine) rebalanceFunds() {
 	for name, need := range needs {
 		bal := balances[name]
 		if bal.futures >= need {
+			// Futures covers the need, but check if post-trade margin ratio would be too high.
+			// If so, top up from spot to bring ratio down.
+			if bal.spot > 0 && bal.marginRatio > 0 {
+				projectedAvail := bal.futures - need
+				if projectedAvail < 0 {
+					projectedAvail = 0
+				}
+				projectedRatio := 1 - projectedAvail/bal.futures
+				if bal.futures > 0 && projectedRatio >= e.cfg.MarginL4Threshold {
+					// Transfer just enough from spot to bring ratio below L4
+					// Target: (futures + extra - need) / (futures + extra) >= (1 - L4)
+					// => extra = (need - futures*(1-L4)) / (1-L4)
+					targetFreeRatio := 1 - e.cfg.MarginL4Threshold
+					if targetFreeRatio > 0 {
+						extra := (need - bal.futures*targetFreeRatio) / targetFreeRatio
+						if extra > bal.spot {
+							extra = bal.spot
+						}
+						if extra >= 1.0 {
+							amtStr := fmt.Sprintf("%.4f", extra)
+							e.log.Info("rebalance: %s spot→futures %s USDT (margin ratio relief, projected=%.2f L4=%.2f)",
+								name, amtStr, projectedRatio, e.cfg.MarginL4Threshold)
+							if !e.cfg.DryRun {
+								if err := e.exchanges[name].TransferToFutures("USDT", amtStr); err != nil {
+									e.log.Error("rebalance: %s spot→futures failed: %v", name, err)
+								} else {
+									bi := balances[name]
+									bi.futures += extra
+									bi.spot -= extra
+									balances[name] = bi
+								}
+							}
+						}
+					}
+				}
+			}
 			continue
 		}
 		shortfall := need - bal.futures
@@ -519,21 +560,31 @@ func (e *Engine) rebalanceFunds() {
 			continue
 		}
 
-		amount := def.amount * 1.05
-		amtStr := fmt.Sprintf("%.4f", amount)
+		// Query actual withdraw fee from exchange
+		fee, feeErr := e.exchanges[bestDonor].GetWithdrawFee("USDT", chain)
+		if feeErr != nil {
+			e.log.Warn("rebalance: %s GetWithdrawFee failed: %v, skipping donor", bestDonor, feeErr)
+			continue
+		}
+		e.log.Info("rebalance: %s withdraw fee=%.4f USDT via %s", bestDonor, fee, chain)
 
-		e.log.Info("rebalance: cross-exchange %s→%s %.2f USDT via %s",
-			bestDonor, def.exchange, amount, chain)
+		netAmount := def.amount          // what recipient needs to receive
+		requiredSpot := netAmount + fee   // what donor needs in spot account
+
+		e.log.Info("rebalance: cross-exchange %s→%s net=%.2f fee=%.4f required=%.2f USDT via %s",
+			bestDonor, def.exchange, netAmount, fee, requiredSpot, chain)
 
 		if e.cfg.DryRun {
-			e.log.Info("[DRY RUN] would transfer %.2f USDT from %s to %s via %s",
-				amount, bestDonor, def.exchange, chain)
+			e.log.Info("[DRY RUN] would transfer %.2f USDT (net) from %s to %s via %s (fee=%.4f)",
+				netAmount, bestDonor, def.exchange, chain, fee)
 			continue
 		}
 
+		// Move funds from futures→spot if donor spot is insufficient
+		var movedToSpot float64
 		donorBal := balances[bestDonor]
-		if donorBal.spot < amount {
-			moveAmt := amount - donorBal.spot
+		if donorBal.spot < requiredSpot {
+			moveAmt := requiredSpot - donorBal.spot
 			maxMove := donorBal.futures - needs[bestDonor]
 			if moveAmt > maxMove && maxMove > 0 {
 				moveAmt = maxMove
@@ -549,6 +600,20 @@ func (e *Engine) rebalanceFunds() {
 				continue
 			}
 			e.recordTransfer(bestDonor, bestDonor+" spot", "USDT", "internal", moveStr, "0", "", "completed", "rebalance-prep")
+
+			// Track movedToSpot for rollback — but only for split-account exchanges
+			// Unified/no-op TransferToSpot exchanges don't actually move funds
+			// Binance and Gate.io have no-op TransferToSpot (unified internally).
+			// OKX and Bybit do real transfers (funding→trading), so they need rollback.
+			isNoOp := bestDonor == "binance" || bestDonor == "gateio"
+			if !isNoOp {
+				if uc, ok := e.exchanges[bestDonor].(interface{ IsUnified() bool }); ok && uc.IsUnified() {
+					isNoOp = true
+				}
+			}
+			if !isNoOp {
+				movedToSpot = moveAmt
+			}
 		}
 
 		donorSpotBal, err := e.exchanges[bestDonor].GetSpotBalance()
@@ -556,15 +621,16 @@ func (e *Engine) rebalanceFunds() {
 			e.log.Error("rebalance: %s get spot balance failed: %v", bestDonor, err)
 			continue
 		}
-		withdrawAmt := amount
+		withdrawAmt := netAmount + fee // gross amount: exchange deducts fee, recipient receives netAmount
 		if donorSpotBal.Available < withdrawAmt {
+			// Not enough to cover net + fee; withdraw everything we have
 			withdrawAmt = donorSpotBal.Available
 		}
-		if withdrawAmt < 10 {
-			e.log.Warn("rebalance: %s spot balance too low to withdraw (%.2f)", bestDonor, donorSpotBal.Available)
+		if withdrawAmt-fee < 10 {
+			e.log.Warn("rebalance: %s spot balance too low to withdraw (available=%.2f, fee=%.4f)", bestDonor, donorSpotBal.Available, fee)
 			continue
 		}
-		amtStr = fmt.Sprintf("%.4f", withdrawAmt)
+		amtStr := fmt.Sprintf("%.4f", withdrawAmt)
 
 		result, err := e.exchanges[bestDonor].Withdraw(exchange.WithdrawParams{
 			Coin:    "USDT",
@@ -574,17 +640,27 @@ func (e *Engine) rebalanceFunds() {
 		})
 		if err != nil {
 			e.log.Error("rebalance: withdraw from %s failed: %v", bestDonor, err)
+			// Rollback futures→spot transfer if we moved funds
+			if movedToSpot > 0 {
+				rollbackStr := fmt.Sprintf("%.4f", movedToSpot)
+				e.log.Info("rebalance: rollback %s spot→futures %s USDT", bestDonor, rollbackStr)
+				if rbErr := e.exchanges[bestDonor].TransferToFutures("USDT", rollbackStr); rbErr != nil {
+					e.log.Error("rebalance: rollback failed: %v", rbErr)
+					// Exclude donor from rest of pass
+					surplus[bestDonor] = -1
+				}
+			}
 			continue
 		}
-		e.log.Info("rebalance: withdraw from %s txid=%s (%.2f USDT) → %s",
-			bestDonor, result.TxID, withdrawAmt, def.exchange)
+		e.log.Info("rebalance: withdraw from %s txid=%s (%.2f USDT gross, %.2f net after fee) → %s",
+			bestDonor, result.TxID, withdrawAmt, withdrawAmt-fee, def.exchange)
 		e.recordTransfer(bestDonor, def.exchange, "USDT", chain, amtStr, result.Fee, result.TxID, "completed", "rebalance")
 
 		if _, exists := pendingStartBal[def.exchange]; !exists {
 			pendingStartBal[def.exchange] = balances[def.exchange].spot
 		}
-		pendingDeposits[def.exchange] += withdrawAmt
-		surplus[bestDonor] -= amount
+		pendingDeposits[def.exchange] += withdrawAmt - fee // track net amount (what will actually arrive after fee deduction)
+		surplus[bestDonor] -= requiredSpot
 	}
 
 	// Phase 2b: Poll for ALL pending deposits, then sweep entire spot into futures.
@@ -668,10 +744,10 @@ func (e *Engine) Stop() {
 
 // run is the main event loop. It listens for new opportunity batches from
 // discovery and dispatches actions based on scan type:
-//   - RebalanceScan (:20) → rebalance funds across exchanges
-//   - ExitScan      (:25) → check exit conditions
-//   - EntryScan     (:35) → execute new arb positions
-//   - RotateScan    (:45) → check leg rotations
+//   - RebalanceScan (:10) → rebalance funds across exchanges
+//   - ExitScan      (:30) → check exit conditions
+//   - RotateScan    (:35) → check leg rotations + V2 rebalance (if RebalanceAfterExit)
+//   - EntryScan     (:40) → execute new arb positions
 func (e *Engine) run() {
 	oppCh := e.discovery.OpportunityChan()
 
@@ -696,25 +772,24 @@ func (e *Engine) run() {
 
 			switch result.Type {
 			case discovery.RebalanceScan:
-				if e.cfg.RebalanceAfterExit {
-					e.log.Info("rebalance: skipped (RebalanceAfterExit enabled, will run after exit)")
-				} else {
-					e.rebalanceFunds()
-				}
+				e.rebalanceFunds()
 				e.log.Info("run loop: rebalanceScan handler done")
 			case discovery.ExitScan:
-				// When RebalanceAfterExit is enabled, run rebalance BEFORE exit checks.
-				// This ensures rebalance sees the current slot count and balances
-				// without interference from exit goroutines still in flight.
-				if e.cfg.RebalanceAfterExit {
-					e.log.Info("rebalance: running on exit scan (before exit checks)")
-					e.rebalanceFunds()
-				}
 				e.checkIntervalChanges()
 				e.checkExitsV2()
 				e.log.Info("run loop: exitScan handler done")
 			case discovery.RotateScan:
 				e.checkRotations()
+				if e.cfg.RebalanceAfterExit && len(result.Opps) > 0 {
+					// V2 rebalance: apply all 6 entry-level filters via scanner
+					v2Opps := e.discovery.FilterForEntry(result.Opps)
+					if len(v2Opps) > 0 {
+						e.log.Info("v2 rebalance: %d/%d opps passed 6 entry filters, running sequential allocation", len(v2Opps), len(result.Opps))
+						e.rebalanceFunds(v2Opps)
+					} else {
+						e.log.Info("v2 rebalance: 0/%d opps passed entry filters, skipping", len(result.Opps))
+					}
+				}
 				e.log.Info("run loop: rotateScan handler done")
 			case discovery.EntryScan:
 				if len(result.Opps) > 0 {
@@ -1110,6 +1185,12 @@ func (e *Engine) handleEmergencyClose(action risk.HealthAction) {
 		e.cancelExitGoroutine(pos.ID)
 
 		e.log.Error("L5 EMERGENCY CLOSE: position %s (exchange=%s)", pos.ID, action.Exchange)
+		reason := fmt.Sprintf("L5 emergency close: %s margin critical", action.Exchange)
+		_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+			fresh.ExitReason = reason
+			return true
+		})
+		pos.ExitReason = reason
 		if err := e.closePositionEmergency(pos); err != nil {
 			e.log.Error("L5 emergency close %s failed: %v", pos.ID, err)
 		}

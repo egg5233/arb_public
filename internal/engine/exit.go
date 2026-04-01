@@ -2474,6 +2474,12 @@ func (e *Engine) closeFullyWithRetryPriced(ctx context.Context, exch exchange.Ex
 			break
 		}
 		sizeStr := e.formatSize(exch.Name(), symbol, remaining)
+		// Guard: if remaining rounds to zero (dust), treat as fully closed.
+		if parsed, err := strconv.ParseFloat(sizeStr, 64); err == nil && parsed <= 0 {
+			e.log.Info("closeFullyWithRetry %s %s: remaining %.6f rounds to 0 (dust) — treating as closed", exch.Name(), symbol, remaining)
+			remaining = 0
+			break
+		}
 		oid, err := exch.PlaceOrder(exchange.PlaceOrderParams{
 			Symbol:     symbol,
 			Side:       side,
