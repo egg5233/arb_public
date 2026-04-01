@@ -34,7 +34,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 Plans:
 - [x] 01-01-PLAN.md -- Enhance livetest harness + verify Bybit (reference implementation)
 - [x] 01-02-PLAN.md -- Verify and fix Binance + Bitget (separate margin accounts)
-- [ ] 01-03-PLAN.md -- Verify and fix Gate.io + OKX (unified accounts, OKX account-level autoLoan)
+- [x] 01-03-PLAN.md -- Verify and fix Gate.io + OKX (unified accounts, OKX account-level autoLoan)
 
 ### Phase 2: Spot-Futures Automation
 **Goal**: The spot-futures engine autonomously discovers, opens, and exits positions without manual intervention
