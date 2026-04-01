@@ -708,10 +708,10 @@ func (e *Engine) Stop() {
 
 // run is the main event loop. It listens for new opportunity batches from
 // discovery and dispatches actions based on scan type:
-//   - RebalanceScan (:20) → rebalance funds across exchanges
-//   - ExitScan      (:25) → check exit conditions
-//   - EntryScan     (:35) → execute new arb positions
-//   - RotateScan    (:45) → check leg rotations
+//   - RebalanceScan (:10) → rebalance funds across exchanges
+//   - ExitScan      (:30) → check exit conditions
+//   - RotateScan    (:35) → check leg rotations + V2 rebalance (if RebalanceAfterExit)
+//   - EntryScan     (:40) → execute new arb positions
 func (e *Engine) run() {
 	oppCh := e.discovery.OpportunityChan()
 
