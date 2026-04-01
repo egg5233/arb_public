@@ -27,14 +27,14 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Success Criteria** (what must be TRUE):
   1. User can manually trigger a Dir A (borrow-sell-long) position on each of Binance, Gate.io, Bitget, and OKX, and it opens successfully with correct margin and borrow behavior
   2. User can manually trigger a Dir B (buy-spot-short) position on each of Binance, Gate.io, Bitget, and OKX, and it opens successfully
-  3. Auto-borrow on entry and auto-repay on exit work correctly on each exchange using exchange-native margin order flags (no manual borrow/repay calls)
+  3. Auto-borrow on entry and auto-repay on exit work correctly on each exchange using exchange-native mechanisms (per-order flags on Bybit/Binance/Bitget/Gate.io; account-level autoLoan on OKX via API)
   4. Each exchange's positions can be cleanly exited (repay completes, no residual borrows, margin released)
 **Plans**: 3 plans
 
 Plans:
 - [ ] 01-01-PLAN.md -- Enhance livetest harness + verify Bybit (reference implementation)
 - [ ] 01-02-PLAN.md -- Verify and fix Binance + Bitget (separate margin accounts)
-- [ ] 01-03-PLAN.md -- Verify and fix Gate.io + OKX (unified accounts, OKX auto-borrow gap)
+- [ ] 01-03-PLAN.md -- Verify and fix Gate.io + OKX (unified accounts, OKX account-level autoLoan)
 
 ### Phase 2: Spot-Futures Automation
 **Goal**: The spot-futures engine autonomously discovers, opens, and exits positions without manual intervention

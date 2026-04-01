@@ -11,7 +11,7 @@ Requirements for Milestone 1. Each maps to roadmap phases.
 
 - [ ] **SF-01**: Dir A (borrow-sell-long) full lifecycle works on all 5 exchanges (Binance, Bybit, Gate.io, Bitget, OKX)
 - [ ] **SF-02**: Dir B (buy-spot-short) full lifecycle works on all 5 exchanges
-- [ ] **SF-03**: Auto-borrow/auto-repay verified and working per exchange (using exchange-native margin order flags)
+- [ ] **SF-03**: Auto-borrow/auto-repay verified and working per exchange using exchange-native mechanisms (per-order flags on Bybit/Binance/Bitget/Gate.io; account-level autoLoan on OKX which is still exchange-native, just configured at account level via API)
 - [ ] **SF-04**: Auto-discovery pipeline finds and ranks spot-futures opportunities across all 5 exchanges
 - [ ] **SF-05**: Auto-open pipeline executes best opportunities without manual intervention
 - [ ] **SF-06**: Auto-exit handles all edge cases (blackout windows, partial fills, emergency close, pending repay retry)
@@ -105,4 +105,4 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 ---
 *Requirements defined: 2026-04-01*
-*Last updated: 2026-04-01 after roadmap creation*
+*Last updated: 2026-04-01 after plan-phase revision*
