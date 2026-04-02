@@ -50,10 +50,10 @@ Exceptions: none -- Phase 2 uses only existing spacing values already present in
 | Role | Size | Weight | Line Height | Tailwind Class |
 |------|------|--------|-------------|----------------|
 | Body | 14px | 400 (normal) | 1.5 | `text-sm` |
-| Label | 12px | 500 (medium) | 1.5 | `text-xs font-medium` |
+| Label | 12px | 400 (normal) | 1.5 | `text-xs` |
 | Heading | 20px | 700 (bold) | 1.2 | `text-xl font-bold` |
 
-**Note:** The project uses exactly 3 type sizes across the dashboard. Config field labels use `text-xs font-medium`, field values and table content use `text-sm`, and page/section headings use `text-xl font-bold`. Monospace (`font-mono`) is applied to all numeric values, rates, and financial data.
+**Note:** The project uses exactly 3 type sizes across the dashboard. Config field labels use `text-xs`, field values and table content use `text-sm`, and page/section headings use `text-xl font-bold`. Visual distinction between body and label is achieved by the size difference (12px vs 14px) and muted color (`text-gray-400`), not by font weight. Monospace (`font-mono`) is applied to all numeric values, rates, and financial data.
 
 **Source:** Codebase inspection -- consistent across all page components.
 
