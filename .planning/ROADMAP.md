@@ -57,15 +57,15 @@ Plans:
 **Depends on**: Nothing (protects existing perp-perp engine; independent of spot-futures phases)
 **Requirements**: PP-01, PP-02, PP-03
 **Success Criteria** (what must be TRUE):
-  1. User receives Telegram notifications for perp-perp critical events: position opened, position closed, SL triggered, errors exceeding threshold
-  2. When an exchange API starts failing repeatedly (error rate or latency spike), the circuit breaker pauses new entries on that exchange and the dashboard shows the exchange as "circuit open"
+  1. User receives Telegram notifications for perp-perp critical events: SL triggered, emergency close (L4/L5), 3+ consecutive API errors on same exchange
+  2. PP-02 (circuit breaker) dropped per D-05 -- API failures already prevent entries naturally; 3-consecutive-error Telegram alert provides operator awareness
   3. When daily or weekly realized loss exceeds the configured threshold, the system halts all new entries and the user sees a "loss limit breached" status on the dashboard
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 03-01: TBD
-- [ ] 03-02: TBD
-- [ ] 03-03: TBD
+- [ ] 03-01-PLAN.md -- Telegram notifications: extend TelegramNotifier with cooldown + wire into perp engine
+- [ ] 03-02-PLAN.md -- Loss limits: Redis sorted set tracker + pre-entry gate + WS broadcast
+- [ ] 03-03-PLAN.md -- Config fields (5 new, 6-touch-point) + Dashboard safety tab + Overview banner + i18n
 
 ### Phase 4: Performance Analytics
 **Goal**: The user can see exactly how much each position earned, compare strategy performance, and track cumulative PnL over time
