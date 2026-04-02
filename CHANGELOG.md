@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.24.1] - 2026-04-02
+
+### Fixed
+- **Withdraw fee double-counting** — OKX/Bitget/Bybit Withdraw API treats amount as net (fee deducted separately), but engine was passing net+fee causing "Insufficient balance". Added `WithdrawFeeInclusive()` interface method to distinguish gross (Binance/BingX/Gate) vs net (OKX/Bitget/Bybit) semantics.
+
 ## [0.24.0] - 2026-04-02
 
 ### Added

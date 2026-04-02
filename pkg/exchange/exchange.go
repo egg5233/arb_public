@@ -39,6 +39,10 @@ type Exchange interface {
 	GetSpotBalance() (*Balance, error)
 	// Withdraw & Transfer
 	Withdraw(params WithdrawParams) (*WithdrawResult, error)
+	// WithdrawFeeInclusive returns true if the Withdraw API's amount parameter
+	// is gross (fee inclusive: recipient gets amount - fee), or false if net
+	// (fee NOT inclusive: recipient gets the full amount, fee deducted separately).
+	WithdrawFeeInclusive() bool
 	// GetWithdrawFee queries the exchange API for the withdrawal fee of a coin on a given chain.
 	GetWithdrawFee(coin, chain string) (float64, error)
 	// TransferToSpot moves funds from the trading/futures account to the

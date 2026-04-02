@@ -726,6 +726,9 @@ func (b *Adapter) getSpotAvailable(asset string) float64 {
 	return bal.Available
 }
 
+// WithdrawFeeInclusive returns true because Binance Withdraw amount includes fee (recipient gets amount - fee).
+func (b *Adapter) WithdrawFeeInclusive() bool { return true }
+
 // GetWithdrawFee queries the Binance API for the withdrawal fee of a coin on a given chain.
 func (b *Adapter) GetWithdrawFee(coin, chain string) (float64, error) {
 	spotClient := b.client.WithBaseURL("https://api.binance.com")

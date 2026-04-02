@@ -833,6 +833,9 @@ func (a *Adapter) Withdraw(params exchange.WithdrawParams) (*exchange.WithdrawRe
 	}, nil
 }
 
+// WithdrawFeeInclusive returns false because Bitget Withdraw amount is net (recipient gets full amount, fee deducted separately).
+func (a *Adapter) WithdrawFeeInclusive() bool { return false }
+
 // GetWithdrawFee queries the Bitget API for the withdrawal fee of a coin on a given chain.
 func (a *Adapter) GetWithdrawFee(coin, chain string) (float64, error) {
 	network := mapChainToBitgetNetwork(chain)

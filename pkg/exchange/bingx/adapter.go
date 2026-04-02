@@ -723,6 +723,9 @@ func (a *Adapter) Withdraw(params exchange.WithdrawParams) (*exchange.WithdrawRe
 	}, nil
 }
 
+// WithdrawFeeInclusive returns true because BingX Withdraw amount includes fee (recipient gets amount - fee).
+func (a *Adapter) WithdrawFeeInclusive() bool { return true }
+
 // GetWithdrawFee queries the BingX API for the withdrawal fee of a coin on a given chain.
 func (a *Adapter) GetWithdrawFee(coin, chain string) (float64, error) {
 	network := mapChainToBingXNetwork(chain)
