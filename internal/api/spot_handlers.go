@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -265,9 +266,18 @@ func (s *Server) handleSpotAutoConfig(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var req struct {
-			Enabled          *bool `json:"enabled"`
-			DryRun           *bool `json:"dry_run"`
-			PersistenceScans *int  `json:"persistence_scans"`
+			Enabled               *bool    `json:"enabled"`
+			DryRun                *bool    `json:"dry_run"`
+			PersistenceScans      *int     `json:"persistence_scans"`
+			NativeScannerEnabled  *bool    `json:"native_scanner_enabled"`
+			EnableMinHold         *bool    `json:"enable_min_hold"`
+			MinHoldHours          *int     `json:"min_hold_hours"`
+			EnableSettlementGuard *bool    `json:"enable_settlement_guard"`
+			SettlementWindowMin   *int     `json:"settlement_window_min"`
+			EnableBasisGate       *bool    `json:"enable_basis_gate"`
+			MaxBasisPct           *float64 `json:"max_basis_pct"`
+			EnableExitSpreadGate  *bool    `json:"enable_exit_spread_gate"`
+			ExitSpreadPct         *float64 `json:"exit_spread_pct"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, Response{Error: "invalid JSON"})
@@ -286,6 +296,42 @@ func (s *Server) handleSpotAutoConfig(w http.ResponseWriter, r *http.Request) {
 		if req.PersistenceScans != nil && *req.PersistenceScans >= 0 {
 			s.cfg.SpotFuturesPersistenceScans = *req.PersistenceScans
 			s.db.SetConfigField("spot_futures_persistence_scans", strconv.Itoa(*req.PersistenceScans))
+		}
+		if req.NativeScannerEnabled != nil {
+			s.cfg.SpotFuturesNativeScannerEnabled = *req.NativeScannerEnabled
+			s.db.SetConfigField("spot_futures_native_scanner_enabled", strconv.FormatBool(*req.NativeScannerEnabled))
+		}
+		if req.EnableMinHold != nil {
+			s.cfg.SpotFuturesEnableMinHold = *req.EnableMinHold
+			s.db.SetConfigField("spot_futures_enable_min_hold", strconv.FormatBool(*req.EnableMinHold))
+		}
+		if req.MinHoldHours != nil && *req.MinHoldHours > 0 {
+			s.cfg.SpotFuturesMinHoldHours = *req.MinHoldHours
+			s.db.SetConfigField("spot_futures_min_hold_hours", strconv.Itoa(*req.MinHoldHours))
+		}
+		if req.EnableSettlementGuard != nil {
+			s.cfg.SpotFuturesEnableSettlementGuard = *req.EnableSettlementGuard
+			s.db.SetConfigField("spot_futures_enable_settlement_guard", strconv.FormatBool(*req.EnableSettlementGuard))
+		}
+		if req.SettlementWindowMin != nil && *req.SettlementWindowMin > 0 {
+			s.cfg.SpotFuturesSettlementWindowMin = *req.SettlementWindowMin
+			s.db.SetConfigField("spot_futures_settlement_window_min", strconv.Itoa(*req.SettlementWindowMin))
+		}
+		if req.EnableBasisGate != nil {
+			s.cfg.SpotFuturesEnableBasisGate = *req.EnableBasisGate
+			s.db.SetConfigField("spot_futures_enable_basis_gate", strconv.FormatBool(*req.EnableBasisGate))
+		}
+		if req.MaxBasisPct != nil && *req.MaxBasisPct > 0 {
+			s.cfg.SpotFuturesMaxBasisPct = *req.MaxBasisPct
+			s.db.SetConfigField("spot_futures_max_basis_pct", fmt.Sprintf("%.4f", *req.MaxBasisPct))
+		}
+		if req.EnableExitSpreadGate != nil {
+			s.cfg.SpotFuturesEnableExitSpreadGate = *req.EnableExitSpreadGate
+			s.db.SetConfigField("spot_futures_enable_exit_spread_gate", strconv.FormatBool(*req.EnableExitSpreadGate))
+		}
+		if req.ExitSpreadPct != nil && *req.ExitSpreadPct > 0 {
+			s.cfg.SpotFuturesExitSpreadPct = *req.ExitSpreadPct
+			s.db.SetConfigField("spot_futures_exit_spread_pct", fmt.Sprintf("%.4f", *req.ExitSpreadPct))
 		}
 		s.cfg.Unlock()
 
@@ -343,6 +389,15 @@ func (s *Server) spotAutoConfigResponse() map[string]interface{} {
 		"max_positions":          s.cfg.SpotFuturesMaxPositions,
 		"capital_separate_usdt": s.cfg.SpotFuturesCapitalSeparate,
 		"capital_unified_usdt":  s.cfg.SpotFuturesCapitalUnified,
+		"native_scanner_enabled":  s.cfg.SpotFuturesNativeScannerEnabled,
+		"enable_min_hold":         s.cfg.SpotFuturesEnableMinHold,
+		"min_hold_hours":          s.cfg.SpotFuturesMinHoldHours,
+		"enable_settlement_guard": s.cfg.SpotFuturesEnableSettlementGuard,
+		"settlement_window_min":   s.cfg.SpotFuturesSettlementWindowMin,
+		"enable_basis_gate":       s.cfg.SpotFuturesEnableBasisGate,
+		"max_basis_pct":           s.cfg.SpotFuturesMaxBasisPct,
+		"enable_exit_spread_gate": s.cfg.SpotFuturesEnableExitSpreadGate,
+		"exit_spread_pct":         s.cfg.SpotFuturesExitSpreadPct,
 	}
 }
 
