@@ -199,7 +199,6 @@ func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
 		}
 
 		if filterStatus != "" && !isActive {
-			e.log.Info("spot discovery: FILTERED %s on %s — %s", spotSymbol, exchName, filterStatus)
 		}
 
 		opps = append(opps, SpotArbOpportunity{

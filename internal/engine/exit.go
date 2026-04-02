@@ -2468,15 +2468,32 @@ func (e *Engine) closeFullyWithRetryPriced(ctx context.Context, exch exchange.Ex
 	deadline := time.Now().Add(30 * time.Second)
 	var vwapSum float64
 
+	// Look up min order size to detect dust remainders that can't be closed.
+	var minSize float64
+	if e.contracts != nil {
+		if exContracts, ok := e.contracts[exch.Name()]; ok {
+			if ci, ok := exContracts[symbol]; ok {
+				minSize = ci.MinSize
+			}
+		}
+	}
+
 	for attempt := 0; attempt < 10 && remaining > 0; attempt++ {
 		if ctx.Err() != nil {
 			e.log.Info("closeFullyWithRetry %s %s: cancelled by context", exch.Name(), symbol)
 			break
 		}
+		// Skip if remaining is dust below exchange minimum order size.
+		if minSize > 0 && remaining < minSize {
+			e.log.Info("closeFullyWithRetry %s %s: remaining %.6f below minSize %.6f — treating as dust", exch.Name(), symbol, remaining, minSize)
+			remaining = 0
+			break
+		}
 		sizeStr := e.formatSize(exch.Name(), symbol, remaining)
-		// Guard: if remaining rounds to zero (dust), treat as fully closed.
-		if parsed, err := strconv.ParseFloat(sizeStr, 64); err == nil && parsed <= 0 {
-			e.log.Info("closeFullyWithRetry %s %s: remaining %.6f rounds to 0 (dust) — treating as closed", exch.Name(), symbol, remaining)
+		// Guard against floating point: RoundToStep can floor to 0 when
+		// remaining is barely at a step boundary (e.g., 0.000999 → 0.000).
+		if sizeF, _ := strconv.ParseFloat(sizeStr, 64); sizeF <= 0 {
+			e.log.Info("closeFullyWithRetry %s %s: formatted size %q rounds to zero (remaining=%.8f) — treating as dust", exch.Name(), symbol, sizeStr, remaining)
 			remaining = 0
 			break
 		}
