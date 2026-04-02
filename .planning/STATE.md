@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 01 Plan 03 Task 1 complete, checkpoint pending
-last_updated: "2026-04-02T05:24:46.349Z"
-last_activity: 2026-04-02
+stopped_at: Completed 02-01-PLAN.md
+last_updated: "2026-04-02T07:55:13Z"
+last_activity: 2026-04-02 -- Phase 02 Plan 01 complete
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 3
-  completed_plans: 3
-  percent: 0
+  completed_plans: 1
+  percent: 33
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-01)
 
 **Core value:** "I deposit USDT, select my risk preference, and the system automatically finds opportunities across both strategies, opens positions, collects funding, exits when profitable, and I can see exactly how much each position earned."
-**Current focus:** Phase 01 — spot-futures-exchange-expansion
+**Current focus:** Phase 02 — spot-futures-automation
 
 ## Current Position
 
-Phase: 2
-Plan: Not started
-Status: Executing Phase 01
-Last activity: 2026-04-02
+Phase: 02 (spot-futures-automation) — EXECUTING
+Plan: 2 of 3
+Status: Executing Phase 02
+Last activity: 2026-04-02 -- Phase 02 Plan 01 complete
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [###░░░░░░░] 33%
 
 ## Performance Metrics
 
@@ -65,6 +65,9 @@ Recent decisions affecting current work:
 - [Roadmap]: PP-04 grouped with analytics (Phase 4) not safety (Phase 3) -- it is a dashboard/data feature
 - [Roadmap]: Phase 3 has no dependency on Phases 1-2 -- can be pulled forward if needed
 - [Phase 01]: OKX cross-margin borrows via tdMode=cross + ccy=USDT (Futures mode implicit) instead of autoLoan API
+- [Phase 02 P01]: Loris URL injection pattern (pollLorisFromURL) for test mocking
+- [Phase 02 P01]: runDiscoveryScan() router: native when enabled, CoinGlass fallback
+- [Phase 02 P01]: Both Dir A and Dir B generated per symbol+exchange for ranking
 
 ### Pending Todos
 
@@ -77,6 +80,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-01T15:39:11.163Z
-Stopped at: Phase 01 Plan 03 Task 1 complete, checkpoint pending
-Resume file: None
+Last session: 2026-04-02T07:55:13Z
+Stopped at: Completed 02-01-PLAN.md
+Resume file: .planning/phases/02-spot-futures-automation/02-02-PLAN.md

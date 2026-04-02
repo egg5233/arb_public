@@ -48,7 +48,7 @@ Plans:
 **Plans**: TBD
 
 Plans:
-- [ ] 02-01: TBD
+- [x] 02-01: Native discovery scanner + config fields
 - [ ] 02-02: TBD
 - [ ] 02-03: TBD
 
@@ -110,7 +110,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Spot-Futures Exchange Expansion | 0/3 | Not started | - |
-| 2. Spot-Futures Automation | 0/3 | Not started | - |
+| 2. Spot-Futures Automation | 1/3 | In progress | - |
 | 3. Operational Safety | 0/3 | Not started | - |
 | 4. Performance Analytics | 0/4 | Not started | - |
 | 5. Capital Allocation | 0/3 | Not started | - |
