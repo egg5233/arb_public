@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.25.1] - 2026-04-02
+
+### Removed
+- **ReversalResetOnRecover** — removed entirely. Reversal count never resets on spread recovery. Config param, dashboard toggle, and all 7 file references deleted.
+- **MinCapitalPerLeg $10 floor** — removed hardcoded $10 minimum. Position sizing now only enforces exchange contract minimum order size, maximizing position opening.
+
+### Added
+- **MaxTransferOut per exchange** — Balance struct now includes MaxTransferOut field. Each adapter populates it from exchange-specific API:
+  - Binance: `maxWithdrawAmount` from account endpoint
+  - Bitget: `maxTransferOut` from account endpoint
+  - Bybit: `GET /v5/account/withdrawal` → `availableWithdrawal`
+  - OKX: `GET /api/v5/account/max-withdrawal` → `maxWd`
+  - Gate.io: `available` (documented as withdrawal amount)
+  - BingX: calculated `balance - usedMargin - freezedMargin`
+- **L4-safe transfer cap** — rebalance Phase 2 donor maxMove uses exchange MaxTransferOut when available, falls back to formula `total * (1 - marginRatio / L4)` to prevent "Exceeded max transferable quantity" errors
+
 ## [0.25.0] - 2026-04-02
 
 ### Fixed

@@ -267,11 +267,8 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 			return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("slippage too high on %s: %.1f bps > %.1f bps limit", bottleneck, bps, m.cfg.SlippageBPS)}, nil
 		}
 
-		// Min size = max(contract minimum, $10 floor / price * leverage)
-		// Round UP to ensure we don't go below the capital floor.
-		minSizeFromCapital := (minCapitalFloor * float64(leverage)) / midPrice
-		minSizeFromCapital = math.Ceil(minSizeFromCapital/stepSize) * stepSize
-		adaptiveMinSize := math.Max(minSizeContract, minSizeFromCapital)
+		// Min size = contract minimum from exchange
+		adaptiveMinSize := minSizeContract
 
 		adaptedSize := findMaxSizeForSlippage(
 			longOB.Asks, shortOB.Bids,
@@ -517,14 +514,6 @@ func (m *Manager) CalculateSize(opp models.Opportunity, balances map[string]floa
 			m.log.Info("[sizing] %s: rejected — size %.6f < minSize %.6f", opp.Symbol, sizeInBase, minSizeContract)
 			return 0
 		}
-	}
-
-	// Enforce minimum capital per leg
-	minCapital := MinCapitalPerLeg(leverage)
-	marginPerLeg := sizeInBase * currentPrice / float64(leverage)
-	if marginPerLeg < minCapital {
-		m.log.Info("[sizing] %s: rejected — marginPerLeg=%.4f < minCapital=%.4f", opp.Symbol, marginPerLeg, minCapital)
-		return 0
 	}
 
 	return sizeInBase

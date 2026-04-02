@@ -390,10 +390,11 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 	// Query all exchange balances (futures + spot) BEFORE calculating needs
 	// so we can do budget-aware allocation.
 	type balInfo struct {
-		futures      float64
-		spot         float64
-		futuresTotal float64 // total equity in futures account
-		marginRatio  float64
+		futures        float64
+		spot           float64
+		futuresTotal   float64 // total equity in futures account
+		marginRatio    float64
+		maxTransferOut float64 // exchange-reported max transferable; 0 = unknown
 	}
 	balances := map[string]balInfo{}
 	for name, exch := range e.exchanges {
@@ -402,12 +403,13 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			bi.futures = futBal.Available
 			bi.futuresTotal = futBal.Total
 			bi.marginRatio = futBal.MarginRatio
+			bi.maxTransferOut = futBal.MaxTransferOut
 		}
 		if spotBal, err := exch.GetSpotBalance(); err == nil {
 			bi.spot = spotBal.Available
 		}
 		balances[name] = bi
-		e.log.Info("rebalance: %s futures=%.2f spot=%.2f futuresTotal=%.2f marginRatio=%.4f", name, bi.futures, bi.spot, bi.futuresTotal, bi.marginRatio)
+		e.log.Info("rebalance: %s futures=%.2f spot=%.2f futuresTotal=%.2f marginRatio=%.4f maxTransferOut=%.2f", name, bi.futures, bi.spot, bi.futuresTotal, bi.marginRatio, bi.maxTransferOut)
 	}
 
 	// Budget-aware sequential allocation: iterate opps by score and only
@@ -819,7 +821,23 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			donorBal := balances[bestDonor]
 			if !skipOuterTransfer && donorBal.spot < requiredSpot {
 				moveAmt := requiredSpot - donorBal.spot
-				maxMove := donorBal.futures - needs[bestDonor]
+				// Use exchange-reported maxTransferOut if available, otherwise estimate.
+				maxMove := donorBal.maxTransferOut
+				if maxMove <= 0 {
+					// Fallback: estimate max transferable to keep margin ratio below L4.
+					// After transfer X: newRatio = maintMargin / (total - X) < L4
+					// → X < total * (1 - currentRatio / L4)
+					maxMove = donorBal.futures - needs[bestDonor]
+					if donorBal.marginRatio > 0 && donorBal.futuresTotal > 0 && e.cfg.MarginL4Threshold > 0 {
+						safeMax := donorBal.futuresTotal * (1.0 - donorBal.marginRatio/e.cfg.MarginL4Threshold)
+						safeMax -= needs[bestDonor]
+						if safeMax < maxMove {
+							maxMove = safeMax
+						}
+					}
+				} else {
+					maxMove -= needs[bestDonor] // reserve for new positions
+				}
 				if moveAmt > maxMove && maxMove > 0 {
 					moveAmt = maxMove
 				}

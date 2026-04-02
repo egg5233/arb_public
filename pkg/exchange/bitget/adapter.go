@@ -605,6 +605,7 @@ func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 			Available       string `json:"available"`
 			Frozen          string `json:"locked"`
 			CrossedRiskRate string `json:"crossedRiskRate"`
+			MaxTransferOut  string `json:"maxTransferOut"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
@@ -624,12 +625,15 @@ func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 		avail = total - frozen
 	}
 
+	maxTransferOut, _ := strconv.ParseFloat(resp.Data.MaxTransferOut, 64)
+
 	return &exchange.Balance{
-		Total:       total,
-		Available:   avail,
-		Frozen:      frozen,
-		Currency:    marginCoinUSDT,
-		MarginRatio: marginRatio,
+		Total:          total,
+		Available:      avail,
+		Frozen:         frozen,
+		Currency:       marginCoinUSDT,
+		MarginRatio:    marginRatio,
+		MaxTransferOut: maxTransferOut,
 	}, nil
 }
 

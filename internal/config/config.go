@@ -98,7 +98,6 @@ type Config struct {
 	// Exit tuning
 	EnableSpreadReversal    bool // enable spread reversal exit check (default true)
 	SpreadReversalTolerance int  // allow N reversals before triggering exit (default 0 = exit on first)
-	ReversalResetOnRecover  bool // reset reversal count when spread recovers (default true)
 	ZeroSpreadTolerance     int  // exit after N consecutive checks where both legs have equal funding rate (0=disabled)
 
 	// Anti-spike filters
@@ -353,7 +352,6 @@ type jsonExit struct {
 	DepthTimeoutSec         *int     `json:"depth_timeout_sec"`
 	EnableSpreadReversal    *bool    `json:"enable_spread_reversal"`
 	SpreadReversalTolerance *int     `json:"spread_reversal_tolerance"`
-	ReversalResetOnRecover  *bool    `json:"reversal_reset_on_recover"`
 	ZeroSpreadTolerance     *int     `json:"zero_spread_tolerance"`
 	MaxGapBPS               *float64 `json:"max_gap_bps"`
 }
@@ -477,7 +475,6 @@ func Load() *Config {
 		RotationCooldownMin:             180,
 		EnableSpreadReversal:            true,
 		SpreadReversalTolerance:         1,
-		ReversalResetOnRecover:          true,
 		ZeroSpreadTolerance:             2,
 		ReEnterCooldownHours:            1.0,
 		RedisAddr:                       "localhost:6379",
@@ -735,9 +732,6 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 			}
 			if x.SpreadReversalTolerance != nil && *x.SpreadReversalTolerance > 0 {
 				c.SpreadReversalTolerance = *x.SpreadReversalTolerance
-			}
-			if x.ReversalResetOnRecover != nil {
-				c.ReversalResetOnRecover = *x.ReversalResetOnRecover
 			}
 			if x.ZeroSpreadTolerance != nil && *x.ZeroSpreadTolerance > 0 {
 				c.ZeroSpreadTolerance = *x.ZeroSpreadTolerance
@@ -1150,7 +1144,6 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	exit["depth_timeout_sec"] = c.ExitDepthTimeoutSec
 	exit["enable_spread_reversal"] = c.EnableSpreadReversal
 	exit["spread_reversal_tolerance"] = c.SpreadReversalTolerance
-	exit["reversal_reset_on_recover"] = c.ReversalResetOnRecover
 	exit["zero_spread_tolerance"] = c.ZeroSpreadTolerance
 	exit["max_gap_bps"] = c.ExitMaxGapBPS
 

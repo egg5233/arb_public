@@ -123,11 +123,12 @@ type FundingRate struct {
 
 // Balance holds account balance info.
 type Balance struct {
-	Total       float64 // total equity
-	Available   float64 // available for new orders
-	Frozen      float64 // locked in positions/orders
-	Currency    string  // "USDT"
-	MarginRatio float64 // maintenanceMargin / equity; 0 = unknown, 1.0 = liquidation
+	Total          float64 // total equity
+	Available      float64 // available for new orders
+	Frozen         float64 // locked in positions/orders
+	Currency       string  // "USDT"
+	MarginRatio    float64 // maintenanceMargin / equity; 0 = unknown, 1.0 = liquidation
+	MaxTransferOut float64 // max amount that can be transferred out; 0 = unknown (use Available as fallback)
 }
 
 // Orderbook represents order book depth.

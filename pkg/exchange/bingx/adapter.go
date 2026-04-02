@@ -602,9 +602,11 @@ func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 
 	var balances []struct {
 		Asset           string `json:"asset"`
+		Balance         string `json:"balance"`
 		Equity          string `json:"equity"`
 		AvailableMargin string `json:"availableMargin"`
 		UsedMargin      string `json:"usedMargin"`
+		FreezedMargin   string `json:"freezedMargin"`
 	}
 	if err := json.Unmarshal(result, &balances); err != nil {
 		return nil, fmt.Errorf("bingx GetFuturesBalance parse: %w", err)
@@ -619,12 +621,22 @@ func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 			if total > 0 && available >= 0 {
 				marginRatio = 1 - available/total // consistent with health monitor fallback
 			}
+			// BingX has no dedicated max transferable API.
+			// Calculate from: balance (wallet, no unrealized PnL) - usedMargin - freezedMargin
+			walletBal, _ := strconv.ParseFloat(b.Balance, 64)
+			freezed, _ := strconv.ParseFloat(b.FreezedMargin, 64)
+			maxTransfer := walletBal - used - freezed
+			if maxTransfer < 0 {
+				maxTransfer = 0
+			}
+
 			return &exchange.Balance{
-				Total:       total,
-				Available:   available,
-				Frozen:      used,
-				Currency:    "USDT",
-				MarginRatio: marginRatio,
+				Total:          total,
+				Available:      available,
+				Frozen:         used,
+				Currency:       "USDT",
+				MarginRatio:    marginRatio,
+				MaxTransferOut: maxTransfer,
 			}, nil
 		}
 	}
