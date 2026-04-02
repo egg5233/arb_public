@@ -367,13 +367,16 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 		}
 	}
 
-	// Pre-filter: remove opps whose symbol already has an active position.
-	// This avoids misleading "N passed filters" counts and wasted allocation.
+	// Pre-filter: remove opps whose symbol already has an active position or is blacklisted.
 	var newOpps []models.Opportunity
 	for _, opp := range opps {
-		if !activeSymbols[opp.Symbol] {
-			newOpps = append(newOpps, opp)
+		if activeSymbols[opp.Symbol] {
+			continue
 		}
+		if blocked, err := e.db.IsBlacklisted(opp.Symbol); err == nil && blocked {
+			continue
+		}
+		newOpps = append(newOpps, opp)
 	}
 	if len(newOpps) == 0 {
 		e.log.Info("rebalance: all %d opps already have active positions, skipping", len(opps))
