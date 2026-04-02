@@ -72,8 +72,9 @@ func (b *Adapter) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (s
 		}
 		reqParams["sideEffectType"] = sideEffect
 	}
-	// Binance market BUY requires quoteOrderQty (USDT amount), not quantity (base coin).
-	if strings.ToLower(params.OrderType) == "market" && params.Side == exchange.SideBuy && params.QuoteSize != "" {
+	// Binance market BUY: prefer base-qty (quantity) for exact step-size matching;
+	// fall back to quoteOrderQty (USDT amount) if Size is absent.
+	if strings.ToLower(params.OrderType) == "market" && params.Side == exchange.SideBuy && params.Size == "" && params.QuoteSize != "" {
 		reqParams["quoteOrderQty"] = params.QuoteSize
 		delete(reqParams, "quantity")
 	}

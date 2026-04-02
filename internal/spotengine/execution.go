@@ -186,13 +186,36 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 	}
 
 	// For Direction A, cap by max borrowable.
+	// On separate-account exchanges, poll until the transferred collateral
+	// is reflected in MaxBorrowable (transfer settlement can lag).
 	if direction == "borrow_sell_long" {
-		mb, err := smExch.GetMarginBalance(baseCoin)
-		if err != nil {
-			e.log.Warn("ManualOpen: GetMarginBalance(%s) failed: %v — proceeding with computed size", baseCoin, err)
-		} else if mb.MaxBorrowable > 0 && rawSize > mb.MaxBorrowable {
-			e.log.Info("ManualOpen: capping size from %.6f to MaxBorrowable %.6f", rawSize, mb.MaxBorrowable)
-			rawSize = mb.MaxBorrowable
+		var maxBorrow float64
+		if needsMarginTransfer(exchName) {
+			minExpected := rawSize * 0.5 // expect at least half the target to be borrowable
+			for poll := 0; poll < 10; poll++ {
+				mb, err := smExch.GetMarginBalance(baseCoin)
+				if err != nil {
+					e.log.Warn("ManualOpen: GetMarginBalance(%s) poll %d failed: %v", baseCoin, poll+1, err)
+					break
+				}
+				maxBorrow = mb.MaxBorrowable
+				if maxBorrow >= minExpected {
+					break
+				}
+				e.log.Info("ManualOpen: MaxBorrowable %.6f < expected %.6f — waiting for collateral settlement (%d/10)", maxBorrow, minExpected, poll+1)
+				time.Sleep(500 * time.Millisecond)
+			}
+		} else {
+			mb, err := smExch.GetMarginBalance(baseCoin)
+			if err != nil {
+				e.log.Warn("ManualOpen: GetMarginBalance(%s) failed: %v — proceeding with computed size", baseCoin, err)
+			} else {
+				maxBorrow = mb.MaxBorrowable
+			}
+		}
+		if maxBorrow > 0 && rawSize > maxBorrow {
+			e.log.Info("ManualOpen: capping size from %.6f to MaxBorrowable %.6f", rawSize, maxBorrow)
+			rawSize = maxBorrow
 		}
 	}
 
@@ -1471,6 +1494,21 @@ func (e *SpotEngine) closeDirectionA(
 			if errors.As(err, &blackout) {
 				pos.PendingRepayRetryAt = &blackout.RetryAfter
 			}
+		}
+	}
+
+	// Step 3b: Sweep any micro-dust with repaid_all.
+	// The exact-amount repay above can leave floating-point dust. A zero-amount
+	// repay triggers repaid_all on exchanges that support it (Gate.io unified).
+	time.Sleep(1 * time.Second)
+	if mb, mbErr := smExch.GetMarginBalance(pos.BaseCoin); mbErr == nil && (mb.Borrowed+mb.Interest) > 0 {
+		dust := mb.Borrowed + mb.Interest
+		e.log.Info("ClosePosition [Dir A] step 3b: dust sweep %s (remaining=%.8f)", pos.BaseCoin, dust)
+		if err := smExch.MarginRepay(exchange.MarginRepayParams{
+			Coin:   pos.BaseCoin,
+			Amount: "0",
+		}); err != nil {
+			e.log.Warn("ClosePosition [Dir A] step 3b: dust sweep failed: %v (%.8f %s remains)", err, dust, pos.BaseCoin)
 		}
 	}
 

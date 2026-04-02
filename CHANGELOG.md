@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.24.1] - 2026-04-02
+
+### Fixed
+- **[spotengine] Dir A collateral settlement polling** -- separate-account exchanges (Binance, Bitget) poll MaxBorrowable up to 10× at 500ms intervals after TransferToMargin, waiting for collateral to settle before sizing; fixes Binance BTC where 600ms was too fast
+- **[spotengine] Dir A dust sweep** -- post-close MarginRepay with amount=0 triggers repaid_all on Gate.io, sweeping micro-dust left by auto-repay
+- **[binance] Prefer base-qty for market BUY** -- when both Size and QuoteSize are set, uses quantity (base) instead of quoteOrderQty (USDT) for exact step-size matching; fixes BTC Dir B where QuoteSize fill rounded below $100 futures minimum
+
 ## [0.24.0] - 2026-04-02
 
 ### Added
