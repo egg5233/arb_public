@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 02-01-PLAN.md
-last_updated: "2026-04-02T07:55:13Z"
-last_activity: 2026-04-02 -- Phase 02 Plan 01 complete
+stopped_at: Completed 02-02-PLAN.md
+last_updated: "2026-04-02T08:15:54.557Z"
+last_activity: 2026-04-02
 progress:
   total_phases: 5
   completed_phases: 1
-  total_plans: 3
-  completed_plans: 1
+  total_plans: 6
+  completed_plans: 5
   percent: 33
 ---
 
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-04-01)
 ## Current Position
 
 Phase: 02 (spot-futures-automation) — EXECUTING
-Plan: 2 of 3
-Status: Executing Phase 02
-Last activity: 2026-04-02 -- Phase 02 Plan 01 complete
+Plan: 3 of 3
+Status: Ready to execute
+Last activity: 2026-04-02
 
 Progress: [###░░░░░░░] 33%
 
@@ -53,6 +53,7 @@ Progress: [###░░░░░░░] 33%
 
 *Updated after each plan completion*
 | Phase 01 P03 | 13 | 1 tasks | 5 files |
+| Phase 02 P02 | 13min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -68,6 +69,9 @@ Recent decisions affecting current work:
 - [Phase 02 P01]: Loris URL injection pattern (pollLorisFromURL) for test mocking
 - [Phase 02 P01]: runDiscoveryScan() router: native when enabled, CoinGlass fallback
 - [Phase 02 P01]: Both Dir A and Dir B generated per symbol+exchange for ranking
+- [Phase 02]: Restructured checkExitTriggers to 3-phase priority: emergency first, guards second, yield last
+- [Phase 02]: Futures orderbook bid-ask spread as conservative basis proxy (no separate spot price feed needed)
+- [Phase 02]: Basis gate fail-closed on errors: rejects entry rather than allowing potentially bad entry
 
 ### Pending Todos
 
@@ -80,6 +84,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-02T07:55:13Z
-Stopped at: Completed 02-01-PLAN.md
-Resume file: .planning/phases/02-spot-futures-automation/02-02-PLAN.md
+Last session: 2026-04-02T08:15:54.553Z
+Stopped at: Completed 02-02-PLAN.md
+Resume file: None
