@@ -50,7 +50,7 @@ Plans:
 Plans:
 - [x] 02-01-PLAN.md -- Config fields (9 new) + native Loris-based discovery scanner replacing CoinGlass
 - [x] 02-02-PLAN.md -- Exit safeguards (min-hold, settlement guard, spread gate) + entry basis gate
-- [ ] 02-03-PLAN.md -- Dashboard UI integration (config toggles, i18n, source indicator) + auto-entry validation
+- [x] 02-03-PLAN.md -- Dashboard UI integration (config toggles, i18n, source indicator) + auto-entry validation
 
 ### Phase 3: Operational Safety
 **Goal**: The live trading system has safety nets that prevent catastrophic losses and keep the operator informed
