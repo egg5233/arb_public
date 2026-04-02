@@ -45,12 +45,12 @@ Plans:
   2. System auto-opens the best spot-futures opportunity when it meets entry thresholds, without user clicking anything
   3. Positions auto-exit when exit conditions are met, handling blackout windows (e.g., Bybit :04-:05:30), partial fills, and emergency close scenarios
   4. Entry is rejected when basis/spread is too wide, and exit is gated by spread threshold -- user can see the spread reason in logs
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 02-01: TBD
-- [ ] 02-02: TBD
-- [ ] 02-03: TBD
+- [ ] 02-01-PLAN.md -- Config fields (9 new) + native Loris-based discovery scanner replacing CoinGlass
+- [ ] 02-02-PLAN.md -- Exit safeguards (min-hold, settlement guard, spread gate) + entry basis gate
+- [ ] 02-03-PLAN.md -- Dashboard UI integration (config toggles, i18n, source indicator) + auto-entry validation
 
 ### Phase 3: Operational Safety
 **Goal**: The live trading system has safety nets that prevent catastrophic losses and keep the operator informed
