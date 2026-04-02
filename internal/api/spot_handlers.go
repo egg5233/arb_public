@@ -274,6 +274,7 @@ func (s *Server) handleSpotAutoConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		s.cfg.Lock()
 		if req.Enabled != nil {
 			s.cfg.SpotFuturesAutoEnabled = *req.Enabled
 			s.db.SetConfigField("spot_futures_auto_enabled", strconv.FormatBool(*req.Enabled))
@@ -286,6 +287,7 @@ func (s *Server) handleSpotAutoConfig(w http.ResponseWriter, r *http.Request) {
 			s.cfg.SpotFuturesPersistenceScans = *req.PersistenceScans
 			s.db.SetConfigField("spot_futures_persistence_scans", strconv.Itoa(*req.PersistenceScans))
 		}
+		s.cfg.Unlock()
 
 		s.log.Info("spot auto config updated: enabled=%v dry_run=%v persistence_scans=%d",
 			s.cfg.SpotFuturesAutoEnabled, s.cfg.SpotFuturesDryRun, s.cfg.SpotFuturesPersistenceScans)

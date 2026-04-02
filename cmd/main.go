@@ -251,6 +251,22 @@ func main() {
 	}()
 	log.Info("Balance refresh started (60s interval)")
 
+	// Wire config hot-reload notifications
+	notifier := apiSrv.ConfigNotifier()
+	scanner.SetConfigNotify(notifier.Subscribe())
+	riskMon.SetConfigNotify(notifier.Subscribe())
+	healthMon.SetConfigNotify(notifier.Subscribe())
+
+	// Exchange hot-reload: rebuild adapters when API keys or enabled state change.
+	exchMgr := engine.NewExchangeManager(cfg)
+	exchMgr.SetExchanges(exchanges)
+	go func() {
+		ch := notifier.Subscribe()
+		for range ch {
+			exchMgr.Reload()
+		}
+	}()
+
 	// Start all components in order
 	scanner.Start()
 	if cfg.DelistFilterEnabled {
@@ -287,6 +303,7 @@ func main() {
 	var spotEng *spotengine.SpotEngine
 	if cfg.SpotFuturesEnabled {
 		spotEng = spotengine.NewSpotEngine(exchanges, db, apiSrv, cfg, allocator)
+		spotEng.SetConfigNotify(notifier.Subscribe(), notifier.Subscribe())
 		apiSrv.SetSpotOpenHandler(spotEng.ManualOpen)
 		apiSrv.SetSpotCloseHandler(spotEng.ManualClose)
 		apiSrv.SetSpotTestInjectHandler(spotEng.InjectTestOpportunity)

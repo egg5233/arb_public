@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.24.0] - 2026-04-02
+
+### Added
+- **Orphan Leg Detector** — detects positions where one leg closed but the other remains (e.g. after failed L5 emergency close); auto-closes surviving leg or marks dust as cleaned; 10×30s consecutive confirmation prevents false positives from transient API errors
+- **Config hot-reload notification system** — ConfigNotifier pub/sub broadcasts config changes to scanner, risk monitor, health monitor, and spot engine without restart
+- **Exchange adapter hot-reload** — ExchangeManager detects API key or enabled-state changes and rebuilds exchange adapters on the fly
+- **Frontend exchange toggle fix** — enable/disable toggle now properly marks exchanges dirty so save actually sends the change to backend
+
+### Fixed
+- **Rebalance V2 rescue bugs** — auto-size mode (CapitalPerLeg=0) no longer produces zero estMargin; post-trade margin ratio verified before rescue; donor surplus no longer double-counted via plannedTransfers tracking
+- **Budget-aware sequential allocation** — rebalance now simulates full approval chain (SimulateApproval) and only counts needs for positions exchanges can actually afford
+
 ## [0.22.57] - 2026-04-02
 
 ### Changed

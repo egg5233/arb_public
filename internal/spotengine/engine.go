@@ -50,6 +50,11 @@ type SpotEngine struct {
 
 	// telegram sends trade lifecycle alerts. Nil if unconfigured.
 	telegram *notify.TelegramNotifier
+
+	// configChanged signals discovery loop when dashboard config has been updated.
+	configChanged <-chan struct{}
+	// configChangedMon signals monitor loop when dashboard config has been updated.
+	configChangedMon <-chan struct{}
 }
 
 // NewSpotEngine creates a new SpotEngine with all required dependencies.
@@ -82,6 +87,13 @@ func NewSpotEngine(
 		borrowVelocity: NewRateVelocityDetector(),
 		telegram:       notify.NewTelegram(cfg.TelegramBotToken, cfg.TelegramChatID),
 	}
+}
+
+// SetConfigNotify registers channels that signal when config has changed.
+// Two channels are needed: one for the discovery loop and one for the monitor loop.
+func (e *SpotEngine) SetConfigNotify(discoveryCh, monitorCh <-chan struct{}) {
+	e.configChanged = discoveryCh
+	e.configChangedMon = monitorCh
 }
 
 // Start launches the spot-futures engine goroutines.
@@ -153,6 +165,19 @@ func (e *SpotEngine) discoveryLoop() {
 			return
 		case <-ticker.C:
 			e.log.Info("spot-futures discovery scan")
+			opps := e.runDiscoveryScan()
+			passed := filterPassed(opps)
+			e.logDiscoveryResults(passed)
+			e.pushOppsToAPI(opps)
+			e.updatePersistenceCounts(passed)
+			e.attemptAutoEntries(passed)
+		case <-e.configChanged:
+			newInterval := time.Duration(e.cfg.SpotFuturesScanIntervalMin) * time.Minute
+			if newInterval < time.Minute {
+				newInterval = 10 * time.Minute
+			}
+			ticker.Reset(newInterval)
+			e.log.Info("spot-futures config updated, scan interval now %s — running immediate scan", newInterval)
 			opps := e.runDiscoveryScan()
 			passed := filterPassed(opps)
 			e.logDiscoveryResults(passed)

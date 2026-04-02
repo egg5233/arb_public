@@ -618,11 +618,17 @@ func (s *Server) buildConfigResponse() configResponse {
 }
 
 func (s *Server) buildExchangesResponse() map[string]configExchangeResponse {
-	getAddr := func(name string) map[string]string {
-		if a, ok := s.cfg.ExchangeAddresses[name]; ok {
-			return a
+	// Caller must hold at least RLock on s.cfg
+	addrSnap := make(map[string]map[string]string, len(s.cfg.ExchangeAddresses))
+	for ex, chains := range s.cfg.ExchangeAddresses {
+		cc := make(map[string]string, len(chains))
+		for k, v := range chains {
+			cc[k] = v
 		}
-		return nil
+		addrSnap[ex] = cc
+	}
+	getAddr := func(name string) map[string]string {
+		return addrSnap[name]
 	}
 	return map[string]configExchangeResponse{
 		"binance": buildExchangeInfo(s.cfg.BinanceAPIKey, s.cfg.BinanceSecretKey, "", false, getAddr("binance"), s.cfg.IsExchangeEnabled("binance")),
@@ -636,7 +642,10 @@ func (s *Server) buildExchangesResponse() map[string]configExchangeResponse {
 
 // handleGetConfig returns the current runtime configuration (safe fields only).
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, Response{OK: true, Data: s.buildConfigResponse()})
+	s.cfg.RLock()
+	resp := s.buildConfigResponse()
+	s.cfg.RUnlock()
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: resp})
 }
 
 func (s *Server) handleGetExchangeHealth(w http.ResponseWriter, r *http.Request) {
@@ -828,7 +837,8 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Apply updates
+	// Apply updates under config lock to prevent data races.
+	s.cfg.Lock()
 	if upd.DryRun != nil {
 		s.cfg.DryRun = *upd.DryRun
 	}
@@ -1383,6 +1393,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.db.SetConfigFields(fields); err != nil {
 		s.log.Error("save config to redis: %v", err)
+		s.cfg.Unlock()
 		writeJSON(w, http.StatusInternalServerError, Response{Error: "failed to persist config"})
 		return
 	}
@@ -1391,6 +1402,10 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	if err := s.cfg.SaveJSONWithExchangeSecretOverrides(exchangeSecretOverrides); err != nil {
 		s.log.Warn("save config.json: %v (Redis saved OK)", err)
 	}
+	s.cfg.Unlock()
+
+	// Notify all subscribers (engine, scanner, etc.) that config has changed.
+	s.configNotifier.Notify()
 
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: snapshot})
 }
@@ -1504,13 +1519,18 @@ func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Look up destination address from config
+	s.cfg.RLock()
 	destAddrs, ok := s.cfg.ExchangeAddresses[req.To]
-	if !ok {
+	var addr string
+	if ok {
+		addr, ok = destAddrs[req.Chain]
+	}
+	s.cfg.RUnlock()
+	if destAddrs == nil {
 		writeJSON(w, http.StatusBadRequest, Response{Error: fmt.Sprintf("no addresses configured for %s", req.To)})
 		return
 	}
-	addr, ok := destAddrs[req.Chain]
-	if !ok {
+	if !ok || addr == "" {
 		writeJSON(w, http.StatusBadRequest, Response{Error: fmt.Sprintf("no %s address for %s", req.Chain, req.To)})
 		return
 	}
@@ -1629,7 +1649,17 @@ func (s *Server) handleAddresses(w http.ResponseWriter, r *http.Request) {
 
 // handleGetAddresses returns configured deposit addresses for all exchanges.
 func (s *Server) handleGetAddresses(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, Response{OK: true, Data: s.cfg.ExchangeAddresses})
+	s.cfg.RLock()
+	addrCopy := make(map[string]map[string]string, len(s.cfg.ExchangeAddresses))
+	for ex, chains := range s.cfg.ExchangeAddresses {
+		cc := make(map[string]string, len(chains))
+		for k, v := range chains {
+			cc[k] = v
+		}
+		addrCopy[ex] = cc
+	}
+	s.cfg.RUnlock()
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: addrCopy})
 }
 
 // handlePostAddresses updates deposit addresses for exchanges.
@@ -1641,6 +1671,7 @@ func (s *Server) handlePostAddresses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.cfg.Lock()
 	if s.cfg.ExchangeAddresses == nil {
 		s.cfg.ExchangeAddresses = make(map[string]map[string]string)
 	}
@@ -1659,11 +1690,23 @@ func (s *Server) handlePostAddresses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.cfg.SaveJSON(); err != nil {
+		s.cfg.Unlock()
 		writeJSON(w, http.StatusInternalServerError, Response{Error: "failed to save: " + err.Error()})
 		return
 	}
+	// Deep copy for safe response after unlock
+	addrCopy := make(map[string]map[string]string, len(s.cfg.ExchangeAddresses))
+	for ex, chains := range s.cfg.ExchangeAddresses {
+		cc := make(map[string]string, len(chains))
+		for k, v := range chains {
+			cc[k] = v
+		}
+		addrCopy[ex] = cc
+	}
+	s.cfg.Unlock()
 
-	writeJSON(w, http.StatusOK, Response{OK: true, Data: s.cfg.ExchangeAddresses})
+	s.configNotifier.Notify()
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: addrCopy})
 }
 
 // handleDiagnose collects error/warn logs + positions, sends to AI for analysis.

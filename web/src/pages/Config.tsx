@@ -301,7 +301,7 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
   const tabBarRef = useRef<HTMLDivElement>(null);
 
   // Exchange overrides: only fields the user actually typed
-  const [exchangeOverrides, setExchangeOverrides] = useState<Record<string, Record<string, string>>>({});
+  const [exchangeOverrides, setExchangeOverrides] = useState<Record<string, Record<string, string | boolean>>>({});
 
   // Track which config paths were changed (dirty fields only)
   const [dirtyPaths, setDirtyPaths] = useState<Set<string>>(new Set());
@@ -413,7 +413,12 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
         const hasPassphrase = info.has_passphrase === true;
         const apiKeyPreview = (info.api_key_preview as string) || '';
         const address = (info.address as Record<string, string>) || {};
-        const overrides = exchangeOverrides[ex.id] || {};
+        const overridesRaw = exchangeOverrides[ex.id] || {};
+        const overrides = {
+          api_key: (overridesRaw.api_key as string) || '',
+          secret_key: (overridesRaw.secret_key as string) || '',
+          passphrase: (overridesRaw.passphrase as string) || '',
+        };
 
         return (
           <div
@@ -431,6 +436,10 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
                   const exData = ((exchanges[ex.id] as Record<string, unknown>) || {});
                   const updated = { ...exchanges, [ex.id]: { ...exData, enabled: v } };
                   setConfig((prev) => ({ ...prev, exchanges: updated }));
+                  setExchangeOverrides((prev) => ({
+                    ...prev,
+                    [ex.id]: { ...(prev[ex.id] || {}), enabled: v },
+                  }));
                 }}
               />
             </div>

@@ -30,6 +30,14 @@ func (e *SpotEngine) monitorLoop() {
 			return
 		case <-ticker.C:
 			e.monitorTick()
+		case <-e.configChangedMon:
+			newInterval := time.Duration(e.cfg.SpotFuturesMonitorIntervalSec) * time.Second
+			if newInterval < 10*time.Second {
+				newInterval = 60 * time.Second
+			}
+			ticker.Reset(newInterval)
+			e.log.Info("spot-futures monitor config updated, interval now %s", newInterval)
+			e.monitorTick()
 		}
 	}
 }

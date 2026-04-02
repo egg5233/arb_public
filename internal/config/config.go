@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -23,6 +24,8 @@ func normalizeChain(chain string) string {
 
 // Config holds all application configuration.
 type Config struct {
+	mu sync.RWMutex // protects concurrent read/write of config fields
+
 	// Strategy parameters
 	MinHoldTime             time.Duration // timed exit hold duration (default 16h)
 	MaxCostRatio            float64       // max fees/revenue ratio for profitability filter (default 0.50)
@@ -517,6 +520,18 @@ func Load() *Config {
 
 	return c
 }
+
+// Lock acquires the config write lock.
+func (c *Config) Lock() { c.mu.Lock() }
+
+// Unlock releases the config write lock.
+func (c *Config) Unlock() { c.mu.Unlock() }
+
+// RLock acquires the config read lock.
+func (c *Config) RLock() { c.mu.RLock() }
+
+// RUnlock releases the config read lock.
+func (c *Config) RUnlock() { c.mu.RUnlock() }
 
 // EnsureScanMinutes adds rebalance/exit/entry/rotate minutes to ScanMinutes
 // if they are not already present, then sorts the slice.
