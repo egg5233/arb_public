@@ -601,21 +601,9 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			continue
 		}
 
-		// Futures doesn't cover the need. Transfer enough from spot so that
-		// post-trade margin ratio stays below L4.
-		// Required total futures: need / targetFreeRatio.
-		requiredTotal := need / targetFreeRatio
-		transferAmt := requiredTotal - bal.futuresTotal
-		// At minimum, transfer the shortfall so we can open at all.
+		// Futures doesn't cover the need. Calculate the actual shortfall.
 		shortfall := need - bal.futures
-		if transferAmt < shortfall {
-			transferAmt = shortfall
-		}
-		// L4-safe deficit: the full amount still needed (includes L4 safety margin)
-		l4Deficit := requiredTotal - bal.futuresTotal
-		if l4Deficit < shortfall {
-			l4Deficit = shortfall
-		}
+		transferAmt := shortfall
 		if bal.spot > 0 {
 			actualTransfer := transferAmt
 			if actualTransfer > bal.spot {
@@ -623,8 +611,8 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			}
 			if actualTransfer < 1.0 {
 				e.log.Debug("rebalance: %s spot→futures skip (%.4f USDT below minimum)", name, actualTransfer)
-				if l4Deficit > 10 {
-					crossDeficits = append(crossDeficits, deficit{name, l4Deficit})
+				if shortfall > 10 {
+					crossDeficits = append(crossDeficits, deficit{name, shortfall})
 				}
 				continue
 			}
@@ -636,7 +624,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 				if err := e.exchanges[name].TransferToFutures("USDT", amtStr); err != nil {
 					e.log.Error("rebalance: %s spot→futures failed: %v", name, err)
 				} else {
-					l4Deficit -= actualTransfer
+					shortfall -= actualTransfer
 					// Update local balance tracking
 					bi := balances[name]
 					bi.futures += actualTransfer
@@ -645,8 +633,8 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 				}
 			}
 		}
-		if l4Deficit > 10 {
-			crossDeficits = append(crossDeficits, deficit{name, l4Deficit})
+		if shortfall > 10 {
+			crossDeficits = append(crossDeficits, deficit{name, shortfall})
 		}
 	}
 

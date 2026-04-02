@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.24.2] - 2026-04-02
+
+### Fixed
+- **Rebalance deficit inflated by L4 safety margin** — cross-exchange deficit was calculated as `need / targetFreeRatio - totalEquity` (5x the actual shortfall), causing "no donor found" even when transfers of $55 would suffice. Now uses actual shortfall `need - available` for cross-exchange transfer sizing.
+
 ## [0.24.1] - 2026-04-02
 
 ### Fixed
