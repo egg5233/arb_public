@@ -2,7 +2,9 @@ package risk
 
 import (
 	"fmt"
+	"math"
 	"sort"
+	"sync"
 	"time"
 
 	"arb/internal/config"
@@ -59,38 +61,49 @@ type ExchangeHealth struct {
 
 // HealthAction represents a protective action to be taken by the engine.
 type HealthAction struct {
-	Type      string                      // "transfer", "reduce", "close"
-	Exchange  string                      // affected exchange
-	Positions []*models.ArbitragePosition // positions to act on
-	Fraction  float64                     // for reduce (e.g. 0.5)
-	DonorExch string                      // for transfer: source exchange
-	Amount    float64                     // for transfer: USDT amount
+	Type           string                      // "transfer", "reduce", "close", "close_orphan", "close_orphan_dust"
+	Exchange       string                      // affected exchange
+	Positions      []*models.ArbitragePosition // positions to act on
+	Fraction       float64                     // for reduce (e.g. 0.5)
+	DonorExch      string                      // for transfer: source exchange
+	Amount         float64                     // for transfer: USDT amount
+	OrphanSide     string                      // for orphan: "long" or "short"
+	OrphanExchange string                      // for orphan: which exchange has the orphan leg
 }
 
 // HealthMonitor checks per-exchange margin health and emits protective actions.
 type HealthMonitor struct {
-	exchanges map[string]exchange.Exchange
-	db        *database.Client
-	cfg       *config.Config
-	log       *utils.Logger
-	states    map[string]*ExchangeHealth
-	liqTrend  *LiqTrendTracker
-	actionCh  chan HealthAction
-	stopCh    chan struct{}
+	exchanges     map[string]exchange.Exchange
+	db            *database.Client
+	cfg           *config.Config
+	log           *utils.Logger
+	states        map[string]*ExchangeHealth
+	liqTrend      *LiqTrendTracker
+	actionCh      chan HealthAction
+	stopCh        chan struct{}
+	configChanged <-chan struct{}
+	orphanMu      sync.Mutex
+	orphanCounts  map[string]int // position ID -> consecutive orphan detection count
 }
 
 // NewHealthMonitor creates a new HealthMonitor.
 func NewHealthMonitor(exchanges map[string]exchange.Exchange, db *database.Client, cfg *config.Config) *HealthMonitor {
 	return &HealthMonitor{
-		exchanges: exchanges,
-		db:        db,
-		cfg:       cfg,
-		log:       utils.NewLogger("health-monitor"),
-		states:    make(map[string]*ExchangeHealth),
-		liqTrend:  NewLiqTrendTracker(cfg),
-		actionCh:  make(chan HealthAction, 20),
-		stopCh:    make(chan struct{}),
+		exchanges:    exchanges,
+		db:           db,
+		cfg:          cfg,
+		log:          utils.NewLogger("health-monitor"),
+		states:       make(map[string]*ExchangeHealth),
+		liqTrend:     NewLiqTrendTracker(cfg),
+		actionCh:     make(chan HealthAction, 20),
+		stopCh:       make(chan struct{}),
+		orphanCounts: make(map[string]int),
 	}
+}
+
+// SetConfigNotify registers a channel that signals when health monitor config has changed.
+func (h *HealthMonitor) SetConfigNotify(ch <-chan struct{}) {
+	h.configChanged = ch
 }
 
 // Start begins the health monitoring loop.
@@ -119,10 +132,16 @@ func (h *HealthMonitor) run() {
 
 	// Initial check
 	h.checkAll()
+	h.checkOrphanLegs()
 
 	for {
 		select {
 		case <-ticker.C:
+			h.checkAll()
+			h.checkOrphanLegs()
+		case <-h.configChanged:
+			h.liqTrend = NewLiqTrendTracker(h.cfg)
+			h.log.Info("health monitor: config updated, liq trend tracker rebuilt")
 			h.checkAll()
 		case <-h.stopCh:
 			h.log.Info("health monitor stopped")
@@ -457,6 +476,157 @@ func (h *HealthMonitor) handleL5(name string, state *ExchangeHealth, positions [
 	default:
 		h.log.Error("L5 %s: action channel full, dropping emergency close!", name)
 	}
+}
+
+// checkOrphanLegs detects positions where one leg has been fully closed (size=0)
+// while the other leg remains open. After 3 consecutive detections, emits an action
+// to close the orphaned leg.
+func (h *HealthMonitor) checkOrphanLegs() {
+	positions, err := h.db.GetActivePositions()
+	if err != nil {
+		h.log.Error("[orphan-leg] failed to get active positions: %v", err)
+		return
+	}
+
+	const epsilon = 1e-8
+	const requiredConsecutive = 10 // 10 × 30s = 5 minutes of consecutive detection
+
+	// Track which position IDs we see this cycle (to clean up stale counts).
+	seen := make(map[string]bool)
+
+	for _, pos := range positions {
+		if pos.Status != models.StatusActive {
+			continue
+		}
+		seen[pos.ID] = true
+
+		// Get exchange position for long leg.
+		longExch, longOk := h.exchanges[pos.LongExchange]
+		if !longOk {
+			continue
+		}
+		longPositions, err := longExch.GetAllPositions()
+		if err != nil {
+			// API error — skip, don't count as orphan.
+			continue
+		}
+
+		// Get exchange position for short leg.
+		shortExch, shortOk := h.exchanges[pos.ShortExchange]
+		if !shortOk {
+			continue
+		}
+		shortPositions, err := shortExch.GetAllPositions()
+		if err != nil {
+			continue
+		}
+
+		// Find the actual size of each leg on the exchange.
+		longSize := h.findLegSize(longPositions, pos.Symbol, "long")
+		shortSize := h.findLegSize(shortPositions, pos.Symbol, "short")
+
+		longZero := math.Abs(longSize) < epsilon
+		shortZero := math.Abs(shortSize) < epsilon
+
+		if (longZero && !shortZero) || (!longZero && shortZero) {
+			// One leg is missing — potential orphan.
+			h.orphanMu.Lock()
+			count := h.orphanCounts[pos.ID]
+			if count < 0 {
+				// Already dispatched — waiting for engine to handle.
+				h.orphanMu.Unlock()
+				continue
+			}
+			count++
+			h.orphanCounts[pos.ID] = count
+			h.orphanMu.Unlock()
+
+			if count < requiredConsecutive {
+				h.log.Info("[orphan-leg] position %s: detection %d/%d", pos.ID, count, requiredConsecutive)
+				continue
+			}
+
+			// Determine which side survives.
+			var orphanSide, orphanExchange string
+			var survivingSize, price float64
+			if longZero {
+				// Long leg is gone, short leg survives.
+				orphanSide = "short"
+				orphanExchange = pos.ShortExchange
+				survivingSize = shortSize
+				price = pos.ShortEntry
+			} else {
+				// Short leg is gone, long leg survives.
+				orphanSide = "long"
+				orphanExchange = pos.LongExchange
+				survivingSize = longSize
+				price = pos.LongEntry
+			}
+
+			notional := math.Abs(survivingSize) * price
+
+			h.log.Warn("[orphan-leg] position %s: %s leg on %s is orphaned (size=%.6f, notional=%.2f, other leg=0) — dispatching close",
+				pos.ID, orphanSide, orphanExchange, survivingSize, notional)
+
+			actionType := "close_orphan"
+			if notional < 5.0 {
+				actionType = "close_orphan_dust"
+			}
+
+			select {
+			case h.actionCh <- HealthAction{
+				Type:           actionType,
+				Exchange:       orphanExchange,
+				Positions:      []*models.ArbitragePosition{pos},
+				OrphanSide:     orphanSide,
+				OrphanExchange: orphanExchange,
+			}:
+				// Mark as dispatched (negative sentinel) to prevent re-enqueue.
+				h.orphanMu.Lock()
+				h.orphanCounts[pos.ID] = -1
+				h.orphanMu.Unlock()
+			default:
+				h.log.Warn("[orphan-leg] action channel full, dropping orphan action for %s", pos.ID)
+			}
+		} else {
+			// Both legs present (or both zero) — reset counter.
+			h.orphanMu.Lock()
+			delete(h.orphanCounts, pos.ID)
+			h.orphanMu.Unlock()
+		}
+	}
+
+	// Clean up counts for positions no longer active.
+	h.orphanMu.Lock()
+	for id := range h.orphanCounts {
+		if !seen[id] {
+			delete(h.orphanCounts, id)
+		}
+	}
+	h.orphanMu.Unlock()
+}
+
+// ResetOrphanCount clears the orphan detection sentinel for a position,
+// allowing it to be re-detected if a close attempt failed and the position
+// was reverted to active.
+func (h *HealthMonitor) ResetOrphanCount(posID string) {
+	h.orphanMu.Lock()
+	delete(h.orphanCounts, posID)
+	h.orphanMu.Unlock()
+}
+
+// findLegSize finds the total size for a given symbol and side from exchange positions.
+func (h *HealthMonitor) findLegSize(positions []exchange.Position, symbol, side string) float64 {
+	var total float64
+	for _, p := range positions {
+		if p.Symbol == symbol && p.HoldSide == side {
+			v, err := utils.ParseFloat(p.Total)
+			if err == nil {
+				total += v
+			}
+		}
+	}
+	return total
 }
 
 // FormatStates returns a summary string of all exchange health states.

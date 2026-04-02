@@ -64,8 +64,16 @@ func (m *Manager) ApproveWithReserved(opp models.Opportunity, reserved map[strin
 	return m.approveInternal(opp, reserved)
 }
 
+// SimulateApproval runs the full approval checks without side effects.
+// It skips ensureFuturesBalance (no spot→futures transfer) and lock acquisition.
+// Used by V2 rebalance to predict which opps would pass real approval.
+func (m *Manager) SimulateApproval(opp models.Opportunity, reserved map[string]float64) (*models.RiskApproval, error) {
+	return m.approveInternal(opp, reserved, true)
+}
+
 // approveInternal is the shared implementation for Approve and ApproveWithReserved.
-func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]float64) (*models.RiskApproval, error) {
+func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]float64, simulate ...bool) (*models.RiskApproval, error) {
+	dryRun := len(simulate) > 0 && simulate[0]
 	// a. Position count check
 	active, err := m.db.GetActivePositions()
 	if err != nil {
@@ -96,7 +104,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	}
 
 	needed := m.cfg.CapitalPerLeg
-	if needed > 0 {
+	if needed > 0 && !dryRun {
 		bufferedNeed := needed * m.cfg.MarginSafetyMultiplier
 		m.ensureFuturesBalance(opp.LongExchange, longExch, longBal, bufferedNeed)
 		m.ensureFuturesBalance(opp.ShortExchange, shortExch, shortBal, bufferedNeed)
@@ -106,6 +114,27 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		}
 		if sb, err := shortExch.GetFuturesBalance(); err == nil {
 			shortBal = sb
+		}
+	}
+
+	// In simulate mode, account for spot balance that could be transferred to futures.
+	// This matches what ensureFuturesBalance would do without actually transferring.
+	if dryRun && needed > 0 {
+		for _, pair := range []struct {
+			name string
+			exch exchange.Exchange
+			bal  *exchange.Balance
+		}{
+			{opp.LongExchange, longExch, longBal},
+			{opp.ShortExchange, shortExch, shortBal},
+		} {
+			bufferedNeed := needed * m.cfg.MarginSafetyMultiplier
+			if pair.bal.Available < bufferedNeed {
+				if spotBal, err := pair.exch.GetSpotBalance(); err == nil && spotBal.Available > 0 {
+					pair.bal.Available += spotBal.Available
+					pair.bal.Total += spotBal.Available
+				}
+			}
 		}
 	}
 

@@ -76,10 +76,11 @@ type Scanner struct {
 	lorisBackoffMu    sync.RWMutex
 	lorisBackoffUntil time.Time
 
-	oppChan  chan ScanResult
-	stopCh   chan struct{}
-	wg       sync.WaitGroup
-	rejStore *models.RejectionStore
+	oppChan       chan ScanResult
+	stopCh        chan struct{}
+	configChanged <-chan struct{}
+	wg            sync.WaitGroup
+	rejStore      *models.RejectionStore
 }
 
 // NewScanner creates a Scanner with the given dependencies.
@@ -96,6 +97,11 @@ func NewScanner(exchanges map[string]exchange.Exchange, db *database.Client, cfg
 		oppChan:     make(chan ScanResult, 1),
 		stopCh:      make(chan struct{}),
 	}
+}
+
+// SetConfigNotify registers a channel that signals when scan schedule config has changed.
+func (s *Scanner) SetConfigNotify(ch <-chan struct{}) {
+	s.configChanged = ch
 }
 
 // SetRejectionStore sets the shared rejection store for recording filtered opportunities.
@@ -181,6 +187,20 @@ func (s *Scanner) Start() {
 				}
 				s.log.Info("scan firing at :%02d (type=%s)", next.Minute(), scanType)
 				s.runCycleTagged(scanType)
+			case <-s.configChanged:
+				timer.Stop()
+				s.cfg.EnsureScanMinutes()
+				now = time.Now()
+				s.cfg.RLock()
+				next = nextScanTime(now, s.cfg.ScanMinutes)
+				s.log.Info("scan schedule updated (schedule=%v rebalance=:%02d exit=:%02d entry=:%02d rotate=:%02d), next scan at %s",
+					s.cfg.ScanMinutes, s.cfg.RebalanceScanMinute, s.cfg.ExitScanMinute, s.cfg.EntryScanMinute, s.cfg.RotateScanMinute,
+					next.Format("15:04:05"))
+				s.cfg.RUnlock()
+				// Fire an immediate normal scan so filter/strategy changes take effect right away.
+				s.log.Info("config changed — running immediate normal scan")
+				s.runCycleTagged(NormalScan)
+				continue
 			case <-s.stopCh:
 				timer.Stop()
 				s.log.Info("Scanner stopped")

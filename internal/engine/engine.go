@@ -337,16 +337,9 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 		return
 	}
 
-	// Determine capital needs per exchange by simulating which opportunities
-	// would actually be opened (same logic as executeArbitrage: skip occupied
-	// symbols, respect remaining slot count). This avoids over-estimating
-	// when many opportunities share the same exchange.
-	margin := e.cfg.CapitalPerLeg
-	if margin <= 0 {
-		margin = 50 // fallback
-	}
-	margin *= e.cfg.MarginSafetyMultiplier // buffer need with safety multiplier
-
+	// Determine capital needs per exchange by simulating the full entry
+	// approval filter chain (matching risk/manager.go approveInternal)
+	// without locks, orders, or side effects.
 	active, err := e.db.GetActivePositions()
 	if err != nil {
 		e.log.Error("rebalance: failed to get active positions: %v", err)
@@ -366,53 +359,190 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 		}
 	}
 
-	// Simulate entry: pick eligible opportunities up to remainingSlots.
-	// Take up to 2x slots to account for some being rejected by risk/lock,
-	// then cap each exchange's need to what it can actually fund.
-	needs := map[string]float64{}
-	selected := 0
-	candidateLimit := remainingSlots * 2 // over-select to cover rejections
-	for _, opp := range opps {
-		if selected >= candidateLimit {
-			break
-		}
-		if activeSymbols[opp.Symbol] {
-			continue
-		}
-		needs[opp.LongExchange] += margin
-		needs[opp.ShortExchange] += margin
-		selected++
-	}
-	// Cap each exchange's need: cannot exceed remainingSlots × margin
-	// (even with 2x over-selection, one exchange won't serve all slots)
-	maxPerExchange := float64(remainingSlots) * margin
-	for name := range needs {
-		if needs[name] > maxPerExchange {
-			needs[name] = maxPerExchange
-		}
-	}
-
-	e.log.Info("rebalance: analyzing %d opportunities, needs: %v", len(opps), needs)
-
-	// Query all exchange balances (futures + spot).
+	// Query all exchange balances (futures + spot) BEFORE calculating needs
+	// so we can do budget-aware allocation.
 	type balInfo struct {
-		futures     float64
-		spot        float64
-		marginRatio float64
+		futures      float64
+		spot         float64
+		futuresTotal float64 // total equity in futures account
+		marginRatio  float64
 	}
 	balances := map[string]balInfo{}
 	for name, exch := range e.exchanges {
 		var bi balInfo
 		if futBal, err := exch.GetFuturesBalance(); err == nil {
 			bi.futures = futBal.Available
+			bi.futuresTotal = futBal.Total
 			bi.marginRatio = futBal.MarginRatio
 		}
 		if spotBal, err := exch.GetSpotBalance(); err == nil {
 			bi.spot = spotBal.Available
 		}
 		balances[name] = bi
-		e.log.Info("rebalance: %s futures=%.2f spot=%.2f marginRatio=%.4f", name, bi.futures, bi.spot, bi.marginRatio)
+		e.log.Info("rebalance: %s futures=%.2f spot=%.2f futuresTotal=%.2f marginRatio=%.4f", name, bi.futures, bi.spot, bi.futuresTotal, bi.marginRatio)
 	}
+
+	// Budget-aware sequential allocation: iterate opps by score and only
+	// count needs for positions the exchanges can actually afford.
+	available := map[string]float64{}
+	for name, bal := range balances {
+		total := bal.futures + bal.spot
+		// Unified accounts: spot and futures share the same pool, don't double-count.
+		type unifiedChecker interface{ IsUnified() bool }
+		if name == "okx" || name == "bybit" {
+			total = bal.futures
+		} else if uc, ok := e.exchanges[name].(unifiedChecker); ok && uc.IsUnified() {
+			total = bal.futures
+		}
+		available[name] = total
+	}
+
+	needs := map[string]float64{}
+	selectedSymbols := make(map[string]bool)     // prevent same-batch duplicates
+	reserved := map[string]float64{}             // cumulative margin reserved per exchange
+	plannedTransfers := map[string]float64{}     // cross-exchange transfer plan: recipient → amount
+	selected := 0
+
+	for _, opp := range opps {
+		if selected >= remainingSlots {
+			break
+		}
+		if activeSymbols[opp.Symbol] || selectedSymbols[opp.Symbol] {
+			continue
+		}
+
+		// Run full approval simulation (same checks as risk.Approve, no side effects)
+		approval, err := e.risk.SimulateApproval(opp, reserved)
+		if err != nil {
+			e.log.Info("rebalance: skip %s — simulate error: %v", opp.Symbol, err)
+			continue
+		}
+		if !approval.Approved {
+			// Check if rejection is margin-related and cross-exchange transfer could help.
+			isMarginRejection := strings.Contains(approval.Reason, "insufficient margin buffer") ||
+				strings.Contains(approval.Reason, "post-trade margin ratio") ||
+				strings.Contains(approval.Reason, "insufficient capital")
+			if !isMarginRejection {
+				e.log.Info("rebalance: skip %s — %s", opp.Symbol, approval.Reason)
+				continue
+			}
+
+			// Margin-related rejection: check if cross-exchange transfer from a donor could help.
+			// Estimate needed margin per leg.
+			estMargin := e.cfg.CapitalPerLeg * e.cfg.MarginSafetyMultiplier
+			canRescue := true
+			for _, legExch := range []string{opp.LongExchange, opp.ShortExchange} {
+				bal := balances[legExch]
+				effectiveAvail := bal.futures - reserved[legExch]
+				if effectiveAvail >= estMargin {
+					continue // this leg is fine
+				}
+				deficit := estMargin - effectiveAvail
+				foundDonor := false
+				for donorName, donorBal := range balances {
+					if donorName == legExch {
+						continue
+					}
+					donorSurplus := donorBal.futures + donorBal.spot - reserved[donorName] - needs[donorName] - plannedTransfers[donorName+"_out"]
+					type unifiedChecker interface{ IsUnified() bool }
+					if donorName == "okx" || donorName == "bybit" {
+						donorSurplus = donorBal.futures - reserved[donorName] - needs[donorName] - plannedTransfers[donorName+"_out"]
+					} else if uc, ok := e.exchanges[donorName].(unifiedChecker); ok && uc.IsUnified() {
+						donorSurplus = donorBal.futures - reserved[donorName] - needs[donorName] - plannedTransfers[donorName+"_out"]
+					}
+					if donorSurplus > deficit {
+						plannedTransfers[legExch] += deficit
+						plannedTransfers[donorName+"_out"] += deficit
+						foundDonor = true
+						e.log.Info("rebalance: %s needs %.2f transfer from %s for %s (margin rescue)",
+							legExch, deficit, donorName, opp.Symbol)
+						break
+					}
+				}
+				if !foundDonor {
+					canRescue = false
+					break
+				}
+			}
+			if !canRescue {
+				e.log.Info("rebalance: skip %s — %s (no donor available)", opp.Symbol, approval.Reason)
+				continue
+			}
+
+			// Donor found — select this opp, Phase 2 will execute the transfer
+			needs[opp.LongExchange] += estMargin
+			needs[opp.ShortExchange] += estMargin
+			reserved[opp.LongExchange] += estMargin
+			reserved[opp.ShortExchange] += estMargin
+			selectedSymbols[opp.Symbol] = true
+			selected++
+			e.log.Info("rebalance: selected %s via cross-exchange rescue (margin=%.2f per leg)", opp.Symbol, estMargin)
+			continue
+		}
+
+		// Approval passed. Check if exchanges need cross-exchange transfers.
+		requiredMargin := approval.RequiredMargin
+		if requiredMargin <= 0 {
+			requiredMargin = e.cfg.CapitalPerLeg * e.cfg.MarginSafetyMultiplier
+		}
+
+		needsTransfer := false
+		for _, leg := range []struct {
+			exchange string
+		}{
+			{opp.LongExchange},
+			{opp.ShortExchange},
+		} {
+			bal := balances[leg.exchange]
+			effectiveAvail := bal.futures - reserved[leg.exchange]
+			if effectiveAvail < requiredMargin {
+				// Look for a donor exchange with surplus
+				deficit := requiredMargin - effectiveAvail
+				foundDonor := false
+				for donorName, donorBal := range balances {
+					if donorName == leg.exchange {
+						continue
+					}
+					donorSurplus := donorBal.futures + donorBal.spot - reserved[donorName] - needs[donorName] - plannedTransfers[donorName+"_out"]
+					// Unified accounts: don't double-count
+					type unifiedChecker interface{ IsUnified() bool }
+					if donorName == "okx" || donorName == "bybit" {
+						donorSurplus = donorBal.futures - reserved[donorName] - needs[donorName] - plannedTransfers[donorName+"_out"]
+					} else if uc, ok := e.exchanges[donorName].(unifiedChecker); ok && uc.IsUnified() {
+						donorSurplus = donorBal.futures - reserved[donorName] - needs[donorName] - plannedTransfers[donorName+"_out"]
+					}
+					if donorSurplus > deficit {
+						plannedTransfers[leg.exchange] += deficit
+						plannedTransfers[donorName+"_out"] += deficit
+						foundDonor = true
+						e.log.Debug("rebalance: %s needs %.2f transfer from %s for %s",
+							leg.exchange, deficit, donorName, opp.Symbol)
+						break
+					}
+				}
+				if !foundDonor {
+					e.log.Debug("rebalance: skip %s — no donor for %s deficit=%.2f",
+						opp.Symbol, leg.exchange, deficit)
+					needsTransfer = true
+					break
+				}
+			}
+		}
+		if needsTransfer {
+			continue
+		}
+
+		// All checks passed — select this opportunity
+		needs[opp.LongExchange] += requiredMargin
+		needs[opp.ShortExchange] += requiredMargin
+		reserved[opp.LongExchange] += requiredMargin
+		reserved[opp.ShortExchange] += requiredMargin
+		selectedSymbols[opp.Symbol] = true
+		selected++
+		e.log.Info("rebalance: selected %s (margin=%.2f per leg)", opp.Symbol, requiredMargin)
+	}
+
+	e.log.Info("rebalance: analyzed %d opportunities, selected %d, needs: %v, plannedTransfers: %v", len(opps), selected, needs, plannedTransfers)
 
 	// Phase 1: Same-exchange spot→futures transfers (instant).
 	type deficit struct {
@@ -423,38 +553,46 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 
 	for name, need := range needs {
 		bal := balances[name]
+
+		// To keep post-trade margin ratio below L4 after opening positions:
+		// ratio = 1 - (total - need) / total < L4
+		// => (total - need) / total >= 1 - L4 = targetFreeRatio
+		// => total >= need / targetFreeRatio
+		targetFreeRatio := 1 - e.cfg.MarginL4Threshold
+		if targetFreeRatio <= 0 {
+			targetFreeRatio = 0.20 // fallback: 20% free margin
+		}
+
 		if bal.futures >= need {
 			// Futures covers the need, but check if post-trade margin ratio would be too high.
 			// If so, top up from spot to bring ratio down.
-			if bal.spot > 0 && bal.marginRatio > 0 {
+			if bal.spot > 0 && bal.futuresTotal > 0 {
 				projectedAvail := bal.futures - need
 				if projectedAvail < 0 {
 					projectedAvail = 0
 				}
-				projectedRatio := 1 - projectedAvail/bal.futures
-				if bal.futures > 0 && projectedRatio >= e.cfg.MarginL4Threshold {
-					// Transfer just enough from spot to bring ratio below L4
-					// Target: (futures + extra - need) / (futures + extra) >= (1 - L4)
-					// => extra = (need - futures*(1-L4)) / (1-L4)
-					targetFreeRatio := 1 - e.cfg.MarginL4Threshold
-					if targetFreeRatio > 0 {
-						extra := (need - bal.futures*targetFreeRatio) / targetFreeRatio
-						if extra > bal.spot {
-							extra = bal.spot
-						}
-						if extra >= 1.0 {
-							amtStr := fmt.Sprintf("%.4f", extra)
-							e.log.Info("rebalance: %s spot→futures %s USDT (margin ratio relief, projected=%.2f L4=%.2f)",
-								name, amtStr, projectedRatio, e.cfg.MarginL4Threshold)
-							if !e.cfg.DryRun {
-								if err := e.exchanges[name].TransferToFutures("USDT", amtStr); err != nil {
-									e.log.Error("rebalance: %s spot→futures failed: %v", name, err)
-								} else {
-									bi := balances[name]
-									bi.futures += extra
-									bi.spot -= extra
-									balances[name] = bi
-								}
+				projectedRatio := 1 - projectedAvail/bal.futuresTotal
+				if projectedRatio >= e.cfg.MarginL4Threshold {
+					// Transfer just enough from spot so that post-transfer ratio < L4.
+					// Target: (futures + extra - need) / (futures + extra) >= targetFreeRatio
+					// => extra >= (need - futures*targetFreeRatio) / targetFreeRatio
+					extra := (need - bal.futuresTotal*targetFreeRatio) / targetFreeRatio
+					if extra > bal.spot {
+						extra = bal.spot
+					}
+					if extra >= 1.0 {
+						amtStr := fmt.Sprintf("%.4f", extra)
+						postRatio := 1 - (bal.futures+extra-need)/(bal.futuresTotal+extra)
+						e.log.Info("rebalance: %s spot→futures %s USDT (margin ratio relief, projected=%.2f post=%.2f L4=%.2f)",
+							name, amtStr, projectedRatio, postRatio, e.cfg.MarginL4Threshold)
+						if !e.cfg.DryRun {
+							if err := e.exchanges[name].TransferToFutures("USDT", amtStr); err != nil {
+								e.log.Error("rebalance: %s spot→futures failed: %v", name, err)
+							} else {
+								bi := balances[name]
+								bi.futures += extra
+								bi.spot -= extra
+								balances[name] = bi
 							}
 						}
 					}
@@ -462,33 +600,53 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			}
 			continue
 		}
+
+		// Futures doesn't cover the need. Transfer enough from spot so that
+		// post-trade margin ratio stays below L4.
+		// Required total futures: need / targetFreeRatio.
+		requiredTotal := need / targetFreeRatio
+		transferAmt := requiredTotal - bal.futuresTotal
+		// At minimum, transfer the shortfall so we can open at all.
 		shortfall := need - bal.futures
+		if transferAmt < shortfall {
+			transferAmt = shortfall
+		}
+		// L4-safe deficit: the full amount still needed (includes L4 safety margin)
+		l4Deficit := requiredTotal - bal.futuresTotal
+		if l4Deficit < shortfall {
+			l4Deficit = shortfall
+		}
 		if bal.spot > 0 {
-			transferAmt := shortfall
-			if transferAmt > bal.spot {
-				transferAmt = bal.spot
+			actualTransfer := transferAmt
+			if actualTransfer > bal.spot {
+				actualTransfer = bal.spot
 			}
-			if transferAmt < 1.0 {
-				e.log.Debug("rebalance: %s spot→futures skip (%.4f USDT below minimum)", name, transferAmt)
+			if actualTransfer < 1.0 {
+				e.log.Debug("rebalance: %s spot→futures skip (%.4f USDT below minimum)", name, actualTransfer)
+				if l4Deficit > 10 {
+					crossDeficits = append(crossDeficits, deficit{name, l4Deficit})
+				}
 				continue
 			}
-			amtStr := fmt.Sprintf("%.4f", transferAmt)
-			e.log.Info("rebalance: %s spot→futures %s USDT (same-exchange, instant)", name, amtStr)
+			postTotal := bal.futuresTotal + actualTransfer
+			postRatio := 1 - (bal.futures+actualTransfer-need)/postTotal
+			amtStr := fmt.Sprintf("%.4f", actualTransfer)
+			e.log.Info("rebalance: %s spot→futures %s USDT (same-exchange, instant, post-ratio=%.2f L4=%.2f)", name, amtStr, postRatio, e.cfg.MarginL4Threshold)
 			if !e.cfg.DryRun {
 				if err := e.exchanges[name].TransferToFutures("USDT", amtStr); err != nil {
 					e.log.Error("rebalance: %s spot→futures failed: %v", name, err)
 				} else {
-					shortfall -= transferAmt
+					l4Deficit -= actualTransfer
 					// Update local balance tracking
 					bi := balances[name]
-					bi.futures += transferAmt
-					bi.spot -= transferAmt
+					bi.futures += actualTransfer
+					bi.spot -= actualTransfer
 					balances[name] = bi
 				}
 			}
 		}
-		if shortfall > 10 {
-			crossDeficits = append(crossDeficits, deficit{name, shortfall})
+		if l4Deficit > 10 {
+			crossDeficits = append(crossDeficits, deficit{name, l4Deficit})
 		}
 	}
 
@@ -541,7 +699,13 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			continue
 		}
 
-		recipientAddrs := e.cfg.ExchangeAddresses[def.exchange]
+		e.cfg.RLock()
+		origAddrs := e.cfg.ExchangeAddresses[def.exchange]
+		recipientAddrs := make(map[string]string, len(origAddrs))
+		for k, v := range origAddrs {
+			recipientAddrs[k] = v
+		}
+		e.cfg.RUnlock()
 		if len(recipientAddrs) == 0 {
 			e.log.Warn("rebalance: no deposit addresses for %s", def.exchange)
 			continue
@@ -832,6 +996,8 @@ func (e *Engine) consumeHealthActions() {
 				e.handleReduce(action)
 			case "close":
 				e.handleEmergencyClose(action)
+			case "close_orphan", "close_orphan_dust":
+				e.handleOrphanClose(action)
 			default:
 				e.log.Warn("unknown health action type: %s", action.Type)
 			}
@@ -1211,6 +1377,118 @@ func (e *Engine) handleEmergencyClose(action risk.HealthAction) {
 	} else {
 		e.log.Info("L5 safety transfer: moved %.2f USDT to spot on %s", bal.Available, action.Exchange)
 		e.recordTransfer(action.Exchange, action.Exchange+" spot", "USDT", "internal", amountStr, "0", "", "completed", "L5-safety")
+	}
+}
+
+// handleOrphanClose processes orphan leg cleanup actions from the health monitor.
+// "close_orphan" closes the surviving leg via market order; "close_orphan_dust"
+// skips the close (too small) and just marks the position closed.
+func (e *Engine) handleOrphanClose(action risk.HealthAction) {
+	for _, pos := range action.Positions {
+		// Skip if another goroutine is already closing this position.
+		e.exitMu.Lock()
+		exiting := e.exitActive[pos.ID]
+		if !exiting {
+			e.exitActive[pos.ID] = true
+		}
+		e.exitMu.Unlock()
+		if exiting {
+			e.log.Info("[orphan-cleanup] position %s already being exited, skipping", pos.ID)
+			continue
+		}
+
+		// Claim position with CAS — set StatusClosing atomically.
+		claimed := false
+		_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+			if fresh.Status != models.StatusActive {
+				return false // already closing/closed by another path
+			}
+			fresh.Status = models.StatusClosing
+			fresh.ExitReason = fmt.Sprintf("orphan %s leg on %s", action.OrphanSide, action.OrphanExchange)
+			fresh.UpdatedAt = time.Now().UTC()
+			claimed = true
+			return true
+		})
+		if !claimed {
+			e.exitMu.Lock()
+			delete(e.exitActive, pos.ID)
+			e.exitMu.Unlock()
+			e.log.Info("[orphan-cleanup] position %s status changed, skipping", pos.ID)
+			continue
+		}
+
+		exch, ok := e.exchanges[action.OrphanExchange]
+		if !ok {
+			e.log.Error("[orphan-cleanup] exchange %s not found for position %s", action.OrphanExchange, pos.ID)
+			e.exitMu.Lock()
+			delete(e.exitActive, pos.ID)
+			e.exitMu.Unlock()
+			continue
+		}
+
+		reason := fmt.Sprintf("orphan %s leg on %s (%s)", action.OrphanSide, action.OrphanExchange, action.Type)
+
+		if action.Type == "close_orphan" {
+			var side exchange.Side
+			var size float64
+			if action.OrphanSide == "long" {
+				side = exchange.SideSell
+				size = pos.LongSize
+			} else {
+				side = exchange.SideBuy
+				size = pos.ShortSize
+			}
+			e.log.Info("[orphan-cleanup] closing %s %s leg on %s (size=%.6f)", pos.ID, action.OrphanSide, action.OrphanExchange, size)
+			e.closeFullyWithRetry(exch, pos.Symbol, side, size)
+
+			// Verify flat after close.
+			time.Sleep(500 * time.Millisecond)
+			remaining, verifyErr := getExchangePositionSize(exch, pos.Symbol, action.OrphanSide)
+			if verifyErr != nil || remaining > 0 {
+				e.log.Error("[orphan-cleanup] position %s NOT flat after close (remaining=%.6f, err=%v) — reverting to active",
+					pos.ID, remaining, verifyErr)
+				_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+					fresh.Status = models.StatusActive
+					if action.OrphanSide == "long" {
+						fresh.LongSize = remaining
+					} else {
+						fresh.ShortSize = remaining
+					}
+					fresh.UpdatedAt = time.Now().UTC()
+					return true
+				})
+				// Reset orphan sentinel so health monitor can re-detect this position.
+				e.healthMonitor.ResetOrphanCount(pos.ID)
+				e.exitMu.Lock()
+				delete(e.exitActive, pos.ID)
+				e.exitMu.Unlock()
+				continue
+			}
+		}
+		// "close_orphan_dust": skip market close — too small to trade.
+
+		// Mark position as closed with proper bookkeeping.
+		_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+			fresh.Status = models.StatusClosed
+			fresh.ExitReason = reason
+			fresh.UpdatedAt = time.Now().UTC()
+			return true
+		})
+		pos.Status = models.StatusClosed
+		pos.ExitReason = reason
+
+		if err := e.db.AddToHistory(pos); err != nil {
+			e.log.Error("[orphan-cleanup] failed to add %s to history: %v", pos.ID, err)
+		}
+		// Release allocator slot.
+		e.releasePerpPosition(pos.ID)
+		e.api.BroadcastPositionUpdate(pos)
+
+		e.exitMu.Lock()
+		delete(e.exitActive, pos.ID)
+		e.exitMu.Unlock()
+
+		e.log.Info("[orphan-cleanup] position %s closed: %s", pos.ID, reason)
 	}
 }
 

@@ -29,12 +29,13 @@ type Alert struct {
 
 // Monitor continuously checks active positions for risk conditions.
 type Monitor struct {
-	exchanges map[string]exchange.Exchange
-	db        *database.Client
-	cfg       *config.Config
-	log       *utils.Logger
-	alertChan chan Alert
-	stopChan  chan struct{}
+	exchanges     map[string]exchange.Exchange
+	db            *database.Client
+	cfg           *config.Config
+	log           *utils.Logger
+	alertChan     chan Alert
+	stopChan      chan struct{}
+	configChanged <-chan struct{}
 }
 
 // NewMonitor creates a new position Monitor.
@@ -47,6 +48,11 @@ func NewMonitor(exchanges map[string]exchange.Exchange, db *database.Client, cfg
 		alertChan: make(chan Alert, 100),
 		stopChan:  make(chan struct{}),
 	}
+}
+
+// SetConfigNotify registers a channel that signals when monitor config has changed.
+func (m *Monitor) SetConfigNotify(ch <-chan struct{}) {
+	m.configChanged = ch
 }
 
 // Start begins the background monitoring loop, checking every 30 seconds.
@@ -79,6 +85,15 @@ func (m *Monitor) run() {
 		select {
 		case <-ticker.C:
 			m.checkAll()
+		case <-m.configChanged:
+			m.cfg.RLock()
+			newInterval := time.Duration(m.cfg.RiskMonitorIntervalSec) * time.Second
+			m.cfg.RUnlock()
+			if newInterval <= 0 {
+				newInterval = 5 * time.Minute
+			}
+			ticker.Reset(newInterval)
+			m.log.Info("risk monitor interval updated to %s", newInterval)
 		case <-m.stopChan:
 			m.log.Info("monitor stopped")
 			return

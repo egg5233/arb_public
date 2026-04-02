@@ -31,20 +31,22 @@ type Server struct {
 	permissions       map[string]exchange.PermissionResult
 	scorer            *risk.ExchangeScorer
 	spotOpps          atomic.Value // []interface{}
-	spotOpenPosition   func(symbol, exchange, direction string) error
-	spotClosePosition  func(positionID string) error
-	spotInjectTestOpp  func(symbol, exchange string)
+	spotOpenPosition  func(symbol, exchange, direction string) error
+	spotClosePosition func(positionID string) error
+	spotInjectTestOpp func(symbol, exchange string)
+	configNotifier    *config.ConfigNotifier
 }
 
 // NewServer creates a new Dashboard server.
 func NewServer(db *database.Client, cfg *config.Config, exchanges map[string]exchange.Exchange) *Server {
 	s := &Server{
-		db:        db,
-		cfg:       cfg,
-		hub:       NewHub(),
-		log:       utils.NewLogger("api"),
-		auth:      newAuthStore(),
-		exchanges: exchanges,
+		db:             db,
+		cfg:            cfg,
+		hub:            NewHub(),
+		log:            utils.NewLogger("api"),
+		auth:           newAuthStore(),
+		exchanges:      exchanges,
+		configNotifier: config.NewConfigNotifier(),
 	}
 	return s
 }
@@ -266,4 +268,10 @@ func (s *Server) SetSpotTestInjectHandler(fn func(symbol, exchange string)) {
 // SetPermissions stores the startup permission check results.
 func (s *Server) SetPermissions(perms map[string]exchange.PermissionResult) {
 	s.permissions = perms
+}
+
+// ConfigNotifier returns the shared ConfigNotifier so that other
+// components (engine, scanner, etc.) can subscribe to config changes.
+func (s *Server) ConfigNotifier() *config.ConfigNotifier {
+	return s.configNotifier
 }
