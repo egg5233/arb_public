@@ -7,6 +7,9 @@ All notable changes to this project will be documented in this file.
 ### Added
 - **Perp-perp coin blacklist** — manually block symbols from auto-open via dashboard. Stored in Redis SET `arb:blacklist:perp` (not config.json). Block/Unblock buttons on both Opportunities and Positions pages. Blacklisted coins visible in Config > Perp-Perp > Discovery tab with remove buttons. Blocked symbols rejected in `executeArbitrage` and logged to Rejections. Manual opens still allowed. One-time seed of DRIFTUSDT on first start (won't re-add after user removes). CORS DELETE method support added for the blacklist API.
 
+### Fixed
+- **V2 rebalance pre-filters active symbols** — opps with existing positions are now removed before sequential allocation, matching entryScan behavior. Log clearly shows how many were filtered.
+
 ## [0.24.4] - 2026-04-02
 
 ### Fixed
