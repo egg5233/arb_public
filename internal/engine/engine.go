@@ -656,199 +656,218 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 	}
 
 	// Phase 2: Cross-exchange transfers for remaining deficits.
-	// Calculate surplus per exchange.
+	// Calculate REAL surplus per exchange: available funds minus what's needed
+	// for new positions on this exchange. Uses futures available (already excludes
+	// frozen margin from existing positions) plus spot.
 	surplus := map[string]float64{}
 	for name, exch := range e.exchanges {
 		bal := balances[name]
-		total := bal.futures + bal.spot
-		// Unified accounts (OKX, Bybit, Gate.io unified): spot and futures share
-		// the same collateral pool, so don't double-count.
+		avail := bal.futures + bal.spot
+		// Unified accounts: don't double-count.
 		type unifiedChecker interface{ IsUnified() bool }
 		if name == "okx" || name == "bybit" {
-			total = bal.futures // already unified
+			avail = bal.futures
 		} else if uc, ok := exch.(unifiedChecker); ok && uc.IsUnified() {
-			total = bal.futures // Gate.io unified
+			avail = bal.futures
 		}
-		surplus[name] = total - needs[name]
+		surplus[name] = avail - needs[name]
 	}
 
-	// Phase 2a: Execute all withdrawals and track pending deposits per recipient.
+	// Phase 2a: Execute withdrawals. Supports partial transfers and multiple
+	// donors per deficit — iterates donors until deficit is filled or no donors left.
 	pendingDeposits := map[string]float64{} // recipient exchange → total amount pending
 	pendingStartBal := map[string]float64{} // recipient exchange → spot balance before deposits
 
-	for _, def := range crossDeficits {
-		var bestDonor string
-		var bestSurplus float64
-		for name, s := range surplus {
-			if name == def.exchange || s <= def.amount {
-				continue
-			}
-			if balances[name].marginRatio >= e.cfg.MarginL3Threshold {
-				e.log.Info("rebalance: skipping donor %s (marginRatio=%.4f >= L3=%.4f)",
-					name, balances[name].marginRatio, e.cfg.MarginL3Threshold)
-				continue
-			}
-			if s > bestSurplus {
-				bestDonor = name
-				bestSurplus = s
-			}
-		}
+	for i := range crossDeficits {
+		remaining := crossDeficits[i].amount
+		exchName := crossDeficits[i].exchange
 
-		if bestDonor == "" {
-			e.log.Warn("rebalance: no donor found for %s deficit=%.2f", def.exchange, def.amount)
-			continue
-		}
+		for remaining > 10 {
+			// Find best donor: highest surplus, allow partial (surplus > 10 is enough)
+			var bestDonor string
+			var bestSurplus float64
+			for name, s := range surplus {
+				if name == exchName || s <= 10 {
+					continue
+				}
+				if balances[name].marginRatio >= e.cfg.MarginL3Threshold {
+					continue
+				}
+				if s > bestSurplus {
+					bestDonor = name
+					bestSurplus = s
+				}
+			}
 
-		e.cfg.RLock()
-		origAddrs := e.cfg.ExchangeAddresses[def.exchange]
-		recipientAddrs := make(map[string]string, len(origAddrs))
-		for k, v := range origAddrs {
-			recipientAddrs[k] = v
-		}
-		e.cfg.RUnlock()
-		if len(recipientAddrs) == 0 {
-			e.log.Warn("rebalance: no deposit addresses for %s", def.exchange)
-			continue
-		}
-
-		var chain, destAddr string
-		for _, c := range []string{"APT", "BEP20"} {
-			if addr, ok := recipientAddrs[c]; ok && addr != "" {
-				chain = c
-				destAddr = addr
+			if bestDonor == "" {
+				e.log.Warn("rebalance: no donor found for %s remaining deficit=%.2f", exchName, remaining)
 				break
 			}
-		}
-		if chain == "" {
-			e.log.Warn("rebalance: no shared chain between %s and %s", bestDonor, def.exchange)
-			continue
-		}
 
-		// Query actual withdraw fee from exchange
-		fee, feeErr := e.exchanges[bestDonor].GetWithdrawFee("USDT", chain)
-		if feeErr != nil {
-			e.log.Warn("rebalance: %s GetWithdrawFee failed: %v, skipping donor", bestDonor, feeErr)
-			continue
-		}
-		e.log.Info("rebalance: %s withdraw fee=%.4f USDT via %s", bestDonor, fee, chain)
-
-		netAmount := def.amount          // what recipient needs to receive
-		requiredSpot := netAmount + fee   // what donor needs in spot account
-
-		e.log.Info("rebalance: cross-exchange %s→%s net=%.2f fee=%.4f required=%.2f USDT via %s",
-			bestDonor, def.exchange, netAmount, fee, requiredSpot, chain)
-
-		if e.cfg.DryRun {
-			e.log.Info("[DRY RUN] would transfer %.2f USDT (net) from %s to %s via %s (fee=%.4f)",
-				netAmount, bestDonor, def.exchange, chain, fee)
-			continue
-		}
-
-		// Move funds from futures→spot if donor spot is insufficient
-		var movedToSpot float64
-		donorBal := balances[bestDonor]
-		if donorBal.spot < requiredSpot {
-			moveAmt := requiredSpot - donorBal.spot
-			maxMove := donorBal.futures - needs[bestDonor]
-			if moveAmt > maxMove && maxMove > 0 {
-				moveAmt = maxMove
+			// Determine how much this donor can contribute (partial OK)
+			contribution := remaining
+			if contribution > bestSurplus {
+				contribution = bestSurplus // donor gives what it can
 			}
-			if moveAmt <= 0 {
-				e.log.Warn("rebalance: %s has no excess futures to move to spot", bestDonor)
-				continue
-			}
-			moveStr := fmt.Sprintf("%.4f", moveAmt)
-			e.log.Info("rebalance: %s futures→spot %s USDT", bestDonor, moveStr)
-			if err := e.exchanges[bestDonor].TransferToSpot("USDT", moveStr); err != nil {
-				e.log.Error("rebalance: %s futures→spot failed: %v", bestDonor, err)
-				continue
-			}
-			e.recordTransfer(bestDonor, bestDonor+" spot", "USDT", "internal", moveStr, "0", "", "completed", "rebalance-prep")
 
-			// Track movedToSpot for rollback — but only for split-account exchanges
-			// Unified/no-op TransferToSpot exchanges don't actually move funds
-			// Binance and Gate.io have no-op TransferToSpot (unified internally).
-			// OKX and Bybit do real transfers (funding→trading), so they need rollback.
-			isNoOp := bestDonor == "binance" || bestDonor == "gateio"
-			if !isNoOp {
-				if uc, ok := e.exchanges[bestDonor].(interface{ IsUnified() bool }); ok && uc.IsUnified() {
-					isNoOp = true
+			// Resolve deposit address and chain for recipient
+			e.cfg.RLock()
+			origAddrs := e.cfg.ExchangeAddresses[exchName]
+			recipientAddrs := make(map[string]string, len(origAddrs))
+			for k, v := range origAddrs {
+				recipientAddrs[k] = v
+			}
+			e.cfg.RUnlock()
+			if len(recipientAddrs) == 0 {
+				e.log.Warn("rebalance: no deposit addresses for %s", exchName)
+				break // can't transfer to this exchange at all
+			}
+
+			var chain, destAddr string
+			for _, c := range []string{"APT", "BEP20"} {
+				if addr, ok := recipientAddrs[c]; ok && addr != "" {
+					chain = c
+					destAddr = addr
+					break
 				}
 			}
-			if !isNoOp {
-				movedToSpot = moveAmt
+			if chain == "" {
+				e.log.Warn("rebalance: no shared chain between %s and %s", bestDonor, exchName)
+				surplus[bestDonor] = 0 // skip this donor, try next
+				continue
 			}
-		}
 
-		donorSpotBal, err := e.exchanges[bestDonor].GetSpotBalance()
-		if err != nil {
-			e.log.Error("rebalance: %s get spot balance failed: %v", bestDonor, err)
-			continue
-		}
+			// Query actual withdraw fee from exchange
+			fee, feeErr := e.exchanges[bestDonor].GetWithdrawFee("USDT", chain)
+			if feeErr != nil {
+				e.log.Warn("rebalance: %s GetWithdrawFee failed: %v, skipping donor", bestDonor, feeErr)
+				surplus[bestDonor] = 0
+				continue
+			}
+			e.log.Info("rebalance: %s withdraw fee=%.4f USDT via %s", bestDonor, fee, chain)
 
-		// Both gross and net exchanges need balance >= netAmount + fee
-		grossRequired := netAmount + fee
-		isGross := e.exchanges[bestDonor].WithdrawFeeInclusive()
+			netAmount := contribution        // what recipient needs to receive
+			requiredSpot := netAmount + fee   // what donor needs in spot account
 
-		if donorSpotBal.Available < grossRequired {
-			// Not enough to cover net + fee; reduce what recipient gets
-			netAmount = donorSpotBal.Available - fee
-		}
-		if netAmount < 10 {
-			e.log.Warn("rebalance: %s spot balance too low to withdraw (available=%.2f, fee=%.4f)", bestDonor, donorSpotBal.Available, fee)
-			continue
-		}
+			e.log.Info("rebalance: cross-exchange %s→%s net=%.2f fee=%.4f required=%.2f USDT via %s",
+				bestDonor, exchName, netAmount, fee, requiredSpot, chain)
 
-		// Determine withdraw amount based on exchange API semantics
-		var withdrawAmtForAPI float64
-		if isGross {
-			// Gross (Binance, BingX, Gate.io): amount includes fee, recipient gets amount - fee
-			// So to deliver netAmount, we need to send netAmount + fee
-			withdrawAmtForAPI = netAmount + fee
-		} else {
-			// Net (OKX, Bitget, Bybit): amount is what recipient gets, fee deducted separately
-			// Balance needs net + fee, but API amount = net
-			withdrawAmtForAPI = netAmount
-		}
-		amtStr := fmt.Sprintf("%.4f", withdrawAmtForAPI)
+			if e.cfg.DryRun {
+				e.log.Info("[DRY RUN] would transfer %.2f USDT (net) from %s to %s via %s (fee=%.4f)",
+					netAmount, bestDonor, exchName, chain, fee)
+				remaining -= netAmount
+				surplus[bestDonor] -= requiredSpot
+				continue
+			}
 
-		result, err := e.exchanges[bestDonor].Withdraw(exchange.WithdrawParams{
-			Coin:    "USDT",
-			Chain:   chain,
-			Address: destAddr,
-			Amount:  amtStr,
-		})
-		if err != nil {
-			e.log.Error("rebalance: withdraw from %s failed: %v", bestDonor, err)
-			// Rollback futures→spot transfer if we moved funds
-			if movedToSpot > 0 {
-				rollbackStr := fmt.Sprintf("%.4f", movedToSpot)
-				e.log.Info("rebalance: rollback %s spot→futures %s USDT", bestDonor, rollbackStr)
-				if rbErr := e.exchanges[bestDonor].TransferToFutures("USDT", rollbackStr); rbErr != nil {
-					e.log.Error("rebalance: rollback failed: %v", rbErr)
-					// Exclude donor from rest of pass
-					surplus[bestDonor] = -1
+			// Move funds from futures→spot if donor spot is insufficient
+			var movedToSpot float64
+			donorBal := balances[bestDonor]
+			if donorBal.spot < requiredSpot {
+				moveAmt := requiredSpot - donorBal.spot
+				maxMove := donorBal.futures - needs[bestDonor]
+				if moveAmt > maxMove && maxMove > 0 {
+					moveAmt = maxMove
+				}
+				if moveAmt <= 0 {
+					e.log.Warn("rebalance: %s has no excess futures to move to spot", bestDonor)
+					surplus[bestDonor] = 0
+					continue
+				}
+				moveStr := fmt.Sprintf("%.4f", moveAmt)
+				e.log.Info("rebalance: %s futures→spot %s USDT", bestDonor, moveStr)
+				if err := e.exchanges[bestDonor].TransferToSpot("USDT", moveStr); err != nil {
+					e.log.Error("rebalance: %s futures→spot failed: %v", bestDonor, err)
+					surplus[bestDonor] = 0
+					continue
+				}
+				e.recordTransfer(bestDonor, bestDonor+" spot", "USDT", "internal", moveStr, "0", "", "completed", "rebalance-prep")
+
+				isNoOp := bestDonor == "binance" || bestDonor == "gateio"
+				if !isNoOp {
+					if uc, ok := e.exchanges[bestDonor].(interface{ IsUnified() bool }); ok && uc.IsUnified() {
+						isNoOp = true
+					}
+				}
+				if !isNoOp {
+					movedToSpot = moveAmt
 				}
 			}
-			continue
-		}
 
-		// What recipient actually receives
-		var recipientReceives float64
-		if isGross {
-			recipientReceives = withdrawAmtForAPI - fee
-		} else {
-			recipientReceives = netAmount
-		}
-		e.log.Info("rebalance: withdraw from %s txid=%s (apiAmt=%.2f, recipient=%.2f USDT, fee=%.4f, gross=%v) → %s",
-			bestDonor, result.TxID, withdrawAmtForAPI, recipientReceives, fee, isGross, def.exchange)
-		e.recordTransfer(bestDonor, def.exchange, "USDT", chain, amtStr, result.Fee, result.TxID, "completed", "rebalance")
+			donorSpotBal, err := e.exchanges[bestDonor].GetSpotBalance()
+			if err != nil {
+				e.log.Error("rebalance: %s get spot balance failed: %v", bestDonor, err)
+				surplus[bestDonor] = 0
+				continue
+			}
 
-		if _, exists := pendingStartBal[def.exchange]; !exists {
-			pendingStartBal[def.exchange] = balances[def.exchange].spot
+			// Both gross and net exchanges need balance >= netAmount + fee
+			grossRequired := netAmount + fee
+			isGross := e.exchanges[bestDonor].WithdrawFeeInclusive()
+
+			if donorSpotBal.Available < grossRequired {
+				netAmount = donorSpotBal.Available - fee
+			}
+			if netAmount < 10 {
+				e.log.Warn("rebalance: %s spot balance too low to withdraw (available=%.2f, fee=%.4f)", bestDonor, donorSpotBal.Available, fee)
+				surplus[bestDonor] = 0
+				continue
+			}
+
+			var withdrawAmtForAPI float64
+			if isGross {
+				withdrawAmtForAPI = netAmount + fee
+			} else {
+				withdrawAmtForAPI = netAmount
+			}
+			amtStr := fmt.Sprintf("%.4f", withdrawAmtForAPI)
+
+			result, err := e.exchanges[bestDonor].Withdraw(exchange.WithdrawParams{
+				Coin:    "USDT",
+				Chain:   chain,
+				Address: destAddr,
+				Amount:  amtStr,
+			})
+			if err != nil {
+				e.log.Error("rebalance: withdraw from %s failed: %v", bestDonor, err)
+				if movedToSpot > 0 {
+					rollbackStr := fmt.Sprintf("%.4f", movedToSpot)
+					e.log.Info("rebalance: rollback %s spot→futures %s USDT", bestDonor, rollbackStr)
+					if rbErr := e.exchanges[bestDonor].TransferToFutures("USDT", rollbackStr); rbErr != nil {
+						e.log.Error("rebalance: rollback failed: %v", rbErr)
+					}
+				}
+				surplus[bestDonor] = 0 // exclude this donor
+				continue
+			}
+
+			var recipientReceives float64
+			if isGross {
+				recipientReceives = withdrawAmtForAPI - fee
+			} else {
+				recipientReceives = netAmount
+			}
+			e.log.Info("rebalance: withdraw from %s txid=%s (apiAmt=%.2f, recipient=%.2f, fee=%.4f, gross=%v) → %s",
+				bestDonor, result.TxID, withdrawAmtForAPI, recipientReceives, fee, isGross, exchName)
+			e.recordTransfer(bestDonor, exchName, "USDT", chain, amtStr, result.Fee, result.TxID, "completed", "rebalance")
+
+			if _, exists := pendingStartBal[exchName]; !exists {
+				pendingStartBal[exchName] = balances[exchName].spot
+			}
+			pendingDeposits[exchName] += recipientReceives
+			actualCost := netAmount + fee // actual amount leaving the donor
+			surplus[bestDonor] -= actualCost
+			// Update cached donor balance so next iteration sees correct state.
+			// Only futures drops by what was moved to spot; spot drops by what was withdrawn.
+			bi := balances[bestDonor]
+			bi.futures -= movedToSpot
+			bi.spot -= (netAmount + fee - movedToSpot) // spot had some, rest came from futures→spot
+			if bi.spot < 0 {
+				bi.spot = 0
+			}
+			balances[bestDonor] = bi
+			remaining -= recipientReceives
 		}
-		pendingDeposits[def.exchange] += recipientReceives // track what recipient actually receives
-		surplus[bestDonor] -= requiredSpot
 	}
 
 	// Phase 2b: Poll for ALL pending deposits, then sweep entire spot into futures.

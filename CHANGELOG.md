@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.24.4] - 2026-04-02
+
+### Fixed
+- **Rebalance multi-donor partial transfers** — cross-exchange transfers now support partial contributions from multiple donors to fill a single deficit. Surplus uses real available balance (not total equity). Donor balance cache updated after each transfer for accurate repeated donor usage.
+
 ## [0.24.3] - 2026-04-02
 
 ### Fixed
