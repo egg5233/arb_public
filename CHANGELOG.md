@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.24.6] - 2026-04-02
+
+### Added
+- **Native Loris-based discovery scanner for spot-futures** -- replaces CoinGlass Chrome scraper as primary data source. Polls `api.loris.tools/funding` directly, calculates net yield (fundingAPR - borrowAPR - feeAPR), generates both Dir A and Dir B opportunities per symbol+exchange. CoinGlass retained as automatic fallback when Loris is unavailable.
+- **9 new spot-futures config fields** -- `NativeScannerEnabled` (default: true), `EnableMinHold` (false), `MinHoldHours` (8), `EnableSettlementGuard` (false), `SettlementWindowMin` (10), `EnableBasisGate` (false), `MaxBasisPct` (0.5), `EnableExitSpreadGate` (false), `ExitSpreadPct` (0.3). All fields have struct, JSON, defaults, apply, toJSON, and fromEnv support.
+
 ## [0.24.5] - 2026-04-02
 
 ### Added

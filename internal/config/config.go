@@ -200,6 +200,17 @@ type Config struct {
 	SpotFuturesCapitalSeparate float64 // capital per position for separate-account exchanges (default: 200)
 	SpotFuturesCapitalUnified  float64 // capital per position for unified-account exchanges (default: 500)
 
+	// Phase 2: native scanner + exit/entry guards
+	SpotFuturesNativeScannerEnabled  bool    // use Loris-based native scanner instead of CoinGlass (default: true)
+	SpotFuturesEnableMinHold         bool    // enable min-hold gate before yield-based exit (default: false)
+	SpotFuturesMinHoldHours          int     // hours before yield-based exit allowed (default: 8)
+	SpotFuturesEnableSettlementGuard bool    // skip exit eval during settlement window (default: false)
+	SpotFuturesSettlementWindowMin   int     // minutes around settlement to guard (default: 10)
+	SpotFuturesEnableBasisGate       bool    // reject entry when basis too wide (default: false)
+	SpotFuturesMaxBasisPct           float64 // max basis % for entry (default: 0.5)
+	SpotFuturesEnableExitSpreadGate  bool    // gate exits by unwind slippage (default: false)
+	SpotFuturesExitSpreadPct         float64 // max slippage % to allow exit (default: 0.3)
+
 	// Telegram notifications
 	TelegramBotToken string
 	TelegramChatID   string
@@ -258,6 +269,17 @@ type jsonSpotFutures struct {
 	ProfitTransferEnabled *bool    `json:"profit_transfer_enabled"`
 	CapitalSeparateUSDT   *float64 `json:"capital_separate_usdt"`
 	CapitalUnifiedUSDT    *float64 `json:"capital_unified_usdt"`
+
+	// Phase 2: native scanner + exit/entry guards
+	NativeScannerEnabled  *bool    `json:"native_scanner_enabled"`
+	EnableMinHold         *bool    `json:"enable_min_hold"`
+	MinHoldHours          *int     `json:"min_hold_hours"`
+	EnableSettlementGuard *bool    `json:"enable_settlement_guard"`
+	SettlementWindowMin   *int     `json:"settlement_window_min"`
+	EnableBasisGate       *bool    `json:"enable_basis_gate"`
+	MaxBasisPct           *float64 `json:"max_basis_pct"`
+	EnableExitSpreadGate  *bool    `json:"enable_exit_spread_gate"`
+	ExitSpreadPct         *float64 `json:"exit_spread_pct"`
 
 	// Backward-compat: accept old key names from existing config files.
 	LegacySeparateAcctMaxUSDT *float64 `json:"separate_acct_max_usdt"`
@@ -507,6 +529,15 @@ func Load() *Config {
 		SpotFuturesPersistenceScans:     2,
 		SpotFuturesCapitalSeparate: 200,
 		SpotFuturesCapitalUnified:  500,
+		SpotFuturesNativeScannerEnabled:  true,
+		SpotFuturesEnableMinHold:         false,
+		SpotFuturesMinHoldHours:          8,
+		SpotFuturesEnableSettlementGuard: false,
+		SpotFuturesSettlementWindowMin:   10,
+		SpotFuturesEnableBasisGate:       false,
+		SpotFuturesMaxBasisPct:           0.5,
+		SpotFuturesEnableExitSpreadGate:  false,
+		SpotFuturesExitSpreadPct:         0.3,
 	}
 
 	// Load from JSON file
@@ -1028,6 +1059,33 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		} else if sf.LegacyUnifiedAcctMaxUSDT != nil && *sf.LegacyUnifiedAcctMaxUSDT > 0 {
 			c.SpotFuturesCapitalUnified = *sf.LegacyUnifiedAcctMaxUSDT
 		}
+		if sf.NativeScannerEnabled != nil {
+			c.SpotFuturesNativeScannerEnabled = *sf.NativeScannerEnabled
+		}
+		if sf.EnableMinHold != nil {
+			c.SpotFuturesEnableMinHold = *sf.EnableMinHold
+		}
+		if sf.MinHoldHours != nil && *sf.MinHoldHours > 0 {
+			c.SpotFuturesMinHoldHours = *sf.MinHoldHours
+		}
+		if sf.EnableSettlementGuard != nil {
+			c.SpotFuturesEnableSettlementGuard = *sf.EnableSettlementGuard
+		}
+		if sf.SettlementWindowMin != nil && *sf.SettlementWindowMin > 0 {
+			c.SpotFuturesSettlementWindowMin = *sf.SettlementWindowMin
+		}
+		if sf.EnableBasisGate != nil {
+			c.SpotFuturesEnableBasisGate = *sf.EnableBasisGate
+		}
+		if sf.MaxBasisPct != nil && *sf.MaxBasisPct > 0 {
+			c.SpotFuturesMaxBasisPct = *sf.MaxBasisPct
+		}
+		if sf.EnableExitSpreadGate != nil {
+			c.SpotFuturesEnableExitSpreadGate = *sf.EnableExitSpreadGate
+		}
+		if sf.ExitSpreadPct != nil && *sf.ExitSpreadPct > 0 {
+			c.SpotFuturesExitSpreadPct = *sf.ExitSpreadPct
+		}
 	}
 
 	// Telegram
@@ -1267,6 +1325,15 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	sf["profit_transfer_enabled"] = c.SpotFuturesProfitTransferEnabled
 	sf["capital_separate_usdt"] = c.SpotFuturesCapitalSeparate
 	sf["capital_unified_usdt"] = c.SpotFuturesCapitalUnified
+	sf["native_scanner_enabled"] = c.SpotFuturesNativeScannerEnabled
+	sf["enable_min_hold"] = c.SpotFuturesEnableMinHold
+	sf["min_hold_hours"] = c.SpotFuturesMinHoldHours
+	sf["enable_settlement_guard"] = c.SpotFuturesEnableSettlementGuard
+	sf["settlement_window_min"] = c.SpotFuturesSettlementWindowMin
+	sf["enable_basis_gate"] = c.SpotFuturesEnableBasisGate
+	sf["max_basis_pct"] = c.SpotFuturesMaxBasisPct
+	sf["enable_exit_spread_gate"] = c.SpotFuturesEnableExitSpreadGate
+	sf["exit_spread_pct"] = c.SpotFuturesExitSpreadPct
 	// Clean up old keys if present in the config file.
 	delete(sf, "capital_per_position")
 	delete(sf, "separate_acct_max_usdt")
@@ -1469,6 +1536,41 @@ func (c *Config) loadEnvOverrides() {
 	if v := os.Getenv("SPOT_FUTURES_BORROW_SPIKE_MIN_ABSOLUTE"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			c.BorrowSpikeMinAbsolute = f
+		}
+	}
+	if v := os.Getenv("SPOT_FUTURES_NATIVE_SCANNER_ENABLED"); v != "" {
+		c.SpotFuturesNativeScannerEnabled = v == "1" || v == "true" || v == "yes"
+	}
+	if v := os.Getenv("SPOT_FUTURES_ENABLE_MIN_HOLD"); v != "" {
+		c.SpotFuturesEnableMinHold = v == "1" || v == "true" || v == "yes"
+	}
+	if v := os.Getenv("SPOT_FUTURES_MIN_HOLD_HOURS"); v != "" {
+		if i, err := strconv.Atoi(v); err == nil {
+			c.SpotFuturesMinHoldHours = i
+		}
+	}
+	if v := os.Getenv("SPOT_FUTURES_ENABLE_SETTLEMENT_GUARD"); v != "" {
+		c.SpotFuturesEnableSettlementGuard = v == "1" || v == "true" || v == "yes"
+	}
+	if v := os.Getenv("SPOT_FUTURES_SETTLEMENT_WINDOW_MIN"); v != "" {
+		if i, err := strconv.Atoi(v); err == nil {
+			c.SpotFuturesSettlementWindowMin = i
+		}
+	}
+	if v := os.Getenv("SPOT_FUTURES_ENABLE_BASIS_GATE"); v != "" {
+		c.SpotFuturesEnableBasisGate = v == "1" || v == "true" || v == "yes"
+	}
+	if v := os.Getenv("SPOT_FUTURES_MAX_BASIS_PCT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			c.SpotFuturesMaxBasisPct = f
+		}
+	}
+	if v := os.Getenv("SPOT_FUTURES_ENABLE_EXIT_SPREAD_GATE"); v != "" {
+		c.SpotFuturesEnableExitSpreadGate = v == "1" || v == "true" || v == "yes"
+	}
+	if v := os.Getenv("SPOT_FUTURES_EXIT_SPREAD_PCT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			c.SpotFuturesExitSpreadPct = f
 		}
 	}
 

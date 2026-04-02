@@ -3,12 +3,15 @@ package spotengine
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"arb/internal/models"
 	"arb/internal/scraper"
 	"arb/pkg/exchange"
 )
@@ -62,11 +65,216 @@ var spotFees = map[string]float64{
 
 const assumedHoldDays = 30.0
 
-// runDiscoveryScan reads CoinGlass spot arb data from Redis, scores all
+const lorisURL = "https://api.loris.tools/funding"
+
+// runDiscoveryScan routes to native Loris scanner when enabled, CoinGlass fallback otherwise.
+func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
+	if e.cfg.SpotFuturesNativeScannerEnabled {
+		return e.runNativeDiscoveryScan()
+	}
+	return e.runCoinGlassFallback()
+}
+
+// pollLoris fetches and parses the latest Loris funding rate data.
+func (e *SpotEngine) pollLoris() (*models.LorisResponse, error) {
+	return e.pollLorisFromURL(lorisURL)
+}
+
+// pollLorisFromURL fetches Loris data from a specific URL (used for testing).
+func (e *SpotEngine) pollLorisFromURL(url string) (*models.LorisResponse, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("loris request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("loris returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var loris models.LorisResponse
+	if err := json.NewDecoder(resp.Body).Decode(&loris); err != nil {
+		return nil, fmt.Errorf("decode loris response: %w", err)
+	}
+	return &loris, nil
+}
+
+// runNativeDiscoveryScan uses Loris API + exchange borrow rates to produce
+// ranked SpotArbOpportunity list. Falls back to CoinGlass on Loris failure.
+func (e *SpotEngine) runNativeDiscoveryScan() []SpotArbOpportunity {
+	loris, err := e.pollLoris()
+	if err != nil {
+		e.log.Warn("native discovery: Loris poll failed, falling back to CoinGlass: %v", err)
+		return e.runCoinGlassFallback()
+	}
+	return e.runNativeDiscoveryScanFromLoris(loris)
+}
+
+// runNativeDiscoveryScanWithURL is a test helper that uses a custom Loris URL.
+func (e *SpotEngine) runNativeDiscoveryScanWithURL(url string) []SpotArbOpportunity {
+	loris, err := e.pollLorisFromURL(url)
+	if err != nil {
+		e.log.Warn("native discovery: Loris poll failed, falling back to CoinGlass: %v", err)
+		return e.runCoinGlassFallback()
+	}
+	return e.runNativeDiscoveryScanFromLoris(loris)
+}
+
+// runNativeDiscoveryScanFromLoris processes a LorisResponse into ranked opportunities.
+func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse) []SpotArbOpportunity {
+
+	// Build allowed exchanges set.
+	allowedExchanges := make(map[string]bool)
+	if len(e.cfg.SpotFuturesExchanges) > 0 {
+		for _, ex := range e.cfg.SpotFuturesExchanges {
+			allowedExchanges[strings.ToLower(ex)] = true
+		}
+	}
+
+	// Build active-position keys so rate/yield filters don't drop symbols
+	// that already have open positions.
+	activeKeys := make(map[string]bool)
+	if activePositions, err := e.db.GetActiveSpotPositions(); err == nil {
+		for _, p := range activePositions {
+			activeKeys[p.Symbol+":"+p.Exchange+":"+p.Direction] = true
+		}
+	} else {
+		e.log.Warn("native discovery: GetActiveSpotPositions failed, active-position bypass disabled: %v", err)
+	}
+
+	now := time.Now().UTC()
+	var opps []SpotArbOpportunity
+
+	for _, baseSym := range loris.Symbols {
+		symbol := strings.ToUpper(baseSym) + "USDT"
+
+		for exchName, smExch := range e.spotMargin {
+			// Check exchange is in allowed list (if configured).
+			if len(allowedExchanges) > 0 && !allowedExchanges[exchName] {
+				continue
+			}
+
+			// Look up funding rate for this exchange + symbol.
+			exchRates, ok := loris.FundingRates[exchName]
+			if !ok {
+				continue
+			}
+			rawRate, ok := exchRates[baseSym]
+			if !ok {
+				continue
+			}
+
+			// Loris rate normalization (per project_loris_normalization.md):
+			// Loris returns 8h-equivalent basis points.
+			// Divide by 8 to get bps/hour.
+			// Multiply by 8760 (hours/year) and divide by 10000 (bps to decimal) = APR.
+			bpsPerHour := rawRate / 8.0
+			fundingAPR := bpsPerHour * 8760.0 / 10000.0
+
+			// Only generate opportunities when funding is positive.
+			if fundingAPR <= 0 {
+				continue
+			}
+
+			// Calculate fee APR (4 taker legs, annualized over assumed hold).
+			takerFee := spotFees[exchName]
+			if takerFee == 0 {
+				takerFee = 0.0005 // default 0.05%
+			}
+			totalRoundTripFee := takerFee * 4
+			feeAPR := totalRoundTripFee * (365.0 / assumedHoldDays)
+
+			// --- Dir A: borrow_sell_long ---
+			{
+				isActive := activeKeys[symbol+":"+exchName+":borrow_sell_long"]
+				var filterStatus string
+				var borrowAPR float64
+
+				rate, err := e.getCachedBorrowRate(exchName, strings.ToUpper(baseSym), smExch)
+				if err != nil {
+					filterStatus = "borrow rate unavailable"
+				} else {
+					borrowAPR = rate.HourlyRate * 24 * 365
+					if e.cfg.SpotFuturesMaxBorrowAPR > 0 && borrowAPR > e.cfg.SpotFuturesMaxBorrowAPR && !isActive {
+						filterStatus = fmt.Sprintf("borrow %.0f%% > max %.0f%%", borrowAPR*100, e.cfg.SpotFuturesMaxBorrowAPR*100)
+					}
+				}
+
+				netAPR := fundingAPR - borrowAPR - feeAPR
+
+				if filterStatus == "" && netAPR < e.cfg.SpotFuturesMinNetYieldAPR && !isActive {
+					filterStatus = fmt.Sprintf("net %.1f%% < min %.1f%%", netAPR*100, e.cfg.SpotFuturesMinNetYieldAPR*100)
+				}
+
+				opps = append(opps, SpotArbOpportunity{
+					Symbol:       symbol,
+					BaseCoin:     strings.ToUpper(baseSym),
+					Exchange:     exchName,
+					Direction:    "borrow_sell_long",
+					FundingAPR:   fundingAPR,
+					BorrowAPR:    borrowAPR,
+					FeeAPR:       feeAPR,
+					NetAPR:       netAPR,
+					Source:       "native",
+					Timestamp:    now,
+					FilterStatus: filterStatus,
+				})
+			}
+
+			// --- Dir B: buy_spot_short ---
+			{
+				isActive := activeKeys[symbol+":"+exchName+":buy_spot_short"]
+				var filterStatus string
+				borrowAPR := 0.0 // no borrow for Dir B
+				netAPR := fundingAPR - borrowAPR - feeAPR
+
+				if filterStatus == "" && netAPR < e.cfg.SpotFuturesMinNetYieldAPR && !isActive {
+					filterStatus = fmt.Sprintf("net %.1f%% < min %.1f%%", netAPR*100, e.cfg.SpotFuturesMinNetYieldAPR*100)
+				}
+
+				opps = append(opps, SpotArbOpportunity{
+					Symbol:       symbol,
+					BaseCoin:     strings.ToUpper(baseSym),
+					Exchange:     exchName,
+					Direction:    "buy_spot_short",
+					FundingAPR:   fundingAPR,
+					BorrowAPR:    borrowAPR,
+					FeeAPR:       feeAPR,
+					NetAPR:       netAPR,
+					Source:       "native",
+					Timestamp:    now,
+					FilterStatus: filterStatus,
+				})
+			}
+		}
+	}
+
+	// Sort by NetAPR descending (passed filters first, then filtered).
+	sort.Slice(opps, func(i, j int) bool {
+		pi, pj := opps[i].FilterStatus == "", opps[j].FilterStatus == ""
+		if pi != pj {
+			return pi
+		}
+		return opps[i].NetAPR > opps[j].NetAPR
+	})
+
+	e.log.Info("native discovery: %d opportunities from Loris (%d symbols)", len(opps), len(loris.Symbols))
+	return opps
+}
+
+// runCoinGlassFallback reads CoinGlass spot arb data from Redis, scores all
 // opportunities by net yield. Every opportunity is returned (for dashboard
 // display); those that fail entry filters have FilterStatus set to a reason
 // string so the UI can distinguish actionable from informational rows.
-func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
+func (e *SpotEngine) runCoinGlassFallback() []SpotArbOpportunity {
 	// 1. Read CoinGlass spot arb data from Redis.
 	raw, err := e.db.Get("coinGlassSpotArb")
 	if err != nil {
