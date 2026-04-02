@@ -2483,10 +2483,17 @@ func (e *Engine) closeFullyWithRetryPriced(ctx context.Context, exch exchange.Ex
 			e.log.Info("closeFullyWithRetry %s %s: cancelled by context", exch.Name(), symbol)
 			break
 		}
-		sizeStr := e.formatSize(exch.Name(), symbol, remaining)
 		// Skip if remaining is dust below exchange minimum order size.
 		if minSize > 0 && remaining < minSize {
 			e.log.Info("closeFullyWithRetry %s %s: remaining %.6f below minSize %.6f — treating as dust", exch.Name(), symbol, remaining, minSize)
+			remaining = 0
+			break
+		}
+		sizeStr := e.formatSize(exch.Name(), symbol, remaining)
+		// Guard against floating point: RoundToStep can floor to 0 when
+		// remaining is barely at a step boundary (e.g., 0.000999 → 0.000).
+		if sizeF, _ := strconv.ParseFloat(sizeStr, 64); sizeF <= 0 {
+			e.log.Info("closeFullyWithRetry %s %s: formatted size %q rounds to zero (remaining=%.8f) — treating as dust", exch.Name(), symbol, sizeStr, remaining)
 			remaining = 0
 			break
 		}

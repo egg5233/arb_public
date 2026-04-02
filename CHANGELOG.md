@@ -2,10 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.57] - 2026-04-02
+
+### Changed
+- **[exchange] Remove GetWithdrawFee from Exchange interface** -- `GetWithdrawFee(coin, chain string)` removed from the 35-method `Exchange` interface and all 6 adapter implementations (Binance, BingX, Bitget, Bybit, Gate.io, OKX); rebalance cross-exchange transfers now send amount×1.05 instead of querying live fee per-transfer; stub implementations removed from test helpers
+- **[discovery] Remove FilterForEntry from Scanner** -- `FilterForEntry()` public method removed; the V2 rebalance path that called it (passing filtered opps to `rebalanceFunds`) was simplified away; callers have no external dependency on this method
+- **[engine] Simplify rebalanceFunds** -- variadic `passedOpps` parameter removed (always calls `discovery.GetOpportunities()`); margin-ratio relief logic (spot→futures transfer when projected ratio would exceed L4) removed; withdraw-fee calculation replaced with flat 5% buffer; rollback logic on withdraw failure removed; `movedToSpot` tracking removed
+- **[risk] Remove post-trade margin ratio projection check** -- pre-entry approval no longer rejects when projected margin ratio would exceed L4 threshold; relies on health monitor for live margin enforcement instead
+- **[engine] Rebalance scan schedule comment update** -- `engine.go` godoc updated to reflect actual scan minutes (:20/:25/:35/:45)
+- **[i18n] rebalanceAfterExit description** -- updated en/zh-TW descriptions to reflect current behavior (runs on exit scan :30 instead of standalone :10)
+
 ## [0.22.56] - 2026-04-02
 
 ### Fixed
-- **[engine] Dust detection in closeFullyWithRetry** -- skip retry when remaining quantity is below exchange minimum order size; prevents BingX "parameter quantity is must" errors on dust remainders (e.g., 0.001 DRIFT below minSize 40.539)
+- **[engine] Dust detection in closeFullyWithRetry** -- skip retry when remaining quantity is below exchange minimum order size; prevents BingX "parameter quantity is must" errors on dust remainders (e.g., 0.001 DRIFT below minSize 40.539); also guards against floating point rounding producing zero-quantity orders when remaining is at a step boundary
+- **[spotengine] Remove noisy filtered-symbol log line** -- spot discovery no longer logs every filtered coin at INFO level on each scan cycle
 
 ## [0.22.55] - 2026-04-02
 
