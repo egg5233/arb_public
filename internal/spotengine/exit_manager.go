@@ -16,77 +16,30 @@ type exitState struct {
 	exiting map[string]bool // posID → true if exit in progress
 }
 
-// checkExitTriggers evaluates 5 exit triggers in priority order for a position.
+// checkExitTriggers evaluates exit triggers in priority order for a position.
 // Returns the reason string and whether this is an emergency (parallel close).
 // An empty reason means no trigger fired.
+//
+// Priority ordering:
+//   Phase 1: ALWAYS-ON SAFETY TRIGGERS (bypass all guards)
+//     1. Price Spike
+//     2. Margin Health
+//   Phase 2: GUARD GATES (block yield-based triggers only)
+//     3. Min-hold gate
+//     4. Settlement window guard
+//     5. Exit spread gate
+//   Phase 3: YIELD-BASED TRIGGERS (gated by Phase 2)
+//     6. Borrow Cost Drift (Dir A only)
+//     7. Funding Rate Drop
 func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason string, isEmergency bool) {
 	isDirA := pos.Direction == "borrow_sell_long"
 
-	// ---------------------------------------------------------------
-	// 1. Borrow Cost Drift (Direction A only)
-	// ---------------------------------------------------------------
-	if isDirA {
-		maxAPR := e.cfg.SpotFuturesMaxBorrowAPR
-		if maxAPR > 0 && pos.CurrentBorrowAPR > maxAPR {
-			e.log.Warn("exit trigger: %s borrow APR %.2f%% > max %.2f%%",
-				pos.Symbol, pos.CurrentBorrowAPR*100, maxAPR*100)
-			return "borrow_cost_exceeded", false
-		}
-
-		graceMin := e.cfg.SpotFuturesBorrowGraceMin
-		if graceMin <= 0 {
-			graceMin = 30
-		}
-		if pos.NegativeYieldSince != nil {
-			elapsed := time.Since(*pos.NegativeYieldSince)
-			if elapsed > time.Duration(graceMin)*time.Minute {
-				e.log.Warn("exit trigger: %s negative yield for %s (grace: %dm)",
-					pos.Symbol, elapsed.Round(time.Second), graceMin)
-				return "borrow_cost_exceeded", false
-			}
-		}
-	}
+	// ===============================================================
+	// PHASE 1: ALWAYS-ON SAFETY TRIGGERS (bypass all guards)
+	// ===============================================================
 
 	// ---------------------------------------------------------------
-	// 2. Funding Rate Drop
-	// ---------------------------------------------------------------
-	var currentFundingAPR, feeAPR float64
-	var hasFundingData bool
-	if opp, found := e.lookupCurrentOpp(pos.Symbol, pos.Exchange, pos.Direction); found {
-		currentFundingAPR = opp.FundingAPR
-		feeAPR = opp.FeeAPR
-		hasFundingData = true
-	} else {
-		// Symbol not in latest scan — fall back to entry-time data.
-		currentFundingAPR = pos.FundingAPR
-		feeAPR = pos.FeeAPR
-		hasFundingData = currentFundingAPR > 0
-	}
-	// Last-resort feeAPR: calculate from spotFees if position predates FeeAPR field.
-	if feeAPR == 0 {
-		takerFee := spotFees[pos.Exchange]
-		if takerFee == 0 {
-			takerFee = 0.0005
-		}
-		feeAPR = takerFee * 4 * (365.0 / assumedHoldDays)
-	}
-	if hasFundingData {
-		borrowAPR := pos.CurrentBorrowAPR
-		if !isDirA {
-			borrowAPR = 0 // Direction B has no borrow
-		}
-		minNet := e.cfg.SpotFuturesMinNetYieldAPR
-		netYield := currentFundingAPR - borrowAPR - feeAPR
-		if netYield < minNet {
-			e.log.Warn("exit trigger: %s net yield %.2f%% < min %.2f%% (funding=%.2f%% borrow=%.2f%% fees=%.2f%%)",
-				pos.Symbol, netYield*100, minNet*100,
-				currentFundingAPR*100, borrowAPR*100, feeAPR*100)
-			return "yield_below_minimum", false
-		}
-	}
-
-	// ---------------------------------------------------------------
-	// 3. Price Spike
+	// 1. Price Spike
 	// ---------------------------------------------------------------
 	priceExitPct := e.cfg.SpotFuturesPriceExitPct
 	if priceExitPct <= 0 {
@@ -145,7 +98,7 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 	}
 
 	// ---------------------------------------------------------------
-	// 4. Margin Health
+	// 2. Margin Health
 	//    Direction A: spot-margin borrow utilization
 	//    Direction B: futures margin ratio from GetFuturesBalance
 	// ---------------------------------------------------------------
@@ -249,10 +202,167 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 		}
 	}
 
+	// ===============================================================
+	// PHASE 2: GUARD GATES (block yield-based triggers only)
+	// ===============================================================
+
 	// ---------------------------------------------------------------
-	// 5. No trigger
+	// 3. Min-hold gate (per D-06)
+	// ---------------------------------------------------------------
+	if e.cfg.SpotFuturesEnableMinHold {
+		minHold := time.Duration(e.cfg.SpotFuturesMinHoldHours) * time.Hour
+		if minHold > 0 && time.Since(pos.CreatedAt) < minHold {
+			e.log.Info("exit-guard: %s min-hold active (age=%s, required=%s), deferring yield exit",
+				pos.Symbol, time.Since(pos.CreatedAt).Round(time.Minute), minHold)
+			return "", false
+		}
+	}
+
+	// ---------------------------------------------------------------
+	// 4. Settlement window guard (per D-07)
+	// ---------------------------------------------------------------
+	if e.cfg.SpotFuturesEnableSettlementGuard {
+		windowMin := e.cfg.SpotFuturesSettlementWindowMin
+		if windowMin <= 0 {
+			windowMin = 10
+		}
+		if isInSettlementWindow(windowMin) {
+			e.log.Info("exit-guard: %s settlement window active (%d min), deferring yield exit",
+				pos.Symbol, windowMin)
+			return "", false
+		}
+	}
+
+	// ---------------------------------------------------------------
+	// 5. Exit spread gate (per D-11)
+	// ---------------------------------------------------------------
+	if e.cfg.SpotFuturesEnableExitSpreadGate {
+		slippagePct := e.estimateUnwindSlippage(pos)
+		maxSlippage := e.cfg.SpotFuturesExitSpreadPct
+		if maxSlippage <= 0 {
+			maxSlippage = 0.3
+		}
+		if slippagePct > maxSlippage {
+			e.log.Info("exit-guard: %s spread %.2f%% > max %.2f%%, deferring yield exit",
+				pos.Symbol, slippagePct, maxSlippage)
+			return "", false
+		}
+	}
+
+	// ===============================================================
+	// PHASE 3: YIELD-BASED TRIGGERS (gated by Phase 2)
+	// ===============================================================
+
+	// ---------------------------------------------------------------
+	// 6. Borrow Cost Drift (Direction A only)
+	// ---------------------------------------------------------------
+	if isDirA {
+		maxAPR := e.cfg.SpotFuturesMaxBorrowAPR
+		if maxAPR > 0 && pos.CurrentBorrowAPR > maxAPR {
+			e.log.Warn("exit trigger: %s borrow APR %.2f%% > max %.2f%%",
+				pos.Symbol, pos.CurrentBorrowAPR*100, maxAPR*100)
+			return "borrow_cost_exceeded", false
+		}
+
+		graceMin := e.cfg.SpotFuturesBorrowGraceMin
+		if graceMin <= 0 {
+			graceMin = 30
+		}
+		if pos.NegativeYieldSince != nil {
+			elapsed := time.Since(*pos.NegativeYieldSince)
+			if elapsed > time.Duration(graceMin)*time.Minute {
+				e.log.Warn("exit trigger: %s negative yield for %s (grace: %dm)",
+					pos.Symbol, elapsed.Round(time.Second), graceMin)
+				return "borrow_cost_exceeded", false
+			}
+		}
+	}
+
+	// ---------------------------------------------------------------
+	// 7. Funding Rate Drop
+	// ---------------------------------------------------------------
+	var currentFundingAPR, feeAPR float64
+	var hasFundingData bool
+	if opp, found := e.lookupCurrentOpp(pos.Symbol, pos.Exchange, pos.Direction); found {
+		currentFundingAPR = opp.FundingAPR
+		feeAPR = opp.FeeAPR
+		hasFundingData = true
+	} else {
+		// Symbol not in latest scan — fall back to entry-time data.
+		currentFundingAPR = pos.FundingAPR
+		feeAPR = pos.FeeAPR
+		hasFundingData = currentFundingAPR > 0
+	}
+	// Last-resort feeAPR: calculate from spotFees if position predates FeeAPR field.
+	if feeAPR == 0 {
+		takerFee := spotFees[pos.Exchange]
+		if takerFee == 0 {
+			takerFee = 0.0005
+		}
+		feeAPR = takerFee * 4 * (365.0 / assumedHoldDays)
+	}
+	if hasFundingData {
+		borrowAPR := pos.CurrentBorrowAPR
+		if !isDirA {
+			borrowAPR = 0 // Direction B has no borrow
+		}
+		minNet := e.cfg.SpotFuturesMinNetYieldAPR
+		netYield := currentFundingAPR - borrowAPR - feeAPR
+		if netYield < minNet {
+			e.log.Warn("exit trigger: %s net yield %.2f%% < min %.2f%% (funding=%.2f%% borrow=%.2f%% fees=%.2f%%)",
+				pos.Symbol, netYield*100, minNet*100,
+				currentFundingAPR*100, borrowAPR*100, feeAPR*100)
+			return "yield_below_minimum", false
+		}
+	}
+
+	// ---------------------------------------------------------------
+	// 8. No trigger
 	// ---------------------------------------------------------------
 	return "", false
+}
+
+// isInSettlementWindow returns true if the current UTC time is within windowMin
+// minutes of a standard 8h funding settlement (:00 at hours 0, 8, 16 UTC).
+func isInSettlementWindow(windowMin int) bool {
+	now := time.Now().UTC()
+	return isInSettlementWindowAt(now.Hour(), now.Minute(), windowMin)
+}
+
+// isInSettlementWindowAt checks if the given hour:minute (UTC) falls within
+// windowMin minutes of a standard 8h funding settlement. Extracted for testability.
+func isInSettlementWindowAt(hour, minute, windowMin int) bool {
+	// Standard settlement: every 8 hours at :00 (00:00, 08:00, 16:00 UTC).
+	// Settlement hours: 0, 8, 16 → hour%8 == 0.
+	// Previous hours: 7, 15, 23 → hour%8 == 7.
+	if hour%8 == 0 && minute < windowMin {
+		return true
+	}
+	if hour%8 == 7 && minute >= 60-windowMin {
+		return true
+	}
+	return false
+}
+
+// estimateUnwindSlippage estimates the percentage cost of unwinding a position
+// by checking the top-of-book spread from the futures orderbook.
+func (e *SpotEngine) estimateUnwindSlippage(pos *models.SpotFuturesPosition) float64 {
+	exch, ok := e.exchanges[pos.Exchange]
+	if !ok {
+		return 0
+	}
+	ob, err := exch.GetOrderbook(pos.Symbol, 5)
+	if err != nil || len(ob.Bids) == 0 || len(ob.Asks) == 0 {
+		return 0
+	}
+	mid := (ob.Bids[0].Price + ob.Asks[0].Price) / 2
+	if mid <= 0 {
+		return 0
+	}
+	// 2 legs: spot + futures, each pays half-spread.
+	spreadPct := (ob.Asks[0].Price - ob.Bids[0].Price) / mid * 100
+	// Estimated total: 2 legs * spread (simplified; real slippage depends on size).
+	return spreadPct * 2
 }
 
 // initiateExit runs the full exit sequence for a position. It should be called
