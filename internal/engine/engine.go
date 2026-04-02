@@ -785,16 +785,32 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			e.log.Error("rebalance: %s get spot balance failed: %v", bestDonor, err)
 			continue
 		}
-		withdrawAmt := netAmount + fee // gross amount: exchange deducts fee, recipient receives netAmount
-		if donorSpotBal.Available < withdrawAmt {
-			// Not enough to cover net + fee; withdraw everything we have
-			withdrawAmt = donorSpotBal.Available
+
+		// Both gross and net exchanges need balance >= netAmount + fee
+		grossRequired := netAmount + fee
+		isGross := e.exchanges[bestDonor].WithdrawFeeInclusive()
+
+		if donorSpotBal.Available < grossRequired {
+			// Not enough to cover net + fee; reduce what recipient gets
+			netAmount = donorSpotBal.Available - fee
 		}
-		if withdrawAmt-fee < 10 {
+		if netAmount < 10 {
 			e.log.Warn("rebalance: %s spot balance too low to withdraw (available=%.2f, fee=%.4f)", bestDonor, donorSpotBal.Available, fee)
 			continue
 		}
-		amtStr := fmt.Sprintf("%.4f", withdrawAmt)
+
+		// Determine withdraw amount based on exchange API semantics
+		var withdrawAmtForAPI float64
+		if isGross {
+			// Gross (Binance, BingX, Gate.io): amount includes fee, recipient gets amount - fee
+			// So to deliver netAmount, we need to send netAmount + fee
+			withdrawAmtForAPI = netAmount + fee
+		} else {
+			// Net (OKX, Bitget, Bybit): amount is what recipient gets, fee deducted separately
+			// Balance needs net + fee, but API amount = net
+			withdrawAmtForAPI = netAmount
+		}
+		amtStr := fmt.Sprintf("%.4f", withdrawAmtForAPI)
 
 		result, err := e.exchanges[bestDonor].Withdraw(exchange.WithdrawParams{
 			Coin:    "USDT",
@@ -816,14 +832,22 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			}
 			continue
 		}
-		e.log.Info("rebalance: withdraw from %s txid=%s (%.2f USDT gross, %.2f net after fee) → %s",
-			bestDonor, result.TxID, withdrawAmt, withdrawAmt-fee, def.exchange)
+
+		// What recipient actually receives
+		var recipientReceives float64
+		if isGross {
+			recipientReceives = withdrawAmtForAPI - fee
+		} else {
+			recipientReceives = netAmount
+		}
+		e.log.Info("rebalance: withdraw from %s txid=%s (apiAmt=%.2f, recipient=%.2f USDT, fee=%.4f, gross=%v) → %s",
+			bestDonor, result.TxID, withdrawAmtForAPI, recipientReceives, fee, isGross, def.exchange)
 		e.recordTransfer(bestDonor, def.exchange, "USDT", chain, amtStr, result.Fee, result.TxID, "completed", "rebalance")
 
 		if _, exists := pendingStartBal[def.exchange]; !exists {
 			pendingStartBal[def.exchange] = balances[def.exchange].spot
 		}
-		pendingDeposits[def.exchange] += withdrawAmt - fee // track net amount (what will actually arrive after fee deduction)
+		pendingDeposits[def.exchange] += recipientReceives // track what recipient actually receives
 		surplus[bestDonor] -= requiredSpot
 	}
 

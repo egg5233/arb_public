@@ -947,6 +947,9 @@ func (a *Adapter) Withdraw(params exchange.WithdrawParams) (*exchange.WithdrawRe
 	}, nil
 }
 
+// WithdrawFeeInclusive returns true because Gate.io Withdraw amount includes fee (recipient gets amount - fee).
+func (a *Adapter) WithdrawFeeInclusive() bool { return true }
+
 // GetWithdrawFee queries the Gate.io API for the withdrawal fee of a coin on a given chain.
 func (a *Adapter) GetWithdrawFee(coin, chain string) (float64, error) {
 	network := mapChainToGateNetwork(chain)
