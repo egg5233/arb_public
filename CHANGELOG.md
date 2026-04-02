@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.25.0] - 2026-04-02
+
+### Fixed
+- **Rescue auto-size (CapitalPerLeg=0)** — estMargin now falls back to RequiredMargin or 50×safety instead of 0
+- **Rescue multi-donor** — no longer requires single donor to cover full deficit; partial donors (surplus>10) accepted, Phase 2 fills the rest
+- **Rescue L3 filter** — both rescue and approved-path donor checks now skip donors with marginRatio >= L3
+- **Donor surplus double-count** — removed redundant `needs[]` subtraction from surplus in both rescue and approved paths (reserved already includes it)
+- **Binance TransferToSpot** — skipped outer futures→spot transfer for Binance since Withdraw() handles it internally; fixes rollback gap
+- **Phase 2 donor L3 logging** — added visible log when donor skipped due to L3
+
 ## [0.24.5] - 2026-04-02
 
 ### Added

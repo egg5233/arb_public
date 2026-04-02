@@ -458,6 +458,14 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			// Margin-related rejection: check if cross-exchange transfer from a donor could help.
 			// Estimate needed margin per leg.
 			estMargin := e.cfg.CapitalPerLeg * e.cfg.MarginSafetyMultiplier
+			if estMargin <= 0 {
+				// Auto-size mode (CapitalPerLeg=0): use approval's RequiredMargin or fallback
+				if approval.RequiredMargin > 0 {
+					estMargin = approval.RequiredMargin
+				} else {
+					estMargin = 50 * e.cfg.MarginSafetyMultiplier
+				}
+			}
 			canRescue := true
 			for _, legExch := range []string{opp.LongExchange, opp.ShortExchange} {
 				bal := balances[legExch]
@@ -471,14 +479,20 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 					if donorName == legExch {
 						continue
 					}
-					donorSurplus := donorBal.futures + donorBal.spot - reserved[donorName] - needs[donorName] - plannedTransfers[donorName+"_out"]
+					// BUG#4: skip donors already at L3 margin stress
+					if balances[donorName].marginRatio >= e.cfg.MarginL3Threshold {
+						continue
+					}
+					// BUG#5: surplus uses available - reserved (reserved already includes needs from selected opps)
+					donorSurplus := donorBal.futures + donorBal.spot - reserved[donorName] - plannedTransfers[donorName+"_out"]
 					type unifiedChecker interface{ IsUnified() bool }
 					if donorName == "okx" || donorName == "bybit" {
-						donorSurplus = donorBal.futures - reserved[donorName] - needs[donorName] - plannedTransfers[donorName+"_out"]
+						donorSurplus = donorBal.futures - reserved[donorName] - plannedTransfers[donorName+"_out"]
 					} else if uc, ok := e.exchanges[donorName].(unifiedChecker); ok && uc.IsUnified() {
-						donorSurplus = donorBal.futures - reserved[donorName] - needs[donorName] - plannedTransfers[donorName+"_out"]
+						donorSurplus = donorBal.futures - reserved[donorName] - plannedTransfers[donorName+"_out"]
 					}
-					if donorSurplus > deficit {
+					// BUG#3: allow partial coverage — any donor with surplus > 10 makes opp rescuable
+					if donorSurplus > 10 {
 						plannedTransfers[legExch] += deficit
 						plannedTransfers[donorName+"_out"] += deficit
 						foundDonor = true
@@ -531,15 +545,18 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 					if donorName == leg.exchange {
 						continue
 					}
-					donorSurplus := donorBal.futures + donorBal.spot - reserved[donorName] - needs[donorName] - plannedTransfers[donorName+"_out"]
+					donorSurplus := donorBal.futures + donorBal.spot - reserved[donorName] - plannedTransfers[donorName+"_out"]
 					// Unified accounts: don't double-count
 					type unifiedChecker interface{ IsUnified() bool }
 					if donorName == "okx" || donorName == "bybit" {
-						donorSurplus = donorBal.futures - reserved[donorName] - needs[donorName] - plannedTransfers[donorName+"_out"]
+						donorSurplus = donorBal.futures - reserved[donorName] - plannedTransfers[donorName+"_out"]
 					} else if uc, ok := e.exchanges[donorName].(unifiedChecker); ok && uc.IsUnified() {
-						donorSurplus = donorBal.futures - reserved[donorName] - needs[donorName] - plannedTransfers[donorName+"_out"]
+						donorSurplus = donorBal.futures - reserved[donorName] - plannedTransfers[donorName+"_out"]
 					}
-					if donorSurplus > deficit {
+					if balances[donorName].marginRatio >= e.cfg.MarginL3Threshold {
+						continue
+					}
+					if donorSurplus > 10 {
 						plannedTransfers[leg.exchange] += deficit
 						plannedTransfers[donorName+"_out"] += deficit
 						foundDonor = true
@@ -719,6 +736,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 					continue
 				}
 				if balances[name].marginRatio >= e.cfg.MarginL3Threshold {
+					e.log.Info("rebalance: skipping donor %s (marginRatio=%.4f >= L3=%.4f)", name, balances[name].marginRatio, e.cfg.MarginL3Threshold)
 					continue
 				}
 				if s > bestSurplus {
@@ -788,10 +806,18 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 				continue
 			}
 
-			// Move funds from futures→spot if donor spot is insufficient
+			// Move funds from futures→spot if donor spot is insufficient.
+			// Skip for Binance: its Withdraw() auto-transfers futures→spot internally.
+			// Skip for Gate.io / unified accounts: spot and futures share the same pool.
 			var movedToSpot float64
+			skipOuterTransfer := bestDonor == "binance" || bestDonor == "gateio"
+			if !skipOuterTransfer {
+				if uc, ok := e.exchanges[bestDonor].(interface{ IsUnified() bool }); ok && uc.IsUnified() {
+					skipOuterTransfer = true
+				}
+			}
 			donorBal := balances[bestDonor]
-			if donorBal.spot < requiredSpot {
+			if !skipOuterTransfer && donorBal.spot < requiredSpot {
 				moveAmt := requiredSpot - donorBal.spot
 				maxMove := donorBal.futures - needs[bestDonor]
 				if moveAmt > maxMove && maxMove > 0 {
@@ -810,16 +836,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 					continue
 				}
 				e.recordTransfer(bestDonor, bestDonor+" spot", "USDT", "internal", moveStr, "0", "", "completed", "rebalance-prep")
-
-				isNoOp := bestDonor == "binance" || bestDonor == "gateio"
-				if !isNoOp {
-					if uc, ok := e.exchanges[bestDonor].(interface{ IsUnified() bool }); ok && uc.IsUnified() {
-						isNoOp = true
-					}
-				}
-				if !isNoOp {
-					movedToSpot = moveAmt
-				}
+				movedToSpot = moveAmt
 			}
 
 			donorSpotBal, err := e.exchanges[bestDonor].GetSpotBalance()
