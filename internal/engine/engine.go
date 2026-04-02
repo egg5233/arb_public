@@ -601,9 +601,21 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			continue
 		}
 
-		// Futures doesn't cover the need. Calculate the actual shortfall.
+		// Futures doesn't cover the need. Calculate the actual shortfall,
+		// plus enough extra so post-trade margin ratio stays below L4.
+		// Without the buffer, entry approval will reject due to L4 ratio.
 		shortfall := need - bal.futures
-		transferAmt := shortfall
+		// L4-aware: total equity after transfer must be >= need / targetFreeRatio
+		// Extra needed = need/targetFreeRatio - futuresTotal - shortfall
+		l4Extra := need/targetFreeRatio - bal.futuresTotal - shortfall
+		if l4Extra < 0 {
+			l4Extra = 0
+		}
+		// Cap L4 extra to at most the shortfall itself (never more than 2x shortfall total)
+		if l4Extra > shortfall {
+			l4Extra = shortfall
+		}
+		transferAmt := shortfall + l4Extra
 		if bal.spot > 0 {
 			actualTransfer := transferAmt
 			if actualTransfer > bal.spot {
@@ -611,8 +623,8 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			}
 			if actualTransfer < 1.0 {
 				e.log.Debug("rebalance: %s spot→futures skip (%.4f USDT below minimum)", name, actualTransfer)
-				if shortfall > 10 {
-					crossDeficits = append(crossDeficits, deficit{name, shortfall})
+				if transferAmt > 10 {
+					crossDeficits = append(crossDeficits, deficit{name, transferAmt})
 				}
 				continue
 			}
@@ -624,7 +636,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 				if err := e.exchanges[name].TransferToFutures("USDT", amtStr); err != nil {
 					e.log.Error("rebalance: %s spot→futures failed: %v", name, err)
 				} else {
-					shortfall -= actualTransfer
+					transferAmt -= actualTransfer
 					// Update local balance tracking
 					bi := balances[name]
 					bi.futures += actualTransfer
@@ -633,8 +645,8 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 				}
 			}
 		}
-		if shortfall > 10 {
-			crossDeficits = append(crossDeficits, deficit{name, shortfall})
+		if transferAmt > 10 {
+			crossDeficits = append(crossDeficits, deficit{name, transferAmt})
 		}
 	}
 

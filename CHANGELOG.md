@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.24.3] - 2026-04-02
+
+### Fixed
+- **Rebalance deficit + L4 buffer** — cross-exchange deficit now includes L4 margin buffer (capped at 2x shortfall) so entry approval won't reject after transfer. Deficit tracking uses full `transferAmt` (shortfall + l4Extra) consistently through spot→futures and cross-exchange paths.
+
 ## [0.24.2] - 2026-04-02
 
 ### Fixed
