@@ -1,8 +1,8 @@
 ---
 phase: 01-spot-futures-exchange-expansion
 verified: 2026-04-02T02:46:38Z
-status: human_needed
-score: 9/10 must-haves verified
+status: passed
+score: 10/10 must-haves verified
 human_verification:
   - test: "Run test-lifecycle on Gate.io and OKX live and confirm structured JSON report shows all steps ok"
     expected: "DirA.Open.Status=ok, DirA.VerifyOpen.Borrowed.Found=true, DirA.VerifyClose.Borrowed.Found=false, DirB.Open.Status=ok, DirB.VerifyOpen.SpotBalance.Found=true, DirB.VerifyClose.SpotBalance.Amount<=initial on both exchanges"
@@ -13,7 +13,7 @@ human_verification:
 
 **Phase Goal:** Both spot-futures directions (Dir A borrow-sell-long, Dir B buy-spot-short) work reliably on all 5 margin exchanges
 **Verified:** 2026-04-02T02:46:38Z
-**Status:** human_needed
+**Status:** passed
 **Re-verification:** No — initial verification
 
 ---
