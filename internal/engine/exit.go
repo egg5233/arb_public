@@ -2468,12 +2468,28 @@ func (e *Engine) closeFullyWithRetryPriced(ctx context.Context, exch exchange.Ex
 	deadline := time.Now().Add(30 * time.Second)
 	var vwapSum float64
 
+	// Look up min order size to detect dust remainders that can't be closed.
+	var minSize float64
+	if e.contracts != nil {
+		if exContracts, ok := e.contracts[exch.Name()]; ok {
+			if ci, ok := exContracts[symbol]; ok {
+				minSize = ci.MinSize
+			}
+		}
+	}
+
 	for attempt := 0; attempt < 10 && remaining > 0; attempt++ {
 		if ctx.Err() != nil {
 			e.log.Info("closeFullyWithRetry %s %s: cancelled by context", exch.Name(), symbol)
 			break
 		}
 		sizeStr := e.formatSize(exch.Name(), symbol, remaining)
+		// Skip if remaining is dust below exchange minimum order size.
+		if minSize > 0 && remaining < minSize {
+			e.log.Info("closeFullyWithRetry %s %s: remaining %.6f below minSize %.6f — treating as dust", exch.Name(), symbol, remaining, minSize)
+			remaining = 0
+			break
+		}
 		oid, err := exch.PlaceOrder(exchange.PlaceOrderParams{
 			Symbol:     symbol,
 			Side:       side,

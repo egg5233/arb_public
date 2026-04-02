@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.56] - 2026-04-02
+
+### Fixed
+- **[engine] Dust detection in closeFullyWithRetry** -- skip retry when remaining quantity is below exchange minimum order size; prevents BingX "parameter quantity is must" errors on dust remainders (e.g., 0.001 DRIFT below minSize 40.539)
+
 ## [0.22.55] - 2026-04-02
 
 ### Fixed
