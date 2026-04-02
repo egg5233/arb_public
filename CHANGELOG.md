@@ -2,10 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.24.6] - 2026-04-02
+
+### Added
+- **Native Loris-based discovery scanner for spot-futures** -- replaces CoinGlass Chrome scraper as primary data source. Polls `api.loris.tools/funding` directly, calculates net yield (fundingAPR - borrowAPR - feeAPR), generates both Dir A and Dir B opportunities per symbol+exchange. CoinGlass retained as automatic fallback when Loris is unavailable.
+- **9 new spot-futures config fields** -- `NativeScannerEnabled` (default: true), `EnableMinHold` (false), `MinHoldHours` (8), `EnableSettlementGuard` (false), `SettlementWindowMin` (10), `EnableBasisGate` (false), `MaxBasisPct` (0.5), `EnableExitSpreadGate` (false), `ExitSpreadPct` (0.3). All fields have struct, JSON, defaults, apply, toJSON, and fromEnv support.
+
 ## [0.24.5] - 2026-04-02
 
 ### Added
 - **Perp-perp coin blacklist** — manually block symbols from auto-open via dashboard. Stored in Redis SET `arb:blacklist:perp` (not config.json). Block/Unblock buttons on both Opportunities and Positions pages. Blacklisted coins visible in Config > Perp-Perp > Discovery tab with remove buttons. Blocked symbols rejected in `executeArbitrage` and logged to Rejections. Manual opens still allowed. One-time seed of DRIFTUSDT on first start (won't re-add after user removes). CORS DELETE method support added for the blacklist API.
+
+### Fixed
+- **V2 rebalance pre-filters active symbols** — opps with existing positions are now removed before sequential allocation, matching entryScan behavior. Log clearly shows how many were filtered.
 
 ## [0.24.4] - 2026-04-02
 

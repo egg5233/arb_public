@@ -367,6 +367,26 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 		}
 	}
 
+	// Pre-filter: remove opps whose symbol already has an active position or is blacklisted.
+	var newOpps []models.Opportunity
+	for _, opp := range opps {
+		if activeSymbols[opp.Symbol] {
+			continue
+		}
+		if blocked, err := e.db.IsBlacklisted(opp.Symbol); err == nil && blocked {
+			continue
+		}
+		newOpps = append(newOpps, opp)
+	}
+	if len(newOpps) == 0 {
+		e.log.Info("rebalance: all %d opps already have active positions, skipping", len(opps))
+		return
+	}
+	if len(newOpps) < len(opps) {
+		e.log.Info("rebalance: filtered %d/%d opps (active symbols removed)", len(newOpps), len(opps))
+	}
+	opps = newOpps
+
 	// Query all exchange balances (futures + spot) BEFORE calculating needs
 	// so we can do budget-aware allocation.
 	type balInfo struct {

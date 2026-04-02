@@ -48,7 +48,7 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 02-01-PLAN.md -- Config fields (9 new) + native Loris-based discovery scanner replacing CoinGlass
+- [x] 02-01-PLAN.md -- Config fields (9 new) + native Loris-based discovery scanner replacing CoinGlass
 - [ ] 02-02-PLAN.md -- Exit safeguards (min-hold, settlement guard, spread gate) + entry basis gate
 - [ ] 02-03-PLAN.md -- Dashboard UI integration (config toggles, i18n, source indicator) + auto-entry validation
 
@@ -110,7 +110,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Spot-Futures Exchange Expansion | 0/3 | Not started | - |
-| 2. Spot-Futures Automation | 0/3 | Not started | - |
+| 2. Spot-Futures Automation | 1/3 | In progress | - |
 | 3. Operational Safety | 0/3 | Not started | - |
 | 4. Performance Analytics | 0/4 | Not started | - |
 | 5. Capital Allocation | 0/3 | Not started | - |
