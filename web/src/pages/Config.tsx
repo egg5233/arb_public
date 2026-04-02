@@ -5,6 +5,8 @@ import { useLocale, type TranslationKey } from '../i18n/index.ts';
 interface ConfigProps {
   getConfig: () => Promise<Record<string, unknown>>;
   updateConfig: (data: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  blacklist?: string[];
+  onBlacklistRemove?: (symbol: string) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -289,7 +291,7 @@ const NumberField: FC<{
 // ---------------------------------------------------------------------------
 // Main Config Component
 // ---------------------------------------------------------------------------
-const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
+const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBlacklistRemove }) => {
   const { t } = useLocale();
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
@@ -667,6 +669,34 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig }) => {
             {getByPath(config, ['strategy', 'discovery', 'delist_filter']) ? 'ON' : 'OFF'}
           </span>
         </div>
+      </div>
+      {/* Blacklisted Coins — spans full width */}
+      <div className="sm:col-span-2">
+        <div className="flex items-center gap-2 mb-2">
+          <label className="text-sm font-medium">{t('cfg.field.blacklist')}</label>
+          <Tooltip text={t('cfg.desc.blacklist')} />
+        </div>
+        {blacklist.length === 0 ? (
+          <p className="text-sm text-gray-500">{t('cfg.blacklistEmpty')}</p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {blacklist.sort().map((symbol) => (
+              <span key={symbol} className="inline-flex items-center gap-1 px-2.5 py-1 bg-yellow-600/15 text-yellow-400 rounded-md text-xs font-mono border border-yellow-600/30">
+                {symbol}
+                {onBlacklistRemove && (
+                  <button
+                    type="button"
+                    onClick={() => onBlacklistRemove(symbol)}
+                    className="ml-0.5 text-yellow-500 hover:text-yellow-200 transition-colors"
+                    title={t('opp.unblock')}
+                  >
+                    ✕
+                  </button>
+                )}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -69,6 +69,9 @@ const en = {
   'opp.openConfirm': 'Confirm Open',
   'opp.forceOpen': 'Force Open (Skip Risk)',
   'opp.openCancel': 'Cancel',
+  'opp.block': 'Block',
+  'opp.unblock': 'Unblock',
+  'opp.blocked': 'Blocked from auto-open',
 
   // Spot-Futures Opportunities
   'spot.tabPerp': 'Perp-Perp',
@@ -198,6 +201,9 @@ const en = {
   'cfg.field.recoveryIntervals': 'Recovery Intervals',
   'cfg.field.maxIntervalHours': 'Max Funding Interval',
   'cfg.field.delistFilter': 'Binance Delist Filter',
+  'cfg.field.blacklist': 'Blacklisted Coins',
+  'cfg.desc.blacklist': 'Symbols blocked from perp-perp auto-open. Add via Opportunities or Positions page. Remove here or by clicking Unblock.',
+  'cfg.blacklistEmpty': 'No coins blacklisted',
   'cfg.field.rebalanceAfterExit': 'Rebalance After Exit',
   'cfg.field.rebalanceScanMinute': 'Rebalance Scan Minute',
   'cfg.field.entryScanMinute': 'Entry Scan Minute',

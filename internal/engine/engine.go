@@ -296,6 +296,14 @@ func (e *Engine) formatPrice(exchName, symbol string, price float64) string {
 func (e *Engine) Start() {
 	e.log.Info("engine starting")
 
+	// One-time seed: add default blacklist entries only if the seed hasn't run before.
+	if seeded, _ := e.db.Get("arb:blacklist:seeded"); seeded == "" {
+		for _, sym := range []string{"DRIFTUSDT"} {
+			_ = e.db.AddToBlacklist(sym)
+		}
+		_ = e.db.SetWithTTL("arb:blacklist:seeded", "1", 0)
+	}
+
 	// Subscribe BBO for any existing active positions (survives restart).
 	if active, err := e.db.GetActivePositions(); err == nil {
 		for _, pos := range active {
@@ -1774,6 +1782,13 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 	for _, opp := range opps {
 		if activeSymbols[opp.Symbol] {
 			continue // skip — symbol already has an active position
+		}
+		// Check blacklist
+		if blocked, err := e.db.IsBlacklisted(opp.Symbol); err == nil && blocked {
+			if e.rejStore != nil {
+				e.rejStore.AddOpp(opp, "engine", "symbol blacklisted")
+			}
+			continue
 		}
 		if newSlotCandidates >= slots {
 			continue

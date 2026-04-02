@@ -23,6 +23,7 @@ function App() {
   const api = useApi();
   const [page, setPage] = useState<Page>('overview');
   const [exchanges, setExchanges] = useState<ExchangeInfo[]>([]);
+  const [blacklist, setBlacklist] = useState<string[]>([]);
   const [locale, setLocaleState] = useState<Locale>(getStoredLocale);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const ws = useWebSocket(!!api.token);
@@ -90,6 +91,18 @@ function App() {
     }
   }, [api, t]);
 
+  const handleBlacklistToggle = useCallback(async (symbol: string) => {
+    try {
+      if (blacklist.includes(symbol)) {
+        await api.removeFromBlacklist(symbol);
+        setBlacklist(prev => prev.filter(s => s !== symbol));
+      } else {
+        await api.addToBlacklist(symbol);
+        setBlacklist(prev => [...prev, symbol]);
+      }
+    } catch { /* ignore */ }
+  }, [api, blacklist]);
+
   // Seed WS state from REST on initial load, and refresh exchanges periodically.
   useEffect(() => {
     if (!api.token) return;
@@ -98,6 +111,7 @@ function App() {
     api.getStats().then(ws.setStats).catch(() => {});
     api.getSpotPositions().then(ws.setSpotPositions).catch(() => {});
     api.getSpotOpportunities().then(ws.setSpotOpportunities).catch(() => {});
+    api.getBlacklist().then(setBlacklist).catch(() => {});
     const loadExchanges = () => {
       api.getExchanges().then(setExchanges).catch(() => {});
     };
@@ -146,6 +160,8 @@ function App() {
             spotOpportunities={ws.spotOpportunities}
             onOpen={api.openPosition}
             onSpotOpen={api.spotManualOpen}
+            blacklist={blacklist}
+            onBlacklistToggle={handleBlacklistToggle}
           />
         );
       case 'positions':
@@ -154,12 +170,14 @@ function App() {
             positions={ws.positions}
             onClose={api.closePosition}
             onFetchFunding={api.getPositionFunding}
+            blacklist={blacklist}
+            onBlacklistToggle={handleBlacklistToggle}
           />
         );
       case 'history':
         return <History getHistory={api.getHistory} />;
       case 'config':
-        return <Config getConfig={api.getConfig} updateConfig={api.updateConfig} />;
+        return <Config getConfig={api.getConfig} updateConfig={api.updateConfig} blacklist={blacklist} onBlacklistRemove={async (s) => { await api.removeFromBlacklist(s); setBlacklist(prev => prev.filter(x => x !== s)); }} />;
       case 'transfers':
         return (
           <Transfers

@@ -8,6 +8,8 @@ interface PositionsProps {
   positions: Position[];
   onClose?: (positionId: string) => Promise<void>;
   onFetchFunding?: (positionId: string) => Promise<FundingEvent[]>;
+  blacklist?: string[];
+  onBlacklistToggle?: (symbol: string) => Promise<void>;
 }
 
 function formatAge(created: string): string {
@@ -50,7 +52,7 @@ function pnlColor(v: number): string {
   return 'text-gray-400';
 }
 
-const Positions: FC<PositionsProps> = ({ positions, onClose, onFetchFunding }) => {
+const Positions: FC<PositionsProps> = ({ positions, onClose, onFetchFunding, blacklist = [], onBlacklistToggle }) => {
   const { t } = useLocale();
   const [closingId, setClosingId] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
@@ -183,7 +185,19 @@ const Positions: FC<PositionsProps> = ({ positions, onClose, onFetchFunding }) =
                     <span className="text-xs text-gray-600">-</span>
                   )}
                 </td>
-                <td className="px-2 py-1">
+                <td className="px-2 py-1 whitespace-nowrap">
+                  {onBlacklistToggle && p.status === 'active' && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onBlacklistToggle(p.symbol); }}
+                      className={`px-2 py-0.5 text-xs rounded mr-1 ${
+                        blacklist.includes(p.symbol)
+                          ? 'bg-yellow-600/20 text-yellow-400 hover:bg-yellow-600/40'
+                          : 'bg-gray-600/20 text-gray-400 hover:bg-gray-600/40'
+                      }`}
+                    >
+                      {blacklist.includes(p.symbol) ? t('opp.unblock') : t('opp.block')}
+                    </button>
+                  )}
                   {p.status === 'active' && onClose && (
                     <button
                       onClick={(e) => { e.stopPropagation(); setClosingId(p.id); }}

@@ -28,6 +28,7 @@ const (
 	keySpreadHistoryPrefix   = "arb:spread:history:"
 	keyLossCooldownPrefix    = "arb:lossCooldown:"
 	keyReEnterCooldownPrefix = "arb:reEnterCooldown:"
+	keyPerpBlacklist         = "arb:blacklist:perp"
 
 	historyMaxLen         = 1000
 	fundingSnapshotMaxLen = 100
@@ -586,4 +587,24 @@ func (c *Client) GetReEnterCooldown(symbol string) time.Duration {
 		return 0
 	}
 	return ttl
+}
+
+// AddToBlacklist adds a symbol to the perp-perp blacklist.
+func (c *Client) AddToBlacklist(symbol string) error {
+	return c.rdb.SAdd(context.Background(), keyPerpBlacklist, symbol).Err()
+}
+
+// RemoveFromBlacklist removes a symbol from the perp-perp blacklist.
+func (c *Client) RemoveFromBlacklist(symbol string) error {
+	return c.rdb.SRem(context.Background(), keyPerpBlacklist, symbol).Err()
+}
+
+// GetBlacklist returns all blacklisted symbols.
+func (c *Client) GetBlacklist() ([]string, error) {
+	return c.rdb.SMembers(context.Background(), keyPerpBlacklist).Result()
+}
+
+// IsBlacklisted checks if a symbol is in the perp-perp blacklist.
+func (c *Client) IsBlacklisted(symbol string) (bool, error) {
+	return c.rdb.SIsMember(context.Background(), keyPerpBlacklist, symbol).Result()
 }

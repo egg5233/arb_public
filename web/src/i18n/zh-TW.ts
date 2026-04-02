@@ -71,6 +71,9 @@ const zhTW: Record<TranslationKey, string> = {
   'opp.openConfirm': '確認',
   'opp.forceOpen': '強制開倉（跳過風控）',
   'opp.openCancel': '取消',
+  'opp.block': '封鎖',
+  'opp.unblock': '解除封鎖',
+  'opp.blocked': '已封鎖自動開倉',
 
   // Spot-Futures Opportunities
   'spot.tabPerp': '永續-永續',
@@ -200,6 +203,9 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.field.recoveryIntervals': '價差恢復週期',
   'cfg.field.maxIntervalHours': '最大結算週期',
   'cfg.field.delistFilter': '幣安下架過濾',
+  'cfg.field.blacklist': '封鎖幣種',
+  'cfg.desc.blacklist': '封鎖幣種不會被永續-永續自動開倉。可在機會或持倉頁面新增，在此處或點擊解除封鎖移除。',
+  'cfg.blacklistEmpty': '無封鎖幣種',
   'cfg.field.rebalanceAfterExit': '退出後再平衡',
   'cfg.field.rebalanceScanMinute': '再平衡執行',
   'cfg.field.entryScanMinute': '進場執行',

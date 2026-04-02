@@ -85,6 +85,9 @@ func (s *Server) Start() {
 	mux.HandleFunc("/api/positions/open", s.cors(s.authMiddleware(s.handleOpenPosition)))
 	mux.HandleFunc("GET /api/positions/{id}/funding", s.cors(s.authMiddleware(s.handleGetPositionFunding)))
 
+	// Blacklist
+	mux.HandleFunc("/api/blacklist", s.cors(s.authMiddleware(s.handleBlacklist)))
+
 	// Transfer routes
 	mux.HandleFunc("/api/transfer", s.cors(s.authMiddleware(s.handleTransfer)))
 	mux.HandleFunc("/api/transfers", s.cors(s.authMiddleware(s.handleGetTransfers)))
@@ -166,7 +169,7 @@ func (s *Server) Stop() {
 func (s *Server) cors(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
 		if r.Method == http.MethodOptions {

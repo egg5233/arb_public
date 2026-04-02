@@ -220,6 +220,24 @@ export function useApi() {
     });
   }, []);
 
+  const getBlacklist = useCallback(() => {
+    return request<string[]>('/api/blacklist');
+  }, []);
+
+  const addToBlacklist = useCallback((symbol: string) => {
+    return request<void>('/api/blacklist', {
+      method: 'POST',
+      body: JSON.stringify({ symbol }),
+    });
+  }, []);
+
+  const removeFromBlacklist = useCallback((symbol: string) => {
+    return request<void>('/api/blacklist', {
+      method: 'DELETE',
+      body: JSON.stringify({ symbol }),
+    });
+  }, []);
+
   const logout = useCallback(() => {
     clearToken();
     _setToken(null);
@@ -256,5 +274,8 @@ export function useApi() {
     getSpotOpportunities,
     spotManualOpen,
     spotManualClose,
+    getBlacklist,
+    addToBlacklist,
+    removeFromBlacklist,
   };
 }

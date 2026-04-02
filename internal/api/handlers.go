@@ -1987,6 +1987,50 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
+// handleBlacklist manages the perp-perp coin blacklist.
+func (s *Server) handleBlacklist(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		list, err := s.db.GetBlacklist()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, Response{Error: fmt.Sprintf("failed to get blacklist: %v", err)})
+			return
+		}
+		if list == nil {
+			list = []string{}
+		}
+		writeJSON(w, http.StatusOK, Response{OK: true, Data: list})
+	case http.MethodPost:
+		var req struct {
+			Symbol string `json:"symbol"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Symbol == "" {
+			writeJSON(w, http.StatusBadRequest, Response{Error: "symbol required"})
+			return
+		}
+		if err := s.db.AddToBlacklist(req.Symbol); err != nil {
+			writeJSON(w, http.StatusInternalServerError, Response{Error: fmt.Sprintf("failed to add to blacklist: %v", err)})
+			return
+		}
+		writeJSON(w, http.StatusOK, Response{OK: true})
+	case http.MethodDelete:
+		var req struct {
+			Symbol string `json:"symbol"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Symbol == "" {
+			writeJSON(w, http.StatusBadRequest, Response{Error: "symbol required"})
+			return
+		}
+		if err := s.db.RemoveFromBlacklist(req.Symbol); err != nil {
+			writeJSON(w, http.StatusInternalServerError, Response{Error: fmt.Sprintf("failed to remove from blacklist: %v", err)})
+			return
+		}
+		writeJSON(w, http.StatusOK, Response{OK: true})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 // workingDir returns the current working directory.
 func workingDir() string {
 	dir, err := os.Getwd()

@@ -10,6 +10,8 @@ interface OpportunitiesProps {
   spotOpportunities?: SpotOpportunity[];
   onOpen?: (symbol: string, longExchange: string, shortExchange: string, force?: boolean) => Promise<void>;
   onSpotOpen?: (symbol: string, exchange: string, direction: string) => Promise<void>;
+  blacklist?: string[];
+  onBlacklistToggle?: (symbol: string) => Promise<void>;
 }
 
 function scoreColor(score: number): string {
@@ -42,7 +44,7 @@ function formatTimestamp(ts?: string): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunities = [], onOpen, onSpotOpen }) => {
+const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunities = [], onOpen, onSpotOpen, blacklist = [], onBlacklistToggle }) => {
   const { t } = useLocale();
   const [tab, setTab] = useState<Tab>('perp');
   const [openingOpp, setOpeningOpp] = useState<Opportunity | null>(null);
@@ -136,7 +138,12 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
               {sorted.map((opp, i) => (
                 <tr key={`${opp.symbol}-${opp.long_exchange}-${opp.short_exchange}`} className={`text-gray-100 ${scoreColor(opp.score)}`}>
                   <td className="py-2 font-mono text-gray-500">{i + 1}</td>
-                  <td className="py-2 font-mono">{opp.symbol}</td>
+                  <td className="py-2 font-mono">
+                    {opp.symbol}
+                    {blacklist.includes(opp.symbol) && (
+                      <span className="ml-1.5 text-xs text-yellow-500" title={t('opp.blocked')}>BAN</span>
+                    )}
+                  </td>
                   <td className="py-2 text-green-400"><ExchangeLink exchange={opp.long_exchange} symbol={opp.symbol} /></td>
                   <td className="py-2 text-red-400"><ExchangeLink exchange={opp.short_exchange} symbol={opp.symbol} /></td>
                   <td className="py-2 text-right font-mono text-gray-400">{opp.long_rate.toFixed(2)}</td>
@@ -146,7 +153,20 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
                   <td className="py-2 text-right font-mono text-gray-400 text-xs">{formatFundingCountdown(opp.next_funding)}</td>
                   <td className="py-2 text-right font-mono">{opp.oi_rank}</td>
                   <td className="py-2 text-right font-mono text-gray-500 text-xs">{formatTimestamp(opp.timestamp)}</td>
-                  <td className="px-2 py-1">
+                  <td className="px-2 py-1 whitespace-nowrap">
+                    {onBlacklistToggle && (
+                      <button
+                        onClick={() => onBlacklistToggle(opp.symbol)}
+                        className={`px-2 py-0.5 text-xs rounded mr-1 ${
+                          blacklist.includes(opp.symbol)
+                            ? 'bg-yellow-600/20 text-yellow-400 hover:bg-yellow-600/40'
+                            : 'bg-gray-600/20 text-gray-400 hover:bg-gray-600/40'
+                        }`}
+                        title={blacklist.includes(opp.symbol) ? t('opp.unblock') : t('opp.block')}
+                      >
+                        {blacklist.includes(opp.symbol) ? t('opp.unblock') : t('opp.block')}
+                      </button>
+                    )}
                     {onOpen && (
                       <button onClick={() => { setOpeningOpp(opp); setOpenError(null); }} disabled={opening}
                         className="px-2 py-0.5 text-xs bg-green-600/20 text-green-400 rounded hover:bg-green-600/40 disabled:opacity-50">
