@@ -1295,35 +1295,90 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
   // =========================================================================
   // Tab: Spot-Futures Discovery
   // =========================================================================
-  const renderSfDiscoveryTab = () => (
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-      <NumberField
-        label={t('cfg.sf.scanInterval')}
-        desc={t('cfg.sf.scanIntervalDesc')}
-        value={getByPath(config, ['spot_futures', 'scan_interval_min'])}
-        unit="min"
-        onChange={(v) => handleChange(['spot_futures', 'scan_interval_min'], v)}
-      />
-      <NumberField
-        label={t('cfg.sf.persistenceScans')}
-        desc={t('cfg.sf.persistenceScansDesc')}
-        value={getByPath(config, ['spot_futures', 'persistence_scans'])}
-        onChange={(v) => handleChange(['spot_futures', 'persistence_scans'], v)}
-      />
-      <NumberField
-        label={t('cfg.sf.minNetYield')}
-        desc={t('cfg.sf.minNetYieldDesc')}
-        value={getByPath(config, ['spot_futures', 'min_net_yield_apr'])}
-        onChange={(v) => handleChange(['spot_futures', 'min_net_yield_apr'], v)}
-      />
-      <NumberField
-        label={t('cfg.sf.maxBorrowApr')}
-        desc={t('cfg.sf.maxBorrowAprDesc')}
-        value={getByPath(config, ['spot_futures', 'max_borrow_apr'])}
-        onChange={(v) => handleChange(['spot_futures', 'max_borrow_apr'], v)}
-      />
-    </div>
-  );
+  const renderSfDiscoveryTab = () => {
+    const sfNativeScannerEnabled = getByPath(config, ['spot_futures', 'native_scanner_enabled']) === true;
+    const sfEnableBasisGate = getByPath(config, ['spot_futures', 'enable_basis_gate']) === true;
+
+    return (
+      <div className="space-y-4">
+        {/* Native Scanner toggle */}
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.sf.nativeScannerEnabled')}</label>
+            <Tooltip text={t('cfg.sf.nativeScannerEnabledDesc')} />
+          </div>
+          <div className="flex items-center gap-3">
+            <ToggleSwitch
+              on={sfNativeScannerEnabled}
+              onChange={(v) => handleBoolChange(['spot_futures', 'native_scanner_enabled'], v)}
+            />
+            <span className={`text-sm font-semibold ${sfNativeScannerEnabled ? 'text-green-400' : 'text-red-400'}`}>
+              {sfNativeScannerEnabled ? 'ON' : 'OFF'}
+            </span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <NumberField
+            label={t('cfg.sf.scanInterval')}
+            desc={t('cfg.sf.scanIntervalDesc')}
+            value={getByPath(config, ['spot_futures', 'scan_interval_min'])}
+            unit="min"
+            onChange={(v) => handleChange(['spot_futures', 'scan_interval_min'], v)}
+          />
+          <NumberField
+            label={t('cfg.sf.persistenceScans')}
+            desc={t('cfg.sf.persistenceScansDesc')}
+            value={getByPath(config, ['spot_futures', 'persistence_scans'])}
+            onChange={(v) => handleChange(['spot_futures', 'persistence_scans'], v)}
+          />
+          <NumberField
+            label={t('cfg.sf.minNetYield')}
+            desc={t('cfg.sf.minNetYieldDesc')}
+            value={getByPath(config, ['spot_futures', 'min_net_yield_apr'])}
+            onChange={(v) => handleChange(['spot_futures', 'min_net_yield_apr'], v)}
+          />
+          <NumberField
+            label={t('cfg.sf.maxBorrowApr')}
+            desc={t('cfg.sf.maxBorrowAprDesc')}
+            value={getByPath(config, ['spot_futures', 'max_borrow_apr'])}
+            onChange={(v) => handleChange(['spot_futures', 'max_borrow_apr'], v)}
+          />
+        </div>
+
+        {/* Entry Gates section */}
+        <div className="border-t border-gray-800 pt-4 mt-4">
+          <h4 className="text-sm font-semibold text-gray-400 mb-3">Entry Gates</h4>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+              <div className="flex items-center gap-2 mb-2">
+                <label className="text-sm font-medium">{t('cfg.sf.enableBasisGate')}</label>
+                <Tooltip text={t('cfg.sf.enableBasisGateDesc')} />
+              </div>
+              <div className="flex items-center gap-3">
+                <ToggleSwitch
+                  on={sfEnableBasisGate}
+                  onChange={(v) => handleBoolChange(['spot_futures', 'enable_basis_gate'], v)}
+                />
+                <span className={`text-sm font-semibold ${sfEnableBasisGate ? 'text-green-400' : 'text-red-400'}`}>
+                  {sfEnableBasisGate ? 'ON' : 'OFF'}
+                </span>
+              </div>
+            </div>
+            <div className={!sfEnableBasisGate ? 'opacity-50' : ''}>
+              <NumberField
+                label={t('cfg.sf.maxBasisPct')}
+                desc={t('cfg.sf.maxBasisPctDesc')}
+                value={getByPath(config, ['spot_futures', 'max_basis_pct'])}
+                unit="%"
+                onChange={(v) => handleChange(['spot_futures', 'max_basis_pct'], v)}
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   // =========================================================================
   // Tab: Spot-Futures Exit & Risk
@@ -1331,6 +1386,9 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
   const renderSfExitTab = () => {
     const sfProfitTransfer = getByPath(config, ['spot_futures', 'profit_transfer_enabled']) === true;
     const sfBorrowSpikeEnabled = getByPath(config, ['spot_futures', 'enable_borrow_spike_detection']) === true;
+    const sfEnableMinHold = getByPath(config, ['spot_futures', 'enable_min_hold']) === true;
+    const sfEnableSettlementGuard = getByPath(config, ['spot_futures', 'enable_settlement_guard']) === true;
+    const sfEnableExitSpreadGate = getByPath(config, ['spot_futures', 'enable_exit_spread_gate']) === true;
 
     return (
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1433,6 +1491,89 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
               {sfProfitTransfer ? 'ON' : 'OFF'}
             </span>
           </div>
+        </div>
+
+        {/* Exit Guards section */}
+        <div className="col-span-1 sm:col-span-2 border-t border-gray-800 pt-4 mt-2">
+          <h4 className="text-sm font-semibold text-gray-400 mb-3">Exit Guards</h4>
+        </div>
+
+        {/* Min Hold Gate */}
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.sf.enableMinHold')}</label>
+            <Tooltip text={t('cfg.sf.enableMinHoldDesc')} />
+          </div>
+          <div className="flex items-center gap-3">
+            <ToggleSwitch
+              on={sfEnableMinHold}
+              onChange={(v) => handleBoolChange(['spot_futures', 'enable_min_hold'], v)}
+            />
+            <span className={`text-sm font-semibold ${sfEnableMinHold ? 'text-green-400' : 'text-red-400'}`}>
+              {sfEnableMinHold ? 'ON' : 'OFF'}
+            </span>
+          </div>
+        </div>
+        <div className={!sfEnableMinHold ? 'opacity-50' : ''}>
+          <NumberField
+            label={t('cfg.sf.minHoldHours')}
+            desc={t('cfg.sf.minHoldHoursDesc')}
+            value={getByPath(config, ['spot_futures', 'min_hold_hours'])}
+            unit="h"
+            onChange={(v) => handleChange(['spot_futures', 'min_hold_hours'], v)}
+          />
+        </div>
+
+        {/* Settlement Window Guard */}
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.sf.enableSettlementGuard')}</label>
+            <Tooltip text={t('cfg.sf.enableSettlementGuardDesc')} />
+          </div>
+          <div className="flex items-center gap-3">
+            <ToggleSwitch
+              on={sfEnableSettlementGuard}
+              onChange={(v) => handleBoolChange(['spot_futures', 'enable_settlement_guard'], v)}
+            />
+            <span className={`text-sm font-semibold ${sfEnableSettlementGuard ? 'text-green-400' : 'text-red-400'}`}>
+              {sfEnableSettlementGuard ? 'ON' : 'OFF'}
+            </span>
+          </div>
+        </div>
+        <div className={!sfEnableSettlementGuard ? 'opacity-50' : ''}>
+          <NumberField
+            label={t('cfg.sf.settlementWindowMin')}
+            desc={t('cfg.sf.settlementWindowMinDesc')}
+            value={getByPath(config, ['spot_futures', 'settlement_window_min'])}
+            unit="min"
+            onChange={(v) => handleChange(['spot_futures', 'settlement_window_min'], v)}
+          />
+        </div>
+
+        {/* Exit Spread Gate */}
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.sf.enableExitSpreadGate')}</label>
+            <Tooltip text={t('cfg.sf.enableExitSpreadGateDesc')} />
+          </div>
+          <div className="flex items-center gap-3">
+            <ToggleSwitch
+              on={sfEnableExitSpreadGate}
+              onChange={(v) => handleBoolChange(['spot_futures', 'enable_exit_spread_gate'], v)}
+            />
+            <span className={`text-sm font-semibold ${sfEnableExitSpreadGate ? 'text-green-400' : 'text-red-400'}`}>
+              {sfEnableExitSpreadGate ? 'ON' : 'OFF'}
+            </span>
+          </div>
+        </div>
+        <div className={!sfEnableExitSpreadGate ? 'opacity-50' : ''}>
+          <NumberField
+            label={t('cfg.sf.exitSpreadPct')}
+            desc={t('cfg.sf.exitSpreadPctDesc')}
+            value={getByPath(config, ['spot_futures', 'exit_spread_pct'])}
+            unit="%"
+            onChange={(v) => handleChange(['spot_futures', 'exit_spread_pct'], v)}
+          />
         </div>
       </div>
     );

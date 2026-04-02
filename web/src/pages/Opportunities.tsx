@@ -199,6 +199,15 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
               <span className="inline-block w-2 h-2 rounded-full bg-gray-600 mr-1.5" />
               {spotOpportunities.length - spotPassed.length} {t('spot.filtered')}
             </span>
+            {spotOpportunities.length > 0 && (
+              <span className="text-xs text-gray-500">
+                Source: {spotOpportunities[0].source === 'native'
+                  ? t('spot.sourceNative')
+                  : spotOpportunities[0].source === 'coinglass'
+                    ? t('spot.sourceCoinGlass')
+                    : t('spot.sourceFallback')}
+              </span>
+            )}
           </div>
 
           {spotError && (
