@@ -71,6 +71,9 @@ type Engine struct {
 	// Telegram notifier for critical event alerts (SL, emergency close, API errors).
 	telegram *notify.TelegramNotifier
 
+	// Rolling window loss limiter -- independent from L0-L5 risk tiers (D-08).
+	lossLimiter *risk.LossLimitChecker
+
 	// Per-exchange consecutive API error counter.
 	apiErrMu     sync.Mutex
 	apiErrCounts map[string]int // exchange name -> consecutive failure count
@@ -131,6 +134,11 @@ func NewEngine(
 // SetTelegram injects the shared Telegram notifier for perp-perp alerts.
 func (e *Engine) SetTelegram(tg *notify.TelegramNotifier) {
 	e.telegram = tg
+}
+
+// SetLossLimiter injects the loss limit checker for pre-entry gating.
+func (e *Engine) SetLossLimiter(ll *risk.LossLimitChecker) {
+	e.lossLimiter = ll
 }
 
 // recordAPIError increments the consecutive error counter for an exchange.
@@ -1843,6 +1851,24 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 	e.log.Info("executeArbitrage: acquiring capacity lock...")
 	e.capacityMu.Lock()
 	e.log.Info("executeArbitrage: capacity lock acquired")
+
+	// Loss limit pre-entry gate (per D-07: halt new entries only, existing positions continue)
+	if e.lossLimiter != nil && e.cfg.EnableLossLimits {
+		blocked, status := e.lossLimiter.CheckLimits()
+		if blocked {
+			e.log.Warn("loss limit breached (%s): daily=%.2f/%.2f weekly=%.2f/%.2f -- halting new entries",
+				status.BreachType, status.DailyLoss, status.DailyLimit,
+				status.WeeklyLoss, status.WeeklyLimit)
+			e.api.BroadcastLossLimits(status)
+			if e.cfg.EnablePerpTelegram {
+				e.telegram.NotifyLossLimitBreached(status.BreachType,
+					status.DailyLoss, status.DailyLimit,
+					status.WeeklyLoss, status.WeeklyLimit)
+			}
+			e.capacityMu.Unlock()
+			return
+		}
+	}
 
 	active, err := e.db.GetActivePositions()
 	if err != nil {

@@ -738,6 +738,9 @@ marketFallback:
 		if err := e.db.UpdateStats(realizedPnL, won); err != nil {
 			e.log.Error("failed to update stats: %v", err)
 		}
+		if e.lossLimiter != nil {
+			e.lossLimiter.RecordClosedPnL(pos.ID, realizedPnL, pos.Symbol, time.Now().UTC())
+		}
 
 		e.log.Info("position %s depth-exit closed: pnl=%.4f (long=%.4f short=%.4f funding=%.4f entryFees=%.4f)",
 			pos.ID, realizedPnL, longPnL, shortPnL, pos.FundingCollected, pos.EntryFees)
@@ -1558,6 +1561,9 @@ func (e *Engine) closePositionWithMode(pos *models.ArbitragePosition, emergency 
 	won := realizedPnL > 0
 	if err := e.db.UpdateStats(realizedPnL, won); err != nil {
 		e.log.Error("failed to update stats: %v", err)
+	}
+	if e.lossLimiter != nil {
+		e.lossLimiter.RecordClosedPnL(pos.ID, realizedPnL, pos.Symbol, time.Now().UTC())
 	}
 	e.releasePerpPosition(pos.ID)
 

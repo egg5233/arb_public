@@ -224,6 +224,11 @@ func (s *Server) BroadcastAlert(alert interface{}) {
 	s.hub.Broadcast("alert", alert)
 }
 
+// BroadcastLossLimits sends loss limit status to all WebSocket clients.
+func (s *Server) BroadcastLossLimits(status interface{}) {
+	s.hub.Broadcast("loss_limits", status)
+}
+
 func (s *Server) SetExchangeScorer(scorer *risk.ExchangeScorer) {
 	s.scorer = scorer
 }

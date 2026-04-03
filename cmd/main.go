@@ -179,6 +179,10 @@ func main() {
 	tg := notify.NewTelegram(cfg.TelegramBotToken, cfg.TelegramChatID)
 	eng.SetTelegram(tg)
 
+	// Create and inject loss limit checker for pre-entry gating.
+	lossLimiter := risk.NewLossLimitChecker(db, cfg, log, tg)
+	eng.SetLossLimiter(lossLimiter)
+
 	// Ensure all exchanges are in cross-margin one-way mode.
 	for name, exch := range exchanges {
 		if err := exch.EnsureOneWayMode(); err != nil {
