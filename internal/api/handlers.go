@@ -346,6 +346,15 @@ type configSpotFuturesResponse struct {
 	ProfitTransferEnabled bool    `json:"profit_transfer_enabled"`
 	CapitalSeparateUSDT   float64 `json:"capital_separate_usdt"`
 	CapitalUnifiedUSDT    float64 `json:"capital_unified_usdt"`
+	NativeScannerEnabled  bool    `json:"native_scanner_enabled"`
+	EnableMinHold         bool    `json:"enable_min_hold"`
+	MinHoldHours          int     `json:"min_hold_hours"`
+	EnableSettlementGuard bool    `json:"enable_settlement_guard"`
+	SettlementWindowMin   int     `json:"settlement_window_min"`
+	EnableBasisGate       bool    `json:"enable_basis_gate"`
+	MaxBasisPct           float64 `json:"max_basis_pct"`
+	EnableExitSpreadGate  bool    `json:"enable_exit_spread_gate"`
+	ExitSpreadPct         float64 `json:"exit_spread_pct"`
 }
 
 type configExchangeResponse struct {
@@ -627,6 +636,15 @@ func (s *Server) buildConfigResponse() configResponse {
 		ProfitTransferEnabled:      s.cfg.SpotFuturesProfitTransferEnabled,
 		CapitalSeparateUSDT: s.cfg.SpotFuturesCapitalSeparate,
 		CapitalUnifiedUSDT:  s.cfg.SpotFuturesCapitalUnified,
+		NativeScannerEnabled:  s.cfg.SpotFuturesNativeScannerEnabled,
+		EnableMinHold:         s.cfg.SpotFuturesEnableMinHold,
+		MinHoldHours:          s.cfg.SpotFuturesMinHoldHours,
+		EnableSettlementGuard: s.cfg.SpotFuturesEnableSettlementGuard,
+		SettlementWindowMin:   s.cfg.SpotFuturesSettlementWindowMin,
+		EnableBasisGate:       s.cfg.SpotFuturesEnableBasisGate,
+		MaxBasisPct:           s.cfg.SpotFuturesMaxBasisPct,
+		EnableExitSpreadGate:  s.cfg.SpotFuturesEnableExitSpreadGate,
+		ExitSpreadPct:         s.cfg.SpotFuturesExitSpreadPct,
 	}
 	return resp
 }
@@ -694,6 +712,15 @@ type configUpdate struct {
 	AI          *aiUpdate                  `json:"ai"`
 	Exchanges   map[string]*exchangeUpdate `json:"exchanges"`
 	SpotFutures *spotFuturesUpdate         `json:"spot_futures"`
+	Safety      *safetyUpdate              `json:"safety"`
+}
+
+type safetyUpdate struct {
+	EnableLossLimits    *bool    `json:"enable_loss_limits"`
+	DailyLossLimitUSDT  *float64 `json:"daily_loss_limit_usdt"`
+	WeeklyLossLimitUSDT *float64 `json:"weekly_loss_limit_usdt"`
+	EnablePerpTelegram  *bool    `json:"enable_perp_telegram"`
+	TelegramCooldownSec *int     `json:"telegram_cooldown_sec"`
 }
 
 type spotFuturesUpdate struct {
@@ -722,6 +749,15 @@ type spotFuturesUpdate struct {
 	ProfitTransferEnabled *bool    `json:"profit_transfer_enabled"`
 	CapitalSeparateUSDT   *float64 `json:"capital_separate_usdt"`
 	CapitalUnifiedUSDT    *float64 `json:"capital_unified_usdt"`
+	NativeScannerEnabled  *bool    `json:"native_scanner_enabled"`
+	EnableMinHold         *bool    `json:"enable_min_hold"`
+	MinHoldHours          *int     `json:"min_hold_hours"`
+	EnableSettlementGuard *bool    `json:"enable_settlement_guard"`
+	SettlementWindowMin   *int     `json:"settlement_window_min"`
+	EnableBasisGate       *bool    `json:"enable_basis_gate"`
+	MaxBasisPct           *float64 `json:"max_basis_pct"`
+	EnableExitSpreadGate  *bool    `json:"enable_exit_spread_gate"`
+	ExitSpreadPct         *float64 `json:"exit_spread_pct"`
 }
 
 type exchangeUpdate struct {
@@ -1294,6 +1330,51 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		if sf.CapitalUnifiedUSDT != nil && *sf.CapitalUnifiedUSDT > 0 {
 			s.cfg.SpotFuturesCapitalUnified = *sf.CapitalUnifiedUSDT
 		}
+		if sf.NativeScannerEnabled != nil {
+			s.cfg.SpotFuturesNativeScannerEnabled = *sf.NativeScannerEnabled
+		}
+		if sf.EnableMinHold != nil {
+			s.cfg.SpotFuturesEnableMinHold = *sf.EnableMinHold
+		}
+		if sf.MinHoldHours != nil && *sf.MinHoldHours >= 0 {
+			s.cfg.SpotFuturesMinHoldHours = *sf.MinHoldHours
+		}
+		if sf.EnableSettlementGuard != nil {
+			s.cfg.SpotFuturesEnableSettlementGuard = *sf.EnableSettlementGuard
+		}
+		if sf.SettlementWindowMin != nil && *sf.SettlementWindowMin >= 0 {
+			s.cfg.SpotFuturesSettlementWindowMin = *sf.SettlementWindowMin
+		}
+		if sf.EnableBasisGate != nil {
+			s.cfg.SpotFuturesEnableBasisGate = *sf.EnableBasisGate
+		}
+		if sf.MaxBasisPct != nil && *sf.MaxBasisPct >= 0 {
+			s.cfg.SpotFuturesMaxBasisPct = *sf.MaxBasisPct
+		}
+		if sf.EnableExitSpreadGate != nil {
+			s.cfg.SpotFuturesEnableExitSpreadGate = *sf.EnableExitSpreadGate
+		}
+		if sf.ExitSpreadPct != nil && *sf.ExitSpreadPct >= 0 {
+			s.cfg.SpotFuturesExitSpreadPct = *sf.ExitSpreadPct
+		}
+	}
+
+	if sa := upd.Safety; sa != nil {
+		if sa.EnableLossLimits != nil {
+			s.cfg.EnableLossLimits = *sa.EnableLossLimits
+		}
+		if sa.DailyLossLimitUSDT != nil && *sa.DailyLossLimitUSDT > 0 {
+			s.cfg.DailyLossLimitUSDT = *sa.DailyLossLimitUSDT
+		}
+		if sa.WeeklyLossLimitUSDT != nil && *sa.WeeklyLossLimitUSDT > 0 {
+			s.cfg.WeeklyLossLimitUSDT = *sa.WeeklyLossLimitUSDT
+		}
+		if sa.EnablePerpTelegram != nil {
+			s.cfg.EnablePerpTelegram = *sa.EnablePerpTelegram
+		}
+		if sa.TelegramCooldownSec != nil && *sa.TelegramCooldownSec >= 0 {
+			s.cfg.TelegramCooldownSec = *sa.TelegramCooldownSec
+		}
 	}
 
 	// Persist config fields to Redis HASH (arb:config) using flat keys.
@@ -1398,7 +1479,23 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		fields["spot_futures_persistence_scans"] = strconv.Itoa(sf.PersistenceScans)
 		fields["spot_futures_profit_transfer_enabled"] = strconv.FormatBool(sf.ProfitTransferEnabled)
 		fields["spot_futures_capital_unified_usdt"] = strconv.FormatFloat(sf.CapitalUnifiedUSDT, 'f', -1, 64)
+		fields["spot_futures_native_scanner_enabled"] = strconv.FormatBool(sf.NativeScannerEnabled)
+		fields["spot_futures_enable_min_hold"] = strconv.FormatBool(sf.EnableMinHold)
+		fields["spot_futures_min_hold_hours"] = strconv.Itoa(sf.MinHoldHours)
+		fields["spot_futures_enable_settlement_guard"] = strconv.FormatBool(sf.EnableSettlementGuard)
+		fields["spot_futures_settlement_window_min"] = strconv.Itoa(sf.SettlementWindowMin)
+		fields["spot_futures_enable_basis_gate"] = strconv.FormatBool(sf.EnableBasisGate)
+		fields["spot_futures_max_basis_pct"] = strconv.FormatFloat(sf.MaxBasisPct, 'f', -1, 64)
+		fields["spot_futures_enable_exit_spread_gate"] = strconv.FormatBool(sf.EnableExitSpreadGate)
+		fields["spot_futures_exit_spread_pct"] = strconv.FormatFloat(sf.ExitSpreadPct, 'f', -1, 64)
 	}
+
+	// Safety fields
+	fields["enable_loss_limits"] = strconv.FormatBool(snapshot.Safety.EnableLossLimits)
+	fields["daily_loss_limit_usdt"] = strconv.FormatFloat(snapshot.Safety.DailyLossLimitUSDT, 'f', -1, 64)
+	fields["weekly_loss_limit_usdt"] = strconv.FormatFloat(snapshot.Safety.WeeklyLossLimitUSDT, 'f', -1, 64)
+	fields["enable_perp_telegram"] = strconv.FormatBool(snapshot.Safety.EnablePerpTelegram)
+	fields["telegram_cooldown_sec"] = strconv.Itoa(snapshot.Safety.TelegramCooldownSec)
 
 	if err := s.db.SetConfigFields(fields); err != nil {
 		s.log.Error("save config to redis: %v", err)
