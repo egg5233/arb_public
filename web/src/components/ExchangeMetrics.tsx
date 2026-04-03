@@ -50,8 +50,8 @@ const ExchangeMetrics: FC<ExchangeMetricsProps> = ({ metrics }) => {
                       </div>
                     </div>
                   </td>
-                  <td className="py-2 text-right font-mono text-gray-300">{(m.apr * 100).toFixed(1)}%</td>
-                  <td className="py-2 text-right font-mono text-gray-300">{(m.win_rate * 100).toFixed(1)}%</td>
+                  <td className="py-2 text-right font-mono text-gray-300">{m.apr.toFixed(1)}%</td>
+                  <td className="py-2 text-right font-mono text-gray-300">{m.win_rate.toFixed(1)}%</td>
                   <td className="py-2 text-right font-mono text-gray-400">{m.trade_count}</td>
                   <td className="py-2 text-right font-mono text-gray-400">{m.avg_slippage.toFixed(2)} bps</td>
                 </tr>

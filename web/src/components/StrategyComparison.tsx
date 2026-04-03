@@ -109,10 +109,10 @@ const StrategyComparison: FC<StrategyComparisonProps> = ({ strategies }) => {
                 {t('analytics.totalPnl')}: <span className={s.total_pnl >= 0 ? 'text-green-400' : 'text-red-400'}>${s.total_pnl.toFixed(2)}</span>
               </div>
               <div className="text-gray-400 text-xs">
-                {t('analytics.winRate')}: <span className="text-gray-100">{(s.win_rate * 100).toFixed(1)}%</span>
+                {t('analytics.winRate')}: <span className="text-gray-100">{s.win_rate.toFixed(1)}%</span>
               </div>
               <div className="text-gray-400 text-xs">
-                {t('analytics.apr')}: <span className="text-gray-100">{(s.apr * 100).toFixed(1)}%</span>
+                {t('analytics.apr')}: <span className="text-gray-100">{s.apr.toFixed(1)}%</span>
               </div>
               <div className="text-gray-400 text-xs">
                 {t('analytics.avgHoldTime')}: <span className="text-gray-100">{formatHoldTime(s.avg_hold_hours)}</span>

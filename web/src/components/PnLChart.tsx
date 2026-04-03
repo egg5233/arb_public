@@ -69,11 +69,19 @@ const PnLChart: FC<PnLChartProps> = ({ data }) => {
     );
   }
 
+  // Compute running cumulative PnL from per-snapshot values
+  const sorted = [...data].sort((a, b) => a.timestamp - b.timestamp);
+  let runningTotal = 0;
+  const cumulativeData = sorted.map((snap) => {
+    runningTotal += snap.cumulative_pnl;
+    return { ...snap, cumulative_pnl: runningTotal };
+  });
+
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
       <h3 className="text-base font-bold text-gray-100 mb-4">{t('analytics.cumulativePnl')}</h3>
       <ResponsiveContainer width="100%" height={400}>
-        <LineChart data={data}>
+        <LineChart data={cumulativeData}>
           <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
           <XAxis
             dataKey="timestamp"

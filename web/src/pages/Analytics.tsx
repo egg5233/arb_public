@@ -144,7 +144,7 @@ const Analytics: FC<AnalyticsProps> = ({ getAnalyticsPnL, getAnalyticsSummary })
         </div>
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
           <div className="text-xs text-gray-400 mb-1">{t('analytics.apr')}</div>
-          <div className="text-lg font-bold text-gray-100">{(avgApr * 100).toFixed(1)}%</div>
+          <div className="text-lg font-bold text-gray-100">{avgApr.toFixed(1)}%</div>
         </div>
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
           <div className="text-xs text-gray-400 mb-1">{t('analytics.winRate')}</div>
