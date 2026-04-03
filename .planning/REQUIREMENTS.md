@@ -26,12 +26,12 @@ Requirements for Milestone 1. Each maps to roadmap phases.
 
 ### Performance Analytics
 
-- [ ] **AN-01**: Per-position PnL decomposition: entry fees, funding earned, exit fees, basis gain/loss, net PnL
+- [x] **AN-01**: Per-position PnL decomposition: entry fees, funding earned, exit fees, basis gain/loss, net PnL
 - [ ] **AN-02**: Strategy-level performance comparison: perp-perp vs spot-futures returns over configurable time window
 - [ ] **AN-03**: Exchange-level metrics: profit, slippage, fill rate, error rate per exchange
-- [ ] **AN-04**: Cumulative PnL chart over time with SQLite time-series storage
-- [ ] **AN-05**: APR calculation for perp-perp positions (funding collected vs capital deployed vs hold time)
-- [ ] **AN-06**: Win rate and average win/loss segmented by strategy and exchange
+- [x] **AN-04**: Cumulative PnL chart over time with SQLite time-series storage
+- [x] **AN-05**: APR calculation for perp-perp positions (funding collected vs capital deployed vs hold time)
+- [x] **AN-06**: Win rate and average win/loss segmented by strategy and exchange
 
 ### Capital Allocation
 
@@ -87,12 +87,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PP-02 | Phase 3 | Dropped (D-05) |
 | PP-03 | Phase 3 | Complete |
 | PP-04 | Phase 4 | Pending |
-| AN-01 | Phase 4 | Pending |
+| AN-01 | Phase 4 | Complete |
 | AN-02 | Phase 4 | Pending |
 | AN-03 | Phase 4 | Pending |
-| AN-04 | Phase 4 | Pending |
-| AN-05 | Phase 4 | Pending |
-| AN-06 | Phase 4 | Pending |
+| AN-04 | Phase 4 | Complete |
+| AN-05 | Phase 4 | Complete |
+| AN-06 | Phase 4 | Complete |
 | CA-01 | Phase 5 | Pending |
 | CA-02 | Phase 5 | Pending |
 | CA-03 | Phase 5 | Pending |
