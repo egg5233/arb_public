@@ -778,11 +778,12 @@ func (a *Adapter) getClassicFuturesBalance() (*exchange.Balance, error) {
 	}
 
 	return &exchange.Balance{
-		Total:       total,
-		Available:   available,
-		Frozen:      total - available,
-		Currency:    "USDT",
-		MarginRatio: marginRatio,
+		Total:          total,
+		Available:      available,
+		Frozen:         total - available,
+		Currency:       "USDT",
+		MarginRatio:    marginRatio,
+		MaxTransferOut: available, // Gate.io: available per docs (per-position available for withdrawal)
 	}, nil
 }
 

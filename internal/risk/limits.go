@@ -9,8 +9,6 @@ const (
 	// hardMaxLeverage is the absolute leverage cap regardless of configuration.
 	hardMaxLeverage = 5
 
-	// minCapitalFloor is the minimum USDT required per leg.
-	minCapitalFloor = 10.0
 )
 
 // MaxExposurePerExchange returns the maximum capital that should be deployed
@@ -19,12 +17,6 @@ func MaxExposurePerExchange(totalCapital float64) float64 {
 	return totalCapital * maxExposurePct
 }
 
-// MinCapitalPerLeg returns the minimum USDT required per position leg.
-// There is a hard floor of 10 USDT regardless of leverage.
-func MinCapitalPerLeg(leverage int) float64 {
-	_ = leverage // reserved for future scaling; floor applies regardless
-	return minCapitalFloor
-}
 
 // MaxLeverage returns the hard-capped maximum leverage (5x), regardless of
 // what the configuration file specifies.

@@ -177,16 +177,6 @@ func (e *Engine) checkExitsV2() {
 				e.log.Info("exit check: %s — %s (reversal %d, exiting)", pos.ID, reason, pos.ReversalCount+1)
 				e.spawnExitGoroutine(pos, reason)
 				continue
-			} else if pos.ReversalCount > 0 && e.cfg.ReversalResetOnRecover {
-				// Spread recovered — reset reversal counter so tolerance resets.
-				pos.ReversalCount = 0
-				if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
-					fresh.ReversalCount = 0
-					return true
-				}); err != nil {
-					e.log.Error("failed to reset reversal count for %s: %v", pos.ID, err)
-				}
-				e.log.Info("exit check: %s — spread recovered, reversal count reset", pos.ID)
 			}
 		}
 

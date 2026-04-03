@@ -729,12 +729,33 @@ func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 					available = total - frozen
 				}
 
+				// Query precise max transferable via dedicated endpoint
+				var maxTransferOut float64
+				if wdData, wdErr := a.client.Get("/api/v5/account/max-withdrawal", map[string]string{"ccy": "USDT"}); wdErr == nil {
+					var wdResp []struct {
+						Ccy   string `json:"ccy"`
+						MaxWd string `json:"maxWd"`
+					}
+					if json.Unmarshal(wdData, &wdResp) == nil {
+						for _, w := range wdResp {
+							if w.Ccy == "USDT" {
+								maxTransferOut, _ = strconv.ParseFloat(w.MaxWd, 64)
+								break
+							}
+						}
+					}
+				}
+				if maxTransferOut <= 0 {
+					maxTransferOut = available // fallback to availEq
+				}
+
 				return &exchange.Balance{
-					Total:       total,
-					Available:   available,
-					Frozen:      frozen,
-					Currency:    "USDT",
-					MarginRatio: marginRatio,
+					Total:          total,
+					Available:      available,
+					Frozen:         frozen,
+					Currency:       "USDT",
+					MarginRatio:    marginRatio,
+					MaxTransferOut: maxTransferOut,
 				}, nil
 			}
 		}

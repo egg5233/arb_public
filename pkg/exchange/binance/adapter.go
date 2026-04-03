@@ -517,11 +517,13 @@ func (b *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 		TotalMarginBalance string `json:"totalMarginBalance"`
 		TotalMaintMargin   string `json:"totalMaintMargin"`
 		AvailableBalance   string `json:"availableBalance"`
-		Assets             []struct {
-			Asset            string `json:"asset"`
-			WalletBalance    string `json:"walletBalance"`
-			MarginBalance    string `json:"marginBalance"`
-			AvailableBalance string `json:"availableBalance"`
+		MaxWithdrawAmount string `json:"maxWithdrawAmount"`
+		Assets            []struct {
+			Asset              string `json:"asset"`
+			WalletBalance      string `json:"walletBalance"`
+			MarginBalance      string `json:"marginBalance"`
+			AvailableBalance   string `json:"availableBalance"`
+			MaxWithdrawAmount  string `json:"maxWithdrawAmount"`
 		} `json:"assets"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -548,12 +550,15 @@ func (b *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 				available = total
 			}
 
+			maxTransferOut, _ := strconv.ParseFloat(asset.MaxWithdrawAmount, 64)
+
 			return &exchange.Balance{
-				Total:       total,
-				Available:   available,
-				Frozen:      total - available,
-				Currency:    "USDT",
-				MarginRatio: marginRatio,
+				Total:          total,
+				Available:      available,
+				Frozen:         total - available,
+				Currency:       "USDT",
+				MarginRatio:    marginRatio,
+				MaxTransferOut: maxTransferOut,
 			}, nil
 		}
 	}

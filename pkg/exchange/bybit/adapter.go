@@ -661,12 +661,27 @@ func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 		available = total - locked
 	}
 
+	// Query precise transferable amount via dedicated endpoint (availableToWithdraw deprecated for UNIFIED since 2025-01-09)
+	var maxTransferOut float64
+	if wdResult, wdErr := a.client.Get("/v5/account/withdrawal", map[string]string{"coinName": "USDT"}); wdErr == nil {
+		var wdResp struct {
+			AvailableWithdrawal string `json:"availableWithdrawal"`
+		}
+		if json.Unmarshal(wdResult, &wdResp) == nil && wdResp.AvailableWithdrawal != "" {
+			maxTransferOut, _ = strconv.ParseFloat(wdResp.AvailableWithdrawal, 64)
+		}
+	}
+	// If dedicated endpoint failed, leave MaxTransferOut=0 so engine uses L4 formula fallback.
+	// Do NOT fallback to 'available' — it may be from deprecated availableToWithdraw (always 0 for UNIFIED)
+	// or from equity-locked which overstates transferable amount.
+
 	return &exchange.Balance{
-		Total:       total,
-		Available:   available,
-		Frozen:      locked,
-		Currency:    "USDT",
-		MarginRatio: marginRatio,
+		Total:          total,
+		Available:      available,
+		Frozen:         locked,
+		Currency:       "USDT",
+		MarginRatio:    marginRatio,
+		MaxTransferOut: maxTransferOut,
 	}, nil
 }
 

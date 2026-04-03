@@ -417,7 +417,6 @@ type configExitResponse struct {
 	DepthTimeoutSec         int  `json:"depth_timeout_sec"`
 	EnableSpreadReversal    bool `json:"enable_spread_reversal"`
 	SpreadReversalTolerance int  `json:"spread_reversal_tolerance"`
-	ReversalResetOnRecover  bool `json:"reversal_reset_on_recover"`
 	ZeroSpreadTolerance     int  `json:"zero_spread_tolerance"`
 }
 
@@ -542,7 +541,6 @@ func (s *Server) buildConfigResponse() configResponse {
 				DepthTimeoutSec:         s.cfg.ExitDepthTimeoutSec,
 				EnableSpreadReversal:    s.cfg.EnableSpreadReversal,
 				SpreadReversalTolerance: s.cfg.SpreadReversalTolerance,
-				ReversalResetOnRecover:  s.cfg.ReversalResetOnRecover,
 				ZeroSpreadTolerance:     s.cfg.ZeroSpreadTolerance,
 			},
 			Rotation: configRotationResponse{
@@ -787,7 +785,6 @@ type exitUpdate struct {
 	DepthTimeoutSec         *int  `json:"depth_timeout_sec"`
 	EnableSpreadReversal    *bool `json:"enable_spread_reversal"`
 	SpreadReversalTolerance *int  `json:"spread_reversal_tolerance"`
-	ReversalResetOnRecover  *bool `json:"reversal_reset_on_recover"`
 	ZeroSpreadTolerance     *int  `json:"zero_spread_tolerance"`
 }
 
@@ -978,9 +975,6 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 			}
 			if x.SpreadReversalTolerance != nil && *x.SpreadReversalTolerance >= 0 {
 				s.cfg.SpreadReversalTolerance = *x.SpreadReversalTolerance
-			}
-			if x.ReversalResetOnRecover != nil {
-				s.cfg.ReversalResetOnRecover = *x.ReversalResetOnRecover
 			}
 			if x.ZeroSpreadTolerance != nil && *x.ZeroSpreadTolerance >= 0 {
 				s.cfg.ZeroSpreadTolerance = *x.ZeroSpreadTolerance
@@ -1336,7 +1330,6 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"exit_depth_timeout_sec":              strconv.Itoa(snapshot.Strategy.Exit.DepthTimeoutSec),
 		"enable_spread_reversal":              strconv.FormatBool(snapshot.Strategy.Exit.EnableSpreadReversal),
 		"spread_reversal_tolerance":           strconv.Itoa(snapshot.Strategy.Exit.SpreadReversalTolerance),
-		"reversal_reset_on_recover":           strconv.FormatBool(snapshot.Strategy.Exit.ReversalResetOnRecover),
 		"zero_spread_tolerance":               strconv.Itoa(snapshot.Strategy.Exit.ZeroSpreadTolerance),
 		"rotation_threshold_bps":              strconv.FormatFloat(snapshot.Strategy.Rotation.ThresholdBPS, 'f', -1, 64),
 		"rotation_cooldown_min":               strconv.Itoa(snapshot.Strategy.Rotation.CooldownMin),
