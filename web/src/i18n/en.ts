@@ -578,6 +578,17 @@ const en = {
   'analytics.trades': 'Trades',
   'analytics.avgSlippage': 'Avg Slippage',
 
+  // History drill-down
+  'hist.entryFees': 'Entry Fees',
+  'hist.exitFees': 'Exit Fees',
+  'hist.funding': 'Funding Earned',
+  'hist.basisGainLoss': 'Basis P/L',
+  'hist.borrowCost': 'Borrow Cost',
+  'hist.slippage': 'Slippage',
+  'hist.netPnl': 'Net PnL',
+  'hist.positionApr': 'APR',
+  'hist.dataUnavailable': 'Detailed breakdown available for positions closed after v0.27.0',
+
   // Config - Analytics
   'cfg.tab.analytics': 'Analytics',
   'cfg.analytics.enableAnalytics': 'Enable Analytics',

@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.27.0] - 2026-04-04 — Performance Analytics
+
+### Added
+- **Analytics page**: Cumulative PnL chart (Recharts), strategy comparison, per-exchange metrics table
+- **PnL decomposition**: Entry fees, exit fees, funding, basis gain/loss, slippage tracked per position
+- **History drill-down**: Click any closed position row to see full PnL breakdown
+- **SQLite time-series**: PnL snapshots stored in SQLite with Redis history backfill on startup
+- **Config toggle**: `enable_analytics` (default OFF) gates all analytics features
+- **APR & win rate**: Annualized return and win rate segmented by strategy and exchange
+- **i18n**: Full English and Traditional Chinese support for all analytics strings
+
 ## [0.26.1] - 2026-04-04
 
 ### Added

@@ -580,6 +580,17 @@ const zhTW: Record<TranslationKey, string> = {
   'analytics.trades': '交易次數',
   'analytics.avgSlippage': '平均滑點',
 
+  // History drill-down
+  'hist.entryFees': '入場手續費',
+  'hist.exitFees': '出場手續費',
+  'hist.funding': '資金費率收入',
+  'hist.basisGainLoss': '基差損益',
+  'hist.borrowCost': '借貸成本',
+  'hist.slippage': '滑點',
+  'hist.netPnl': '淨損益',
+  'hist.positionApr': '年化報酬率',
+  'hist.dataUnavailable': '詳細分解僅適用於 v0.27.0 之後平倉的部位',
+
   // Config - Analytics
   'cfg.tab.analytics': '分析',
   'cfg.analytics.enableAnalytics': '啟用分析',

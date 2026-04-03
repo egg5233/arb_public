@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, Fragment } from 'react';
 import type { FC } from 'react';
 import type { Position } from '../types.ts';
 import { useLocale } from '../i18n/index.ts';
 import { ExchangeLink } from '../utils/tradingUrl.tsx';
+import PnLBreakdown from '../components/PnLBreakdown.tsx';
 
 interface HistoryProps {
   getHistory: (limit: number) => Promise<Position[]>;
@@ -73,7 +74,12 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
           </thead>
           <tbody className="divide-y divide-gray-800">
             {trades.map((tr) => (
-              <tr key={tr.id} className="text-gray-100">
+              <Fragment key={tr.id}>
+              <tr
+                className="text-gray-100 cursor-pointer hover:bg-gray-800/30"
+                aria-expanded={expandedRow === tr.id}
+                onClick={() => setExpandedRow(expandedRow === tr.id ? null : tr.id)}
+              >
                 <td className="py-2 text-gray-400 text-xs">{new Date(tr.created_at).toLocaleString()}</td>
                 <td className="py-2 text-gray-400 text-xs">{new Date(tr.updated_at).toLocaleString()}</td>
                 <td className="py-2 font-mono">{tr.symbol}</td>
@@ -102,10 +108,7 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
                 <td className="py-2 text-right font-mono text-gray-500">
                   {(tr.rotation_count ?? 0) > 0 ? tr.rotation_count : '-'}
                 </td>
-                <td
-                  className="py-2 text-gray-400 text-xs max-w-[200px] cursor-pointer"
-                  onClick={() => setExpandedRow(expandedRow === tr.id ? null : tr.id)}
-                >
+                <td className="py-2 text-gray-400 text-xs max-w-[200px]">
                   {expandedRow === tr.id ? (
                     <span className="whitespace-normal break-words">{tr.exit_reason || '-'}</span>
                   ) : (
@@ -113,6 +116,14 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
                   )}
                 </td>
               </tr>
+              {expandedRow === tr.id && (
+                <tr className="bg-gray-800/50">
+                  <td colSpan={15} className="px-4 py-3">
+                    <PnLBreakdown position={tr} />
+                  </td>
+                </tr>
+              )}
+              </Fragment>
             ))}
             {trades.length === 0 && (
               <tr>
