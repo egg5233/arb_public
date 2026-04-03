@@ -45,6 +45,10 @@ const en = {
   'overview.nextFund': 'Next Fund',
   'overview.recentAlerts': 'Recent Alerts',
   'overview.noAlerts': 'No alerts',
+  'overview.lossLimits': 'Loss Limits',
+  'overview.lossLimitBreached': 'ENTRIES HALTED - Loss limit breached',
+  'overview.daily': '24h',
+  'overview.weekly': '7d',
 
   // Opportunities
   'opp.title': 'Opportunities',
@@ -340,6 +344,19 @@ const en = {
   'cfg.desc.maxPerExchangePct': 'Maximum fraction of the total allocator budget that any single exchange can consume across both strategies.',
   'cfg.desc.reservationTTLSec': 'How long a pending capital reservation stays live before auto-expiring if the trade never commits.',
   'cfg.desc.dryRun': 'When enabled, the bot logs all actions but does not execute any real trades',
+
+  // Config - Safety
+  'cfg.safety.title': 'Safety',
+  'cfg.safety.enableLossLimits': 'Enable Loss Limits',
+  'cfg.safety.enableLossLimitsDesc': 'Halt new entries when rolling loss exceeds threshold',
+  'cfg.safety.dailyLimit': 'Daily Loss Limit (USDT)',
+  'cfg.safety.dailyLimitDesc': 'Maximum net realized loss in rolling 24-hour window',
+  'cfg.safety.weeklyLimit': 'Weekly Loss Limit (USDT)',
+  'cfg.safety.weeklyLimitDesc': 'Maximum net realized loss in rolling 7-day window',
+  'cfg.safety.enablePerpTelegram': 'Perp-Perp Telegram Alerts',
+  'cfg.safety.enablePerpTelegramDesc': 'Send Telegram for SL triggers, emergency closes, API errors',
+  'cfg.safety.telegramCooldown': 'Alert Cooldown (seconds)',
+  'cfg.safety.telegramCooldownDesc': 'Minimum seconds between same-type notifications',
 
   // Config - Strategy Toggles
   'cfg.strategyPerp': 'Perp-Perp',

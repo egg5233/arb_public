@@ -151,6 +151,7 @@ function App() {
             onDiagnose={api.diagnose}
             onResolveSpotPosition={api.spotManualClose}
             spotPositions={ws.spotPositions}
+            lossLimits={ws.lossLimits}
           />
         );
       case 'opportunities':

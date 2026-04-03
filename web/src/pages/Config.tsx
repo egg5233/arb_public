@@ -12,7 +12,7 @@ interface ConfigProps {
 // ---------------------------------------------------------------------------
 // Tab definitions
 // ---------------------------------------------------------------------------
-type Strategy = 'exchanges' | 'perp' | 'spot' | 'risk';
+type Strategy = 'exchanges' | 'perp' | 'spot' | 'risk' | 'safety';
 type PerpTabId = 'fund' | 'schedule' | 'discovery' | 'persist' | 'entry' | 'exit';
 type SpotTabId = 'sf-general' | 'sf-sizing' | 'sf-discovery' | 'sf-exit';
 type RiskTabId = 'risk-margins' | 'risk-liq' | 'risk-alloc';
@@ -1567,8 +1567,56 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
   // =========================================================================
   // Render active tab content
   // =========================================================================
+  const renderSafetyTab = () => (
+    <div className="space-y-4">
+      {/* Loss Limits */}
+      <h4 className="text-sm font-semibold text-gray-400 border-b border-gray-800 pb-2">{t('cfg.safety.enableLossLimits')}</h4>
+      <ToggleField
+        label={t('cfg.safety.enableLossLimits')}
+        desc={t('cfg.safety.enableLossLimitsDesc')}
+        value={getByPath(config, ['safety', 'enable_loss_limits'])}
+        onChange={(v) => handleBoolChange(['safety', 'enable_loss_limits'], v)}
+      />
+      <div className={!getByPath(config, ['safety', 'enable_loss_limits']) ? 'opacity-50 space-y-4' : 'space-y-4'}>
+        <NumberField
+          label={t('cfg.safety.dailyLimit')}
+          desc={t('cfg.safety.dailyLimitDesc')}
+          value={getByPath(config, ['safety', 'daily_loss_limit_usdt']) ?? 100}
+          unit="USDT"
+          onChange={(v) => handleChange(['safety', 'daily_loss_limit_usdt'], v)}
+        />
+        <NumberField
+          label={t('cfg.safety.weeklyLimit')}
+          desc={t('cfg.safety.weeklyLimitDesc')}
+          value={getByPath(config, ['safety', 'weekly_loss_limit_usdt']) ?? 300}
+          unit="USDT"
+          onChange={(v) => handleChange(['safety', 'weekly_loss_limit_usdt'], v)}
+        />
+      </div>
+
+      {/* Telegram */}
+      <h4 className="text-sm font-semibold text-gray-400 border-t border-gray-800 pt-4">{t('cfg.safety.enablePerpTelegram')}</h4>
+      <ToggleField
+        label={t('cfg.safety.enablePerpTelegram')}
+        desc={t('cfg.safety.enablePerpTelegramDesc')}
+        value={getByPath(config, ['safety', 'enable_perp_telegram'])}
+        onChange={(v) => handleBoolChange(['safety', 'enable_perp_telegram'], v)}
+      />
+      <div className={!getByPath(config, ['safety', 'enable_perp_telegram']) ? 'opacity-50 space-y-4' : 'space-y-4'}>
+        <NumberField
+          label={t('cfg.safety.telegramCooldown')}
+          desc={t('cfg.safety.telegramCooldownDesc')}
+          value={getByPath(config, ['safety', 'telegram_cooldown_sec']) ?? 300}
+          unit="sec"
+          onChange={(v) => handleChange(['safety', 'telegram_cooldown_sec'], v)}
+        />
+      </div>
+    </div>
+  );
+
   const renderTabContent = () => {
     if (strategy === 'exchanges') return renderExchangesTab();
+    if (strategy === 'safety') return renderSafetyTab();
     switch (activeTab) {
       case 'fund': return renderFundTab();
       case 'schedule': return renderScheduleTab();
@@ -1638,10 +1686,21 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
         >
           {t('cfg.strategyRisk')}
         </button>
+        <button
+          type="button"
+          onClick={() => setStrategy('safety')}
+          className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all duration-150 ${
+            strategy === 'safety'
+              ? 'bg-emerald-900/60 text-emerald-200 shadow-sm'
+              : 'text-gray-500 hover:text-gray-300'
+          }`}
+        >
+          {t('cfg.safety.title')}
+        </button>
       </div>
 
-      {/* Tab bar (hidden for exchanges — no sub-tabs) */}
-      {strategy !== 'exchanges' && <div
+      {/* Tab bar (hidden for exchanges and safety — no sub-tabs) */}
+      {strategy !== 'exchanges' && strategy !== 'safety' && <div
         ref={tabBarRef}
         className="flex gap-1 overflow-x-auto pb-3 mb-4 scrollbar-none"
         style={{ scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' }}

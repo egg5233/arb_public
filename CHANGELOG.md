@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.26.0] - 2026-04-03
+
+### Added
+- **Perp-perp Telegram notifications** for critical events: SL triggers, L4/L5 emergency closes, 3+ consecutive API errors
+- Per-event-type cooldown (5 min default) prevents notification spam
+- Shared TelegramNotifier instance across both engines
+- **Rolling-window loss limits**: 24h and 7d net realized PnL tracking via Redis sorted sets
+- Pre-entry gate halts new entries when loss limit breached (existing positions continue)
+- Loss limit status broadcast via WebSocket to dashboard
+- **Dashboard Config "Safety" tab** with toggles and thresholds for loss limits and Telegram alerts
+- **Overview page loss limit banner**: green (ok), yellow (>80%), red (breached)
+- 5 new config fields with full 6-touch-point convention (EnableLossLimits, DailyLossLimitUSDT, WeeklyLossLimitUSDT, EnablePerpTelegram, TelegramCooldownSec)
+- i18n support for all safety features (en + zh-TW)
+
 ## [0.25.2] - 2026-04-03
 
 ### Added

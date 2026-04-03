@@ -47,6 +47,10 @@ const zhTW: Record<TranslationKey, string> = {
   'overview.nextFund': '下次結算',
   'overview.recentAlerts': '最近警報',
   'overview.noAlerts': '無警報',
+  'overview.lossLimits': '虧損限制',
+  'overview.lossLimitBreached': '已暫停開倉 - 虧損限制已觸發',
+  'overview.daily': '24小時',
+  'overview.weekly': '7天',
 
   // Opportunities
   'opp.title': '機會',
@@ -344,6 +348,19 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.desc.dryRun': '啟用時，機器人記錄所有操作但不執行任何真實交易',
 
   // Config - Strategy Toggles
+  // Config - Safety
+  'cfg.safety.title': '安全設定',
+  'cfg.safety.enableLossLimits': '啟用虧損限制',
+  'cfg.safety.enableLossLimitsDesc': '當滾動虧損超過閾值時暫停新開倉',
+  'cfg.safety.dailyLimit': '每日虧損限制 (USDT)',
+  'cfg.safety.dailyLimitDesc': '24小時滾動窗口內最大淨實現虧損',
+  'cfg.safety.weeklyLimit': '每週虧損限制 (USDT)',
+  'cfg.safety.weeklyLimitDesc': '7天滾動窗口內最大淨實現虧損',
+  'cfg.safety.enablePerpTelegram': '永續合約 Telegram 通知',
+  'cfg.safety.enablePerpTelegramDesc': '發送停損觸發、緊急平倉、API錯誤的Telegram通知',
+  'cfg.safety.telegramCooldown': '通知冷卻時間（秒）',
+  'cfg.safety.telegramCooldownDesc': '同類通知之間的最短間隔秒數',
+
   'cfg.strategyPerp': '永續-永續',
   'cfg.strategySpot': '現貨-合約',
   'cfg.strategyRisk': '全域風控',

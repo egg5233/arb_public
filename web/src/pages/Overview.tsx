@@ -1,5 +1,5 @@
 import { useState, type FC } from 'react';
-import type { Position, Stats, ExchangeInfo, SpotPosition } from '../types.ts';
+import type { Position, Stats, ExchangeInfo, SpotPosition, LossLimitStatus } from '../types.ts';
 import StatusBadge from '../components/StatusBadge.tsx';
 import { useLocale } from '../i18n/index.ts';
 
@@ -10,6 +10,7 @@ interface OverviewProps {
   onDiagnose?: () => Promise<{ analysis: string }>;
   onResolveSpotPosition?: (positionId: string) => Promise<void>;
   spotPositions?: SpotPosition[];
+  lossLimits?: LossLimitStatus | null;
 }
 
 function formatFundingCountdown(next: string | undefined): string {
@@ -31,6 +32,7 @@ const Overview: FC<OverviewProps> = ({
   onDiagnose,
   onResolveSpotPosition,
   spotPositions = [],
+  lossLimits,
 }) => {
   const { t } = useLocale();
   const [diagnosing, setDiagnosing] = useState(false);
@@ -109,6 +111,28 @@ const Overview: FC<OverviewProps> = ({
           </button>
         )}
       </div>
+
+      {lossLimits && lossLimits.enabled && (
+        <div className={`rounded-lg p-3 border ${
+          lossLimits.breached
+            ? 'bg-red-900/30 border-red-700 text-red-300'
+            : (lossLimits.daily_limit > 0 && Math.abs(lossLimits.daily_loss) / lossLimits.daily_limit > 0.8) ||
+              (lossLimits.weekly_limit > 0 && Math.abs(lossLimits.weekly_loss) / lossLimits.weekly_limit > 0.8)
+              ? 'bg-yellow-900/30 border-yellow-700 text-yellow-300'
+              : 'bg-gray-900 border-gray-800 text-gray-300'
+        }`}>
+          <div className="flex items-center justify-between text-sm">
+            <span className="font-medium">{t('overview.lossLimits')}</span>
+            <div className="flex gap-4 font-mono text-xs">
+              <span>{t('overview.daily')}: ${Math.abs(lossLimits.daily_loss).toFixed(2)} / ${lossLimits.daily_limit.toFixed(2)}</span>
+              <span>{t('overview.weekly')}: ${Math.abs(lossLimits.weekly_loss).toFixed(2)} / ${lossLimits.weekly_limit.toFixed(2)}</span>
+            </div>
+          </div>
+          {lossLimits.breached && (
+            <div className="text-xs mt-1 font-semibold">{t('overview.lossLimitBreached')}</div>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {statCards.map((card) => (

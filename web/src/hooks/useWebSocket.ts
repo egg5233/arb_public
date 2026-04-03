@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import type { Position, Opportunity, Stats, Alert, LogEntry, RejectedOpportunity, SpotPosition, SpotOpportunity } from '../types.ts';
+import type { Position, Opportunity, Stats, Alert, LogEntry, RejectedOpportunity, SpotPosition, SpotOpportunity, LossLimitStatus } from '../types.ts';
 
 interface WsMessage {
   type: string;
@@ -16,6 +16,7 @@ export function useWebSocket(enabled: boolean) {
   const [rejections, setRejections] = useState<RejectedOpportunity[]>([]);
   const [spotPositions, setSpotPositions] = useState<SpotPosition[]>([]);
   const [spotOpportunities, setSpotOpportunities] = useState<SpotOpportunity[]>([]);
+  const [lossLimits, setLossLimits] = useState<LossLimitStatus | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -118,6 +119,9 @@ export function useWebSocket(enabled: boolean) {
             case 'spot_opportunities':
               setSpotOpportunities((msg.data as SpotOpportunity[]) || []);
               break;
+            case 'loss_limits':
+              setLossLimits(msg.data as LossLimitStatus);
+              break;
           }
         } catch {
           // ignore parse errors
@@ -140,5 +144,5 @@ export function useWebSocket(enabled: boolean) {
     };
   }, [enabled, connect]);
 
-  return { connected, positions, setPositions, opportunities, setOpportunities, alerts, stats, setStats, logs, setLogs, rejections, setRejections, spotPositions, setSpotPositions, spotOpportunities, setSpotOpportunities };
+  return { connected, positions, setPositions, opportunities, setOpportunities, alerts, stats, setStats, logs, setLogs, rejections, setRejections, spotPositions, setSpotPositions, spotOpportunities, setSpotOpportunities, lossLimits };
 }

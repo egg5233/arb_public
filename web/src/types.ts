@@ -167,3 +167,13 @@ export interface SpotOpportunity {
   timestamp: string;
   filter_status?: string;
 }
+
+export interface LossLimitStatus {
+  enabled: boolean;
+  daily_loss: number;
+  daily_limit: number;
+  weekly_loss: number;
+  weekly_limit: number;
+  breached: boolean;
+  breach_type: string; // "daily", "weekly", or ""
+}
