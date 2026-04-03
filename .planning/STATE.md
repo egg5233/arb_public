@@ -21,42 +21,37 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-01)
 
 **Core value:** "I deposit USDT, select my risk preference, and the system automatically finds opportunities across both strategies, opens positions, collects funding, exits when profitable, and I can see exactly how much each position earned."
-**Current focus:** Phase 03 — operational-safety
+**Current focus:** Phase 01 — spot-futures-exchange-expansion
 
 ## Current Position
 
 Phase: 3
-Plan: 2 of 3
-Status: Executing Phase 03
+Plan: 3 of 3
+Status: Executing Phase 03 (Plan 03 checkpoint pending)
 Last activity: 2026-04-03
 
-Progress: [####░░░░░░] 40%
+Progress: [██████░░░░] 60%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 0
-- Average duration: -
-- Total execution time: 0 hours
+- Total plans completed: 3
+- Average duration: 14 min
+- Total execution time: 0.7 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| - | - | - | - |
+| 03 | 3 | 41min | 14min |
 
 **Recent Trend:**
 
-- Last 5 plans: -
-- Trend: -
+- Last 3 plans: 03-01(8min), 03-02(19min), 03-03(14min)
+- Trend: stable
 
 *Updated after each plan completion*
-
-| Plan | Duration | Tasks | Files |
-|------|----------|-------|-------|
-| Phase 03 P01 | 8min | 2 tasks | 7 files |
-| Phase 03 P02 | 19min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -69,9 +64,11 @@ Recent decisions affecting current work:
 - [Roadmap]: PP-04 grouped with analytics (Phase 4) not safety (Phase 3) -- it is a dashboard/data feature
 - [Roadmap]: Phase 3 has no dependency on Phases 1-2 -- can be pulled forward if needed
 - [Phase 01]: OKX cross-margin borrows via tdMode=cross + ccy=USDT (Futures mode implicit) instead of autoLoan API
-- [Phase 03-02]: Fail-open on Redis query errors in loss limit checker (don't block entries if Redis fails)
-- [Phase 03-02]: PP-02 (circuit breaker) dropped per D-05 -- acknowledged, not implemented
-- [Phase 03-02]: Config fields struct-only; JSON/apply/toJSON/fromEnv deferred to Plan 03-03
+- [Phase 03-01]: Cooldown logic uses injectable time parameter for deterministic testing
+- [Phase 03-01]: Notifier does not gate on config -- callers check EnablePerpTelegram before calling
+- [Phase 03-02]: Fail-open on Redis query errors -- loss event query failure does not block entries
+- [Phase 03-03]: Safety tab uses emerald color to distinguish from amber-colored Global Risk tab
+- [Phase 03-03]: VERSION bumped to 0.26.0 to cover all Phase 3 operational safety work
 
 ### Pending Todos
 
@@ -84,6 +81,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-03T00:51:01Z
-Stopped at: Completed 03-02-PLAN.md
+Last session: 2026-04-03T01:22:50Z
+Stopped at: Phase 03 Plan 03 Tasks 1-2 complete, Task 3 human-verify checkpoint pending
 Resume file: None

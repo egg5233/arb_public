@@ -63,9 +63,9 @@ Plans:
 **Plans**: TBD
 
 Plans:
-- [x] 03-01-PLAN.md -- Perp-Perp Telegram Notifications (cooldown, SL, emergency close, API errors)
-- [x] 03-02-PLAN.md -- Rolling Loss Limit System (Redis sorted set, 24h/7d windows, pre-entry gate)
-- [ ] 03-03-PLAN.md -- Config Wiring (JSON/defaults/apply/toJSON/fromEnv for all safety fields)
+- [x] 03-01-PLAN.md -- Perp-perp Telegram notifications with per-event-type cooldown
+- [x] 03-02-PLAN.md -- Rolling loss limit system (Redis sorted sets, pre-entry gate)
+- [x] 03-03-PLAN.md -- Config 6-touch-points, Dashboard Safety tab, Overview banner, i18n, version bump
 
 ### Phase 4: Performance Analytics
 **Goal**: The user can see exactly how much each position earned, compare strategy performance, and track cumulative PnL over time
@@ -111,6 +111,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 |-------|----------------|--------|-----------|
 | 1. Spot-Futures Exchange Expansion | 0/3 | Not started | - |
 | 2. Spot-Futures Automation | 0/3 | Not started | - |
-| 3. Operational Safety | 2/3 | In progress | - |
+| 3. Operational Safety | 3/3 | Complete (pending human verify) | 2026-04-03 |
 | 4. Performance Analytics | 0/4 | Not started | - |
 | 5. Capital Allocation | 0/3 | Not started | - |
