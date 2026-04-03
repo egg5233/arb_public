@@ -311,6 +311,12 @@ type configResponse struct {
 	Exchanges   map[string]configExchangeResponse `json:"exchanges"`
 	SpotFutures *configSpotFuturesResponse        `json:"spot_futures,omitempty"`
 	Safety      configSafetyResponse              `json:"safety"`
+	Analytics   configAnalyticsResponse           `json:"analytics"`
+}
+
+type configAnalyticsResponse struct {
+	EnableAnalytics bool   `json:"enable_analytics"`
+	AnalyticsDBPath string `json:"analytics_db_path"`
 }
 
 type configSafetyResponse struct {
@@ -610,6 +616,10 @@ func (s *Server) buildConfigResponse() configResponse {
 			EnablePerpTelegram:  s.cfg.EnablePerpTelegram,
 			TelegramCooldownSec: s.cfg.TelegramCooldownSec,
 		},
+		Analytics: configAnalyticsResponse{
+			EnableAnalytics: s.cfg.EnableAnalytics,
+			AnalyticsDBPath: s.cfg.AnalyticsDBPath,
+		},
 	}
 	resp.SpotFutures = &configSpotFuturesResponse{
 		Enabled:                    s.cfg.SpotFuturesEnabled,
@@ -713,6 +723,12 @@ type configUpdate struct {
 	Exchanges   map[string]*exchangeUpdate `json:"exchanges"`
 	SpotFutures *spotFuturesUpdate         `json:"spot_futures"`
 	Safety      *safetyUpdate              `json:"safety"`
+	Analytics   *analyticsUpdate           `json:"analytics"`
+}
+
+type analyticsUpdate struct {
+	EnableAnalytics *bool   `json:"enable_analytics"`
+	AnalyticsDBPath *string `json:"analytics_db_path,omitempty"`
 }
 
 type safetyUpdate struct {
@@ -1374,6 +1390,15 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if sa.TelegramCooldownSec != nil && *sa.TelegramCooldownSec >= 0 {
 			s.cfg.TelegramCooldownSec = *sa.TelegramCooldownSec
+		}
+	}
+
+	if an := upd.Analytics; an != nil {
+		if an.EnableAnalytics != nil {
+			s.cfg.EnableAnalytics = *an.EnableAnalytics
+		}
+		if an.AnalyticsDBPath != nil && *an.AnalyticsDBPath != "" {
+			s.cfg.AnalyticsDBPath = *an.AnalyticsDBPath
 		}
 	}
 

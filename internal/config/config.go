@@ -223,6 +223,12 @@ type Config struct {
 	DailyLossLimitUSDT  float64 // 24-hour rolling net loss threshold in USDT
 	WeeklyLossLimitUSDT float64 // 7-day rolling net loss threshold in USDT
 	TelegramCooldownSec int     // Per-event-type cooldown in seconds (default 300 = 5 min per D-03)
+
+	// ---------------------------------------------------------------------------
+	// Analytics: performance analytics with SQLite store and API endpoints
+	// ---------------------------------------------------------------------------
+	EnableAnalytics bool   // Master on/off for analytics (SQLite store, API endpoints). Default OFF.
+	AnalyticsDBPath string // Path to SQLite analytics database file. Default "data/analytics.db".
 }
 
 // ---------- Nested JSON config structs ----------
@@ -240,6 +246,12 @@ type jsonConfig struct {
 	SpotFutures *jsonSpotFutures        `json:"spot_futures"`
 	Telegram    *jsonTelegram           `json:"telegram"`
 	Safety      *jsonSafety             `json:"safety"`
+	Analytics   *jsonAnalytics          `json:"analytics"`
+}
+
+type jsonAnalytics struct {
+	EnableAnalytics *bool   `json:"enable_analytics"`
+	AnalyticsDBPath *string `json:"analytics_db_path,omitempty"`
 }
 
 type jsonSafety struct {
@@ -563,6 +575,10 @@ func Load() *Config {
 		DailyLossLimitUSDT:  100.0,
 		WeeklyLossLimitUSDT: 300.0,
 		TelegramCooldownSec: 300,
+
+		// Analytics defaults (off by default)
+		EnableAnalytics: false,
+		AnalyticsDBPath: "data/analytics.db",
 	}
 
 	// Load from JSON file
@@ -1142,6 +1158,16 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 			c.TelegramCooldownSec = *sa.TelegramCooldownSec
 		}
 	}
+
+	// Analytics
+	if an := jc.Analytics; an != nil {
+		if an.EnableAnalytics != nil {
+			c.EnableAnalytics = *an.EnableAnalytics
+		}
+		if an.AnalyticsDBPath != nil && *an.AnalyticsDBPath != "" {
+			c.AnalyticsDBPath = *an.AnalyticsDBPath
+		}
+	}
 }
 
 // ExchangeSecretOverride contains explicit secret replacements to persist.
@@ -1392,6 +1418,11 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	safety["weekly_loss_limit_usdt"] = c.WeeklyLossLimitUSDT
 	safety["enable_perp_telegram"] = c.EnablePerpTelegram
 	safety["telegram_cooldown_sec"] = c.TelegramCooldownSec
+
+	// Analytics
+	analyticsMap := getMap(raw, "analytics")
+	analyticsMap["enable_analytics"] = c.EnableAnalytics
+	analyticsMap["analytics_db_path"] = c.AnalyticsDBPath
 
 	out, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
@@ -1663,6 +1694,14 @@ func (c *Config) loadEnvOverrides() {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			c.TelegramCooldownSec = n
 		}
+	}
+
+	// Analytics
+	if v := os.Getenv("ENABLE_ANALYTICS"); v != "" {
+		c.EnableAnalytics = v == "1" || v == "true"
+	}
+	if v := os.Getenv("ANALYTICS_DB_PATH"); v != "" {
+		c.AnalyticsDBPath = v
 	}
 }
 

@@ -74,6 +74,11 @@ type Engine struct {
 	// Rolling window loss limiter -- independent from L0-L5 risk tiers (D-08).
 	lossLimiter *risk.LossLimitChecker
 
+	// Analytics snapshot writer for recording position close events.
+	snapshotWriter interface {
+		RecordPerpClose(pos *models.ArbitragePosition)
+	}
+
 	// Per-exchange consecutive API error counter.
 	apiErrMu     sync.Mutex
 	apiErrCounts map[string]int // exchange name -> consecutive failure count
@@ -139,6 +144,12 @@ func (e *Engine) SetTelegram(tg *notify.TelegramNotifier) {
 // SetLossLimiter injects the loss limit checker for pre-entry gating.
 func (e *Engine) SetLossLimiter(ll *risk.LossLimitChecker) {
 	e.lossLimiter = ll
+}
+
+// SetSnapshotWriter injects the analytics snapshot writer for recording
+// position close events. The writer is optional; nil means analytics disabled.
+func (e *Engine) SetSnapshotWriter(sw interface{ RecordPerpClose(pos *models.ArbitragePosition) }) {
+	e.snapshotWriter = sw
 }
 
 // recordAPIError increments the consecutive error counter for an exchange.

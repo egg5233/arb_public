@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"arb/internal/analytics"
 	"arb/internal/config"
 	"arb/internal/database"
 	"arb/internal/models"
@@ -35,6 +36,7 @@ type Server struct {
 	spotClosePosition func(positionID string) error
 	spotInjectTestOpp func(symbol, exchange string)
 	configNotifier    *config.ConfigNotifier
+	analyticsStore    *analytics.Store
 }
 
 // NewServer creates a new Dashboard server.
@@ -117,6 +119,10 @@ func (s *Server) Start() {
 	mux.HandleFunc("/api/spot/config/auto", s.cors(s.authMiddleware(s.handleSpotAutoConfig)))
 	mux.HandleFunc("/api/spot/test-inject", s.cors(s.authMiddleware(s.handleSpotTestInject)))
 	mux.HandleFunc("/api/spot/test-lifecycle", s.cors(s.authMiddleware(s.handleSpotTestLifecycle)))
+
+	// Analytics
+	mux.HandleFunc("/api/analytics/pnl-history", s.cors(s.authMiddleware(s.handleGetAnalyticsPnLHistory)))
+	mux.HandleFunc("/api/analytics/summary", s.cors(s.authMiddleware(s.handleGetAnalyticsSummary)))
 
 	// System update
 	mux.HandleFunc("/api/check-update", s.cors(s.authMiddleware(s.handleCheckUpdate)))
@@ -277,6 +283,11 @@ func (s *Server) SetSpotTestInjectHandler(fn func(symbol, exchange string)) {
 // SetPermissions stores the startup permission check results.
 func (s *Server) SetPermissions(perms map[string]exchange.PermissionResult) {
 	s.permissions = perms
+}
+
+// SetAnalyticsStore injects the analytics SQLite store for dashboard API endpoints.
+func (s *Server) SetAnalyticsStore(store *analytics.Store) {
+	s.analyticsStore = store
 }
 
 // ConfigNotifier returns the shared ConfigNotifier so that other

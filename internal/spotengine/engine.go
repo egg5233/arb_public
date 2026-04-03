@@ -51,6 +51,11 @@ type SpotEngine struct {
 	// telegram sends trade lifecycle alerts. Nil if unconfigured.
 	telegram *notify.TelegramNotifier
 
+	// Analytics snapshot writer for recording position close events. Nil if disabled.
+	snapshotWriter interface {
+		RecordSpotClose(pos *models.SpotFuturesPosition)
+	}
+
 	// configChanged signals discovery loop when dashboard config has been updated.
 	configChanged <-chan struct{}
 	// configChangedMon signals monitor loop when dashboard config has been updated.
@@ -89,6 +94,12 @@ func NewSpotEngine(
 		borrowVelocity: NewRateVelocityDetector(),
 		telegram:       telegram,
 	}
+}
+
+// SetSnapshotWriter injects the analytics snapshot writer for recording
+// spot position close events. The writer is optional; nil means analytics disabled.
+func (e *SpotEngine) SetSnapshotWriter(sw interface{ RecordSpotClose(pos *models.SpotFuturesPosition) }) {
+	e.snapshotWriter = sw
 }
 
 // SetConfigNotify registers channels that signal when config has changed.

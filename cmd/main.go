@@ -7,6 +7,7 @@ import (
 	"syscall"
 	"time"
 
+	"arb/internal/analytics"
 	"arb/internal/api"
 	"arb/internal/config"
 	"arb/internal/database"
@@ -204,6 +205,43 @@ func main() {
 	apiSrv.SetCloseHandler(eng.ManualClose)
 	apiSrv.SetOpenHandler(eng.ManualOpen)
 
+	// ---------------------------------------------------------------------------
+	// Analytics: SQLite store, snapshot writer, backfill (guarded by config)
+	// ---------------------------------------------------------------------------
+	var snapWriter *analytics.SnapshotWriter
+	if cfg.EnableAnalytics {
+		os.MkdirAll("data", 0755)
+
+		analyticsStore, err := analytics.NewStore(cfg.AnalyticsDBPath)
+		if err != nil {
+			log.Error("analytics store init failed: %v (analytics disabled)", err)
+		} else {
+			defer analyticsStore.Close()
+
+			// Inject into API server for /api/analytics/* endpoints.
+			apiSrv.SetAnalyticsStore(analyticsStore)
+
+			// Create and start background snapshot writer.
+			snapWriter = analytics.NewSnapshotWriter(analyticsStore)
+			snapWriter.Start()
+			defer snapWriter.Stop()
+
+			// Wire snapshot writer to perp engine.
+			eng.SetSnapshotWriter(snapWriter)
+
+			// Run backfill in background (non-blocking startup).
+			go func() {
+				perps, _ := db.GetHistory(500)
+				spots, _ := db.GetSpotHistory(500)
+				analytics.BackfillFromHistory(analyticsStore, perps, spots, log)
+			}()
+
+			log.Info("analytics enabled (db=%s)", cfg.AnalyticsDBPath)
+		}
+	} else {
+		log.Info("analytics disabled (enable_analytics=false)")
+	}
+
 	// Wire event channels — forward to dashboard API.
 	go func() {
 		for opps := range opportunityCh {
@@ -313,6 +351,9 @@ func main() {
 	if cfg.SpotFuturesEnabled {
 		spotEng = spotengine.NewSpotEngine(exchanges, db, apiSrv, cfg, allocator, tg)
 		spotEng.SetConfigNotify(notifier.Subscribe(), notifier.Subscribe())
+		if snapWriter != nil {
+			spotEng.SetSnapshotWriter(snapWriter)
+		}
 		apiSrv.SetSpotOpenHandler(spotEng.ManualOpen)
 		apiSrv.SetSpotCloseHandler(spotEng.ManualClose)
 		apiSrv.SetSpotTestInjectHandler(spotEng.InjectTestOpportunity)
