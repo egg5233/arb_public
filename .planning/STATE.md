@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 03-01-PLAN.md
-last_updated: "2026-04-03T00:16:00.847Z"
+stopped_at: Phase 01 Plan 03 Task 1 complete, checkpoint pending
+last_updated: "2026-04-02T05:24:46.349Z"
 last_activity: 2026-04-02
 progress:
   total_phases: 5
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-01)
 
 **Core value:** "I deposit USDT, select my risk preference, and the system automatically finds opportunities across both strategies, opens positions, collects funding, exits when profitable, and I can see exactly how much each position earned."
-**Current focus:** Phase 01 — spot-futures-exchange-expansion
+**Current focus:** Phase 03 — operational-safety
 
 ## Current Position
 
-Phase: 2
-Plan: Not started
-Status: Executing Phase 01
-Last activity: 2026-04-02
+Phase: 3
+Plan: 2 of 3
+Status: Executing Phase 03
+Last activity: 2026-04-03
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [####░░░░░░] 40%
 
 ## Performance Metrics
 
@@ -52,8 +52,11 @@ Progress: [░░░░░░░░░░] 0%
 - Trend: -
 
 *Updated after each plan completion*
-| Phase 01 P03 | 13 | 1 tasks | 5 files |
+
+| Plan | Duration | Tasks | Files |
+|------|----------|-------|-------|
 | Phase 03 P01 | 8min | 2 tasks | 7 files |
+| Phase 03 P02 | 19min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -66,9 +69,9 @@ Recent decisions affecting current work:
 - [Roadmap]: PP-04 grouped with analytics (Phase 4) not safety (Phase 3) -- it is a dashboard/data feature
 - [Roadmap]: Phase 3 has no dependency on Phases 1-2 -- can be pulled forward if needed
 - [Phase 01]: OKX cross-margin borrows via tdMode=cross + ccy=USDT (Futures mode implicit) instead of autoLoan API
-- [Phase 03]: Cooldown uses injectable time parameter for deterministic testing
-- [Phase 03]: Notifier does not gate on config; callers check EnablePerpTelegram
-- [Phase 03]: API error counter fires at exactly count==3, not every subsequent failure
+- [Phase 03-02]: Fail-open on Redis query errors in loss limit checker (don't block entries if Redis fails)
+- [Phase 03-02]: PP-02 (circuit breaker) dropped per D-05 -- acknowledged, not implemented
+- [Phase 03-02]: Config fields struct-only; JSON/apply/toJSON/fromEnv deferred to Plan 03-03
 
 ### Pending Todos
 
@@ -81,6 +84,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-03T00:16:00.843Z
-Stopped at: Completed 03-01-PLAN.md
+Last session: 2026-04-03T00:51:01Z
+Stopped at: Completed 03-02-PLAN.md
 Resume file: None

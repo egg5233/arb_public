@@ -45,27 +45,27 @@ Plans:
   2. System auto-opens the best spot-futures opportunity when it meets entry thresholds, without user clicking anything
   3. Positions auto-exit when exit conditions are met, handling blackout windows (e.g., Bybit :04-:05:30), partial fills, and emergency close scenarios
   4. Entry is rejected when basis/spread is too wide, and exit is gated by spread threshold -- user can see the spread reason in logs
-**Plans**: 3 plans
+**Plans**: TBD
 
 Plans:
-- [x] 02-01-PLAN.md -- Config fields (9 new) + native Loris-based discovery scanner replacing CoinGlass
-- [x] 02-02-PLAN.md -- Exit safeguards (min-hold, settlement guard, spread gate) + entry basis gate
-- [x] 02-03-PLAN.md -- Dashboard UI integration (config toggles, i18n, source indicator) + auto-entry validation
+- [ ] 02-01: TBD
+- [ ] 02-02: TBD
+- [ ] 02-03: TBD
 
 ### Phase 3: Operational Safety
 **Goal**: The live trading system has safety nets that prevent catastrophic losses and keep the operator informed
 **Depends on**: Nothing (protects existing perp-perp engine; independent of spot-futures phases)
 **Requirements**: PP-01, PP-02, PP-03
 **Success Criteria** (what must be TRUE):
-  1. User receives Telegram notifications for perp-perp critical events: SL triggered, emergency close (L4/L5), 3+ consecutive API errors on same exchange
-  2. PP-02 (circuit breaker) dropped per D-05 -- API failures already prevent entries naturally; 3-consecutive-error Telegram alert provides operator awareness
+  1. User receives Telegram notifications for perp-perp critical events: position opened, position closed, SL triggered, errors exceeding threshold
+  2. When an exchange API starts failing repeatedly (error rate or latency spike), the circuit breaker pauses new entries on that exchange and the dashboard shows the exchange as "circuit open"
   3. When daily or weekly realized loss exceeds the configured threshold, the system halts all new entries and the user sees a "loss limit breached" status on the dashboard
-**Plans**: 3 plans
+**Plans**: TBD
 
 Plans:
-- [x] 03-01-PLAN.md -- Telegram notifications: extend TelegramNotifier with cooldown + wire into perp engine
-- [ ] 03-02-PLAN.md -- Loss limits: Redis sorted set tracker + pre-entry gate + WS broadcast
-- [ ] 03-03-PLAN.md -- Config fields (5 new, 6-touch-point) + Dashboard safety tab + Overview banner + i18n
+- [x] 03-01-PLAN.md -- Perp-Perp Telegram Notifications (cooldown, SL, emergency close, API errors)
+- [x] 03-02-PLAN.md -- Rolling Loss Limit System (Redis sorted set, 24h/7d windows, pre-entry gate)
+- [ ] 03-03-PLAN.md -- Config Wiring (JSON/defaults/apply/toJSON/fromEnv for all safety fields)
 
 ### Phase 4: Performance Analytics
 **Goal**: The user can see exactly how much each position earned, compare strategy performance, and track cumulative PnL over time
@@ -110,7 +110,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Spot-Futures Exchange Expansion | 0/3 | Not started | - |
-| 2. Spot-Futures Automation | 2/3 | In Progress|  |
-| 3. Operational Safety | 1/3 | In Progress | - |
+| 2. Spot-Futures Automation | 0/3 | Not started | - |
+| 3. Operational Safety | 2/3 | In progress | - |
 | 4. Performance Analytics | 0/4 | Not started | - |
 | 5. Capital Allocation | 0/3 | Not started | - |

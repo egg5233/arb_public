@@ -19,9 +19,9 @@ Requirements for Milestone 1. Each maps to roadmap phases.
 
 ### Perp-Perp Operational Safety
 
-- [x] **PP-01**: Telegram notifications for perp-perp engine critical events (entry, exit, errors, SL triggers)
-- [ ] **PP-02**: Circuit breaker pauses trading on an exchange when error rate or latency exceeds threshold
-- [ ] **PP-03**: Daily and weekly loss limits halt new entries when threshold breached
+- [ ] **PP-01**: Telegram notifications for perp-perp engine critical events (entry, exit, errors, SL triggers)
+- [x] **PP-02**: Circuit breaker pauses trading on an exchange when error rate or latency exceeds threshold (DROPPED per D-05 -- acknowledged in Plan 03-02)
+- [x] **PP-03**: Daily and weekly loss limits halt new entries when threshold breached
 - [ ] **PP-04**: Trade history dashboard shows per-position detailed breakdown (entry/exit prices, fees, funding collected, hold time, PnL components)
 
 ### Performance Analytics
@@ -83,9 +83,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SF-05 | Phase 2 | Pending |
 | SF-06 | Phase 2 | Pending |
 | SF-07 | Phase 2 | Pending |
-| PP-01 | Phase 3 | Complete |
-| PP-02 | Phase 3 | Pending |
-| PP-03 | Phase 3 | Pending |
+| PP-01 | Phase 3 | Pending |
+| PP-02 | Phase 3 | Dropped (D-05) |
+| PP-03 | Phase 3 | Complete |
 | PP-04 | Phase 4 | Pending |
 | AN-01 | Phase 4 | Pending |
 | AN-02 | Phase 4 | Pending |
