@@ -22,13 +22,13 @@ Requirements for Milestone 1. Each maps to roadmap phases.
 - [ ] **PP-01**: Telegram notifications for perp-perp engine critical events (entry, exit, errors, SL triggers)
 - [x] **PP-02**: Circuit breaker pauses trading on an exchange when error rate or latency exceeds threshold (DROPPED per D-05 -- acknowledged in Plan 03-02)
 - [x] **PP-03**: Daily and weekly loss limits halt new entries when threshold breached
-- [ ] **PP-04**: Trade history dashboard shows per-position detailed breakdown (entry/exit prices, fees, funding collected, hold time, PnL components)
+- [x] **PP-04**: Trade history dashboard shows per-position detailed breakdown (entry/exit prices, fees, funding collected, hold time, PnL components)
 
 ### Performance Analytics
 
 - [x] **AN-01**: Per-position PnL decomposition: entry fees, funding earned, exit fees, basis gain/loss, net PnL
-- [ ] **AN-02**: Strategy-level performance comparison: perp-perp vs spot-futures returns over configurable time window
-- [ ] **AN-03**: Exchange-level metrics: profit, slippage, fill rate, error rate per exchange
+- [x] **AN-02**: Strategy-level performance comparison: perp-perp vs spot-futures returns over configurable time window
+- [x] **AN-03**: Exchange-level metrics: profit, slippage, fill rate, error rate per exchange
 - [x] **AN-04**: Cumulative PnL chart over time with SQLite time-series storage
 - [x] **AN-05**: APR calculation for perp-perp positions (funding collected vs capital deployed vs hold time)
 - [x] **AN-06**: Win rate and average win/loss segmented by strategy and exchange
@@ -86,10 +86,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PP-01 | Phase 3 | Pending |
 | PP-02 | Phase 3 | Dropped (D-05) |
 | PP-03 | Phase 3 | Complete |
-| PP-04 | Phase 4 | Pending |
+| PP-04 | Phase 4 | Complete |
 | AN-01 | Phase 4 | Complete |
-| AN-02 | Phase 4 | Pending |
-| AN-03 | Phase 4 | Pending |
+| AN-02 | Phase 4 | Complete |
+| AN-03 | Phase 4 | Complete |
 | AN-04 | Phase 4 | Complete |
 | AN-05 | Phase 4 | Complete |
 | AN-06 | Phase 4 | Complete |
