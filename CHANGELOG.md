@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.25.2] - 2026-04-03
+
+### Added
+- **Rolling loss limit system** — LossLimitChecker with Redis sorted set for PnL event tracking, 24h/7d rolling windows, automatic 8-day pruning. Config fields: EnableLossLimits, DailyLossLimitUSDT, WeeklyLossLimitUSDT, TelegramCooldownSec (all default OFF/zero). Pre-entry gate blocks new entries when loss threshold breached; existing positions continue to be managed.
+
 ## [0.25.1] - 2026-04-02
 
 ### Removed

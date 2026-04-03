@@ -29,6 +29,7 @@ const (
 	keyLossCooldownPrefix    = "arb:lossCooldown:"
 	keyReEnterCooldownPrefix = "arb:reEnterCooldown:"
 	keyPerpBlacklist         = "arb:blacklist:perp"
+	keyLossEvents            = "arb:loss_events"
 
 	historyMaxLen         = 1000
 	fundingSnapshotMaxLen = 100
@@ -607,4 +608,51 @@ func (c *Client) GetBlacklist() ([]string, error) {
 // IsBlacklisted checks if a symbol is in the perp-perp blacklist.
 func (c *Client) IsBlacklisted(symbol string) (bool, error) {
 	return c.rdb.SIsMember(context.Background(), keyPerpBlacklist, symbol).Result()
+}
+
+// ---------------------------------------------------------------------------
+// Loss event tracking (rolling window sorted set)
+// ---------------------------------------------------------------------------
+
+// RecordLossEvent stores a PnL event in the loss events sorted set.
+// Score is the Unix timestamp (with nanosecond fraction), member is JSON with
+// pos_id, pnl, symbol. Automatically prunes events older than 8 days.
+func (c *Client) RecordLossEvent(posID string, pnl float64, symbol string, closedAt time.Time) error {
+	ctx := context.Background()
+	member := fmt.Sprintf(`{"pos_id":"%s","pnl":%.8f,"symbol":"%s"}`, posID, pnl, symbol)
+	score := float64(closedAt.Unix()) + float64(closedAt.Nanosecond())/1e9
+
+	pipe := c.rdb.Pipeline()
+	pipe.ZAdd(ctx, keyLossEvents, redis.Z{Score: score, Member: member})
+	// Prune events older than 8 days
+	cutoff := float64(closedAt.Add(-8 * 24 * time.Hour).Unix())
+	pipe.ZRemRangeByScore(ctx, keyLossEvents, "-inf", fmt.Sprintf("%f", cutoff))
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+// GetLossEventsInWindow returns all PnL values within the given time window.
+// Returns a slice of float64 values for summing.
+func (c *Client) GetLossEventsInWindow(windowStart time.Time) ([]float64, error) {
+	ctx := context.Background()
+	startScore := fmt.Sprintf("%f", float64(windowStart.Unix()))
+	results, err := c.rdb.ZRangeByScore(ctx, keyLossEvents, &redis.ZRangeBy{
+		Min: startScore,
+		Max: "+inf",
+	}).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	var pnls []float64
+	for _, member := range results {
+		var event struct {
+			PnL float64 `json:"pnl"`
+		}
+		if err := json.Unmarshal([]byte(member), &event); err != nil {
+			continue // skip malformed entries
+		}
+		pnls = append(pnls, event.PnL)
+	}
+	return pnls, nil
 }

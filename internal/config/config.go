@@ -218,7 +218,11 @@ type Config struct {
 	// Safety: perp-perp Telegram notifications (struct field only; remaining
 	// touch points -- JSON, default, apply, toJSON, fromEnv -- added in Plan 03)
 	// ---------------------------------------------------------------------------
-	EnablePerpTelegram bool // On/off for perp-perp Telegram alerts (default OFF per D-10)
+	EnablePerpTelegram  bool // On/off for perp-perp Telegram alerts (default OFF per D-10)
+	EnableLossLimits    bool    // Master on/off for rolling loss limits (default OFF per D-10)
+	DailyLossLimitUSDT  float64 // 24-hour rolling net loss threshold in USDT
+	WeeklyLossLimitUSDT float64 // 7-day rolling net loss threshold in USDT
+	TelegramCooldownSec int     // Per-event-type cooldown in seconds (default 300 = 5 min per D-03)
 }
 
 // ---------- Nested JSON config structs ----------
