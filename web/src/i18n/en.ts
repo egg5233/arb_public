@@ -550,6 +550,40 @@ const en = {
   'perm.legendUnknown': 'Unknown — cannot verify (check exchange UI)',
   'perm.tipTitle': 'Gate.io Users:',
   'perm.tipGateio': 'Enable "保證金交易（新版統一帳戶）" (Margin Trading - Unified Account) permission on your API key for accurate balance display. Without this, the dashboard will use an estimated balance.',
+
+  // Navigation - Analytics
+  'nav.analytics': 'Analytics',
+
+  // Analytics page
+  'analytics.title': 'Analytics',
+  'analytics.cumulativePnl': 'Cumulative PnL',
+  'analytics.strategyComparison': 'Strategy Comparison',
+  'analytics.exchangePerformance': 'Exchange Performance',
+  'analytics.perpPerp': 'Perp-Perp',
+  'analytics.spotFutures': 'Spot-Futures',
+  'analytics.totalPnl': 'Total PnL',
+  'analytics.apr': 'APR',
+  'analytics.winRate': 'Win Rate',
+  'analytics.avgHoldTime': 'Avg Hold Time',
+  'analytics.noData': 'No analytics data yet',
+  'analytics.noDataBody': 'Analytics will appear after your first closed position.',
+  'analytics.loadError': 'Failed to load analytics data. Check your connection and try again.',
+  'analytics.loading': 'Loading...',
+  'analytics.range7d': '7D',
+  'analytics.range30d': '30D',
+  'analytics.range90d': '90D',
+  'analytics.rangeAll': 'All',
+  'analytics.exchange': 'Exchange',
+  'analytics.profit': 'Profit',
+  'analytics.trades': 'Trades',
+  'analytics.avgSlippage': 'Avg Slippage',
+
+  // Config - Analytics
+  'cfg.tab.analytics': 'Analytics',
+  'cfg.analytics.enableAnalytics': 'Enable Analytics',
+  'cfg.analytics.enableAnalyticsDesc': 'Enable SQLite-backed performance analytics (PnL charts, strategy comparison, exchange metrics). Requires restart.',
+  'cfg.analytics.dbPath': 'Database Path',
+  'cfg.analytics.dbPathDesc': 'Path to the SQLite analytics database file',
 } as const;
 
 export type TranslationKey = keyof typeof en;

@@ -12,10 +12,11 @@ import Transfers from './pages/Transfers.tsx';
 import Logs from './pages/Logs.tsx';
 import Rejections from './pages/Rejections.tsx';
 import Permissions from './pages/Permissions.tsx';
+import Analytics from './pages/Analytics.tsx';
 import { LocaleContext, getStoredLocale, storeLocale, t as translate, type Locale } from './i18n/index.ts';
 import type { ExchangeInfo } from './types.ts';
 
-type Page = 'overview' | 'opportunities' | 'positions' | 'history' | 'config' | 'transfers' | 'logs' | 'rejections' | 'permissions';
+type Page = 'overview' | 'opportunities' | 'positions' | 'history' | 'analytics' | 'config' | 'transfers' | 'logs' | 'rejections' | 'permissions';
 
 const UPDATE_DISMISS_KEY = 'arb_update_dismissed';
 
@@ -178,6 +179,8 @@ function App() {
         );
       case 'history':
         return <History getHistory={api.getHistory} />;
+      case 'analytics':
+        return <Analytics getAnalyticsPnL={api.getAnalyticsPnL} getAnalyticsSummary={api.getAnalyticsSummary} />;
       case 'config':
         return <Config getConfig={api.getConfig} updateConfig={api.updateConfig} blacklist={blacklist} onBlacklistRemove={async (s) => { await api.removeFromBlacklist(s); setBlacklist(prev => prev.filter(x => x !== s)); }} />;
       case 'transfers':

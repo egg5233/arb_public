@@ -552,6 +552,40 @@ const zhTW: Record<TranslationKey, string> = {
   'perm.legendUnknown': '未知 — 無法驗證（請檢查交易所介面）',
   'perm.tipTitle': 'Gate.io 使用者：',
   'perm.tipGateio': '請在 API 金鑰設定中啟用「保證金交易（新版統一帳戶）」權限，以正確顯示帳戶餘額。未啟用時，儀表板將使用估算餘額。',
+
+  // Navigation - Analytics
+  'nav.analytics': '分析',
+
+  // Analytics page
+  'analytics.title': '分析',
+  'analytics.cumulativePnl': '累計損益',
+  'analytics.strategyComparison': '策略比較',
+  'analytics.exchangePerformance': '交易所績效',
+  'analytics.perpPerp': '永續-永續',
+  'analytics.spotFutures': '現貨-合約',
+  'analytics.totalPnl': '總損益',
+  'analytics.apr': '年化報酬率',
+  'analytics.winRate': '勝率',
+  'analytics.avgHoldTime': '平均持倉時間',
+  'analytics.noData': '尚無分析數據',
+  'analytics.noDataBody': '在您的第一筆平倉後，分析數據將會顯示。',
+  'analytics.loadError': '載入分析數據失敗。請檢查連線並重試。',
+  'analytics.loading': '載入中...',
+  'analytics.range7d': '7天',
+  'analytics.range30d': '30天',
+  'analytics.range90d': '90天',
+  'analytics.rangeAll': '全部',
+  'analytics.exchange': '交易所',
+  'analytics.profit': '利潤',
+  'analytics.trades': '交易次數',
+  'analytics.avgSlippage': '平均滑點',
+
+  // Config - Analytics
+  'cfg.tab.analytics': '分析',
+  'cfg.analytics.enableAnalytics': '啟用分析',
+  'cfg.analytics.enableAnalyticsDesc': '啟用基於 SQLite 的效能分析（損益圖表、策略比較、交易所指標）。需要重啟。',
+  'cfg.analytics.dbPath': '資料庫路徑',
+  'cfg.analytics.dbPathDesc': 'SQLite 分析資料庫檔案路徑',
 };
 
 export default zhTW;

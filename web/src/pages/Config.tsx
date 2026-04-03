@@ -12,7 +12,7 @@ interface ConfigProps {
 // ---------------------------------------------------------------------------
 // Tab definitions
 // ---------------------------------------------------------------------------
-type Strategy = 'exchanges' | 'perp' | 'spot' | 'risk' | 'safety';
+type Strategy = 'exchanges' | 'perp' | 'spot' | 'risk' | 'safety' | 'analytics';
 type PerpTabId = 'fund' | 'schedule' | 'discovery' | 'persist' | 'entry' | 'exit';
 type SpotTabId = 'sf-general' | 'sf-sizing' | 'sf-discovery' | 'sf-exit';
 type RiskTabId = 'risk-margins' | 'risk-liq' | 'risk-alloc';
@@ -1614,9 +1614,29 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
     </div>
   );
 
+  const renderAnalyticsTab = () => (
+    <div className="space-y-4">
+      <ToggleField
+        label={t('cfg.analytics.enableAnalytics')}
+        desc={t('cfg.analytics.enableAnalyticsDesc')}
+        value={getByPath(config, ['analytics', 'enable_analytics'])}
+        onChange={(v) => handleBoolChange(['analytics', 'enable_analytics'], v)}
+      />
+      <div className={!getByPath(config, ['analytics', 'enable_analytics']) ? 'opacity-50 space-y-4' : 'space-y-4'}>
+        <NumberField
+          label={t('cfg.analytics.dbPath')}
+          desc={t('cfg.analytics.dbPathDesc')}
+          value={getByPath(config, ['analytics', 'analytics_db_path']) || 'data/analytics.db'}
+          onChange={(v) => handleChange(['analytics', 'analytics_db_path'], v)}
+        />
+      </div>
+    </div>
+  );
+
   const renderTabContent = () => {
     if (strategy === 'exchanges') return renderExchangesTab();
     if (strategy === 'safety') return renderSafetyTab();
+    if (strategy === 'analytics') return renderAnalyticsTab();
     switch (activeTab) {
       case 'fund': return renderFundTab();
       case 'schedule': return renderScheduleTab();
@@ -1697,10 +1717,21 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
         >
           {t('cfg.safety.title')}
         </button>
+        <button
+          type="button"
+          onClick={() => setStrategy('analytics')}
+          className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all duration-150 ${
+            strategy === 'analytics'
+              ? 'bg-blue-900/60 text-blue-200 shadow-sm'
+              : 'text-gray-500 hover:text-gray-300'
+          }`}
+        >
+          {t('cfg.tab.analytics')}
+        </button>
       </div>
 
-      {/* Tab bar (hidden for exchanges and safety — no sub-tabs) */}
-      {strategy !== 'exchanges' && strategy !== 'safety' && <div
+      {/* Tab bar (hidden for exchanges, safety, analytics — no sub-tabs) */}
+      {strategy !== 'exchanges' && strategy !== 'safety' && strategy !== 'analytics' && <div
         ref={tabBarRef}
         className="flex gap-1 overflow-x-auto pb-3 mb-4 scrollbar-none"
         style={{ scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' }}

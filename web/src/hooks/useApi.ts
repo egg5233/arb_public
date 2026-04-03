@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import type { Position, Opportunity, Stats, ExchangeInfo, TransferRecord, LogEntry, RejectedOpportunity, FundingEvent, SpotPosition, SpotStats, SpotOpportunity, PriceGapResult } from '../types.ts';
+import type { Position, Opportunity, Stats, ExchangeInfo, TransferRecord, LogEntry, RejectedOpportunity, FundingEvent, SpotPosition, SpotStats, SpotOpportunity, PriceGapResult, PnLSnapshot, StrategySummary, ExchangeMetric } from '../types.ts';
 
 const TOKEN_KEY = 'arb_token';
 
@@ -245,6 +245,15 @@ export function useApi() {
     });
   }, []);
 
+  // Analytics API
+  const getAnalyticsPnL = useCallback((from: number, to: number, strategy: string) => {
+    return request<PnLSnapshot[]>(`/api/analytics/pnl-history?from=${from}&to=${to}&strategy=${strategy}`);
+  }, []);
+
+  const getAnalyticsSummary = useCallback((from: number, to: number) => {
+    return request<{ strategies: StrategySummary[]; exchange_metrics: ExchangeMetric[] }>(`/api/analytics/summary?from=${from}&to=${to}`);
+  }, []);
+
   const logout = useCallback(() => {
     clearToken();
     _setToken(null);
@@ -285,5 +294,7 @@ export function useApi() {
     getBlacklist,
     addToBlacklist,
     removeFromBlacklist,
+    getAnalyticsPnL,
+    getAnalyticsSummary,
   };
 }

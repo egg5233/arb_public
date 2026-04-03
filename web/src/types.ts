@@ -41,6 +41,9 @@ export interface Position {
   long_sl_order_id?: string;
   short_sl_order_id?: string;
   entry_fees?: number;
+  exit_fees?: number;
+  basis_gain_loss?: number;
+  slippage?: number;
   exit_reason?: string;
   long_unrealized_pnl?: number;
   short_unrealized_pnl?: number;
@@ -185,4 +188,45 @@ export interface LossLimitStatus {
   weekly_limit: number;
   breached: boolean;
   breach_type: string; // "daily", "weekly", or ""
+}
+
+// ---------------------------------------------------------------------------
+// Analytics types (Phase 4)
+// ---------------------------------------------------------------------------
+
+export interface PnLSnapshot {
+  id: number;
+  timestamp: number;
+  strategy: string;
+  exchange: string;
+  cumulative_pnl: number;
+  position_count: number;
+  win_count: number;
+  loss_count: number;
+  funding_total: number;
+  fees_total: number;
+}
+
+export interface StrategySummary {
+  strategy: string;
+  total_pnl: number;
+  trade_count: number;
+  win_count: number;
+  loss_count: number;
+  win_rate: number;
+  apr: number;
+  avg_hold_hours: number;
+  funding_total: number;
+  fees_total: number;
+}
+
+export interface ExchangeMetric {
+  exchange: string;
+  profit: number;
+  trade_count: number;
+  win_count: number;
+  loss_count: number;
+  win_rate: number;
+  avg_slippage: number;
+  apr: number;
 }
