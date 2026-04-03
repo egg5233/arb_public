@@ -310,6 +310,15 @@ type configResponse struct {
 	AI          configAIResponse                  `json:"ai"`
 	Exchanges   map[string]configExchangeResponse `json:"exchanges"`
 	SpotFutures *configSpotFuturesResponse        `json:"spot_futures,omitempty"`
+	Safety      configSafetyResponse              `json:"safety"`
+}
+
+type configSafetyResponse struct {
+	EnableLossLimits    bool    `json:"enable_loss_limits"`
+	DailyLossLimitUSDT  float64 `json:"daily_loss_limit_usdt"`
+	WeeklyLossLimitUSDT float64 `json:"weekly_loss_limit_usdt"`
+	EnablePerpTelegram  bool    `json:"enable_perp_telegram"`
+	TelegramCooldownSec int     `json:"telegram_cooldown_sec"`
 }
 
 type configSpotFuturesResponse struct {
@@ -585,6 +594,13 @@ func (s *Server) buildConfigResponse() configResponse {
 			HasKey:    s.cfg.AIAPIKey != "",
 		},
 		Exchanges: s.buildExchangesResponse(),
+		Safety: configSafetyResponse{
+			EnableLossLimits:    s.cfg.EnableLossLimits,
+			DailyLossLimitUSDT:  s.cfg.DailyLossLimitUSDT,
+			WeeklyLossLimitUSDT: s.cfg.WeeklyLossLimitUSDT,
+			EnablePerpTelegram:  s.cfg.EnablePerpTelegram,
+			TelegramCooldownSec: s.cfg.TelegramCooldownSec,
+		},
 	}
 	resp.SpotFutures = &configSpotFuturesResponse{
 		Enabled:                    s.cfg.SpotFuturesEnabled,

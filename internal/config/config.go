@@ -239,6 +239,15 @@ type jsonConfig struct {
 	SpotArb     *jsonSpotArb            `json:"spot_arb"`
 	SpotFutures *jsonSpotFutures        `json:"spot_futures"`
 	Telegram    *jsonTelegram           `json:"telegram"`
+	Safety      *jsonSafety            `json:"safety"`
+}
+
+type jsonSafety struct {
+	EnableLossLimits    *bool    `json:"enable_loss_limits"`
+	DailyLossLimitUSDT  *float64 `json:"daily_loss_limit_usdt"`
+	WeeklyLossLimitUSDT *float64 `json:"weekly_loss_limit_usdt"`
+	EnablePerpTelegram  *bool    `json:"enable_perp_telegram"`
+	TelegramCooldownSec *int     `json:"telegram_cooldown_sec"`
 }
 
 type jsonTelegram struct {
@@ -545,6 +554,13 @@ func Load() *Config {
 		SpotFuturesMaxBasisPct:           0.5,
 		SpotFuturesEnableExitSpreadGate:  false,
 		SpotFuturesExitSpreadPct:         0.3,
+
+		// Safety defaults (all off by default per D-10)
+		EnablePerpTelegram:  false,
+		EnableLossLimits:    false,
+		DailyLossLimitUSDT:  100.0,
+		WeeklyLossLimitUSDT: 300.0,
+		TelegramCooldownSec: 300,
 	}
 
 	// Load from JSON file
@@ -1101,6 +1117,25 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 			c.TelegramChatID = tg.ChatID
 		}
 	}
+
+	// Safety
+	if sa := jc.Safety; sa != nil {
+		if sa.EnableLossLimits != nil {
+			c.EnableLossLimits = *sa.EnableLossLimits
+		}
+		if sa.DailyLossLimitUSDT != nil && *sa.DailyLossLimitUSDT > 0 {
+			c.DailyLossLimitUSDT = *sa.DailyLossLimitUSDT
+		}
+		if sa.WeeklyLossLimitUSDT != nil && *sa.WeeklyLossLimitUSDT > 0 {
+			c.WeeklyLossLimitUSDT = *sa.WeeklyLossLimitUSDT
+		}
+		if sa.EnablePerpTelegram != nil {
+			c.EnablePerpTelegram = *sa.EnablePerpTelegram
+		}
+		if sa.TelegramCooldownSec != nil && *sa.TelegramCooldownSec >= 0 {
+			c.TelegramCooldownSec = *sa.TelegramCooldownSec
+		}
+	}
 }
 
 // ExchangeSecretOverride contains explicit secret replacements to persist.
@@ -1341,6 +1376,14 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	delete(sf, "capital_per_position")
 	delete(sf, "separate_acct_max_usdt")
 	delete(sf, "unified_acct_max_usdt")
+
+	// Safety
+	safety := getMap(raw, "safety")
+	safety["enable_loss_limits"] = c.EnableLossLimits
+	safety["daily_loss_limit_usdt"] = c.DailyLossLimitUSDT
+	safety["weekly_loss_limit_usdt"] = c.WeeklyLossLimitUSDT
+	safety["enable_perp_telegram"] = c.EnablePerpTelegram
+	safety["telegram_cooldown_sec"] = c.TelegramCooldownSec
 
 	out, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
@@ -1583,6 +1626,29 @@ func (c *Config) loadEnvOverrides() {
 	}
 	if v := os.Getenv("TELEGRAM_CHAT_ID"); v != "" {
 		c.TelegramChatID = v
+	}
+
+	// Safety
+	if v := os.Getenv("ENABLE_LOSS_LIMITS"); v != "" {
+		c.EnableLossLimits = v == "1" || v == "true"
+	}
+	if v := os.Getenv("DAILY_LOSS_LIMIT_USDT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			c.DailyLossLimitUSDT = f
+		}
+	}
+	if v := os.Getenv("WEEKLY_LOSS_LIMIT_USDT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			c.WeeklyLossLimitUSDT = f
+		}
+	}
+	if v := os.Getenv("ENABLE_PERP_TELEGRAM"); v != "" {
+		c.EnablePerpTelegram = v == "1" || v == "true"
+	}
+	if v := os.Getenv("TELEGRAM_COOLDOWN_SEC"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			c.TelegramCooldownSec = n
+		}
 	}
 }
 
