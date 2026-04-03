@@ -13,6 +13,7 @@ import (
 	"arb/internal/discovery"
 	"arb/internal/engine"
 	"arb/internal/models"
+	"arb/internal/notify"
 	"arb/internal/risk"
 	"arb/internal/scraper"
 	"arb/internal/spotengine"
@@ -174,6 +175,10 @@ func main() {
 	eng := engine.NewEngine(exchanges, scanner, riskMgr, riskMon, healthMon, db, apiSrv, cfg, allocator)
 	eng.SetContracts(allContracts)
 
+	// Create shared Telegram notifier for both engines.
+	tg := notify.NewTelegram(cfg.TelegramBotToken, cfg.TelegramChatID)
+	eng.SetTelegram(tg)
+
 	// Ensure all exchanges are in cross-margin one-way mode.
 	for name, exch := range exchanges {
 		if err := exch.EnsureOneWayMode(); err != nil {
@@ -302,7 +307,7 @@ func main() {
 	// Start spot-futures arbitrage engine if enabled.
 	var spotEng *spotengine.SpotEngine
 	if cfg.SpotFuturesEnabled {
-		spotEng = spotengine.NewSpotEngine(exchanges, db, apiSrv, cfg, allocator)
+		spotEng = spotengine.NewSpotEngine(exchanges, db, apiSrv, cfg, allocator, tg)
 		spotEng.SetConfigNotify(notifier.Subscribe(), notifier.Subscribe())
 		apiSrv.SetSpotOpenHandler(spotEng.ManualOpen)
 		apiSrv.SetSpotCloseHandler(spotEng.ManualClose)

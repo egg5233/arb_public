@@ -214,6 +214,12 @@ type Config struct {
 	// Telegram notifications
 	TelegramBotToken string
 	TelegramChatID   string
+
+	// ---------------------------------------------------------------------------
+	// Safety: perp-perp Telegram notifications (struct field only; remaining
+	// touch points -- JSON, default, apply, toJSON, fromEnv -- added in Plan 03)
+	// ---------------------------------------------------------------------------
+	EnablePerpTelegram bool // On/off for perp-perp Telegram alerts (default OFF per D-10)
 }
 
 // ---------- Nested JSON config structs ----------

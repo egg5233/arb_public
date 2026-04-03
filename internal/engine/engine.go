@@ -14,6 +14,7 @@ import (
 	"arb/internal/database"
 	"arb/internal/discovery"
 	"arb/internal/models"
+	"arb/internal/notify"
 	"arb/internal/risk"
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
@@ -67,6 +68,13 @@ type Engine struct {
 	// Rejection tracking for dashboard display.
 	rejStore *models.RejectionStore
 
+	// Telegram notifier for critical event alerts (SL, emergency close, API errors).
+	telegram *notify.TelegramNotifier
+
+	// Per-exchange consecutive API error counter.
+	apiErrMu     sync.Mutex
+	apiErrCounts map[string]int // exchange name -> consecutive failure count
+
 	// SL fill detection: reverse index from (exchange:orderID) → (posID, leg).
 	slIndexMu sync.RWMutex
 	slIndex   map[string]slEntry // "exchange:orderID" → posID + leg
@@ -115,8 +123,37 @@ func NewEngine(
 		entryActive:     make(map[string]string),
 		slIndex:         make(map[string]slEntry),
 		slFillCh:        make(chan slFillEvent, 64),
+		apiErrCounts:    make(map[string]int),
 	}
 	return e
+}
+
+// SetTelegram injects the shared Telegram notifier for perp-perp alerts.
+func (e *Engine) SetTelegram(tg *notify.TelegramNotifier) {
+	e.telegram = tg
+}
+
+// recordAPIError increments the consecutive error counter for an exchange.
+// Triggers Telegram notification at exactly 3 consecutive failures (per D-02).
+func (e *Engine) recordAPIError(exchName string, err error) {
+	if !e.cfg.EnablePerpTelegram {
+		return
+	}
+	e.apiErrMu.Lock()
+	e.apiErrCounts[exchName]++
+	count := e.apiErrCounts[exchName]
+	e.apiErrMu.Unlock()
+
+	if count == 3 {
+		e.telegram.NotifyConsecutiveAPIErrors(exchName, count, err)
+	}
+}
+
+// recordAPISuccess resets the consecutive error counter for an exchange.
+func (e *Engine) recordAPISuccess(exchName string) {
+	e.apiErrMu.Lock()
+	e.apiErrCounts[exchName] = 0
+	e.apiErrMu.Unlock()
 }
 
 // ManualClose initiates an exit for the given position from the dashboard.
@@ -1324,6 +1361,10 @@ func (e *Engine) triggerEmergencyClose(exchName, posID, leg string, upd exchange
 		"message": fmt.Sprintf("Stop-loss triggered on %s (%s leg) — emergency closing %s", exchName, leg, posID),
 	})
 
+	if e.cfg.EnablePerpTelegram {
+		e.telegram.NotifySLTriggered(pos, leg, exchName)
+	}
+
 	go e.closePositionEmergency(pos)
 }
 
@@ -1384,6 +1425,10 @@ func (e *Engine) handleReduce(action risk.HealthAction) {
 		return
 	}
 
+	if e.cfg.EnablePerpTelegram {
+		e.telegram.NotifyEmergencyClosePerp(action.Exchange, "L4", len(action.Positions))
+	}
+
 	for _, pos := range action.Positions {
 		e.cancelExitGoroutine(pos.ID)
 
@@ -1416,6 +1461,10 @@ func (e *Engine) handleEmergencyClose(action risk.HealthAction) {
 		e.log.Info("[DRY RUN] L5 would emergency close %d positions on %s",
 			len(action.Positions), action.Exchange)
 		return
+	}
+
+	if e.cfg.EnablePerpTelegram {
+		e.telegram.NotifyEmergencyClosePerp(action.Exchange, "L5", len(action.Positions))
 	}
 
 	for _, pos := range action.Positions {
@@ -2760,6 +2809,7 @@ fillLoop:
 			})
 			if err != nil {
 				shortConsecFails++
+				e.recordAPIError(opp.ShortExchange, err)
 				// On margin error, refresh balance to get accurate state
 				if isMarginError(err) {
 					e.log.Warn("depth tick: short IOC margin insufficient for %s, invalidating cache", opp.Symbol)
@@ -2768,6 +2818,7 @@ fillLoop:
 				e.log.Warn("depth tick: short IOC failed (%d/%d): %v", shortConsecFails, maxConsecFails, err)
 				continue
 			}
+			e.recordAPISuccess(opp.ShortExchange)
 			shortFilled, shortAvg = e.confirmFill(shortExch, shortOID, opp.Symbol)
 			if shortFilled == 0 {
 				shortConsecFails++
@@ -2788,6 +2839,7 @@ fillLoop:
 			})
 			if err != nil {
 				longConsecFails++
+				e.recordAPIError(opp.LongExchange, err)
 				if isMarginError(err) {
 					e.log.Warn("depth tick: long IOC margin insufficient for %s after short filled, invalidating cache", opp.Symbol)
 					lastBalCheck = time.Time{}
@@ -2796,6 +2848,7 @@ fillLoop:
 				e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
 				continue
 			}
+			e.recordAPISuccess(opp.LongExchange)
 			longConsecFails = 0
 			longFilled, longAvg = e.confirmFill(longExch, longOID, opp.Symbol)
 			if longFilled < shortFilled {
@@ -2819,6 +2872,7 @@ fillLoop:
 			})
 			if err != nil {
 				longConsecFails++
+				e.recordAPIError(opp.LongExchange, err)
 				// On margin error, refresh balance to get accurate state
 				if isMarginError(err) {
 					e.log.Warn("depth tick: long IOC margin insufficient for %s, invalidating cache", opp.Symbol)
@@ -2827,6 +2881,7 @@ fillLoop:
 				e.log.Warn("depth tick: long IOC failed (%d/%d): %v", longConsecFails, maxConsecFails, err)
 				continue
 			}
+			e.recordAPISuccess(opp.LongExchange)
 			longFilled, longAvg = e.confirmFill(longExch, longOID, opp.Symbol)
 			if longFilled == 0 {
 				longConsecFails++
@@ -2847,6 +2902,7 @@ fillLoop:
 			})
 			if err != nil {
 				shortConsecFails++
+				e.recordAPIError(opp.ShortExchange, err)
 				if isMarginError(err) {
 					e.log.Warn("depth tick: short IOC margin insufficient for %s after long filled, invalidating cache", opp.Symbol)
 					lastBalCheck = time.Time{}
@@ -2855,6 +2911,7 @@ fillLoop:
 				e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
 				continue
 			}
+			e.recordAPISuccess(opp.ShortExchange)
 			shortConsecFails = 0
 			shortFilled, shortAvg = e.confirmFill(shortExch, shortOID, opp.Symbol)
 			if shortFilled < longFilled {

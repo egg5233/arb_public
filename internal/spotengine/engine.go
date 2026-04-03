@@ -59,12 +59,14 @@ type SpotEngine struct {
 
 // NewSpotEngine creates a new SpotEngine with all required dependencies.
 // It extracts SpotMarginExchange implementations from the exchanges map.
+// The telegram notifier is shared with the perp-perp engine (may be nil).
 func NewSpotEngine(
 	exchanges map[string]exchange.Exchange,
 	db *database.Client,
 	apiSrv *api.Server,
 	cfg *config.Config,
 	allocator *risk.CapitalAllocator,
+	telegram *notify.TelegramNotifier,
 ) *SpotEngine {
 	sm := make(map[string]exchange.SpotMarginExchange)
 	for name, exc := range exchanges {
@@ -85,7 +87,7 @@ func NewSpotEngine(
 		exitState:      exitState{exiting: make(map[string]bool)},
 		lastSeen:       make(map[string]bool),
 		borrowVelocity: NewRateVelocityDetector(),
-		telegram:       notify.NewTelegram(cfg.TelegramBotToken, cfg.TelegramChatID),
+		telegram:       telegram,
 	}
 }
 

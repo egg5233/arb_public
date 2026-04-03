@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"fmt"
 	"testing"
 
+	"arb/internal/config"
 	"arb/internal/models"
 )
 
@@ -78,6 +80,54 @@ func TestClassifyRotation(t *testing.T) {
 					shared, old, new_, side, tt.wantShared, tt.wantOld, tt.wantNew, tt.wantSide)
 			}
 		})
+	}
+}
+
+func TestAPIErrorCounter(t *testing.T) {
+	e := &Engine{
+		apiErrCounts: make(map[string]int),
+		cfg:          &config.Config{EnablePerpTelegram: true},
+	}
+	// Record 2 errors -- should not trigger (threshold is 3).
+	e.recordAPIError("binance", fmt.Errorf("timeout"))
+	e.recordAPIError("binance", fmt.Errorf("timeout"))
+	if e.apiErrCounts["binance"] != 2 {
+		t.Errorf("expected 2 errors, got %d", e.apiErrCounts["binance"])
+	}
+	// Third error hits threshold (notification fires but TelegramNotifier is nil -- nil-safe).
+	e.recordAPIError("binance", fmt.Errorf("timeout"))
+	if e.apiErrCounts["binance"] != 3 {
+		t.Errorf("expected 3 errors, got %d", e.apiErrCounts["binance"])
+	}
+	// Fourth error should still increment but not re-trigger (only at exactly 3).
+	e.recordAPIError("binance", fmt.Errorf("timeout"))
+	if e.apiErrCounts["binance"] != 4 {
+		t.Errorf("expected 4 errors, got %d", e.apiErrCounts["binance"])
+	}
+}
+
+func TestAPIErrorCounterReset(t *testing.T) {
+	e := &Engine{
+		apiErrCounts: make(map[string]int),
+		cfg:          &config.Config{EnablePerpTelegram: true},
+	}
+	e.recordAPIError("binance", fmt.Errorf("timeout"))
+	e.recordAPIError("binance", fmt.Errorf("timeout"))
+	e.recordAPISuccess("binance")
+	if e.apiErrCounts["binance"] != 0 {
+		t.Errorf("expected 0 after reset, got %d", e.apiErrCounts["binance"])
+	}
+}
+
+func TestAPIErrorCounterDisabled(t *testing.T) {
+	e := &Engine{
+		apiErrCounts: make(map[string]int),
+		cfg:          &config.Config{EnablePerpTelegram: false},
+	}
+	// When EnablePerpTelegram is false, errors should not be tracked.
+	e.recordAPIError("binance", fmt.Errorf("timeout"))
+	if e.apiErrCounts["binance"] != 0 {
+		t.Errorf("expected 0 when disabled, got %d", e.apiErrCounts["binance"])
 	}
 }
 
