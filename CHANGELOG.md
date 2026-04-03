@@ -8,6 +8,8 @@ All notable changes to this project will be documented in this file.
 - **Analytics data layer** — new `internal/analytics/` package with SQLite time-series store (WAL mode, pure-Go driver via `modernc.org/sqlite`) for cumulative PnL snapshots. Write, batch-write, range-query by timestamp and strategy.
 - **ArbitragePosition enrichment** — three new fields: `ExitFees`, `BasisGainLoss`, `Slippage` for per-position PnL decomposition (mirrors spot-futures model)
 - **Analytics aggregator** — `CalculateAPR`, `ComputeWinRate`, `ComputeExchangeMetrics`, `ComputeStrategySummary` functions for performance analytics computations
+- **Recharts charting library** (^3.8.1) and **react-is** (^19.2.4) added as frontend dependencies for Phase 4 performance analytics charts
+- Lockfile updated and audited: zero axios contamination confirmed
 
 ## [0.26.0] - 2026-04-03
 
