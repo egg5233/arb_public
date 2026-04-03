@@ -90,9 +90,9 @@ func TestComputeExchangeMetrics(t *testing.T) {
 		t.Errorf("Binance profit: expected %f, got %f", expectedBinanceProfit, binance.Profit)
 	}
 
-	// Bybit: p1(short half=5), p4(short half=-2.5), p5(both halves=10) = 12.5
+	// Bybit: p1(short half=5), p3(long half=2.5), p4(short half=-2.5), p5(both halves=10) = 15.0
 	bybit := metricMap["Bybit"]
-	expectedBybitProfit := 5.0 - 2.5 + 10.0 // = 12.5
+	expectedBybitProfit := 5.0 + 2.5 - 2.5 + 10.0 // = 15.0
 	if math.Abs(bybit.Profit-expectedBybitProfit) > 0.01 {
 		t.Errorf("Bybit profit: expected %f, got %f", expectedBybitProfit, bybit.Profit)
 	}
