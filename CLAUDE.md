@@ -1,7 +1,5 @@
 # CLAUDE.md
 
-**If you are a Paperclip agent (you have PAPERCLIP_AGENT_ID or PAPERCLIP_RUN_ID set), IGNORE this entire file. Follow your Paperclip agent instructions instead — they take priority over everything in this file.**
-
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository outside of Paperclip.
 
 ## CRITICAL: npm security lockdown
@@ -11,19 +9,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - You are the coordinator/team lead. For any task involving 2+ files or non-trivial logic, break it into subtasks and delegate to teammates. Wait for teammates to complete before proceeding.
 - For trivial changes (single-line fixes, config edits, typos), you may implement directly.
 - Use only Sonnet4.6 or Opus4.6 when creating teams.
-
-## Project
-
-Funding rate arbitrage bot — monitors funding rate differentials across **Binance, Bybit, Gate.io, Bitget, OKX, BingX** and executes delta-neutral positions (long low-rate exchange, short high-rate exchange).
-
-## Tech Stack
-
-- **Language**: Go 1.22+
-- **Database**: Redis DB 2 (state, locks, position tracking)
-- **Data source**: Loris API (`https://api.loris.tools/funding`) with exchange-native verification
-- **Dashboard**: Go HTTP/WebSocket backend + React (Vite + Tailwind) frontend, embedded via go:embed
-- **Config**: Environment variables
-- **Node**: v22.13.0 via nvm (for frontend builds)
 
 ## Build & Run
 
@@ -39,10 +24,6 @@ make dev
 
 # Frontend only
 make build-frontend
-
-# Live exchange tests
-go run ./cmd/livetest/ --exchange binance
-go run ./cmd/livetest/ --exchange bitget --skip-orders
 ```
 
 ## Project Structure
@@ -50,31 +31,18 @@ Before making structural changes or adding new modules, read ARCHITECTURE.md in 
 
 ## Skill instruction for agent team
 
+### Go code navigation
+    Prefer the LSP tool (gopls) over Grep/Glob for Go code navigation — use `goToDefinition`, `findReferences`, `incomingCalls`, `outgoingCalls`, and `hover` when tracing call paths, finding callers, or checking types. Fall back to Grep/Glob only when LSP is unavailable or for cross-language searches.
+
 ### Debugging
-    Let agent team load `/sdebug` skill when debugging, bug fixing, or troubleshooting issues. Follow the four-phase framework: Root Cause Investigation → Pattern Analysis → Hypothesis Testing → Implementation.
+    load `/sdebug` skill when debugging, bug fixing, or troubleshooting issues. Follow the four-phase framework: Root Cause Investigation → Pattern Analysis → Hypothesis Testing → Implementation.
 
 ### When code change involves any exchange api
-    Let agent team load `/local-api-docs` skill
+    load `/local-api-docs` skill
 
 
 ## Codex Integration
-
-### Prerequisites
-- Codex CLI (`npm install -g @openai/codex`)
-- Before using any codex command, verify with `which codex`. 
-  If not installed, skip codex tasks and work manually.
-
-### Session Management
-Two skill types: **codex** and **codex-chat**.
-Always attempt to resume the persistent session before starting a new one.
-- Read the session ID from `.codex-session` (gitignored, local to each user)
-- If the file is missing or resume fails, start a new session and write the new session ID back to `.codex-session`
-- Only start a fresh session if resume fails or the user explicitly asks
-
-### Routing
-- `/codex` → invoke the **codex** skill only
-- `/codex-chat` → invoke the **codex-chat** skill only
-- Never cross-invoke between the two
+If user asks to run codex , read instructions in ~/.claude/plugins/marketplaces/openai-codex/README.md and decide which /codex: command to run
 
 <!-- GSD:project-start source:PROJECT.md -->
 ## Project
@@ -139,7 +107,7 @@ A funding rate arbitrage system that monitors funding rate differentials across 
 # Full build (correct order)
 # Frontend only
 # Dev mode (assumes frontend already built)
-- `build-frontend` - Requires Node 22+ via nvm, runs `npm install && npm run build` in `web/`
+- `build-frontend` - Requires Node 22+ via nvm, runs `npm ci && npm run build` in `web/`
 - `build` - Depends on `build-frontend`, then `go build -o arb ./cmd/main.go`
 - `dev` - `go run ./cmd/main.go` (no frontend rebuild)
 - `run` - Execute the compiled `./arb` binary
@@ -191,7 +159,7 @@ A funding rate arbitrage system that monitors funding rate differentials across 
 - `cmd/wstest/` - WebSocket testing
 - `cmd/validate-docs/` - API documentation validator
 ## Versioning
-- Current version: 0.22.49 (`VERSION` file)
+- Current version: 0.24.6 (`VERSION` file)
 - Changelog maintained in `CHANGELOG.md`
 - Every commit must update both `CHANGELOG.md` and `VERSION`
 <!-- GSD:stack-end -->
@@ -236,8 +204,6 @@ A funding rate arbitrage system that monitors funding rate differentials across 
 - Methods on optional types (e.g., `*TelegramNotifier`) are safe to call on nil receivers -- see `internal/notify/telegram.go`
 - Standard JSON wrapper for all dashboard API responses:
 - Helper: `writeJSON(w, status, Response{...})` in `internal/api/handlers.go`
-## Logging
-## Import Organization
 ## Comment/Documentation Style
 - Every interface method has a single-line `//` comment explaining its purpose
 - Interface-level `//` comment describes the abstraction's role
@@ -351,7 +317,7 @@ A funding rate arbitrage system that monitors funding rate differentials across 
 - Emits: `HealthAction` on a channel consumed by the engine
 - Purpose: Independent engine for spot margin + futures hedge arbitrage
 - Location: `internal/spotengine/`
-- Contains: `engine.go` (lifecycle, discovery loop), `discovery.go` (CoinGlass reader, scoring), `execution.go` (entry/exit trades, 1678 lines), `exit_manager.go` (exit triggers, 622 lines), `monitor.go` (stuck exit retry, repay retry), `risk_gate.go` (pre-entry checks), `autoentry.go` (automated entry), `capital.go`, `rate_velocity.go`
+- Contains: `engine.go` (lifecycle, discovery loop), `discovery.go` (native Loris scanner + CoinGlass fallback, scoring), `execution.go` (entry/exit trades), `exit_manager.go` (exit triggers + guards: min-hold, settlement, spread), `monitor.go` (stuck exit retry, repay retry), `risk_gate.go` (pre-entry checks + basis gate), `autoentry.go` (automated entry), `capital.go`, `rate_velocity.go`
 - Depends on: `pkg/exchange`, `internal/database`, `internal/api`, `internal/models`, `internal/config`, `internal/risk`, `internal/notify`
 - Used by: `cmd/main.go` (conditionally started if `SpotFuturesEnabled`)
 - Fully independent from perp-perp engine: separate goroutines, separate Redis keys, separate API routes
@@ -389,8 +355,6 @@ A funding rate arbitrage system that monitors funding rate differentials across 
 - Depends on: Standard library only
 - Used by: All packages
 ## Data Flow
-```
-```
 - All position state persisted to Redis (DB 2) via `internal/database/state.go`
 - Distributed locks via Redis SET NX + TTL + Lua scripts (`internal/database/locks.go`)
 - In-memory tracking for exit goroutines (`exitActive`, `exitCancels`, `exitDone` maps in Engine)

@@ -63,7 +63,7 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 03-01-PLAN.md -- Telegram notifications: extend TelegramNotifier with cooldown + wire into perp engine
+- [x] 03-01-PLAN.md -- Telegram notifications: extend TelegramNotifier with cooldown + wire into perp engine
 - [ ] 03-02-PLAN.md -- Loss limits: Redis sorted set tracker + pre-entry gate + WS broadcast
 - [ ] 03-03-PLAN.md -- Config fields (5 new, 6-touch-point) + Dashboard safety tab + Overview banner + i18n
 
@@ -111,6 +111,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 |-------|----------------|--------|-----------|
 | 1. Spot-Futures Exchange Expansion | 0/3 | Not started | - |
 | 2. Spot-Futures Automation | 2/3 | In Progress|  |
-| 3. Operational Safety | 0/3 | Not started | - |
+| 3. Operational Safety | 1/3 | In Progress | - |
 | 4. Performance Analytics | 0/4 | Not started | - |
 | 5. Capital Allocation | 0/3 | Not started | - |

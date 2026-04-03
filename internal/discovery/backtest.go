@@ -13,7 +13,15 @@ import (
 	"arb/internal/models"
 )
 
-const lorisHistoricalURL = "https://loris.tools/api/funding/historical"
+var (
+	lorisHistoricalURL          = "https://loris.tools/api/funding/historical"
+	backtestCacheTTL            = 24 * time.Hour
+	backtestRefreshInterval     = 4 * time.Hour
+	backtestRefreshCandidateMin = 10
+	backtestInlineFetchLimit    = 3
+	backtestPrefetchMinDelay    = 3 * time.Second
+	backtestPrefetchMaxDelay    = 30 * time.Second
+)
 
 // backtestResult caches the raw sums from the backtest check.
 // Pass/fail is re-evaluated on each read using the current BacktestMinProfit.
@@ -21,13 +29,14 @@ type backtestResult struct {
 	LongSum   float64 `json:"long_sum"`
 	ShortSum  float64 `json:"short_sum"`
 	NetProfit float64 `json:"net_profit"`
+	FetchedAt string  `json:"fetched_at,omitempty"`
 }
 
 // lorisHistoricalResponse represents the Loris historical funding API response.
 type lorisHistoricalResponse struct {
-	Symbol  string                       `json:"symbol"`
-	Series  map[string][]lorisDataPoint  `json:"series"`
-	Notices []string                     `json:"notices"`
+	Symbol  string                      `json:"symbol"`
+	Series  map[string][]lorisDataPoint `json:"series"`
+	Notices []string                    `json:"notices"`
 }
 
 type lorisDataPoint struct {
@@ -47,20 +56,53 @@ func (s *Scanner) backtestFundingHistory(opp models.Opportunity) (bool, string) 
 	cacheKey := fmt.Sprintf("arb:backtest:%s:%s:%s:%d", opp.Symbol, opp.LongExchange, opp.ShortExchange, days)
 
 	// Check Redis cache — raw sums cached, pass/fail re-evaluated with current threshold.
-	if cached, err := s.db.Get(cacheKey); err == nil && cached != "" {
-		var result backtestResult
-		if json.Unmarshal([]byte(cached), &result) == nil {
-			if result.NetProfit > s.cfg.BacktestMinProfit {
-				return true, ""
-			}
-			return false, fmt.Sprintf("backtest unprofitable (%dd cached): longSum=%.2f shortSum=%.2f net=%.2f (need >%.2f)",
-				days, result.LongSum, result.ShortSum, result.NetProfit, s.cfg.BacktestMinProfit)
+	if result, ok := s.loadBacktestResult(cacheKey); ok {
+		if result.NetProfit > s.cfg.BacktestMinProfit {
+			return true, ""
 		}
+		return false, fmt.Sprintf("backtest unprofitable (%dd cached): longSum=%.2f shortSum=%.2f net=%.2f (need >%.2f)",
+			days, result.LongSum, result.ShortSum, result.NetProfit, s.cfg.BacktestMinProfit)
 	}
 
 	// Cache miss — fail open. Background prefetch will populate for next scan.
 	s.log.Info("backtest %s (%s/%s): cache miss, skipping (will prefetch)", opp.Symbol, opp.LongExchange, opp.ShortExchange)
 	return true, ""
+}
+
+// backtestFundingHistoryRequireCached guarantees the decision is backed by an
+// actual cached result. On entry scans, callers may allow an inline fetch on
+// cache miss; if that fails, the opportunity is rejected.
+func (s *Scanner) backtestFundingHistoryRequireCached(opp models.Opportunity, allowInlineFetch bool) (bool, string) {
+	days := s.cfg.BacktestDays
+	if days <= 0 {
+		return true, ""
+	}
+
+	cacheKey := fmt.Sprintf("arb:backtest:%s:%s:%s:%d", opp.Symbol, opp.LongExchange, opp.ShortExchange, days)
+	if result, ok := s.loadBacktestResult(cacheKey); ok {
+		if result.NetProfit > s.cfg.BacktestMinProfit {
+			return true, ""
+		}
+		return false, fmt.Sprintf("backtest unprofitable (%dd cached): longSum=%.2f shortSum=%.2f net=%.2f (need >%.2f)",
+			days, result.LongSum, result.ShortSum, result.NetProfit, s.cfg.BacktestMinProfit)
+	}
+
+	if !allowInlineFetch {
+		return false, fmt.Sprintf("backtest missing (%dd): waiting for prefetch", days)
+	}
+
+	if !s.tryInlineFetchBacktest(opp) {
+		return false, fmt.Sprintf("backtest missing (%dd): inline fetch failed", days)
+	}
+
+	if result, ok := s.loadBacktestResult(cacheKey); ok {
+		if result.NetProfit > s.cfg.BacktestMinProfit {
+			return true, ""
+		}
+		return false, fmt.Sprintf("backtest unprofitable (%dd fetched): longSum=%.2f shortSum=%.2f net=%.2f (need >%.2f)",
+			days, result.LongSum, result.ShortSum, result.NetProfit, s.cfg.BacktestMinProfit)
+	}
+	return false, fmt.Sprintf("backtest missing (%dd): inline fetch returned no cache entry", days)
 }
 
 // fetchAndCacheBacktest calls the Loris historical API for a single opportunity
@@ -141,9 +183,14 @@ func (s *Scanner) fetchAndCacheBacktest(opp models.Opportunity) bool {
 	}
 
 	netProfit := shortSumY - longSumY
-	result := backtestResult{LongSum: longSumY, ShortSum: shortSumY, NetProfit: netProfit}
+	result := backtestResult{
+		LongSum:   longSumY,
+		ShortSum:  shortSumY,
+		NetProfit: netProfit,
+		FetchedAt: now.Format(time.RFC3339),
+	}
 	if data, err := json.Marshal(result); err == nil {
-		s.db.SetWithTTL(cacheKey, string(data), 24*time.Hour)
+		s.db.SetWithTTL(cacheKey, string(data), backtestCacheTTL)
 	}
 
 	s.log.Info("backtest prefetch %s (%s/%s %dd): longSum=%.2f shortSum=%.2f net=%.2f",
@@ -174,19 +221,31 @@ func (s *Scanner) prefetchBacktestData(opps []models.Opportunity) {
 		return
 	}
 
+	candidates := s.backtestRefreshCandidates(opps)
+	if len(candidates) == 0 {
+		return
+	}
+
 	// Deduplicate by cache key.
 	type oppKey struct{ symbol, long, short string }
 	seen := make(map[oppKey]bool)
 	var toFetch []models.Opportunity
-	for _, opp := range opps {
+	fresh := 0
+	stale := 0
+	now := time.Now().UTC()
+	for _, opp := range candidates {
 		k := oppKey{opp.Symbol, opp.LongExchange, opp.ShortExchange}
 		if seen[k] {
 			continue
 		}
 		seen[k] = true
 		cacheKey := fmt.Sprintf("arb:backtest:%s:%s:%s:%d", opp.Symbol, opp.LongExchange, opp.ShortExchange, days)
-		if cached, err := s.db.Get(cacheKey); err == nil && cached != "" {
-			continue // already cached
+		if result, ok := s.loadBacktestResult(cacheKey); ok {
+			if !result.isStale(now) {
+				fresh++
+				continue
+			}
+			stale++
 		}
 		toFetch = append(toFetch, opp)
 	}
@@ -195,12 +254,13 @@ func (s *Scanner) prefetchBacktestData(opps []models.Opportunity) {
 		return
 	}
 
-	s.log.Info("backtest prefetch: %d to fetch, %d already cached", len(toFetch), len(seen)-len(toFetch))
+	s.log.Info("backtest prefetch: %d to fetch (%d stale), %d fresh, %d candidates",
+		len(toFetch), stale, fresh, len(seen))
 
 	fetched := 0
 	for _, opp := range toFetch {
-		// Random delay 3-30s between requests.
-		delay := time.Duration(3+rand.Intn(28)) * time.Second
+		// Random delay between requests to avoid bursting the historical API.
+		delay := nextBacktestPrefetchDelay()
 		time.Sleep(delay)
 
 		// Re-check backoff (might have been set by another path).
@@ -224,6 +284,79 @@ func (s *Scanner) prefetchBacktestData(opps []models.Opportunity) {
 	}
 
 	s.log.Info("backtest prefetch: completed %d/%d", fetched, len(toFetch))
+}
+
+func (s *Scanner) tryInlineFetchBacktest(opp models.Opportunity) bool {
+	s.lorisBackoffMu.RLock()
+	backoff := s.lorisBackoffUntil
+	s.lorisBackoffMu.RUnlock()
+	if time.Now().Before(backoff) {
+		s.log.Warn("backtest entry fetch %s (%s/%s): skipped, rate limit backoff until %s",
+			opp.Symbol, opp.LongExchange, opp.ShortExchange, backoff.Format("15:04:05"))
+		return false
+	}
+
+	s.log.Info("backtest entry fetch %s (%s/%s): cache miss, fetching inline",
+		opp.Symbol, opp.LongExchange, opp.ShortExchange)
+	if s.fetchAndCacheBacktest(opp) {
+		return true
+	}
+
+	s.lorisBackoffMu.Lock()
+	s.lorisBackoffUntil = time.Now().Add(60 * time.Second)
+	s.lorisBackoffMu.Unlock()
+	return false
+}
+
+func (s *Scanner) loadBacktestResult(cacheKey string) (backtestResult, bool) {
+	cached, err := s.db.Get(cacheKey)
+	if err != nil || cached == "" {
+		return backtestResult{}, false
+	}
+
+	var result backtestResult
+	if err := json.Unmarshal([]byte(cached), &result); err != nil {
+		return backtestResult{}, false
+	}
+	return result, true
+}
+
+func (r backtestResult) isStale(now time.Time) bool {
+	if backtestRefreshInterval <= 0 {
+		return false
+	}
+	if r.FetchedAt == "" {
+		return true
+	}
+
+	fetchedAt, err := time.Parse(time.RFC3339, r.FetchedAt)
+	if err != nil {
+		return true
+	}
+	return now.Sub(fetchedAt) >= backtestRefreshInterval
+}
+
+func (s *Scanner) backtestRefreshCandidates(opps []models.Opportunity) []models.Opportunity {
+	limit := backtestRefreshCandidateMin
+	if cfgLimit := s.cfg.MaxPositions * 2; cfgLimit > limit {
+		limit = cfgLimit
+	}
+	if limit <= 0 || len(opps) <= limit {
+		return opps
+	}
+	return opps[:limit]
+}
+
+func nextBacktestPrefetchDelay() time.Duration {
+	if backtestPrefetchMaxDelay <= backtestPrefetchMinDelay {
+		if backtestPrefetchMinDelay < 0 {
+			return 0
+		}
+		return backtestPrefetchMinDelay
+	}
+
+	span := backtestPrefetchMaxDelay - backtestPrefetchMinDelay + time.Second
+	return backtestPrefetchMinDelay + time.Duration(rand.Int63n(int64(span)))
 }
 
 // getLegInterval returns the funding interval in hours for a specific exchange+symbol.
