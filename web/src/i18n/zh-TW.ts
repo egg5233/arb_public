@@ -197,6 +197,8 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.marginHealthDesc': '基於全倉維持率的風險管理與自動減倉',
   'cfg.system': '系統',
   'cfg.systemDesc': '運行模式',
+  'cfg.section.poolAllocator': '池分配器',
+  'cfg.section.scanMinutes': '掃描分鐘',
 
   // Config fields
   'cfg.field.topOpportunities': '機會數量',
@@ -210,7 +212,6 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.field.blacklist': '封鎖幣種',
   'cfg.desc.blacklist': '封鎖幣種不會被永續-永續自動開倉。可在機會或持倉頁面新增，在此處或點擊解除封鎖移除。',
   'cfg.blacklistEmpty': '無封鎖幣種',
-  'cfg.field.rebalanceAfterExit': '退出後再平衡',
   'cfg.field.rebalanceScanMinute': '再平衡執行',
   'cfg.field.entryScanMinute': '進場執行',
   'cfg.field.exitScanMinute': '退出執行',
@@ -316,7 +317,6 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.desc.reEnterCooldownHours': '任何平倉（無論盈虧）後，封鎖該幣種重新進場的時數。0 = 停用',
   'cfg.desc.backtestDays': '進場前檢查的歷史資金費率天數。拒絕歷史資金費率差不利的幣種。0 = 停用',
   'cfg.desc.backtestMinProfit': '歷史資金費率淨利潤最低門檻，低於此值不通過回測篩選',
-  'cfg.desc.rebalanceAfterExit': '於 :35 分增加開倉前餘額調撥，使可開倉數量最大化。',
   'cfg.desc.rebalanceScanMinute': '每小時中觸發跨交易所資金再平衡的分鐘標記',
   'cfg.desc.exitScanMinute': '觸發活躍持倉退出條件檢查的分鐘標記',
   'cfg.desc.entryScanMinute': '觸發合格機會交易執行的分鐘標記',
@@ -550,6 +550,12 @@ const zhTW: Record<TranslationKey, string> = {
   'perm.legendUnknown': '未知 — 無法驗證（請檢查交易所介面）',
   'perm.tipTitle': 'Gate.io 使用者：',
   'perm.tipGateio': '請在 API 金鑰設定中啟用「保證金交易（新版統一帳戶）」權限，以正確顯示帳戶餘額。未啟用時，儀表板將使用估算餘額。',
+  'cfg.field.enablePoolAllocator': '啟用資金池配置器',
+  'cfg.field.topPairsPerSymbol': '每幣候選配對數',
+  'cfg.field.allocatorTimeoutMs': '配置器逾時',
+  'cfg.desc.enablePoolAllocator': '啟用再平衡資金池配置器。它會為每個幣保留多組交易所配對候選，並挑選可實際轉帳落地的組合。預設關閉，方便分階段上線。',
+  'cfg.desc.topPairsPerSymbol': '每個幣最多保留幾組排序後的交易所配對候選供再平衡配置器選擇。設為 1 時，行為最接近舊版單一配對邏輯。',
+  'cfg.desc.allocatorTimeoutMs': '資金池配置器 branch-and-bound 搜尋的軟性時間預算，單位為毫秒。實際總耗時仍可能主要由即時風控模擬 API 呼叫決定。',
 };
 
 export default zhTW;

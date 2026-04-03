@@ -1001,6 +1001,7 @@ func generateUUID() string {
 
 // Ensure Adapter implements exchange.Exchange at compile time.
 var _ exchange.Exchange = (*Adapter)(nil)
+var _ exchange.TradingFeeProvider = (*Adapter)(nil)
 
 // GetUserTrades returns filled trades for a symbol since startTime.
 // Bybit endpoint: GET /v5/execution/list
@@ -1292,4 +1293,43 @@ func (a *Adapter) isOneWayMode() bool {
 		}
 	}
 	return false
+}
+
+// GetTradingFee returns the authenticated user's maker/taker fee rates for linear perpetuals.
+func (a *Adapter) GetTradingFee() (*exchange.TradingFee, error) {
+	params := map[string]string{
+		"category": "linear",
+		"symbol":   "BTCUSDT",
+	}
+	result, err := a.client.Get("/v5/account/fee-rate", params)
+	if err != nil {
+		return nil, fmt.Errorf("bybit GetTradingFee: %w", err)
+	}
+
+	var resp struct {
+		List []struct {
+			MakerFeeRate string `json:"makerFeeRate"`
+			TakerFeeRate string `json:"takerFeeRate"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return nil, fmt.Errorf("bybit GetTradingFee unmarshal: %w", err)
+	}
+	if len(resp.List) == 0 {
+		return nil, fmt.Errorf("bybit GetTradingFee: empty fee rate list")
+	}
+
+	maker, err := strconv.ParseFloat(resp.List[0].MakerFeeRate, 64)
+	if err != nil {
+		return nil, fmt.Errorf("bybit GetTradingFee parse maker: %w", err)
+	}
+	taker, err := strconv.ParseFloat(resp.List[0].TakerFeeRate, 64)
+	if err != nil {
+		return nil, fmt.Errorf("bybit GetTradingFee parse taker: %w", err)
+	}
+
+	return &exchange.TradingFee{
+		MakerRate: maker,
+		TakerRate: taker,
+	}, nil
 }

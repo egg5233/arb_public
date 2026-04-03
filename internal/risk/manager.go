@@ -15,6 +15,13 @@ import (
 // Compile-time check: *Manager satisfies models.RiskChecker.
 var _ models.RiskChecker = (*Manager)(nil)
 
+// PrefetchCache holds pre-fetched exchange data (balances, orderbooks) to avoid
+// redundant API calls when approving multiple opportunities in a batch.
+type PrefetchCache struct {
+	Balances   map[string]*exchange.Balance   // exchange name -> futures balance
+	Orderbooks map[string]*exchange.Orderbook // "exchange:symbol" -> orderbook
+}
+
 // Manager performs pre-trade risk assessment before entering positions.
 // It satisfies models.RiskChecker.
 type Manager struct {
@@ -55,25 +62,53 @@ func (m *Manager) SetExchangeScorer(scorer *ExchangeScorer) {
 
 // Approve runs all pre-trade risk checks and returns an Approval decision.
 func (m *Manager) Approve(opp models.Opportunity) (*models.RiskApproval, error) {
-	return m.approveInternal(opp, nil)
+	return m.approveInternal(opp, nil, false, nil)
 }
 
 // ApproveWithReserved is like Approve but subtracts already-reserved margin
 // from available balances before checking sufficiency.
 func (m *Manager) ApproveWithReserved(opp models.Opportunity, reserved map[string]float64) (*models.RiskApproval, error) {
-	return m.approveInternal(opp, reserved)
+	return m.approveInternal(opp, reserved, false, nil)
+}
+
+// ApproveWithReservedCached is like ApproveWithReserved but uses pre-fetched
+// balance and orderbook data to avoid redundant API calls in batch approval loops.
+// If a needed value is missing from the cache, it falls back to a live API call.
+func (m *Manager) ApproveWithReservedCached(opp models.Opportunity, reserved map[string]float64, cache *PrefetchCache) (*models.RiskApproval, error) {
+	return m.approveInternal(opp, reserved, false, cache)
 }
 
 // SimulateApproval runs the full approval checks without side effects.
 // It skips ensureFuturesBalance (no spot→futures transfer) and lock acquisition.
 // Used by V2 rebalance to predict which opps would pass real approval.
 func (m *Manager) SimulateApproval(opp models.Opportunity, reserved map[string]float64) (*models.RiskApproval, error) {
-	return m.approveInternal(opp, reserved, true)
+	return m.approveInternal(opp, reserved, true, nil)
+}
+
+// SimulateApprovalForPair is a side-effect-free approval simulation for a
+// specific long/short pair derived from an existing opportunity.
+// alt, when non-nil, overrides the rate/spread/cost fields so that downstream
+// checks (gap recovery, spread stability) use the alternative pair's values
+// instead of the primary pair's.
+func (m *Manager) SimulateApprovalForPair(opp models.Opportunity, longExch, shortExch string, reserved map[string]float64, alt *models.AlternativePair) (*models.RiskApproval, error) {
+	pairOpp := opp
+	pairOpp.LongExchange = longExch
+	pairOpp.ShortExchange = shortExch
+	if alt != nil {
+		pairOpp.LongRate = alt.LongRate
+		pairOpp.ShortRate = alt.ShortRate
+		pairOpp.Spread = alt.Spread
+		pairOpp.CostRatio = alt.CostRatio
+		pairOpp.Score = alt.Score
+		pairOpp.IntervalHours = alt.IntervalHours
+	}
+	return m.approveInternal(pairOpp, reserved, true, nil)
 }
 
 // approveInternal is the shared implementation for Approve and ApproveWithReserved.
-func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]float64, simulate ...bool) (*models.RiskApproval, error) {
-	dryRun := len(simulate) > 0 && simulate[0]
+// When cache is non-nil, pre-fetched balances and orderbooks are used instead of
+// live API calls. Cache misses fall back to live calls transparently.
+func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]float64, dryRun bool, cache *PrefetchCache) (*models.RiskApproval, error) {
 	// a. Position count check
 	active, err := m.db.GetActivePositions()
 	if err != nil {
@@ -92,15 +127,26 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("short exchange %s not configured", opp.ShortExchange)}, nil
 	}
 
-	// b. Capital check — get balances from both exchanges.
+	// b. Capital check — get balances from both exchanges (use cache if available).
 	// If futures balance is insufficient and spot has funds, auto-transfer.
-	longBal, err := longExch.GetFuturesBalance()
-	if err != nil {
-		return nil, fmt.Errorf("get balance from %s: %w", opp.LongExchange, err)
+	var longBal, shortBal *exchange.Balance
+	if cache != nil && cache.Balances != nil {
+		longBal = cache.Balances[opp.LongExchange]
+		shortBal = cache.Balances[opp.ShortExchange]
 	}
-	shortBal, err := shortExch.GetFuturesBalance()
-	if err != nil {
-		return nil, fmt.Errorf("get balance from %s: %w", opp.ShortExchange, err)
+	if longBal == nil {
+		var err2 error
+		longBal, err2 = longExch.GetFuturesBalance()
+		if err2 != nil {
+			return nil, fmt.Errorf("get balance from %s: %w", opp.LongExchange, err2)
+		}
+	}
+	if shortBal == nil {
+		var err2 error
+		shortBal, err2 = shortExch.GetFuturesBalance()
+		if err2 != nil {
+			return nil, fmt.Errorf("get balance from %s: %w", opp.ShortExchange, err2)
+		}
 	}
 
 	needed := m.cfg.CapitalPerLeg
@@ -108,12 +154,20 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		bufferedNeed := needed * m.cfg.MarginSafetyMultiplier
 		m.ensureFuturesBalance(opp.LongExchange, longExch, longBal, bufferedNeed)
 		m.ensureFuturesBalance(opp.ShortExchange, shortExch, shortBal, bufferedNeed)
-		// Re-fetch after potential transfer; keep old balance on error
+		// Re-fetch after potential transfer; keep old balance on error.
+		// Always re-fetch live here since ensureFuturesBalance has side effects.
 		if lb, err := longExch.GetFuturesBalance(); err == nil {
 			longBal = lb
+			// Update cache so subsequent approvals in the batch see the fresh balance.
+			if cache != nil && cache.Balances != nil {
+				cache.Balances[opp.LongExchange] = lb
+			}
 		}
 		if sb, err := shortExch.GetFuturesBalance(); err == nil {
 			shortBal = sb
+			if cache != nil && cache.Balances != nil {
+				cache.Balances[opp.ShortExchange] = sb
+			}
 		}
 	}
 
@@ -164,19 +218,26 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		m.log.Warn("configured leverage %d exceeds hard cap, clamped to %d", m.cfg.Leverage, leverage)
 	}
 
-	// Get a reference price from the long exchange orderbook
-	longOB, err := longExch.GetOrderbook(opp.Symbol, 20)
-	if err != nil {
-		return nil, fmt.Errorf("get orderbook from %s: %w", opp.LongExchange, err)
+	// Get a reference price from the long exchange orderbook (use cache if available).
+	var longOB *exchange.Orderbook
+	if cache != nil && cache.Orderbooks != nil {
+		longOB = cache.Orderbooks[opp.LongExchange+":"+opp.Symbol]
+	}
+	if longOB == nil {
+		var err2 error
+		longOB, err2 = longExch.GetOrderbook(opp.Symbol, 20)
+		if err2 != nil {
+			return nil, fmt.Errorf("get orderbook from %s: %w", opp.LongExchange, err2)
+		}
 	}
 	if len(longOB.Asks) == 0 || len(longOB.Bids) == 0 {
 		return &models.RiskApproval{Approved: false, Reason: "empty orderbook on long exchange"}, nil
 	}
 	midPrice := (longOB.Bids[0].Price + longOB.Asks[0].Price) / 2.0
 
-	// Calculate position size
+	// Calculate position size (pass midPrice to avoid redundant orderbook fetch).
 	remainingSlots := m.cfg.MaxPositions - len(active)
-	size := m.CalculateSize(opp, balances)
+	size := m.calculateSizeWithPrice(opp, balances, midPrice)
 	if size <= 0 {
 		return &models.RiskApproval{Approved: false, Reason: "insufficient capital for minimum position size"}, nil
 	}
@@ -195,8 +256,8 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 
 	// Post-trade margin ratio projection check (uses effective avail after batch reservations)
 	for _, leg := range []struct {
-		exchange      string
-		bal           *exchange.Balance
+		exchange       string
+		bal            *exchange.Balance
 		effectiveAvail float64
 	}{
 		{opp.LongExchange, longBal, effectiveLongAvail},
@@ -216,10 +277,17 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		}
 	}
 
-	// d. Orderbook depth / slippage check on both exchanges
-	shortOB, err := shortExch.GetOrderbook(opp.Symbol, 20)
-	if err != nil {
-		return nil, fmt.Errorf("get orderbook from %s: %w", opp.ShortExchange, err)
+	// d. Orderbook depth / slippage check on both exchanges (use cache if available).
+	var shortOB *exchange.Orderbook
+	if cache != nil && cache.Orderbooks != nil {
+		shortOB = cache.Orderbooks[opp.ShortExchange+":"+opp.Symbol]
+	}
+	if shortOB == nil {
+		var err2 error
+		shortOB, err2 = shortExch.GetOrderbook(opp.Symbol, 20)
+		if err2 != nil {
+			return nil, fmt.Errorf("get orderbook from %s: %w", opp.ShortExchange, err2)
+		}
 	}
 
 	if len(shortOB.Asks) == 0 || len(shortOB.Bids) == 0 {
@@ -510,6 +578,100 @@ func (m *Manager) CalculateSize(opp models.Opportunity, balances map[string]floa
 		m.log.Info("[sizing] %s: stepSize=%.6f minSize=%.6f before=%.6f after=%.6f",
 			opp.Symbol, stepSize, minSizeContract, beforeRound, sizeInBase)
 		// Enforce minimum size (stricter of both exchanges)
+		if sizeInBase < minSizeContract {
+			m.log.Info("[sizing] %s: rejected — size %.6f < minSize %.6f", opp.Symbol, sizeInBase, minSizeContract)
+			return 0
+		}
+	}
+
+	return sizeInBase
+}
+
+// calculateSizeWithPrice is like CalculateSize but uses a pre-computed reference
+// price instead of fetching a separate orderbook. This avoids a redundant API
+// call when the caller (approveInternal) already has an orderbook.
+func (m *Manager) calculateSizeWithPrice(opp models.Opportunity, balances map[string]float64, refPrice float64) float64 {
+	balA := balances[opp.LongExchange]
+	balB := balances[opp.ShortExchange]
+	availableCapital := math.Min(balA, balB)
+
+	m.log.Info("[sizing] %s: %s=%.4f %s=%.4f availCap=%.4f capPerLeg=%.2f lev=%d",
+		opp.Symbol, opp.LongExchange, balA, opp.ShortExchange, balB,
+		availableCapital, m.cfg.CapitalPerLeg, m.cfg.Leverage)
+
+	if availableCapital <= 0 {
+		m.log.Info("[sizing] %s: rejected — zero available capital", opp.Symbol)
+		return 0
+	}
+
+	leverage := m.cfg.Leverage
+	if leverage > MaxLeverage() {
+		leverage = MaxLeverage()
+	}
+
+	active, err := m.db.GetActivePositions()
+	if err != nil {
+		m.log.Error("failed to get active positions for sizing: %v", err)
+		return 0
+	}
+	remainingSlots := m.cfg.MaxPositions - len(active)
+	if remainingSlots <= 0 {
+		return 0
+	}
+
+	var maxPositionValue float64
+	if m.cfg.CapitalPerLeg > 0 {
+		maxPositionValue = m.cfg.CapitalPerLeg * float64(leverage)
+		maxFromBalance := availableCapital * float64(leverage)
+		if maxPositionValue > maxFromBalance {
+			maxPositionValue = maxFromBalance
+		}
+	} else {
+		maxPositionValue = (availableCapital * float64(leverage)) / (float64(remainingSlots) * 2.0)
+	}
+
+	currentPrice := refPrice
+	if currentPrice <= 0 {
+		return 0
+	}
+
+	sizeInBase := maxPositionValue / currentPrice
+
+	m.log.Info("[sizing] %s: maxPosVal=%.4f price=%.6f rawSize=%.6f",
+		opp.Symbol, maxPositionValue, currentPrice, sizeInBase)
+
+	// Round down to contract step size — use the stricter (larger) of both
+	// exchanges' StepSize and MinSize so the result is valid on both sides.
+	var stepSize, minSizeContract float64
+	longExch, ok := m.exchanges[opp.LongExchange]
+	if ok {
+		contracts, cerr := longExch.LoadAllContracts()
+		if cerr == nil {
+			if info, found := contracts[opp.Symbol]; found && info.StepSize > 0 {
+				stepSize = info.StepSize
+				minSizeContract = info.MinSize
+			}
+		}
+	}
+	shortExch, sok := m.exchanges[opp.ShortExchange]
+	if sok {
+		shortContracts, serr := shortExch.LoadAllContracts()
+		if serr == nil {
+			if sinfo, found := shortContracts[opp.Symbol]; found && sinfo.StepSize > 0 {
+				if sinfo.StepSize > stepSize {
+					stepSize = sinfo.StepSize
+				}
+				if sinfo.MinSize > minSizeContract {
+					minSizeContract = sinfo.MinSize
+				}
+			}
+		}
+	}
+	if stepSize > 0 {
+		beforeRound := sizeInBase
+		sizeInBase = utils.RoundToStep(sizeInBase, stepSize)
+		m.log.Info("[sizing] %s: stepSize=%.6f minSize=%.6f before=%.6f after=%.6f",
+			opp.Symbol, stepSize, minSizeContract, beforeRound, sizeInBase)
 		if sizeInBase < minSizeContract {
 			m.log.Info("[sizing] %s: rejected — size %.6f < minSize %.6f", opp.Symbol, sizeInBase, minSizeContract)
 			return 0

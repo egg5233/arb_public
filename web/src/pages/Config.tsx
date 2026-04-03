@@ -562,40 +562,76 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
   // =========================================================================
   // Tab: Schedule
   // =========================================================================
-  const renderScheduleTab = () => (
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-      <ToggleField
-        label={t('cfg.field.rebalanceAfterExit')}
-        desc={t('cfg.desc.rebalanceAfterExit')}
-        value={getByPath(config, ['strategy', 'rebalance_after_exit'])}
-        onChange={(v) => handleChange(['strategy', 'rebalance_after_exit'], String(v))}
-      />
-      <NumberField
-        label={t('cfg.field.rebalanceScanMinute')}
-        desc={t('cfg.desc.rebalanceScanMinute')}
-        value={getByPath(config, ['strategy', 'rebalance_scan_minute'])}
-        onChange={(v) => handleChange(['strategy', 'rebalance_scan_minute'], v)}
-      />
-      <NumberField
-        label={t('cfg.field.exitScanMinute')}
-        desc={t('cfg.desc.exitScanMinute')}
-        value={getByPath(config, ['strategy', 'exit_scan_minute'])}
-        onChange={(v) => handleChange(['strategy', 'exit_scan_minute'], v)}
-      />
-      <NumberField
-        label={t('cfg.field.entryScanMinute')}
-        desc={t('cfg.desc.entryScanMinute')}
-        value={getByPath(config, ['strategy', 'entry_scan_minute'])}
-        onChange={(v) => handleChange(['strategy', 'entry_scan_minute'], v)}
-      />
-      <NumberField
-        label={t('cfg.field.rotateScanMinute')}
-        desc={t('cfg.desc.rotateScanMinute')}
-        value={getByPath(config, ['strategy', 'rotate_scan_minute'])}
-        onChange={(v) => handleChange(['strategy', 'rotate_scan_minute'], v)}
-      />
-    </div>
-  );
+  const renderScheduleTab = () => {
+    const poolAllocatorEnabled = getByPath(config, ['strategy', 'enable_pool_allocator']) === true;
+
+    return (
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <NumberField
+          label={t('cfg.field.rebalanceScanMinute')}
+          desc={t('cfg.desc.rebalanceScanMinute')}
+          value={getByPath(config, ['strategy', 'rebalance_scan_minute'])}
+          onChange={(v) => handleChange(['strategy', 'rebalance_scan_minute'], v)}
+        />
+
+        {/* Pool Allocator */}
+        <div className="sm:col-span-2 border-t border-gray-800 pt-4 mt-2">
+          <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">{t('cfg.section.poolAllocator')}</h4>
+        </div>
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.field.enablePoolAllocator')}</label>
+            <Tooltip text={t('cfg.desc.enablePoolAllocator')} />
+          </div>
+          <div className="flex items-center gap-3">
+            <ToggleSwitch
+              on={poolAllocatorEnabled}
+              onChange={(v) => handleBoolChange(['strategy', 'enable_pool_allocator'], v)}
+            />
+            <span className={`text-sm font-semibold ${poolAllocatorEnabled ? 'text-green-400' : 'text-red-400'}`}>
+              {poolAllocatorEnabled ? 'ON' : 'OFF'}
+            </span>
+          </div>
+        </div>
+        <NumberField
+          label={t('cfg.field.topPairsPerSymbol')}
+          desc={t('cfg.desc.topPairsPerSymbol')}
+          value={getByPath(config, ['strategy', 'top_pairs_per_symbol'])}
+          onChange={(v) => handleChange(['strategy', 'top_pairs_per_symbol'], v)}
+        />
+        <NumberField
+          label={t('cfg.field.allocatorTimeoutMs')}
+          desc={t('cfg.desc.allocatorTimeoutMs')}
+          value={getByPath(config, ['strategy', 'allocator_timeout_ms'])}
+          unit="ms"
+          onChange={(v) => handleChange(['strategy', 'allocator_timeout_ms'], v)}
+        />
+
+        {/* Scan Minutes */}
+        <div className="sm:col-span-2 border-t border-gray-800 pt-4 mt-2">
+          <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">{t('cfg.section.scanMinutes')}</h4>
+        </div>
+        <NumberField
+          label={t('cfg.field.exitScanMinute')}
+          desc={t('cfg.desc.exitScanMinute')}
+          value={getByPath(config, ['strategy', 'exit_scan_minute'])}
+          onChange={(v) => handleChange(['strategy', 'exit_scan_minute'], v)}
+        />
+        <NumberField
+          label={t('cfg.field.entryScanMinute')}
+          desc={t('cfg.desc.entryScanMinute')}
+          value={getByPath(config, ['strategy', 'entry_scan_minute'])}
+          onChange={(v) => handleChange(['strategy', 'entry_scan_minute'], v)}
+        />
+        <NumberField
+          label={t('cfg.field.rotateScanMinute')}
+          desc={t('cfg.desc.rotateScanMinute')}
+          value={getByPath(config, ['strategy', 'rotate_scan_minute'])}
+          onChange={(v) => handleChange(['strategy', 'rotate_scan_minute'], v)}
+        />
+      </div>
+    );
+  };
 
   // =========================================================================
   // Tab: Discovery (without persistence fields)
@@ -1143,6 +1179,7 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
           unit="sec"
           onChange={(v) => handleChange(['risk', 'reservation_ttl_sec'], v)}
         />
+
       </div>
     );
   };

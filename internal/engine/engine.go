@@ -87,6 +87,12 @@ type Engine struct {
 	// Used by handleSLFill method 2 to avoid false-triggering on our own
 	// reduce-only fills (exits, L4 reductions, rotation closes, consolidator trims).
 	ownOrders sync.Map // "exchange:orderID" → struct{}{}
+
+	// allocOverrides stores the allocator's chosen exchange pairs from the most
+	// recent rebalance scan, keyed by symbol. The entry scan applies these to
+	// patch opportunities so the executed pair matches the rebalanced pair.
+	allocOverrideMu sync.Mutex
+	allocOverrides  map[string]allocatorChoice // symbol → chosen pair
 }
 
 // slEntry maps a stop-loss order to its position and leg.
@@ -379,6 +385,16 @@ func (e *Engine) Start() {
 // has enough margin. Performs same-exchange spot→futures transfers first,
 // then cross-exchange withdrawals for remaining deficits.
 func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
+	// Clear any stale allocator overrides from the previous cycle.
+	// If the prior entry scan had 0 opportunities, applyAllocatorOverrides
+	// was never called and the old overrides would leak into the next cycle.
+	e.allocOverrideMu.Lock()
+	if e.allocOverrides != nil {
+		e.log.Info("rebalance: clearing %d stale allocator overrides from previous cycle", len(e.allocOverrides))
+		e.allocOverrides = nil
+	}
+	e.allocOverrideMu.Unlock()
+
 	var opps []models.Opportunity
 	if len(passedOpps) > 0 && len(passedOpps[0]) > 0 {
 		opps = passedOpps[0]
@@ -432,18 +448,22 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 	}
 	opps = newOpps
 
+	// Build set of exchanges that have active position legs (used to cap
+	// donor transfers so we don't drain margin from exchanges holding positions).
+	exchWithPositions := make(map[string]bool)
+	for _, p := range active {
+		if p.Status == models.StatusClosed {
+			continue
+		}
+		exchWithPositions[p.LongExchange] = true
+		exchWithPositions[p.ShortExchange] = true
+	}
+
 	// Query all exchange balances (futures + spot) BEFORE calculating needs
 	// so we can do budget-aware allocation.
-	type balInfo struct {
-		futures        float64
-		spot           float64
-		futuresTotal   float64 // total equity in futures account
-		marginRatio    float64
-		maxTransferOut float64 // exchange-reported max transferable; 0 = unknown
-	}
-	balances := map[string]balInfo{}
+	balances := map[string]rebalanceBalanceInfo{}
 	for name, exch := range e.exchanges {
-		var bi balInfo
+		var bi rebalanceBalanceInfo
 		if futBal, err := exch.GetFuturesBalance(); err == nil {
 			bi.futures = futBal.Available
 			bi.futuresTotal = futBal.Total
@@ -453,12 +473,44 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 		if spotBal, err := exch.GetSpotBalance(); err == nil {
 			bi.spot = spotBal.Available
 		}
+		bi.hasPositions = exchWithPositions[name]
 		balances[name] = bi
-		e.log.Info("rebalance: %s futures=%.2f spot=%.2f futuresTotal=%.2f marginRatio=%.4f maxTransferOut=%.2f", name, bi.futures, bi.spot, bi.futuresTotal, bi.marginRatio, bi.maxTransferOut)
+		e.log.Info("rebalance: %s futures=%.2f spot=%.2f futuresTotal=%.2f marginRatio=%.4f maxTransferOut=%.2f hasPos=%v", name, bi.futures, bi.spot, bi.futuresTotal, bi.marginRatio, bi.maxTransferOut, bi.hasPositions)
 	}
 
-	// Budget-aware sequential allocation: iterate opps by score and only
-	// count needs for positions the exchanges can actually afford.
+	// ---------------------------------------------------------------------------
+	// Try pool allocator first (if enabled).
+	// ---------------------------------------------------------------------------
+	if e.cfg.EnablePoolAllocator {
+		allocSel, allocErr := e.runPoolAllocator(opps, balances, remainingSlots)
+		if allocErr != nil {
+			e.log.Warn("rebalance: pool allocator failed, falling back to sequential: %v", allocErr)
+		} else if allocSel != nil && allocSel.feasible {
+			e.log.Info("rebalance: pool allocator selected %d opps (value=%.4f, choices=%s)", len(allocSel.choices), allocSel.totalBaseValue, e.formatAllocatorSummary(allocSel))
+			e.executeRebalanceFundingPlan(allocSel.needs, balances)
+
+			// Store allocator choices so the upcoming entry scan can patch
+			// opportunities to use the same exchange pairs that funds were rebalanced for.
+			e.allocOverrideMu.Lock()
+			e.allocOverrides = make(map[string]allocatorChoice, len(allocSel.choices))
+			for _, c := range allocSel.choices {
+				e.allocOverrides[c.symbol] = c
+			}
+			e.allocOverrideMu.Unlock()
+			e.log.Info("rebalance: stored %d allocator overrides for entry scan", len(allocSel.choices))
+
+			e.log.Info("rebalance: complete")
+			return
+		} else {
+			e.log.Warn("rebalance: pool allocator infeasible, falling back to sequential")
+		}
+	}
+
+	// ---------------------------------------------------------------------------
+	// Sequential allocation fallback (original path).
+	// Budget-aware: iterate opps by score and only count needs for positions
+	// the exchanges can actually afford.
+	// ---------------------------------------------------------------------------
 	available := map[string]float64{}
 	for name, bal := range balances {
 		total := bal.futures + bal.spot
@@ -503,10 +555,8 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			}
 
 			// Margin-related rejection: check if cross-exchange transfer from a donor could help.
-			// Estimate needed margin per leg.
 			estMargin := e.cfg.CapitalPerLeg * e.cfg.MarginSafetyMultiplier
 			if estMargin <= 0 {
-				// Auto-size mode (CapitalPerLeg=0): use approval's RequiredMargin or fallback
 				if approval.RequiredMargin > 0 {
 					estMargin = approval.RequiredMargin
 				} else {
@@ -518,7 +568,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 				bal := balances[legExch]
 				effectiveAvail := bal.futures - reserved[legExch]
 				if effectiveAvail >= estMargin {
-					continue // this leg is fine
+					continue
 				}
 				deficit := estMargin - effectiveAvail
 				foundDonor := false
@@ -526,11 +576,9 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 					if donorName == legExch {
 						continue
 					}
-					// BUG#4: skip donors already at L3 margin stress
 					if balances[donorName].marginRatio >= e.cfg.MarginL3Threshold {
 						continue
 					}
-					// BUG#5: surplus uses available - reserved (reserved already includes needs from selected opps)
 					donorSurplus := donorBal.futures + donorBal.spot - reserved[donorName] - plannedTransfers[donorName+"_out"]
 					type unifiedChecker interface{ IsUnified() bool }
 					if donorName == "okx" || donorName == "bybit" {
@@ -538,7 +586,14 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 					} else if uc, ok := e.exchanges[donorName].(unifiedChecker); ok && uc.IsUnified() {
 						donorSurplus = donorBal.futures - reserved[donorName] - plannedTransfers[donorName+"_out"]
 					}
-					// BUG#3: allow partial coverage — any donor with surplus > 10 makes opp rescuable
+					// Cap donor surplus by margin health to prevent draining exchanges with active positions.
+					if balances[donorName].hasPositions && balances[donorName].marginRatio > 0 && balances[donorName].futuresTotal > 0 && e.cfg.MarginL3Threshold > 0 {
+						maint := balances[donorName].marginRatio * balances[donorName].futuresTotal
+						healthCap := balances[donorName].futuresTotal - maint/e.cfg.MarginL3Threshold
+						if healthCap < donorSurplus {
+							donorSurplus = healthCap
+						}
+					}
 					if donorSurplus > 10 {
 						plannedTransfers[legExch] += deficit
 						plannedTransfers[donorName+"_out"] += deficit
@@ -558,7 +613,6 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 				continue
 			}
 
-			// Donor found — select this opp, Phase 2 will execute the transfer
 			needs[opp.LongExchange] += estMargin
 			needs[opp.ShortExchange] += estMargin
 			reserved[opp.LongExchange] += estMargin
@@ -585,7 +639,6 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			bal := balances[leg.exchange]
 			effectiveAvail := bal.futures - reserved[leg.exchange]
 			if effectiveAvail < requiredMargin {
-				// Look for a donor exchange with surplus
 				deficit := requiredMargin - effectiveAvail
 				foundDonor := false
 				for donorName, donorBal := range balances {
@@ -593,7 +646,6 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 						continue
 					}
 					donorSurplus := donorBal.futures + donorBal.spot - reserved[donorName] - plannedTransfers[donorName+"_out"]
-					// Unified accounts: don't double-count
 					type unifiedChecker interface{ IsUnified() bool }
 					if donorName == "okx" || donorName == "bybit" {
 						donorSurplus = donorBal.futures - reserved[donorName] - plannedTransfers[donorName+"_out"]
@@ -602,6 +654,14 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 					}
 					if balances[donorName].marginRatio >= e.cfg.MarginL3Threshold {
 						continue
+					}
+					// Cap donor surplus by margin health to prevent draining exchanges with active positions.
+					if balances[donorName].hasPositions && balances[donorName].marginRatio > 0 && balances[donorName].futuresTotal > 0 && e.cfg.MarginL3Threshold > 0 {
+						maint := balances[donorName].marginRatio * balances[donorName].futuresTotal
+						healthCap := balances[donorName].futuresTotal - maint/e.cfg.MarginL3Threshold
+						if healthCap < donorSurplus {
+							donorSurplus = healthCap
+						}
 					}
 					if donorSurplus > 10 {
 						plannedTransfers[leg.exchange] += deficit
@@ -624,7 +684,6 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			continue
 		}
 
-		// All checks passed — select this opportunity
 		needs[opp.LongExchange] += requiredMargin
 		needs[opp.ShortExchange] += requiredMargin
 		reserved[opp.LongExchange] += requiredMargin
@@ -637,27 +696,20 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 	e.log.Info("rebalance: analyzed %d opportunities, selected %d, needs: %v, plannedTransfers: %v", len(opps), selected, needs, plannedTransfers)
 
 	// Phase 1: Same-exchange spot→futures transfers (instant).
-	type deficit struct {
+	type seqDeficit struct {
 		exchange string
 		amount   float64
 	}
-	var crossDeficits []deficit
+	var crossDeficits []seqDeficit
 
 	for name, need := range needs {
 		bal := balances[name]
-
-		// To keep post-trade margin ratio below L4 after opening positions:
-		// ratio = 1 - (total - need) / total < L4
-		// => (total - need) / total >= 1 - L4 = targetFreeRatio
-		// => total >= need / targetFreeRatio
 		targetFreeRatio := 1 - e.cfg.MarginL4Threshold
 		if targetFreeRatio <= 0 {
-			targetFreeRatio = 0.20 // fallback: 20% free margin
+			targetFreeRatio = 0.20
 		}
 
 		if bal.futures >= need {
-			// Futures covers the need, but check if post-trade margin ratio would be too high.
-			// If so, top up from spot to bring ratio down.
 			if bal.spot > 0 && bal.futuresTotal > 0 {
 				projectedAvail := bal.futures - need
 				if projectedAvail < 0 {
@@ -665,9 +717,6 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 				}
 				projectedRatio := 1 - projectedAvail/bal.futuresTotal
 				if projectedRatio >= e.cfg.MarginL4Threshold {
-					// Transfer just enough from spot so that post-transfer ratio < L4.
-					// Target: (futures + extra - need) / (futures + extra) >= targetFreeRatio
-					// => extra >= (need - futures*targetFreeRatio) / targetFreeRatio
 					extra := (need - bal.futuresTotal*targetFreeRatio) / targetFreeRatio
 					if extra > bal.spot {
 						extra = bal.spot
@@ -693,17 +742,11 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			continue
 		}
 
-		// Futures doesn't cover the need. Calculate the actual shortfall,
-		// plus enough extra so post-trade margin ratio stays below L4.
-		// Without the buffer, entry approval will reject due to L4 ratio.
 		shortfall := need - bal.futures
-		// L4-aware: total equity after transfer must be >= need / targetFreeRatio
-		// Extra needed = need/targetFreeRatio - futuresTotal - shortfall
 		l4Extra := need/targetFreeRatio - bal.futuresTotal - shortfall
 		if l4Extra < 0 {
 			l4Extra = 0
 		}
-		// Cap L4 extra to at most the shortfall itself (never more than 2x shortfall total)
 		if l4Extra > shortfall {
 			l4Extra = shortfall
 		}
@@ -716,7 +759,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			if actualTransfer < 1.0 {
 				e.log.Debug("rebalance: %s spot→futures skip (%.4f USDT below minimum)", name, actualTransfer)
 				if transferAmt > 10 {
-					crossDeficits = append(crossDeficits, deficit{name, transferAmt})
+					crossDeficits = append(crossDeficits, seqDeficit{name, transferAmt})
 				}
 				continue
 			}
@@ -729,7 +772,6 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 					e.log.Error("rebalance: %s spot→futures failed: %v", name, err)
 				} else {
 					transferAmt -= actualTransfer
-					// Update local balance tracking
 					bi := balances[name]
 					bi.futures += actualTransfer
 					bi.spot -= actualTransfer
@@ -738,7 +780,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			}
 		}
 		if transferAmt > 10 {
-			crossDeficits = append(crossDeficits, deficit{name, transferAmt})
+			crossDeficits = append(crossDeficits, seqDeficit{name, transferAmt})
 		}
 	}
 
@@ -748,14 +790,10 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 	}
 
 	// Phase 2: Cross-exchange transfers for remaining deficits.
-	// Calculate REAL surplus per exchange: available funds minus what's needed
-	// for new positions on this exchange. Uses futures available (already excludes
-	// frozen margin from existing positions) plus spot.
 	surplus := map[string]float64{}
 	for name, exch := range e.exchanges {
 		bal := balances[name]
 		avail := bal.futures + bal.spot
-		// Unified accounts: don't double-count.
 		type unifiedChecker interface{ IsUnified() bool }
 		if name == "okx" || name == "bybit" {
 			avail = bal.futures
@@ -763,19 +801,25 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			avail = bal.futures
 		}
 		surplus[name] = avail - needs[name]
+		// Cap surplus by margin health to prevent draining exchanges with active positions.
+		if balances[name].hasPositions && balances[name].marginRatio > 0 && balances[name].futuresTotal > 0 && e.cfg.MarginL3Threshold > 0 {
+			maint := balances[name].marginRatio * balances[name].futuresTotal
+			healthCap := balances[name].futuresTotal - maint/e.cfg.MarginL3Threshold
+			if healthCap < surplus[name] {
+				surplus[name] = healthCap
+			}
+		}
 	}
 
-	// Phase 2a: Execute withdrawals. Supports partial transfers and multiple
-	// donors per deficit — iterates donors until deficit is filled or no donors left.
-	pendingDeposits := map[string]float64{} // recipient exchange → total amount pending
-	pendingStartBal := map[string]float64{} // recipient exchange → spot balance before deposits
+	// Phase 2a: Execute withdrawals.
+	pendingDeposits := map[string]float64{}
+	pendingStartBal := map[string]float64{}
 
 	for i := range crossDeficits {
 		remaining := crossDeficits[i].amount
 		exchName := crossDeficits[i].exchange
 
 		for remaining > 10 {
-			// Find best donor: highest surplus, allow partial (surplus > 10 is enough)
 			var bestDonor string
 			var bestSurplus float64
 			for name, s := range surplus {
@@ -797,13 +841,11 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 				break
 			}
 
-			// Determine how much this donor can contribute (partial OK)
 			contribution := remaining
 			if contribution > bestSurplus {
-				contribution = bestSurplus // donor gives what it can
+				contribution = bestSurplus
 			}
 
-			// Resolve deposit address and chain for recipient
 			e.cfg.RLock()
 			origAddrs := e.cfg.ExchangeAddresses[exchName]
 			recipientAddrs := make(map[string]string, len(origAddrs))
@@ -813,7 +855,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			e.cfg.RUnlock()
 			if len(recipientAddrs) == 0 {
 				e.log.Warn("rebalance: no deposit addresses for %s", exchName)
-				break // can't transfer to this exchange at all
+				break
 			}
 
 			var chain, destAddr string
@@ -826,11 +868,10 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			}
 			if chain == "" {
 				e.log.Warn("rebalance: no shared chain between %s and %s", bestDonor, exchName)
-				surplus[bestDonor] = 0 // skip this donor, try next
+				surplus[bestDonor] = 0
 				continue
 			}
 
-			// Query actual withdraw fee from exchange
 			fee, feeErr := e.exchanges[bestDonor].GetWithdrawFee("USDT", chain)
 			if feeErr != nil {
 				e.log.Warn("rebalance: %s GetWithdrawFee failed: %v, skipping donor", bestDonor, feeErr)
@@ -839,8 +880,18 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			}
 			e.log.Info("rebalance: %s withdraw fee=%.4f USDT via %s", bestDonor, fee, chain)
 
-			netAmount := contribution        // what recipient needs to receive
-			requiredSpot := netAmount + fee   // what donor needs in spot account
+			netAmount := contribution
+			// For net-fee exchanges with active positions, subtract fee from netAmount
+			// so total debit (netAmount + fee) stays within the donor's health cap.
+			if !e.exchanges[bestDonor].WithdrawFeeInclusive() && balances[bestDonor].hasPositions {
+				netAmount -= fee
+				if netAmount < 10 {
+					e.log.Warn("rebalance: %s contribution %.2f too low after fee %.4f deduction, skipping donor", bestDonor, netAmount+fee, fee)
+					surplus[bestDonor] = 0
+					continue
+				}
+			}
+			requiredSpot := netAmount + fee
 
 			e.log.Info("rebalance: cross-exchange %s→%s net=%.2f fee=%.4f required=%.2f USDT via %s",
 				bestDonor, exchName, netAmount, fee, requiredSpot, chain)
@@ -854,8 +905,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			}
 
 			// Move funds from futures→spot if donor spot is insufficient.
-			// Skip for Binance: its Withdraw() auto-transfers futures→spot internally.
-			// Skip for Gate.io / unified accounts: spot and futures share the same pool.
+			// Skip for Binance (auto-transfers) and Gate.io / unified accounts.
 			var movedToSpot float64
 			skipOuterTransfer := bestDonor == "binance" || bestDonor == "gateio"
 			if !skipOuterTransfer {
@@ -866,12 +916,8 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			donorBal := balances[bestDonor]
 			if !skipOuterTransfer && donorBal.spot < requiredSpot {
 				moveAmt := requiredSpot - donorBal.spot
-				// Use exchange-reported maxTransferOut if available, otherwise estimate.
 				maxMove := donorBal.maxTransferOut
 				if maxMove <= 0 {
-					// Fallback: estimate max transferable to keep margin ratio below L4.
-					// After transfer X: newRatio = maintMargin / (total - X) < L4
-					// → X < total * (1 - currentRatio / L4)
 					maxMove = donorBal.futures - needs[bestDonor]
 					if donorBal.marginRatio > 0 && donorBal.futuresTotal > 0 && e.cfg.MarginL4Threshold > 0 {
 						safeMax := donorBal.futuresTotal * (1.0 - donorBal.marginRatio/e.cfg.MarginL4Threshold)
@@ -881,7 +927,16 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 						}
 					}
 				} else {
-					maxMove -= needs[bestDonor] // reserve for new positions
+					maxMove -= needs[bestDonor]
+				}
+				// Refresh maxTransferOut from exchange to avoid stale cached value
+				// (Bitget fix: cached maxTransferOut may be outdated after prior transfers).
+				if freshBal, freshErr := e.exchanges[bestDonor].GetFuturesBalance(); freshErr == nil && freshBal.MaxTransferOut > 0 {
+					cap := freshBal.MaxTransferOut * 0.99
+					if moveAmt > cap {
+						e.log.Info("rebalance: %s capping moveAmt %.4f to fresh maxTransferOut %.4f (99%%)", bestDonor, moveAmt, cap)
+						moveAmt = cap
+					}
 				}
 				if moveAmt > maxMove && maxMove > 0 {
 					moveAmt = maxMove
@@ -909,7 +964,6 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 				continue
 			}
 
-			// Both gross and net exchanges need balance >= netAmount + fee
 			grossRequired := netAmount + fee
 			isGross := e.exchanges[bestDonor].WithdrawFeeInclusive()
 
@@ -941,11 +995,15 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 				if movedToSpot > 0 {
 					rollbackStr := fmt.Sprintf("%.4f", movedToSpot)
 					e.log.Info("rebalance: rollback %s spot→futures %s USDT", bestDonor, rollbackStr)
+					// BingX needs a brief delay before rollback to avoid rate-limit errors.
+					if bestDonor == "bingx" {
+						time.Sleep(2 * time.Second)
+					}
 					if rbErr := e.exchanges[bestDonor].TransferToFutures("USDT", rollbackStr); rbErr != nil {
 						e.log.Error("rebalance: rollback failed: %v", rbErr)
 					}
 				}
-				surplus[bestDonor] = 0 // exclude this donor
+				surplus[bestDonor] = 0
 				continue
 			}
 
@@ -963,13 +1021,11 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 				pendingStartBal[exchName] = balances[exchName].spot
 			}
 			pendingDeposits[exchName] += recipientReceives
-			actualCost := netAmount + fee // actual amount leaving the donor
+			actualCost := netAmount + fee
 			surplus[bestDonor] -= actualCost
-			// Update cached donor balance so next iteration sees correct state.
-			// Only futures drops by what was moved to spot; spot drops by what was withdrawn.
 			bi := balances[bestDonor]
 			bi.futures -= movedToSpot
-			bi.spot -= (netAmount + fee - movedToSpot) // spot had some, rest came from futures→spot
+			bi.spot -= (netAmount + fee - movedToSpot)
 			if bi.spot < 0 {
 				bi.spot = 0
 			}
@@ -978,7 +1034,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 		}
 	}
 
-	// Phase 2b: Poll for ALL pending deposits, then sweep entire spot into futures.
+	// Phase 2b: Poll for ALL pending deposits, then sweep into futures.
 	for recipient, totalPending := range pendingDeposits {
 		if totalPending <= 0 {
 			continue
@@ -1003,7 +1059,6 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			}
 		}
 
-		// Only transfer the amount that was sent via rebalance, not the entire spot balance.
 		if !arrived {
 			e.log.Warn("rebalance: deposits on %s not confirmed within 5min, skipping spot→futures", recipient)
 			continue
@@ -1023,6 +1078,144 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 	}
 
 	e.log.Info("rebalance: complete")
+}
+
+// applyAllocatorOverrides consumes stored allocator choices and uses them to
+// both FILTER and PATCH the opportunity list.  When overrides are present
+// (allocator ran this cycle), only symbols the allocator selected are kept;
+// non-selected symbols are dropped so they cannot consume an entry slot and
+// invalidate the allocator's capital plan.  When overrides are empty (allocator
+// didn't run, or TopPairsPerSymbol==1 with no alternatives), all opps pass
+// through unchanged for backwards compatibility.
+func (e *Engine) applyAllocatorOverrides(opps []models.Opportunity) []models.Opportunity {
+	e.allocOverrideMu.Lock()
+	overrides := e.allocOverrides
+	e.allocOverrides = nil
+	e.allocOverrideMu.Unlock()
+
+	if len(overrides) == 0 {
+		return opps // no allocator guidance, pass all through
+	}
+
+	// Filter to only allocator-selected symbols, and patch pairs.
+	// IMPORTANT: When the override wants a different exchange pair, we validate
+	// that the pair still exists in the CURRENT scan's alternatives and use the
+	// fresh data from the current scan — never stale data from the rebalance scan.
+	var filtered []models.Opportunity
+	patched := 0
+	skipped := 0
+	stale := 0
+	for _, opp := range opps {
+		choice, ok := overrides[opp.Symbol]
+		if !ok {
+			skipped++
+			continue // allocator didn't select this symbol, drop it
+		}
+		// Copy to avoid mutating the shared scanner slice.
+		o := opp
+		if choice.longExchange == o.LongExchange && choice.shortExchange == o.ShortExchange {
+			// Primary pair already matches the override — use current fresh data as-is.
+		} else {
+			// Override wants a different pair — validate it still exists in
+			// the current scan's alternatives so we never apply stale data.
+			found := false
+			for _, alt := range o.Alternatives {
+				if alt.LongExchange == choice.longExchange && alt.ShortExchange == choice.shortExchange {
+					e.log.Info("allocator override %s: %s/%s → %s/%s (spread %.4f→%.4f bps/h)",
+						o.Symbol, o.LongExchange, o.ShortExchange,
+						choice.longExchange, choice.shortExchange,
+						o.Spread, alt.Spread)
+					o.LongExchange = alt.LongExchange
+					o.ShortExchange = alt.ShortExchange
+					o.LongRate = alt.LongRate
+					o.ShortRate = alt.ShortRate
+					o.Spread = alt.Spread
+					// IntervalHours: use current alt if available, otherwise keep opp-level value.
+					if alt.IntervalHours > 0 {
+						o.IntervalHours = alt.IntervalHours
+					}
+					found = true
+					patched++
+					break
+				}
+			}
+			if !found {
+				e.log.Warn("entry: allocator override for %s pair %s/%s no longer in current scan, skipping",
+					o.Symbol, choice.longExchange, choice.shortExchange)
+				stale++
+				continue // skip this opp entirely — pair is stale
+			}
+		}
+		filtered = append(filtered, o)
+	}
+
+	e.log.Info("allocator filter: %d opps kept, %d dropped, %d patched, %d stale-skipped (from %d total)",
+		len(filtered), skipped, patched, stale, len(opps))
+
+	if len(filtered) == 0 {
+		e.log.Warn("entry: all allocator overrides stale, no opps passed filter")
+		return nil // don't fall back to unfiltered opps
+	}
+	return filtered
+}
+
+// buildOppsFromAllocatorChoices maps allocator choices back to scan opps,
+// patching LongExchange/ShortExchange where the allocator picked a different
+// pair. This is the same logic as applyAllocatorOverrides but operates on a
+// fresh allocatorSelection without storing anything for later scans.
+func (e *Engine) buildOppsFromAllocatorChoices(opps []models.Opportunity, sel *allocatorSelection) []models.Opportunity {
+	if sel == nil || len(sel.choices) == 0 {
+		return nil
+	}
+
+	// Index choices by symbol.
+	choiceMap := make(map[string]allocatorChoice, len(sel.choices))
+	for _, c := range sel.choices {
+		choiceMap[c.symbol] = c
+	}
+
+	var filtered []models.Opportunity
+	patched := 0
+	for _, opp := range opps {
+		choice, ok := choiceMap[opp.Symbol]
+		if !ok {
+			continue
+		}
+		o := opp
+		if choice.longExchange == o.LongExchange && choice.shortExchange == o.ShortExchange {
+			// Primary pair matches — use as-is.
+		} else {
+			found := false
+			for _, alt := range o.Alternatives {
+				if alt.LongExchange == choice.longExchange && alt.ShortExchange == choice.shortExchange {
+					e.log.Info("entry tier-1 patch %s: %s/%s → %s/%s (spread %.4f→%.4f bps/h)",
+						o.Symbol, o.LongExchange, o.ShortExchange,
+						choice.longExchange, choice.shortExchange,
+						o.Spread, alt.Spread)
+					o.LongExchange = alt.LongExchange
+					o.ShortExchange = alt.ShortExchange
+					o.LongRate = alt.LongRate
+					o.ShortRate = alt.ShortRate
+					o.Spread = alt.Spread
+					if alt.IntervalHours > 0 {
+						o.IntervalHours = alt.IntervalHours
+					}
+					found = true
+					patched++
+					break
+				}
+			}
+			if !found {
+				e.log.Warn("entry tier-1: allocator choice for %s pair %s/%s not in current scan, skipping",
+					o.Symbol, choice.longExchange, choice.shortExchange)
+				continue
+			}
+		}
+		filtered = append(filtered, o)
+	}
+
+	e.log.Info("entry tier-1: %d opps from allocator, %d patched", len(filtered), patched)
+	return filtered
 }
 
 // recordTransfer saves a transfer record to the database for dashboard display.
@@ -1061,7 +1254,7 @@ func (e *Engine) Stop() {
 // discovery and dispatches actions based on scan type:
 //   - RebalanceScan (:10) → rebalance funds across exchanges
 //   - ExitScan      (:30) → check exit conditions
-//   - RotateScan    (:35) → check leg rotations + V2 rebalance (if RebalanceAfterExit)
+//   - RotateScan    (:35) → check leg rotations
 //   - EntryScan     (:40) → execute new arb positions
 func (e *Engine) run() {
 	oppCh := e.discovery.OpportunityChan()
@@ -1095,22 +1288,87 @@ func (e *Engine) run() {
 				e.log.Info("run loop: exitScan handler done")
 			case discovery.RotateScan:
 				e.checkRotations()
-				if e.cfg.RebalanceAfterExit && len(result.Opps) > 0 {
-					// V2 rebalance: apply all 6 entry-level filters via scanner
-					v2Opps := e.discovery.FilterForEntry(result.Opps)
-					if len(v2Opps) > 0 {
-						e.log.Info("v2 rebalance: %d/%d opps passed 6 entry filters, running sequential allocation", len(v2Opps), len(result.Opps))
-						e.rebalanceFunds(v2Opps)
-					} else {
-						e.log.Info("v2 rebalance: 0/%d opps passed entry filters, skipping", len(result.Opps))
-					}
+				if e.cfg.EnablePoolAllocator {
+					e.rebalanceFunds()
 				}
 				e.log.Info("run loop: rotateScan handler done")
 			case discovery.EntryScan:
 				if len(result.Opps) > 0 {
 					e.log.Info("entry scan complete, triggering trade execution")
-					e.executeArbitrage(result.Opps)
-					e.log.Info("run loop: entryScan handler done")
+
+					var entryOpps []models.Opportunity
+					tier := "none"
+
+					// Tier 1: Run allocator inline with :40's fresh opps.
+					if e.cfg.EnablePoolAllocator {
+						active, dbErr := e.db.GetActivePositions()
+						remainingSlots := 0
+						if dbErr != nil {
+							e.log.Warn("entry tier-1: failed to get active positions, skipping tier-1: %v", dbErr)
+						} else {
+							remainingSlots = e.cfg.MaxPositions - len(active)
+						}
+						if remainingSlots > 0 {
+							// Build exchange positions set.
+							exchWithPositions := make(map[string]bool)
+							if dbErr == nil {
+								for _, p := range active {
+									if p.Status != models.StatusClosed {
+										exchWithPositions[p.LongExchange] = true
+										exchWithPositions[p.ShortExchange] = true
+									}
+								}
+							}
+
+							// Query balances (same pattern as rebalanceFunds).
+							balances := map[string]rebalanceBalanceInfo{}
+							for name, exch := range e.exchanges {
+								var bi rebalanceBalanceInfo
+								if futBal, bErr := exch.GetFuturesBalance(); bErr == nil {
+									bi.futures = futBal.Available
+									bi.futuresTotal = futBal.Total
+									bi.marginRatio = futBal.MarginRatio
+									bi.maxTransferOut = futBal.MaxTransferOut
+								}
+								if spotBal, bErr := exch.GetSpotBalance(); bErr == nil {
+									bi.spot = spotBal.Available
+								}
+								bi.hasPositions = exchWithPositions[name]
+								balances[name] = bi
+							}
+
+							allocSel, allocErr := e.runPoolAllocator(result.Opps, balances, remainingSlots)
+							if allocErr == nil && allocSel != nil && allocSel.feasible && len(allocSel.choices) > 0 {
+								entryOpps = e.buildOppsFromAllocatorChoices(result.Opps, allocSel)
+								if len(entryOpps) > 0 {
+									tier = "tier-1-inline-allocator"
+									e.log.Info("entry: %s selected %d opps", tier, len(entryOpps))
+								}
+							} else if allocErr != nil {
+								e.log.Warn("entry tier-1: allocator failed: %v", allocErr)
+							}
+						}
+					}
+
+					// Tier 2: Fall back to :35 allocator overrides.
+					if len(entryOpps) == 0 {
+						patched := e.applyAllocatorOverrides(result.Opps)
+						if len(patched) > 0 {
+							tier = "tier-2-rebalance-overrides"
+							e.log.Info("entry: %s using %d opps", tier, len(patched))
+							entryOpps = patched
+						}
+					}
+
+					// Tier 3: Fall back to original rank-based entry.
+					if len(entryOpps) == 0 {
+						tier = "tier-3-rank-based"
+						e.log.Info("entry: %s with %d opps", tier, len(result.Opps))
+						entryOpps = result.Opps
+					}
+
+					e.executeArbitrage(entryOpps)
+					e.log.Info("run loop: entryScan handler done (via %s)", tier)
 				}
 			}
 
@@ -1895,6 +2153,101 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 		return
 	}
 
+	// ---------------------------------------------------------------------------
+	// Pre-fetch phase: collect all unique exchanges and (exchange, symbol) pairs
+	// from the opportunity batch, then fetch balances and orderbooks in parallel.
+	// This avoids 4+ serial API calls per opportunity during the approval loop.
+	// ---------------------------------------------------------------------------
+	type prefetchKey struct{ exchange, symbol string }
+	exchangeSet := map[string]bool{}
+	symbolPairs := map[prefetchKey]bool{}
+	for _, opp := range opps {
+		if activeSymbols[opp.Symbol] {
+			continue
+		}
+		exchangeSet[opp.LongExchange] = true
+		exchangeSet[opp.ShortExchange] = true
+		symbolPairs[prefetchKey{opp.LongExchange, opp.Symbol}] = true
+		symbolPairs[prefetchKey{opp.ShortExchange, opp.Symbol}] = true
+	}
+
+	prefetchStart := time.Now()
+	var pfWg sync.WaitGroup
+	balanceSyncMap := sync.Map{}
+	orderbookSyncMap := sync.Map{}
+
+	for exch := range exchangeSet {
+		pfWg.Add(1)
+		go func(name string) {
+			defer pfWg.Done()
+			if adapter, ok := e.exchanges[name]; ok {
+				if bal, err := adapter.GetFuturesBalance(); err == nil {
+					balanceSyncMap.Store(name, bal)
+				} else {
+					e.log.Warn("prefetch: GetFuturesBalance(%s) failed: %v", name, err)
+				}
+			}
+		}(exch)
+	}
+	// Collect BingX symbols separately — BingX has strict rate limits,
+	// so its orderbook requests run sequentially in one goroutine.
+	var bingxSymbols []string
+	for key := range symbolPairs {
+		if key.exchange == "bingx" {
+			bingxSymbols = append(bingxSymbols, key.symbol)
+		} else {
+			pfWg.Add(1)
+			go func(k prefetchKey) {
+				defer pfWg.Done()
+				if adapter, ok := e.exchanges[k.exchange]; ok {
+					if ob, ok := adapter.GetDepth(k.symbol); ok {
+						orderbookSyncMap.Store(k.exchange+":"+k.symbol, ob)
+					} else if ob, err := adapter.GetOrderbook(k.symbol, 20); err == nil {
+						orderbookSyncMap.Store(k.exchange+":"+k.symbol, ob)
+					} else {
+						e.log.Warn("prefetch: GetOrderbook(%s:%s) failed: %v", k.exchange, k.symbol, err)
+					}
+				}
+			}(key)
+		}
+	}
+	if len(bingxSymbols) > 0 {
+		pfWg.Add(1)
+		go func() {
+			defer pfWg.Done()
+			adapter, ok := e.exchanges["bingx"]
+			if !ok {
+				return
+			}
+			for _, sym := range bingxSymbols {
+				if ob, ok := adapter.GetDepth(sym); ok {
+					orderbookSyncMap.Store("bingx:"+sym, ob)
+				} else if ob, err := adapter.GetOrderbook(sym, 20); err == nil {
+					orderbookSyncMap.Store("bingx:"+sym, ob)
+				} else {
+					e.log.Warn("prefetch: GetOrderbook(bingx:%s) failed: %v", sym, err)
+				}
+			}
+		}()
+	}
+	pfWg.Wait()
+
+	// Convert sync.Maps to regular maps for the cache.
+	prefetchCache := &risk.PrefetchCache{
+		Balances:   make(map[string]*exchange.Balance),
+		Orderbooks: make(map[string]*exchange.Orderbook),
+	}
+	balanceSyncMap.Range(func(k, v interface{}) bool {
+		prefetchCache.Balances[k.(string)] = v.(*exchange.Balance)
+		return true
+	})
+	orderbookSyncMap.Range(func(k, v interface{}) bool {
+		prefetchCache.Orderbooks[k.(string)] = v.(*exchange.Orderbook)
+		return true
+	})
+	e.log.Info("executeArbitrage: pre-fetched %d balances + %d orderbooks in %v",
+		len(prefetchCache.Balances), len(prefetchCache.Orderbooks), time.Since(prefetchStart).Round(time.Millisecond))
+
 	// Phase 1: Sequential pre-filter — approve up to `slots` candidates.
 	type candidate struct {
 		opp         models.Opportunity
@@ -1936,7 +2289,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 		}
 
 		e.log.Info("executeArbitrage: risk.Approve %s...", opp.Symbol)
-		approval, err := e.risk.ApproveWithReserved(opp, reserved)
+		approval, err := e.risk.ApproveWithReservedCached(opp, reserved, prefetchCache)
 		if err != nil {
 			e.log.Error("risk approval error for %s: %v", opp.Symbol, err)
 			if e.rejStore != nil {

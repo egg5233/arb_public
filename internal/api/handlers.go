@@ -374,17 +374,19 @@ type configAIResponse struct {
 }
 
 type configStrategyResponse struct {
-	TopOpportunities    int                     `json:"top_opportunities"`
-	ScanMinutes         []int                   `json:"scan_minutes"`
-	EntryScanMinute     int                     `json:"entry_scan_minute"`
-	ExitScanMinute      int                     `json:"exit_scan_minute"`
-	RotateScanMinute    int                     `json:"rotate_scan_minute"`
-	RebalanceScanMinute int                     `json:"rebalance_scan_minute"`
-	RebalanceAfterExit  bool                    `json:"rebalance_after_exit"`
-	Discovery           configDiscoveryResponse `json:"discovery"`
-	Entry               configEntryResponse     `json:"entry"`
-	Exit                configExitResponse      `json:"exit"`
-	Rotation            configRotationResponse  `json:"rotation"`
+	TopOpportunities       int                     `json:"top_opportunities"`
+	ScanMinutes            []int                   `json:"scan_minutes"`
+	EntryScanMinute        int                     `json:"entry_scan_minute"`
+	ExitScanMinute         int                     `json:"exit_scan_minute"`
+	RotateScanMinute       int                     `json:"rotate_scan_minute"`
+	RebalanceScanMinute    int                     `json:"rebalance_scan_minute"`
+	EnablePoolAllocator    bool                    `json:"enable_pool_allocator"`
+	TopPairsPerSymbol      int                     `json:"top_pairs_per_symbol"`
+	AllocatorTimeoutMs int                     `json:"allocator_timeout_ms"`
+	Discovery          configDiscoveryResponse `json:"discovery"`
+	Entry                  configEntryResponse     `json:"entry"`
+	Exit                   configExitResponse      `json:"exit"`
+	Rotation               configRotationResponse  `json:"rotation"`
 }
 
 type configDiscoveryResponse struct {
@@ -508,13 +510,15 @@ func (s *Server) buildConfigResponse() configResponse {
 	resp := configResponse{
 		DryRun: s.cfg.DryRun,
 		Strategy: configStrategyResponse{
-			TopOpportunities:    s.cfg.TopOpportunities,
-			ScanMinutes:         s.cfg.ScanMinutes,
-			EntryScanMinute:     s.cfg.EntryScanMinute,
-			ExitScanMinute:      s.cfg.ExitScanMinute,
-			RotateScanMinute:    s.cfg.RotateScanMinute,
-			RebalanceScanMinute: s.cfg.RebalanceScanMinute,
-			RebalanceAfterExit:  s.cfg.RebalanceAfterExit,
+			TopOpportunities:       s.cfg.TopOpportunities,
+			ScanMinutes:            s.cfg.ScanMinutes,
+			EntryScanMinute:        s.cfg.EntryScanMinute,
+			ExitScanMinute:         s.cfg.ExitScanMinute,
+			RotateScanMinute:       s.cfg.RotateScanMinute,
+			RebalanceScanMinute:    s.cfg.RebalanceScanMinute,
+			EnablePoolAllocator:    s.cfg.EnablePoolAllocator,
+			TopPairsPerSymbol:      s.cfg.TopPairsPerSymbol,
+			AllocatorTimeoutMs: s.cfg.AllocatorTimeoutMs,
 			Discovery: configDiscoveryResponse{
 				MinHoldTimeHours:        int(s.cfg.MinHoldTime.Hours()),
 				MaxCostRatio:            s.cfg.MaxCostRatio,
@@ -776,17 +780,19 @@ type aiUpdate struct {
 }
 
 type strategyUpdate struct {
-	TopOpportunities    *int             `json:"top_opportunities"`
-	ScanMinutes         []int            `json:"scan_minutes"`
-	EntryScanMinute     *int             `json:"entry_scan_minute"`
-	ExitScanMinute      *int             `json:"exit_scan_minute"`
-	RotateScanMinute    *int             `json:"rotate_scan_minute"`
-	RebalanceScanMinute *int             `json:"rebalance_scan_minute"`
-	RebalanceAfterExit  *bool            `json:"rebalance_after_exit"`
-	Discovery           *discoveryUpdate `json:"discovery"`
-	Entry               *entryUpdate     `json:"entry"`
-	Exit                *exitUpdate      `json:"exit"`
-	Rotation            *rotationUpdate  `json:"rotation"`
+	TopOpportunities       *int             `json:"top_opportunities"`
+	ScanMinutes            []int            `json:"scan_minutes"`
+	EntryScanMinute        *int             `json:"entry_scan_minute"`
+	ExitScanMinute         *int             `json:"exit_scan_minute"`
+	RotateScanMinute       *int             `json:"rotate_scan_minute"`
+	RebalanceScanMinute    *int             `json:"rebalance_scan_minute"`
+	EnablePoolAllocator    *bool            `json:"enable_pool_allocator"`
+	TopPairsPerSymbol      *int             `json:"top_pairs_per_symbol"`
+	AllocatorTimeoutMs *int             `json:"allocator_timeout_ms"`
+	Discovery          *discoveryUpdate `json:"discovery"`
+	Entry                  *entryUpdate     `json:"entry"`
+	Exit                   *exitUpdate      `json:"exit"`
+	Rotation               *rotationUpdate  `json:"rotation"`
 }
 
 type discoveryUpdate struct {
@@ -908,8 +914,14 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		if st.RebalanceScanMinute != nil && *st.RebalanceScanMinute >= 0 && *st.RebalanceScanMinute < 60 {
 			s.cfg.RebalanceScanMinute = *st.RebalanceScanMinute
 		}
-		if st.RebalanceAfterExit != nil {
-			s.cfg.RebalanceAfterExit = *st.RebalanceAfterExit
+		if st.EnablePoolAllocator != nil {
+			s.cfg.EnablePoolAllocator = *st.EnablePoolAllocator
+		}
+		if st.TopPairsPerSymbol != nil && *st.TopPairsPerSymbol > 0 {
+			s.cfg.TopPairsPerSymbol = *st.TopPairsPerSymbol
+		}
+		if st.AllocatorTimeoutMs != nil && *st.AllocatorTimeoutMs > 0 {
+			s.cfg.AllocatorTimeoutMs = *st.AllocatorTimeoutMs
 		}
 		if st.TopOpportunities != nil && *st.TopOpportunities > 0 {
 			s.cfg.TopOpportunities = *st.TopOpportunities
@@ -1387,8 +1399,10 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"leverage":                            strconv.Itoa(snapshot.Fund.Leverage),
 		"slippage_limit_bps":                  strconv.FormatFloat(snapshot.Strategy.Entry.SlippageLimitBPS, 'f', -1, 64),
 		"rebalance_scan_minute":               strconv.Itoa(snapshot.Strategy.RebalanceScanMinute),
-		"rebalance_after_exit":                strconv.FormatBool(snapshot.Strategy.RebalanceAfterExit),
-		"top_opportunities":                   strconv.Itoa(snapshot.Strategy.TopOpportunities),
+		"enable_pool_allocator":               strconv.FormatBool(snapshot.Strategy.EnablePoolAllocator),
+		"top_pairs_per_symbol":                strconv.Itoa(snapshot.Strategy.TopPairsPerSymbol),
+		"allocator_timeout_ms": strconv.Itoa(snapshot.Strategy.AllocatorTimeoutMs),
+		"top_opportunities":   strconv.Itoa(snapshot.Strategy.TopOpportunities),
 		"entry_scan_minute":                   strconv.Itoa(snapshot.Strategy.EntryScanMinute),
 		"exit_scan_minute":                    strconv.Itoa(snapshot.Strategy.ExitScanMinute),
 		"rotate_scan_minute":                  strconv.Itoa(snapshot.Strategy.RotateScanMinute),

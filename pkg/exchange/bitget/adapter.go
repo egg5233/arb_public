@@ -1012,6 +1012,7 @@ func parseRawFloat(raw json.RawMessage) float64 {
 
 // Compile-time interface check.
 var _ exchange.Exchange = (*Adapter)(nil)
+var _ exchange.TradingFeeProvider = (*Adapter)(nil)
 
 // GetUserTrades returns filled trades for a symbol since startTime.
 // Bitget endpoint: GET /api/v2/mix/order/fill-history
@@ -1302,4 +1303,48 @@ func (a *Adapter) isOneWayMode() bool {
 		return resp.Data.PosMode == "one_way_mode"
 	}
 	return false
+}
+
+// GetTradingFee returns maker/taker fee rates from the public contracts endpoint.
+func (a *Adapter) GetTradingFee() (*exchange.TradingFee, error) {
+	params := map[string]string{
+		"symbol":      "BTCUSDT",
+		"productType": productTypeUSDTFutures,
+	}
+	raw, err := a.client.Get("/api/v2/mix/market/contracts", params)
+	if err != nil {
+		return nil, fmt.Errorf("bitget GetTradingFee: %w", err)
+	}
+
+	var resp struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+		Data []struct {
+			MakerRate string `json:"makerFeeRate"`
+			TakerRate string `json:"takerFeeRate"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		return nil, fmt.Errorf("bitget GetTradingFee unmarshal: %w", err)
+	}
+	if resp.Code != "00000" {
+		return nil, fmt.Errorf("bitget GetTradingFee failed: code=%s msg=%s", resp.Code, resp.Msg)
+	}
+	if len(resp.Data) == 0 {
+		return nil, fmt.Errorf("bitget GetTradingFee: empty data")
+	}
+
+	maker, err := strconv.ParseFloat(resp.Data[0].MakerRate, 64)
+	if err != nil {
+		return nil, fmt.Errorf("bitget GetTradingFee parse maker: %w", err)
+	}
+	taker, err := strconv.ParseFloat(resp.Data[0].TakerRate, 64)
+	if err != nil {
+		return nil, fmt.Errorf("bitget GetTradingFee parse taker: %w", err)
+	}
+
+	return &exchange.TradingFee{
+		MakerRate: maker,
+		TakerRate: taker,
+	}, nil
 }

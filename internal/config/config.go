@@ -120,7 +120,9 @@ type Config struct {
 	RotateScanMinute int   // minute mark that triggers rotation checks (default 45)
 
 	// Rebalance scheduling
-	RebalanceAfterExit bool // run rebalance after exit scan instead of on its own tick (default false)
+	EnablePoolAllocator    bool
+	TopPairsPerSymbol      int
+	AllocatorTimeoutMs int
 
 	// Leg rotation parameters
 	RotationThresholdBPS float64 // min spread improvement to trigger rotation (default: 20)
@@ -174,7 +176,7 @@ type Config struct {
 	// Spot-futures arbitrage engine
 	SpotFuturesEnabled            bool
 	SpotFuturesMaxPositions       int
-	SpotFuturesLeverage int
+	SpotFuturesLeverage           int
 	SpotFuturesMonitorIntervalSec int
 	SpotFuturesMinNetYieldAPR     float64  // minimum net APR after costs (decimal, e.g. 0.10 = 10%)
 	SpotFuturesMaxBorrowAPR       float64  // maximum borrow APR for Direction A (decimal, e.g. 0.50 = 50%)
@@ -196,8 +198,8 @@ type Config struct {
 
 	// Separate-account exchange support (Binance/Bitget)
 	SpotFuturesProfitTransferEnabled bool    // enable auto profit-to-margin transfers after exit (default: false)
-	SpotFuturesCapitalSeparate float64 // capital per position for separate-account exchanges (default: 200)
-	SpotFuturesCapitalUnified  float64 // capital per position for unified-account exchanges (default: 500)
+	SpotFuturesCapitalSeparate       float64 // capital per position for separate-account exchanges (default: 200)
+	SpotFuturesCapitalUnified        float64 // capital per position for unified-account exchanges (default: 500)
 
 	// Phase 2: native scanner + exit/entry guards
 	SpotFuturesNativeScannerEnabled  bool    // use Loris-based native scanner instead of CoinGlass (default: true)
@@ -263,8 +265,8 @@ type jsonSpotArb struct {
 
 type jsonSpotFutures struct {
 	Enabled                    *bool    `json:"enabled"`
-	MaxPositions *int `json:"max_positions"`
-	Leverage     *int `json:"leverage"`
+	MaxPositions               *int     `json:"max_positions"`
+	Leverage                   *int     `json:"leverage"`
 	MonitorIntervalSec         *int     `json:"monitor_interval_sec"`
 	MinNetYieldAPR             *float64 `json:"min_net_yield_apr"`
 	MaxBorrowAPR               *float64 `json:"max_borrow_apr"`
@@ -331,17 +333,19 @@ type jsonAI struct {
 }
 
 type jsonStrategy struct {
-	TopOpportunities    *int           `json:"top_opportunities"`
-	ScanMinutes         []int          `json:"scan_minutes"`
-	EntryScanMinute     *int           `json:"entry_scan_minute"`
-	ExitScanMinute      *int           `json:"exit_scan_minute"`
-	RotateScanMinute    *int           `json:"rotate_scan_minute"`
-	RebalanceScanMinute *int           `json:"rebalance_scan_minute"`
-	RebalanceAfterExit  *bool          `json:"rebalance_after_exit"`
-	Discovery           *jsonDiscovery `json:"discovery"`
-	Entry               *jsonEntry     `json:"entry"`
-	Exit                *jsonExit      `json:"exit"`
-	Rotation            *jsonRotation  `json:"rotation"`
+	TopOpportunities       *int           `json:"top_opportunities"`
+	ScanMinutes            []int          `json:"scan_minutes"`
+	EntryScanMinute        *int           `json:"entry_scan_minute"`
+	ExitScanMinute         *int           `json:"exit_scan_minute"`
+	RotateScanMinute       *int           `json:"rotate_scan_minute"`
+	RebalanceScanMinute    *int           `json:"rebalance_scan_minute"`
+	EnablePoolAllocator    *bool          `json:"enable_pool_allocator"`
+	TopPairsPerSymbol      *int           `json:"top_pairs_per_symbol"`
+	AllocatorTimeoutMs *int           `json:"allocator_timeout_ms"`
+	Discovery          *jsonDiscovery `json:"discovery"`
+	Entry                  *jsonEntry     `json:"entry"`
+	Exit                   *jsonExit      `json:"exit"`
+	Rotation               *jsonRotation  `json:"rotation"`
 }
 
 type jsonDiscovery struct {
@@ -462,7 +466,10 @@ func Load() *Config {
 		Leverage:                        3,
 		SlippageBPS:                     50,
 		RebalanceScanMinute:             10,
-		TopOpportunities:                25,
+		EnablePoolAllocator:             false,
+		TopPairsPerSymbol:               1,
+		AllocatorTimeoutMs: 5,
+		TopOpportunities:   25,
 		PriceGapFreeBPS:                 40,
 		MaxPriceGapBPS:                  200,
 		MaxGapRecoveryIntervals:         1.0,
@@ -526,7 +533,7 @@ func Load() *Config {
 		SpotArbSchedule:                 "15,35",
 		SpotArbChromePath:               detectChromePath(),
 		SpotFuturesMaxPositions:         1,
-		SpotFuturesLeverage: 3,
+		SpotFuturesLeverage:             3,
 		SpotFuturesMonitorIntervalSec:   60,
 		SpotFuturesMinNetYieldAPR:       0.10, // 10%
 		SpotFuturesMaxBorrowAPR:         0.50, // 50%
@@ -543,8 +550,8 @@ func Load() *Config {
 		SpotFuturesLossCooldownHours:    4,
 		SpotFuturesDryRun:               true,
 		SpotFuturesPersistenceScans:     2,
-		SpotFuturesCapitalSeparate: 200,
-		SpotFuturesCapitalUnified:  500,
+		SpotFuturesCapitalSeparate:       200,
+		SpotFuturesCapitalUnified:        500,
 		SpotFuturesNativeScannerEnabled:  false,
 		SpotFuturesEnableMinHold:         false,
 		SpotFuturesMinHoldHours:          8,
@@ -666,8 +673,14 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if s.RebalanceScanMinute != nil {
 			c.RebalanceScanMinute = *s.RebalanceScanMinute
 		}
-		if s.RebalanceAfterExit != nil {
-			c.RebalanceAfterExit = *s.RebalanceAfterExit
+		if s.EnablePoolAllocator != nil {
+			c.EnablePoolAllocator = *s.EnablePoolAllocator
+		}
+		if s.TopPairsPerSymbol != nil && *s.TopPairsPerSymbol > 0 {
+			c.TopPairsPerSymbol = *s.TopPairsPerSymbol
+		}
+		if s.AllocatorTimeoutMs != nil && *s.AllocatorTimeoutMs > 0 {
+			c.AllocatorTimeoutMs = *s.AllocatorTimeoutMs
 		}
 
 		// Discovery
@@ -1200,7 +1213,9 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	strategy["exit_scan_minute"] = c.ExitScanMinute
 	strategy["rotate_scan_minute"] = c.RotateScanMinute
 	strategy["rebalance_scan_minute"] = c.RebalanceScanMinute
-	strategy["rebalance_after_exit"] = c.RebalanceAfterExit
+	strategy["enable_pool_allocator"] = c.EnablePoolAllocator
+	strategy["top_pairs_per_symbol"] = c.TopPairsPerSymbol
+	strategy["allocator_timeout_ms"] = c.AllocatorTimeoutMs
 
 	disc := getMap(strategy, "discovery")
 	disc["min_hold_time_hours"] = int(c.MinHoldTime.Hours())
