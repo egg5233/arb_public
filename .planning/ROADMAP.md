@@ -84,7 +84,7 @@ Plans:
 - [x] 04-01-PLAN.md -- Backend data layer: position model enrichment, SQLite time-series store, aggregator (APR, win rate, exchange metrics)
 - [x] 04-02-PLAN.md -- Frontend dependency setup: add Recharts via controlled npm lockfile update (user approval checkpoint)
 - [x] 04-03-PLAN.md -- Backend integration: analytics API endpoints, PnL decomposition in reconcilePnL, BBO slippage capture, snapshot writer, Redis backfill
-- [ ] 04-04-PLAN.md -- Frontend: Analytics page (PnL chart, strategy comparison, exchange metrics), History drill-down, sidebar nav, i18n
+- [x] 04-04-PLAN.md -- Frontend: Analytics page (PnL chart, strategy comparison, exchange metrics), History drill-down, sidebar nav, i18n
 
 ### Phase 5: Capital Allocation
 **Goal**: The user deposits USDT once, selects a risk preference, and the system intelligently distributes capital across both strategies and all exchanges
