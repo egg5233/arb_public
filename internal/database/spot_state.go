@@ -18,9 +18,11 @@ const (
 	keySpotHistory         = "arb:spot_history"
 	keySpotStats           = "arb:spot_stats"
 	keySpotPersistPrefix   = "arb:spot_persistence:"
+	keySpotMarketPrefix    = "arb:spot_market_exists:"
 
 	spotHistoryMaxLen = 500
 	spotPersistTTL    = 20 * time.Minute
+	spotMarketTTL     = 24 * time.Hour
 )
 
 // ---------------------------------------------------------------------------
@@ -248,6 +250,35 @@ func (c *Client) DeleteSpotPersistence(symbol string) error {
 	ctx := context.Background()
 	key := keySpotPersistPrefix + symbol
 	return c.rdb.Del(ctx, key).Err()
+}
+
+// GetSpotMarketAvailability returns the cached spot-market existence flag for
+// one exchange+symbol. The second return value reports whether a cache entry
+// existed at all.
+func (c *Client) GetSpotMarketAvailability(exchange, symbol string) (bool, bool, error) {
+	ctx := context.Background()
+	key := keySpotMarketPrefix + exchange + ":" + symbol
+	val, err := c.rdb.Get(ctx, key).Result()
+	if err == redis.Nil {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	return val == "1", true, nil
+}
+
+// SetSpotMarketAvailability caches whether an exchange has a usable spot
+// market for the given symbol. The key expires automatically so the cache can
+// refresh over time while still surviving process restarts.
+func (c *Client) SetSpotMarketAvailability(exchange, symbol string, exists bool) error {
+	ctx := context.Background()
+	key := keySpotMarketPrefix + exchange + ":" + symbol
+	val := "0"
+	if exists {
+		val = "1"
+	}
+	return c.rdb.Set(ctx, key, val, spotMarketTTL).Err()
 }
 
 // ListSpotPersistenceSymbols returns all symbols that currently have a

@@ -15,6 +15,9 @@ All notable changes to this project will be documented in this file.
 - **Native scanner defaults** — `NativeScannerEnabled` now defaults to `false` (was `true`)
 - **Spot opportunity API cap** — `/api/spot/opportunities` capped to 100 entries
 - **Dir A/B funding sign** — Dir A (long futures) now correctly shows negative funding when rate is positive; Dir B (short futures) shows positive
+- **[spot-futures] Discovery filters missing spot markets in both native and CoinGlass paths** — spot-futures discovery now probes spot-market availability before marking rows actionable, caches the result in Redis (`arb:spot_market_exists:{exchange}:{symbol}`, 24h TTL), and persists the cache across restarts so impossible rows such as missing OKX spot instruments are consistently labeled `spot market unavailable` instead of failing later in `ManualOpen` or the dashboard gap check (`internal/spotengine/discovery.go`, `internal/database/spot_state.go`)
+- **[binance] GetSpotBBO uses unsigned public spot endpoint** — `GetSpotBBO()` now calls Binance `/api/v3/ticker/bookTicker` without `timestamp` or `signature`, fixing `-1104 Not all sent parameters were read` on the dashboard spot-futures price-gap action (`pkg/exchange/binance/client.go`, `pkg/exchange/binance/margin.go`)
+- **[okx] GetSpotBBO maps missing spot instruments to domain error** — OKX `51001` responses from the spot ticker endpoint are now normalized to `no OKX spot market for SYMBOL`, allowing discovery to cache and filter those rows cleanly instead of surfacing raw exchange errors in the UI (`pkg/exchange/okx/margin.go`)
 
 ## [0.25.1] - 2026-04-02
 

@@ -238,6 +238,9 @@ func (a *Adapter) GetSpotBBO(symbol string) (exchange.BBO, error) {
 	instID := toOKXSpotInstID(symbol)
 	data, err := a.client.Get("/api/v5/market/ticker", map[string]string{"instId": instID})
 	if err != nil {
+		if apiErr, ok := err.(*APIError); ok && apiErr.Code == "51001" {
+			return exchange.BBO{}, fmt.Errorf("GetSpotBBO: no OKX spot market for %s", symbol)
+		}
 		return exchange.BBO{}, fmt.Errorf("GetSpotBBO: %w", err)
 	}
 

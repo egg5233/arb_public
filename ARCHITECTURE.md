@@ -782,7 +782,7 @@ A separate engine (`internal/spotengine/`) that runs **alongside** the perp-perp
 | `internal/spotengine/monitor.go` | Per-tick monitoring: stuck exit retry, `retryPendingRepay` for Bybit blackout, fresh borrow rate fetch |
 | `internal/spotengine/risk_gate.go` | Pre-entry risk gate: capacity, cooldown, duplicate (per-symbol), persistence filter |
 | `internal/models/spot_position.go` | `SpotFuturesPosition` data model — spot leg, futures leg, borrow tracking, P&L, `PendingRepay`, `ExitRetryCount` |
-| `internal/database/spot_state.go` | Redis CRUD — positions, history, stats, cooldown, Redis-backed persistence counters with 20-min TTL |
+| `internal/database/spot_state.go` | Redis CRUD — positions, history, stats, cooldown, Redis-backed persistence counters with 20-min TTL, spot-market availability cache (`arb:spot_market_exists:*`, 24h TTL) |
 | `internal/notify/telegram.go` | `TelegramNotifier` — auto-entry, auto-exit, emergency close, manual close alerts via Telegram Bot API |
 | `internal/api/spot_handlers.go` | Dashboard REST endpoints + WebSocket broadcasts for spot positions |
 | `doc/DESIGN_SPOT_FUTURES_RISK.md` | Extreme condition & risk design (10x squeeze, liquidation cascades) |
@@ -790,23 +790,32 @@ A separate engine (`internal/spotengine/`) that runs **alongside** the perp-perp
 ### 3.3 Discovery Flow
 
 ```
-CoinGlass scraper → Redis (coinGlassSpotArb)
-                        ↓
+Primary path:
+Loris funding API
+  ↓
 SpotEngine.discoveryLoop (every scan_interval_min minutes)
-  1. Read + parse CoinGlass payload from Redis
-  2. Staleness check: reject if >60min old or bad timestamp
-  3. For each opportunity:
+  1. Poll Loris funding payload, derive per-exchange Dir A + Dir B rows
+  2. For each symbol+exchange:
      a. Normalize exchange name, check allowed list
      b. Verify exchange implements SpotMarginExchange interface
-     c. Parse direction from Portfolio field ("Sell X" → A, "Buy X" → B)
-     d. Parse funding APR from CoinGlass APR field
-     e. Direction A only: fetch borrow rate (5min cache), filter by max_borrow_apr
-     f. Calculate fee APR: 4 taker legs × (365 / 30-day assumed hold)
-     g. Net APR = fundingAPR − borrowAPR − feeAPR
-     h. Filter by min_net_yield_apr
-  4. Rank by net APR descending, limit to top N (always preserving entries for active positions)
-  5. Update Redis persistence counters (per-symbol, 20-min TTL)
-  6. Push results to API server (GET /api/spot/opportunities)
+     c. Check spot-market availability via GetSpotBBO()
+        - cache result in Redis key arb:spot_market_exists:{exchange}:{symbol}
+        - TTL 24h so discovery survives restart without re-probing every symbol
+        - rows with no spot market remain visible but carry `filter_status="spot market unavailable"`
+     d. Direction A only: fetch borrow rate (5min cache), filter by max_borrow_apr
+     e. Calculate fee APR: 4 taker legs × (365 / 30-day assumed hold)
+     f. Net APR = fundingAPR − borrowAPR − feeAPR
+     g. Filter by min_net_yield_apr
+  3. Rank by net APR descending, limit to top N (always preserving entries for active positions)
+  4. Update Redis persistence counters (per-symbol, 20-min TTL)
+  5. Push results to API server (GET /api/spot/opportunities)
+
+Fallback path:
+CoinGlass scraper → Redis (coinGlassSpotArb)
+                        ↓
+Used only when native Loris discovery is disabled or unavailable
+  - Same spot-market availability filter applies before borrowability checks
+  - Prevents impossible rows (for example missing OKX spot markets) from appearing actionable
 ```
 
 ### 3.4 Configuration

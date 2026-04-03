@@ -197,7 +197,7 @@ func (b *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarg
 
 // GetSpotBBO returns the current best bid/offer for the Binance spot market.
 func (b *Adapter) GetSpotBBO(symbol string) (exchange.BBO, error) {
-	body, err := b.client.SpotGet("/api/v3/ticker/bookTicker", map[string]string{"symbol": symbol})
+	body, err := b.client.SpotPublicGet("/api/v3/ticker/bookTicker", map[string]string{"symbol": symbol})
 	if err != nil {
 		return exchange.BBO{}, fmt.Errorf("GetSpotBBO: %w", err)
 	}

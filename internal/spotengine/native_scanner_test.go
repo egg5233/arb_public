@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -19,6 +20,9 @@ import (
 type nativeScannerStubExchange struct {
 	borrowRate *exchange.MarginInterestRate
 	borrowErr  error
+	bbo        exchange.BBO
+	bboErr     error
+	bboCalls   int
 }
 
 func (s *nativeScannerStubExchange) MarginBorrow(exchange.MarginBorrowParams) error { return nil }
@@ -36,6 +40,13 @@ func (s *nativeScannerStubExchange) GetMarginBalance(string) (*exchange.MarginBa
 	return &exchange.MarginBalance{Available: 1000}, nil
 }
 func (s *nativeScannerStubExchange) GetSpotBBO(string) (exchange.BBO, error) {
+	s.bboCalls++
+	if s.bboErr != nil {
+		return exchange.BBO{}, s.bboErr
+	}
+	if s.bbo.Bid > 0 && s.bbo.Ask > 0 {
+		return s.bbo, nil
+	}
 	return exchange.BBO{Bid: 100, Ask: 100.1}, nil
 }
 func (s *nativeScannerStubExchange) TransferToMargin(string, string) error   { return nil }
@@ -478,10 +489,90 @@ func TestNativeScannerFilterStatus(t *testing.T) {
 	}
 }
 
+func TestNativeScannerCachesMissingSpotMarketAcrossRestart(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	stubExch := &nativeScannerStubExchange{
+		borrowRate: &exchange.MarginInterestRate{
+			Coin:       "ONT",
+			HourlyRate: 0.00001,
+		},
+		bboErr: fmt.Errorf("GetSpotBBO: no OKX spot market for ONTUSDT"),
+	}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{
+		"okx": stubExch,
+	}
+	engine.cfg = &config.Config{
+		SpotFuturesNativeScannerEnabled: true,
+		SpotFuturesMinNetYieldAPR:       0.01,
+	}
+
+	lorisResp := buildTestLorisResponse(
+		[]string{"ONT"},
+		map[string]map[string]float64{
+			"okx": {"ONT": 10.0},
+		},
+	)
+	server := mockLorisServer(lorisResp)
+	defer server.Close()
+
+	opps := engine.runNativeDiscoveryScanWithURL(server.URL)
+	if len(opps) != 2 {
+		t.Fatalf("expected 2 opportunities, got %d", len(opps))
+	}
+	for _, opp := range opps {
+		if opp.FilterStatus != "spot market unavailable" {
+			t.Fatalf("expected spot market unavailable, got %q", opp.FilterStatus)
+		}
+	}
+	if stubExch.bboCalls != 1 {
+		t.Fatalf("expected one GetSpotBBO probe for native scan, got %d", stubExch.bboCalls)
+	}
+
+	exists, found, err := engine.db.GetSpotMarketAvailability("okx", "ONTUSDT")
+	if err != nil {
+		t.Fatalf("GetSpotMarketAvailability: %v", err)
+	}
+	if !found {
+		t.Fatal("expected cached spot market availability entry")
+	}
+	if exists {
+		t.Fatal("expected cached spot market availability to be false")
+	}
+
+	engine2 := &SpotEngine{
+		cfg:       &config.Config{SpotFuturesNativeScannerEnabled: true, SpotFuturesMinNetYieldAPR: 0.01},
+		db:        engine.db,
+		log:       engine.log,
+		stopCh:    make(chan struct{}),
+		exitState: exitState{exiting: make(map[string]bool)},
+		spotMargin: map[string]exchange.SpotMarginExchange{
+			"okx": &nativeScannerStubExchange{
+				borrowRate: &exchange.MarginInterestRate{Coin: "ONT", HourlyRate: 0.00001},
+			},
+		},
+	}
+
+	opps = engine2.runNativeDiscoveryScanWithURL(server.URL)
+	if len(opps) != 2 {
+		t.Fatalf("expected 2 opportunities after restart, got %d", len(opps))
+	}
+	for _, opp := range opps {
+		if opp.FilterStatus != "spot market unavailable" {
+			t.Fatalf("expected cached spot market unavailable after restart, got %q", opp.FilterStatus)
+		}
+	}
+	if secondStub := engine2.spotMargin["okx"].(*nativeScannerStubExchange); secondStub.bboCalls != 0 {
+		t.Fatalf("expected no GetSpotBBO call after restart cache hit, got %d", secondStub.bboCalls)
+	}
+}
+
 func TestNativeScannerConfigDefaults(t *testing.T) {
 	// Test: Config defaults for all 9 new fields.
 	// config.Load() sets defaults, then loads JSON + env. We call it in a
 	// clean env to verify the struct literal defaults are correct.
+	t.Setenv("CONFIG_FILE", filepath.Join(t.TempDir(), "config.json"))
 	cfg := config.Load()
 
 	tests := []struct {

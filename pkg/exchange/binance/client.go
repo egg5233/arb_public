@@ -15,7 +15,10 @@ import (
 	"time"
 )
 
-const defaultBaseURL = "https://fapi.binance.com"
+const (
+	defaultBaseURL     = "https://fapi.binance.com"
+	defaultSpotBaseURL = "https://api.binance.com"
+)
 
 // APIError represents a Binance API error response.
 type APIError struct {
@@ -30,6 +33,7 @@ func (e *APIError) Error() string {
 // Client is a low-level HTTP client for the Binance USDT-M Futures API.
 type Client struct {
 	baseURL         string
+	spotBaseURL     string
 	apiKey          string
 	secretKey       string
 	http            *http.Client
@@ -40,6 +44,7 @@ type Client struct {
 func (c *Client) WithBaseURL(url string) *Client {
 	return &Client{
 		baseURL:         url,
+		spotBaseURL:     url,
 		apiKey:          c.apiKey,
 		secretKey:       c.secretKey,
 		http:            c.http,
@@ -50,9 +55,10 @@ func (c *Client) WithBaseURL(url string) *Client {
 // NewClient creates a new Binance futures API client.
 func NewClient(apiKey, secretKey string) *Client {
 	return &Client{
-		baseURL:   defaultBaseURL,
-		apiKey:    apiKey,
-		secretKey: secretKey,
+		baseURL:     defaultBaseURL,
+		spotBaseURL: defaultSpotBaseURL,
+		apiKey:      apiKey,
+		secretKey:   secretKey,
 		http: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -155,7 +161,7 @@ func (c *Client) Delete(path string, params map[string]string) ([]byte, error) {
 // SpotPost performs a signed POST request against the Binance spot API (api.binance.com).
 func (c *Client) SpotPost(path string, params map[string]string) ([]byte, error) {
 	qs := c.buildQuery(params)
-	reqURL := "https://api.binance.com" + path
+	reqURL := c.spotBaseURL + path
 
 	req, err := http.NewRequest(http.MethodPost, reqURL, strings.NewReader(qs))
 	if err != nil {
@@ -170,7 +176,7 @@ func (c *Client) SpotPost(path string, params map[string]string) ([]byte, error)
 // SpotGet performs a signed GET request against the Binance spot API (api.binance.com).
 func (c *Client) SpotGet(path string, params map[string]string) ([]byte, error) {
 	qs := c.buildQuery(params)
-	reqURL := "https://api.binance.com" + path + "?" + qs
+	reqURL := c.spotBaseURL + path + "?" + qs
 
 	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
 	if err != nil {
@@ -179,6 +185,40 @@ func (c *Client) SpotGet(path string, params map[string]string) ([]byte, error) 
 	req.Header.Set("X-MBX-APIKEY", c.apiKey)
 
 	return c.doRequest(req)
+}
+
+// SpotPublicGet performs an unsigned GET request against the Binance spot API.
+// Use this for public market data endpoints that reject timestamp/signature.
+func (c *Client) SpotPublicGet(path string, params map[string]string) ([]byte, error) {
+	qs := buildUnsignedQuery(params)
+	reqURL := c.spotBaseURL + path
+	if qs != "" {
+		reqURL += "?" + qs
+	}
+
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	return c.doRequest(req)
+}
+
+func buildUnsignedQuery(params map[string]string) string {
+	if len(params) == 0 {
+		return ""
+	}
+
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, url.QueryEscape(k)+"="+url.QueryEscape(params[k]))
+	}
+	return strings.Join(parts, "&")
 }
 
 // doRequest executes the HTTP request and checks for Binance error responses.

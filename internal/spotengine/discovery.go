@@ -189,20 +189,29 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 			// Dir B (short futures): receives funding when rate is positive, pays when negative.
 			dirAFundingAPR := -fundingAPR // long futures: opposite sign
 			dirBFundingAPR := fundingAPR  // short futures: same sign
+			spotAvailable, spotAvailErr := e.checkSpotMarketAvailable(exchName, symbol, smExch)
+			spotFilterStatus := ""
+			if spotAvailErr != nil {
+				spotFilterStatus = "spot market check failed"
+			} else if !spotAvailable {
+				spotFilterStatus = "spot market unavailable"
+			}
 
 			// --- Dir A: borrow_sell_long ---
 			{
 				isActive := activeKeys[symbol+":"+exchName+":borrow_sell_long"]
-				var filterStatus string
+				filterStatus := spotFilterStatus
 				var borrowAPR float64
 
-				rate, err := e.getCachedBorrowRate(exchName, strings.ToUpper(baseSym), smExch)
-				if err != nil {
-					filterStatus = "borrow rate unavailable"
-				} else {
-					borrowAPR = rate.HourlyRate * 24 * 365
-					if e.cfg.SpotFuturesMaxBorrowAPR > 0 && borrowAPR > e.cfg.SpotFuturesMaxBorrowAPR && !isActive {
-						filterStatus = fmt.Sprintf("borrow %.0f%% > max %.0f%%", borrowAPR*100, e.cfg.SpotFuturesMaxBorrowAPR*100)
+				if filterStatus == "" {
+					rate, err := e.getCachedBorrowRate(exchName, strings.ToUpper(baseSym), smExch)
+					if err != nil {
+						filterStatus = "borrow rate unavailable"
+					} else {
+						borrowAPR = rate.HourlyRate * 24 * 365
+						if e.cfg.SpotFuturesMaxBorrowAPR > 0 && borrowAPR > e.cfg.SpotFuturesMaxBorrowAPR && !isActive {
+							filterStatus = fmt.Sprintf("borrow %.0f%% > max %.0f%%", borrowAPR*100, e.cfg.SpotFuturesMaxBorrowAPR*100)
+						}
 					}
 				}
 
@@ -230,7 +239,7 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 			// --- Dir B: buy_spot_short ---
 			{
 				isActive := activeKeys[symbol+":"+exchName+":buy_spot_short"]
-				var filterStatus string
+				filterStatus := spotFilterStatus
 				borrowAPR := 0.0 // no borrow for Dir B
 				netAPR := dirBFundingAPR - borrowAPR
 
@@ -373,6 +382,12 @@ func (e *SpotEngine) runCoinGlassFallback() []SpotArbOpportunity {
 		// symbol actually exists on the exchange's cross-margin market.
 		// For borrow_sell_long, also check borrowability and borrow rate.
 		smExch := e.spotMargin[exchName]
+		spotAvailable, spotAvailErr := e.checkSpotMarketAvailable(exchName, spotSymbol, smExch)
+		if spotAvailErr != nil {
+			filterStatus = "spot market check failed"
+		} else if !spotAvailable {
+			filterStatus = "spot market unavailable"
+		}
 		if filterStatus == "" {
 			spotBal, err := smExch.GetMarginBalance(baseCoin)
 			if err != nil {
@@ -524,6 +539,41 @@ func parsePercent(s string) float64 {
 		return 0
 	}
 	return f / 100
+}
+
+func (e *SpotEngine) checkSpotMarketAvailable(exchName, symbol string, smExch exchange.SpotMarginExchange) (bool, error) {
+	if cached, found, err := e.db.GetSpotMarketAvailability(exchName, symbol); err == nil && found {
+		return cached, nil
+	} else if err != nil {
+		e.log.Warn("spot discovery: spot-market cache read failed for %s on %s: %v", symbol, exchName, err)
+	}
+
+	if _, err := smExch.GetSpotBBO(symbol); err != nil {
+		if isMissingSpotMarketError(err) {
+			if cacheErr := e.db.SetSpotMarketAvailability(exchName, symbol, false); cacheErr != nil {
+				e.log.Warn("spot discovery: failed to cache missing spot market for %s on %s: %v", symbol, exchName, cacheErr)
+			}
+			return false, nil
+		}
+		return false, err
+	}
+
+	if err := e.db.SetSpotMarketAvailability(exchName, symbol, true); err != nil {
+		e.log.Warn("spot discovery: failed to cache spot market for %s on %s: %v", symbol, exchName, err)
+	}
+	return true, nil
+}
+
+func isMissingSpotMarketError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no okx spot market") ||
+		strings.Contains(msg, "doesn't exist") ||
+		strings.Contains(msg, "does not exist") ||
+		strings.Contains(msg, "invalid symbol") ||
+		strings.Contains(msg, "no data for")
 }
 
 // logDiscoveryResults logs the top opportunities in a table format.
