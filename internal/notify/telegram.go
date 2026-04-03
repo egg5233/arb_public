@@ -6,18 +6,24 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"arb/internal/models"
 	"arb/pkg/utils"
 )
 
-// TelegramNotifier sends spot-futures trade alerts via Telegram Bot API.
+// TelegramNotifier sends trade alerts via Telegram Bot API.
+// Used by both spot-futures and perp-perp engines.
 type TelegramNotifier struct {
 	botToken string
 	chatID   string
 	client   *http.Client
 	log      *utils.Logger
+
+	// Per-event-type cooldown to prevent notification spam.
+	cooldownMu sync.Mutex
+	lastSent   map[string]time.Time // event type key -> last sent time
 }
 
 // NewTelegram creates a notifier. Returns nil if botToken or chatID is empty.
@@ -30,6 +36,7 @@ func NewTelegram(botToken, chatID string) *TelegramNotifier {
 		chatID:   chatID,
 		client:   &http.Client{Timeout: 10 * time.Second},
 		log:      utils.NewLogger("telegram"),
+		lastSent: make(map[string]time.Time),
 	}
 }
 
@@ -120,6 +127,116 @@ func (t *TelegramNotifier) NotifyEmergencyClose(pos *models.SpotFuturesPosition,
 		pos.Symbol, triggerLabel,
 		pnlSign, pnl,
 		pos.Exchange,
+	)
+	go t.send(text)
+}
+
+// ---------------------------------------------------------------------------
+// Cooldown: per-event-type dedup (5 minutes)
+// ---------------------------------------------------------------------------
+
+// checkCooldown returns true if enough time has passed since last notification
+// of this type. Thread-safe. Uses wall-clock time.
+func (t *TelegramNotifier) checkCooldown(eventKey string) bool {
+	return t.checkCooldownAt(eventKey, time.Now())
+}
+
+// checkCooldownAt is the testable core of checkCooldown with an explicit timestamp.
+func (t *TelegramNotifier) checkCooldownAt(eventKey string, now time.Time) bool {
+	t.cooldownMu.Lock()
+	defer t.cooldownMu.Unlock()
+	if last, ok := t.lastSent[eventKey]; ok && now.Sub(last) < 5*time.Minute {
+		return false
+	}
+	t.lastSent[eventKey] = now
+	return true
+}
+
+// ---------------------------------------------------------------------------
+// Perp-perp notification methods
+// ---------------------------------------------------------------------------
+
+// NotifySLTriggered sends an alert when a stop-loss fill is detected on a
+// perp-perp position leg. Nil-receiver safe.
+func (t *TelegramNotifier) NotifySLTriggered(pos *models.ArbitragePosition, leg, exchName string) {
+	if t == nil {
+		return
+	}
+	if !t.checkCooldown("sl_triggered") {
+		return
+	}
+	sym := ""
+	if pos != nil {
+		sym = pos.Symbol
+	}
+	text := fmt.Sprintf(
+		"\xE2\x9A\xA0 *SL Triggered*\n"+
+			"Symbol: `%s`\n"+
+			"Exchange: %s\n"+
+			"Leg: %s\n"+
+			"Emergency close initiated",
+		sym, exchName, leg,
+	)
+	go t.send(text)
+}
+
+// NotifyEmergencyClosePerp sends an alert for L4/L5 margin health emergency
+// actions on perp-perp positions. Nil-receiver safe.
+func (t *TelegramNotifier) NotifyEmergencyClosePerp(exchName string, level string, posCount int) {
+	if t == nil {
+		return
+	}
+	if !t.checkCooldown("emergency_close_perp:" + exchName) {
+		return
+	}
+	text := fmt.Sprintf(
+		"\xE2\x9A\xA0 *%s Emergency Action*\n"+
+			"Exchange: %s\n"+
+			"Positions affected: %d\n"+
+			"Margin health critical — reducing exposure",
+		level, exchName, posCount,
+	)
+	go t.send(text)
+}
+
+// NotifyConsecutiveAPIErrors sends an alert when an exchange accumulates 3+
+// consecutive API errors. Nil-receiver safe.
+func (t *TelegramNotifier) NotifyConsecutiveAPIErrors(exchName string, errCount int, lastErr error) {
+	if t == nil {
+		return
+	}
+	if !t.checkCooldown("api_errors:" + exchName) {
+		return
+	}
+	errMsg := "<nil>"
+	if lastErr != nil {
+		errMsg = lastErr.Error()
+	}
+	text := fmt.Sprintf(
+		"\xE2\x9A\xA0 *API Error Alert*\n"+
+			"Exchange: %s\n"+
+			"Consecutive failures: %d\n"+
+			"Last error: %s",
+		exchName, errCount, errMsg,
+	)
+	go t.send(text)
+}
+
+// NotifyLossLimitBreached sends an alert when daily or weekly loss limits are
+// breached. New entries halted but existing positions continue. Nil-receiver safe.
+func (t *TelegramNotifier) NotifyLossLimitBreached(breachType string, dailyLoss, dailyLimit, weeklyLoss, weeklyLimit float64) {
+	if t == nil {
+		return
+	}
+	if !t.checkCooldown("loss_limit_breached") {
+		return
+	}
+	text := fmt.Sprintf(
+		"\xE2\x9A\xA0 *Loss Limit Breached (%s)*\n"+
+			"Daily: %.2f / %.2f USDT\n"+
+			"Weekly: %.2f / %.2f USDT\n"+
+			"New entries halted. Existing positions continue.",
+		breachType, dailyLoss, dailyLimit, weeklyLoss, weeklyLimit,
 	)
 	go t.send(text)
 }

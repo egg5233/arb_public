@@ -3,6 +3,8 @@ package notify
 import (
 	"testing"
 	"time"
+
+	"arb/internal/models"
 )
 
 func TestNewTelegramNilOnEmpty(t *testing.T) {
@@ -26,6 +28,12 @@ func TestNilSafeNotify(t *testing.T) {
 	n.NotifyAutoEntry(nil, 0.1) // should not panic
 	n.NotifyAutoExit(nil, "", 0, 0)
 	n.NotifyEmergencyClose(nil, "", 0)
+
+	// New perp-perp methods (nil-safe).
+	n.NotifySLTriggered(nil, "", "")
+	n.NotifyEmergencyClosePerp("", "", 0)
+	n.NotifyConsecutiveAPIErrors("", 0, nil)
+	n.NotifyLossLimitBreached("", 0, 0, 0, 0)
 }
 
 func TestFormatDuration(t *testing.T) {
@@ -67,4 +75,79 @@ func TestFormatExitReason(t *testing.T) {
 			t.Errorf("formatExitReason(%q) = %q, want %q", tc.reason, got, tc.want)
 		}
 	}
+}
+
+func TestCooldown(t *testing.T) {
+	tg := NewTelegram("tok", "123")
+	if tg == nil {
+		t.Fatal("NewTelegram returned nil")
+	}
+
+	t0 := time.Date(2026, 4, 3, 12, 0, 0, 0, time.UTC)
+
+	// First call should return true (no prior send).
+	if !tg.checkCooldownAt("test_event", t0) {
+		t.Error("first checkCooldownAt should return true")
+	}
+
+	// Within 5 minutes should return false.
+	if tg.checkCooldownAt("test_event", t0.Add(2*time.Minute)) {
+		t.Error("checkCooldownAt within 5m should return false")
+	}
+
+	// After 5 minutes should return true again.
+	if !tg.checkCooldownAt("test_event", t0.Add(6*time.Minute)) {
+		t.Error("checkCooldownAt after 6m should return true")
+	}
+}
+
+func TestCooldownIndependent(t *testing.T) {
+	tg := NewTelegram("tok", "123")
+	if tg == nil {
+		t.Fatal("NewTelegram returned nil")
+	}
+
+	t0 := time.Date(2026, 4, 3, 12, 0, 0, 0, time.UTC)
+
+	// Both different event types should return true at the same time.
+	if !tg.checkCooldownAt("sl_triggered", t0) {
+		t.Error("sl_triggered should pass cooldown")
+	}
+	if !tg.checkCooldownAt("api_errors:binance", t0) {
+		t.Error("api_errors:binance should pass cooldown independently")
+	}
+
+	// But same event type should be blocked.
+	if tg.checkCooldownAt("sl_triggered", t0.Add(1*time.Minute)) {
+		t.Error("sl_triggered should be blocked within cooldown window")
+	}
+}
+
+func TestNotifySLTriggeredFormat(t *testing.T) {
+	tg := NewTelegram("tok", "123")
+	if tg == nil {
+		t.Fatal("NewTelegram returned nil")
+	}
+
+	pos := &models.ArbitragePosition{
+		ID:            "test-pos-1",
+		Symbol:        "BTCUSDT",
+		LongExchange:  "binance",
+		ShortExchange: "bybit",
+		LongSize:      0.5,
+		ShortSize:     0.5,
+	}
+
+	// Should not panic even though send will fail (invalid bot token).
+	tg.NotifySLTriggered(pos, "long", "binance")
+}
+
+func TestNotifyLossLimitBreachedFormat(t *testing.T) {
+	tg := NewTelegram("tok", "123")
+	if tg == nil {
+		t.Fatal("NewTelegram returned nil")
+	}
+
+	// Should not panic.
+	tg.NotifyLossLimitBreached("daily", 150.0, 100.0, 300.0, 500.0)
 }
