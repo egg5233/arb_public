@@ -34,7 +34,7 @@ Declared values (must be multiples of 4):
 | Token | Value | Usage |
 |-------|-------|-------|
 | xs | 4px (`p-1`, `gap-1`) | Icon gaps, inline padding, badge padding |
-| sm | 8px (`p-2`, `gap-2`) | Compact element spacing, nav item padding |
+| sm | 8px (`p-2`, `gap-2`) | Compact element spacing, nav item padding, TimeRangeSelector button vertical padding |
 | md | 16px (`p-4`, `gap-4`) | Default element spacing, card padding, section padding |
 | lg | 24px (`p-6`, `space-y-6`) | Page content padding (`p-3 md:p-6`), section gaps |
 | xl | 32px (`p-8`, `gap-8`) | Chart-to-chart vertical gaps on Analytics page |
@@ -52,11 +52,13 @@ Exceptions: none
 | Role | Size | Weight | Line Height | Tailwind Class |
 |------|------|--------|-------------|----------------|
 | Body | 14px | 400 (normal) | 1.5 | `text-sm` |
-| Label | 12px | 500 (medium) | 1.4 | `text-xs font-medium` |
+| Label | 12px | 400 (normal) | 1.4 | `text-xs` |
 | Heading | 20px | 700 (bold) | 1.2 | `text-xl font-bold` |
-| Subheading | 16px | 600 (semibold) | 1.3 | `text-base font-semibold` |
+| Subheading | 16px | 700 (bold) | 1.3 | `text-base font-bold` |
 
-**Source:** Extracted from existing patterns. Page headings use `text-xl font-bold` (History.tsx:52, Overview.tsx:103). Body text uses `text-sm`. Labels and table headers use `text-xs` or `text-sm text-gray-400`. Stat card labels use `text-xs font-medium`.
+**Weights:** Exactly 2 weights used throughout this phase -- 400 (normal) for body text, labels, data values, and table content; 700 (bold) for page headings, section headings, and stat card values.
+
+**Source:** Extracted from existing patterns. Page headings use `text-xl font-bold` (History.tsx:52, Overview.tsx:103). Body text uses `text-sm`. Labels and table headers use `text-xs` or `text-sm text-gray-400`. Stat card values use `font-bold`.
 
 ---
 
@@ -66,7 +68,7 @@ Exceptions: none
 |------|-------|----------|-------|
 | Dominant (60%) | `#030712` | `bg-gray-950` | Page background, main content area |
 | Secondary (30%) | `#111827` | `bg-gray-900` | Cards, sidebar, table containers, chart backgrounds |
-| Accent (10%) | `#3B82F6` / `#60A5FA` | `bg-blue-500` / `text-blue-400` | Active nav item, time range selector active state, primary action buttons, chart active tooltip border |
+| Accent (10%) | `#3B82F6` / `#60A5FA` | `bg-blue-500` / `text-blue-400` | Active nav item, TimeRangeSelector active preset button, chart active tooltip border |
 | Destructive | `#EF4444` / `#F87171` | `bg-red-500` / `text-red-400` | Loss values, negative PnL, error states |
 
 **Semantic Colors (data visualization):**
@@ -80,7 +82,7 @@ Exceptions: none
 | Yellow (`#FACC15`) | `text-yellow-400` | Basis gain/loss neutral indicator, pending states |
 | Gray (`#9CA3AF`) | `text-gray-400` / `stroke: #9CA3AF` | Axis labels, grid lines, secondary text, chart tick labels, N/A values |
 
-**Accent reserved for:** Active nav item highlight (`bg-blue-500/20 text-blue-400`), time range selector active button, chart tooltip active border, "Load More" / "View Details" interactive buttons.
+**Accent reserved for:** Active sidebar nav item highlight (`bg-blue-500/20 text-blue-400`), TimeRangeSelector `7D` / `30D` / `90D` / `All` active preset button (`bg-blue-500/20 text-blue-400`), chart tooltip active border (`border-blue-400`).
 
 **Source:** Extracted from `App.tsx:216`, `Sidebar.tsx:58-63`, `StatusBadge.tsx:7-16`, `Overview.tsx:94-98`, RESEARCH.md code example.
 
@@ -228,7 +230,7 @@ Exceptions: none
 | Presets | `7d`, `30d`, `90d`, `All` |
 | Active state | `bg-blue-500/20 text-blue-400` (matches nav active pattern) |
 | Inactive state | `bg-gray-800 text-gray-400 hover:text-gray-300 hover:bg-gray-700` |
-| Button size | `px-3 py-1.5 text-sm rounded-md` |
+| Button size | `px-3 py-2 text-sm rounded-md` |
 | Layout | `flex gap-2` |
 | Default selection | `30d` |
 | Behavior | Clicking a preset updates all charts on the Analytics page simultaneously |
