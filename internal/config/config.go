@@ -545,7 +545,7 @@ func Load() *Config {
 		SpotFuturesPersistenceScans:     2,
 		SpotFuturesCapitalSeparate: 200,
 		SpotFuturesCapitalUnified:  500,
-		SpotFuturesNativeScannerEnabled:  true,
+		SpotFuturesNativeScannerEnabled:  false,
 		SpotFuturesEnableMinHold:         false,
 		SpotFuturesMinHoldHours:          8,
 		SpotFuturesEnableSettlementGuard: false,

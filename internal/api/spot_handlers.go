@@ -101,6 +101,11 @@ func (s *Server) handleGetSpotOpportunities(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Cap to 100 entries to avoid overwhelming the dashboard.
+	if len(opps) > 100 {
+		opps = opps[:100]
+	}
+
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: opps})
 }
 

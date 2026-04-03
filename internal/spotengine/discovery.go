@@ -179,11 +179,6 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 			bpsPerHour := rawRate / 8.0
 			fundingAPR := bpsPerHour * 8760.0 / 10000.0
 
-			// Only generate opportunities when funding is positive.
-			if fundingAPR <= 0 {
-				continue
-			}
-
 			// Calculate fee APR (4 taker legs, annualized over assumed hold).
 			takerFee := spotFees[exchName]
 			if takerFee == 0 {
@@ -191,6 +186,11 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 			}
 			totalRoundTripFee := takerFee * 4
 			feeAPR := totalRoundTripFee * (365.0 / assumedHoldDays)
+
+			// Dir A (long futures): pays funding when rate is positive, receives when negative.
+			// Dir B (short futures): receives funding when rate is positive, pays when negative.
+			dirAFundingAPR := -fundingAPR // long futures: opposite sign
+			dirBFundingAPR := fundingAPR  // short futures: same sign
 
 			// --- Dir A: borrow_sell_long ---
 			{
@@ -208,7 +208,7 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 					}
 				}
 
-				netAPR := fundingAPR - borrowAPR - feeAPR
+				netAPR := dirAFundingAPR - borrowAPR - feeAPR
 
 				if filterStatus == "" && netAPR < e.cfg.SpotFuturesMinNetYieldAPR && !isActive {
 					filterStatus = fmt.Sprintf("net %.1f%% < min %.1f%%", netAPR*100, e.cfg.SpotFuturesMinNetYieldAPR*100)
@@ -219,7 +219,7 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 					BaseCoin:     strings.ToUpper(baseSym),
 					Exchange:     exchName,
 					Direction:    "borrow_sell_long",
-					FundingAPR:   fundingAPR,
+					FundingAPR:   dirAFundingAPR,
 					BorrowAPR:    borrowAPR,
 					FeeAPR:       feeAPR,
 					NetAPR:       netAPR,
@@ -234,7 +234,7 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 				isActive := activeKeys[symbol+":"+exchName+":buy_spot_short"]
 				var filterStatus string
 				borrowAPR := 0.0 // no borrow for Dir B
-				netAPR := fundingAPR - borrowAPR - feeAPR
+				netAPR := dirBFundingAPR - borrowAPR - feeAPR
 
 				if filterStatus == "" && netAPR < e.cfg.SpotFuturesMinNetYieldAPR && !isActive {
 					filterStatus = fmt.Sprintf("net %.1f%% < min %.1f%%", netAPR*100, e.cfg.SpotFuturesMinNetYieldAPR*100)
@@ -245,7 +245,7 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 					BaseCoin:     strings.ToUpper(baseSym),
 					Exchange:     exchName,
 					Direction:    "buy_spot_short",
-					FundingAPR:   fundingAPR,
+					FundingAPR:   dirBFundingAPR,
 					BorrowAPR:    borrowAPR,
 					FeeAPR:       feeAPR,
 					NetAPR:       netAPR,
@@ -530,19 +530,19 @@ func parsePercent(s string) float64 {
 
 // logDiscoveryResults logs the top opportunities in a table format.
 func (e *SpotEngine) logDiscoveryResults(opps []SpotArbOpportunity) {
-	if len(opps) == 0 {
-		e.log.Info("spot discovery: no opportunities passed filters")
-		return
-	}
+	// if len(opps) == 0 {
+	// 	e.log.Info("spot discovery: no opportunities passed filters")
+	// 	return
+	// }
 
-	e.log.Info("spot discovery: %d opportunities found", len(opps))
-	for i, opp := range opps {
-		borrowStr := "n/a"
-		if opp.Direction == "borrow_sell_long" {
-			borrowStr = fmt.Sprintf("%.1f%%", opp.BorrowAPR*100)
-		}
-		e.log.Info("  [%d] %s on %s (%s) | Funding: %.1f%% | Interest: %s | Fees: %.1f%% | Net: %.1f%% APR",
-			i+1, opp.Symbol, opp.Exchange, opp.Direction,
-			opp.FundingAPR*100, borrowStr, opp.FeeAPR*100, opp.NetAPR*100)
-	}
+	// e.log.Info("spot discovery: %d opportunities found", len(opps))
+	// for i, opp := range opps {
+	// 	borrowStr := "n/a"
+	// 	if opp.Direction == "borrow_sell_long" {
+	// 		borrowStr = fmt.Sprintf("%.1f%%", opp.BorrowAPR*100)
+	// 	}
+	// 	e.log.Info("  [%d] %s on %s (%s) | Funding: %.1f%% | Interest: %s | Fees: %.1f%% | Net: %.1f%% APR",
+	// 		i+1, opp.Symbol, opp.Exchange, opp.Direction,
+	// 		opp.FundingAPR*100, borrowStr, opp.FeeAPR*100, opp.NetAPR*100)
+	// }
 }

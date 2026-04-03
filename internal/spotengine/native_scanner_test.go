@@ -119,8 +119,8 @@ func TestNativeScannerDirA(t *testing.T) {
 	if dirA.BorrowAPR <= 0 {
 		t.Errorf("BorrowAPR = %f, want > 0", dirA.BorrowAPR)
 	}
-	if dirA.FundingAPR <= 0 {
-		t.Errorf("FundingAPR = %f, want > 0", dirA.FundingAPR)
+	if dirA.FundingAPR >= 0 {
+		t.Errorf("FundingAPR = %f, want < 0 (Dir A long futures pays when rate is positive)", dirA.FundingAPR)
 	}
 }
 
@@ -486,7 +486,7 @@ func TestNativeScannerConfigDefaults(t *testing.T) {
 		got  interface{}
 		want interface{}
 	}{
-		{"SpotFuturesNativeScannerEnabled", cfg.SpotFuturesNativeScannerEnabled, true},
+		{"SpotFuturesNativeScannerEnabled", cfg.SpotFuturesNativeScannerEnabled, false},
 		{"SpotFuturesEnableMinHold", cfg.SpotFuturesEnableMinHold, false},
 		{"SpotFuturesMinHoldHours", cfg.SpotFuturesMinHoldHours, 8},
 		{"SpotFuturesEnableSettlementGuard", cfg.SpotFuturesEnableSettlementGuard, false},
