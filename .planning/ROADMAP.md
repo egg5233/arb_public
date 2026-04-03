@@ -77,14 +77,14 @@ Plans:
   3. User can view per-exchange metrics (profit, slippage, fill rate, error rate) to identify which exchanges perform best
   4. Dashboard shows a cumulative PnL chart over time, backed by SQLite time-series storage
   5. User can see APR and win rate metrics segmented by strategy and exchange
-**Plans**: TBD
+**Plans**: 4 plans
 **UI hint**: yes
 
 Plans:
-- [ ] 04-01: TBD
-- [ ] 04-02: TBD
-- [ ] 04-03: TBD
-- [ ] 04-04: TBD
+- [ ] 04-01-PLAN.md -- Backend data layer: position model enrichment, SQLite time-series store, aggregator (APR, win rate, exchange metrics)
+- [ ] 04-02-PLAN.md -- Frontend dependency setup: add Recharts via controlled npm lockfile update (user approval checkpoint)
+- [ ] 04-03-PLAN.md -- Backend integration: analytics API endpoints, PnL decomposition in reconcilePnL, BBO slippage capture, snapshot writer, Redis backfill
+- [ ] 04-04-PLAN.md -- Frontend: Analytics page (PnL chart, strategy comparison, exchange metrics), History drill-down, sidebar nav, i18n
 
 ### Phase 5: Capital Allocation
 **Goal**: The user deposits USDT once, selects a risk preference, and the system intelligently distributes capital across both strategies and all exchanges
