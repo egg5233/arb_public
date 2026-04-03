@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import type { Position, Opportunity, Stats, ExchangeInfo, TransferRecord, LogEntry, RejectedOpportunity, FundingEvent, SpotPosition, SpotStats, SpotOpportunity } from '../types.ts';
+import type { Position, Opportunity, Stats, ExchangeInfo, TransferRecord, LogEntry, RejectedOpportunity, FundingEvent, SpotPosition, SpotStats, SpotOpportunity, PriceGapResult } from '../types.ts';
 
 const TOKEN_KEY = 'arb_token';
 
@@ -220,6 +220,13 @@ export function useApi() {
     });
   }, []);
 
+  const checkSpotPriceGap = useCallback((symbol: string, exchange: string, direction: string) => {
+    return request<PriceGapResult>('/api/spot/check-price-gap', {
+      method: 'POST',
+      body: JSON.stringify({ symbol, exchange, direction }),
+    });
+  }, []);
+
   const getBlacklist = useCallback(() => {
     return request<string[]>('/api/blacklist');
   }, []);
@@ -274,6 +281,7 @@ export function useApi() {
     getSpotOpportunities,
     spotManualOpen,
     spotManualClose,
+    checkSpotPriceGap,
     getBlacklist,
     addToBlacklist,
     removeFromBlacklist,

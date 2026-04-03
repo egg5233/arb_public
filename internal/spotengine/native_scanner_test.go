@@ -35,6 +35,9 @@ func (s *nativeScannerStubExchange) GetMarginInterestRate(string) (*exchange.Mar
 func (s *nativeScannerStubExchange) GetMarginBalance(string) (*exchange.MarginBalance, error) {
 	return &exchange.MarginBalance{Available: 1000}, nil
 }
+func (s *nativeScannerStubExchange) GetSpotBBO(string) (exchange.BBO, error) {
+	return exchange.BBO{Bid: 100, Ask: 100.1}, nil
+}
 func (s *nativeScannerStubExchange) TransferToMargin(string, string) error   { return nil }
 func (s *nativeScannerStubExchange) TransferFromMargin(string, string) error { return nil }
 
@@ -57,9 +60,9 @@ func mockLorisErrorServer() *httptest.Server {
 // buildTestLorisResponse creates a LorisResponse with given symbol/exchange/rate data.
 func buildTestLorisResponse(symbols []string, rates map[string]map[string]float64) models.LorisResponse {
 	return models.LorisResponse{
-		Symbols: symbols,
+		Symbols:      symbols,
 		FundingRates: rates,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Timestamp:    time.Now().UTC().Format(time.RFC3339),
 	}
 }
 
@@ -266,11 +269,11 @@ func TestNetYieldRanking(t *testing.T) {
 
 	// Verify net yield formula: netAPR = fundingAPR - borrowAPR - feeAPR
 	for _, opp := range opps {
-		expectedNet := opp.FundingAPR - opp.BorrowAPR - opp.FeeAPR
+		expectedNet := opp.FundingAPR - opp.BorrowAPR
 		if math.Abs(opp.NetAPR-expectedNet) > 0.0001 {
 			t.Errorf("%s %s %s: NetAPR = %f, want %f (funding=%f, borrow=%f, fee=%f)",
 				opp.Symbol, opp.Exchange, opp.Direction,
-				opp.NetAPR, expectedNet, opp.FundingAPR, opp.BorrowAPR, opp.FeeAPR)
+				opp.NetAPR, expectedNet, opp.FundingAPR, opp.BorrowAPR, opp.FeePct)
 		}
 	}
 
@@ -491,8 +494,8 @@ func TestNativeScannerConfigDefaults(t *testing.T) {
 		{"SpotFuturesMinHoldHours", cfg.SpotFuturesMinHoldHours, 8},
 		{"SpotFuturesEnableSettlementGuard", cfg.SpotFuturesEnableSettlementGuard, false},
 		{"SpotFuturesSettlementWindowMin", cfg.SpotFuturesSettlementWindowMin, 10},
-		{"SpotFuturesEnableBasisGate", cfg.SpotFuturesEnableBasisGate, false},
-		{"SpotFuturesMaxBasisPct", cfg.SpotFuturesMaxBasisPct, 0.5},
+		{"SpotFuturesEnablePriceGapGate", cfg.SpotFuturesEnablePriceGapGate, false},
+		{"SpotFuturesMaxPriceGapPct", cfg.SpotFuturesMaxPriceGapPct, 0.5},
 		{"SpotFuturesEnableExitSpreadGate", cfg.SpotFuturesEnableExitSpreadGate, false},
 		{"SpotFuturesExitSpreadPct", cfg.SpotFuturesExitSpreadPct, 0.3},
 	}

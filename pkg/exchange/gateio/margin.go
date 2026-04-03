@@ -201,6 +201,32 @@ func (a *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarg
 	return result, nil
 }
 
+// GetSpotBBO returns the current best bid/offer for the Gate.io spot market.
+func (a *Adapter) GetSpotBBO(symbol string) (exchange.BBO, error) {
+	data, err := a.client.Get("/spot/tickers", map[string]string{"currency_pair": toGateSymbol(symbol)})
+	if err != nil {
+		return exchange.BBO{}, fmt.Errorf("GetSpotBBO: %w", err)
+	}
+
+	var resp []struct {
+		HighestBid string `json:"highest_bid"`
+		LowestAsk  string `json:"lowest_ask"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return exchange.BBO{}, fmt.Errorf("GetSpotBBO unmarshal: %w", err)
+	}
+	if len(resp) == 0 {
+		return exchange.BBO{}, fmt.Errorf("GetSpotBBO: no data for %s", symbol)
+	}
+
+	bid, _ := strconv.ParseFloat(resp[0].HighestBid, 64)
+	ask, _ := strconv.ParseFloat(resp[0].LowestAsk, 64)
+	if bid <= 0 || ask <= 0 {
+		return exchange.BBO{}, fmt.Errorf("GetSpotBBO: invalid bid/ask for %s", symbol)
+	}
+	return exchange.BBO{Bid: bid, Ask: ask}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Spot Margin: Interest Rate
 // ---------------------------------------------------------------------------

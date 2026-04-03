@@ -24,7 +24,7 @@ type SpotArbOpportunity struct {
 	Direction    string    `json:"direction"` // "borrow_sell_long" or "buy_spot_short"
 	FundingAPR   float64   `json:"funding_apr"`
 	BorrowAPR    float64   `json:"borrow_apr"` // 0 for Direction B
-	FeeAPR       float64   `json:"fee_apr"`
+	FeePct       float64   `json:"fee_pct"`
 	NetAPR       float64   `json:"net_apr"`
 	Source       string    `json:"source"`
 	Timestamp    time.Time `json:"timestamp"`
@@ -52,9 +52,9 @@ var spotExchangeMap = map[string]string{
 	"Gate.io": "gateio",
 }
 
-// spotFeeAPR estimates the round-trip fee cost as an annualized rate.
+// spotFeePct estimates the round-trip fee cost as a flat percentage.
 // 4 legs (spot entry + futures entry + spot exit + futures exit), all taker.
-// Assumes ~30 day hold for annualization: feeAPR = totalFeePct * (365/30).
+// One-time cost across 4 taker legs (spot entry + futures entry + spot exit + futures exit).
 var spotFees = map[string]float64{
 	"binance": 0.05 * 0.8 / 100, // 0.04% taker after rebate
 	"bybit":   0.055 * 0.8 / 100,
@@ -62,8 +62,6 @@ var spotFees = map[string]float64{
 	"bitget":  0.06 * 0.8 / 100,
 	"gateio":  0.05 * 0.8 / 100,
 }
-
-const assumedHoldDays = 30.0
 
 const lorisURL = "https://api.loris.tools/funding"
 
@@ -179,13 +177,13 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 			bpsPerHour := rawRate / 8.0
 			fundingAPR := bpsPerHour * 8760.0 / 10000.0
 
-			// Calculate fee APR (4 taker legs, annualized over assumed hold).
+			// Calculate one-time fee % (4 taker legs, no annualization).
 			takerFee := spotFees[exchName]
 			if takerFee == 0 {
 				takerFee = 0.0005 // default 0.05%
 			}
 			totalRoundTripFee := takerFee * 4
-			feeAPR := totalRoundTripFee * (365.0 / assumedHoldDays)
+			feePct := totalRoundTripFee
 
 			// Dir A (long futures): pays funding when rate is positive, receives when negative.
 			// Dir B (short futures): receives funding when rate is positive, pays when negative.
@@ -208,7 +206,7 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 					}
 				}
 
-				netAPR := dirAFundingAPR - borrowAPR - feeAPR
+				netAPR := dirAFundingAPR - borrowAPR
 
 				if filterStatus == "" && netAPR < e.cfg.SpotFuturesMinNetYieldAPR && !isActive {
 					filterStatus = fmt.Sprintf("net %.1f%% < min %.1f%%", netAPR*100, e.cfg.SpotFuturesMinNetYieldAPR*100)
@@ -221,7 +219,7 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 					Direction:    "borrow_sell_long",
 					FundingAPR:   dirAFundingAPR,
 					BorrowAPR:    borrowAPR,
-					FeeAPR:       feeAPR,
+					FeePct:       feePct,
 					NetAPR:       netAPR,
 					Source:       "native",
 					Timestamp:    now,
@@ -234,7 +232,7 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 				isActive := activeKeys[symbol+":"+exchName+":buy_spot_short"]
 				var filterStatus string
 				borrowAPR := 0.0 // no borrow for Dir B
-				netAPR := dirBFundingAPR - borrowAPR - feeAPR
+				netAPR := dirBFundingAPR - borrowAPR
 
 				if filterStatus == "" && netAPR < e.cfg.SpotFuturesMinNetYieldAPR && !isActive {
 					filterStatus = fmt.Sprintf("net %.1f%% < min %.1f%%", netAPR*100, e.cfg.SpotFuturesMinNetYieldAPR*100)
@@ -247,7 +245,7 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 					Direction:    "buy_spot_short",
 					FundingAPR:   dirBFundingAPR,
 					BorrowAPR:    borrowAPR,
-					FeeAPR:       feeAPR,
+					FeePct:       feePct,
 					NetAPR:       netAPR,
 					Source:       "native",
 					Timestamp:    now,
@@ -356,13 +354,13 @@ func (e *SpotEngine) runCoinGlassFallback() []SpotArbOpportunity {
 		// live economics to monitor/exit paths.
 		fundingAPR := parsePercent(item.APR)
 
-		// Calculate fee APR (4 taker legs, annualized over assumed hold).
+		// Calculate one-time fee % (4 taker legs, no annualization).
 		takerFee := spotFees[exchName]
 		if takerFee == 0 {
 			takerFee = 0.0005 // default 0.05%
 		}
 		totalRoundTripFee := takerFee * 4
-		feeAPR := totalRoundTripFee * (365.0 / assumedHoldDays)
+		feePct := totalRoundTripFee
 
 		// --- Entry filters: mark failures in FilterStatus instead of skipping ---
 		var filterStatus string
@@ -399,7 +397,7 @@ func (e *SpotEngine) runCoinGlassFallback() []SpotArbOpportunity {
 			}
 		}
 
-		netAPR := fundingAPR - borrowAPR - feeAPR
+		netAPR := fundingAPR - borrowAPR
 
 		// Check net yield threshold.
 		if filterStatus == "" && netAPR < e.cfg.SpotFuturesMinNetYieldAPR && !isActive {
@@ -416,7 +414,7 @@ func (e *SpotEngine) runCoinGlassFallback() []SpotArbOpportunity {
 			Direction:    direction,
 			FundingAPR:   fundingAPR,
 			BorrowAPR:    borrowAPR,
-			FeeAPR:       feeAPR,
+			FeePct:       feePct,
 			NetAPR:       netAPR,
 			Source:       "coinglass_spot",
 			Timestamp:    now,
@@ -543,6 +541,6 @@ func (e *SpotEngine) logDiscoveryResults(opps []SpotArbOpportunity) {
 	// 	}
 	// 	e.log.Info("  [%d] %s on %s (%s) | Funding: %.1f%% | Interest: %s | Fees: %.1f%% | Net: %.1f%% APR",
 	// 		i+1, opp.Symbol, opp.Exchange, opp.Direction,
-	// 		opp.FundingAPR*100, borrowStr, opp.FeeAPR*100, opp.NetAPR*100)
+	// 		opp.FundingAPR*100, borrowStr, opp.FeePct*100, opp.NetAPR*100)
 	// }
 }

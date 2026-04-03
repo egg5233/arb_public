@@ -71,7 +71,7 @@ func (s priceStubExchange) GetFundingFees(string, time.Time) ([]exchange.Funding
 func (s priceStubExchange) GetClosePnL(string, time.Time) ([]exchange.ClosePnL, error) {
 	return nil, nil
 }
-func (s priceStubExchange) WithdrawFeeInclusive() bool                     { return false }
+func (s priceStubExchange) WithdrawFeeInclusive() bool { return false }
 func (s priceStubExchange) GetWithdrawFee(string, string) (float64, error) {
 	return 0, fmt.Errorf("not implemented")
 }
@@ -106,6 +106,9 @@ func (s *marginStubExchange) GetMarginInterestRate(string) (*exchange.MarginInte
 }
 func (s *marginStubExchange) GetMarginBalance(string) (*exchange.MarginBalance, error) {
 	return &exchange.MarginBalance{Available: s.available}, nil
+}
+func (s *marginStubExchange) GetSpotBBO(string) (exchange.BBO, error) {
+	return exchange.BBO{Bid: 100, Ask: 100.1}, nil
 }
 func (s *marginStubExchange) TransferToMargin(string, string) error   { return nil }
 func (s *marginStubExchange) TransferFromMargin(string, string) error { return nil }

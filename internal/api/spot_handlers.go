@@ -177,9 +177,9 @@ func (s *Server) handleSpotPositionHealth(w http.ResponseWriter, r *http.Request
 		"direction":              pos.Direction,
 		"current_borrow_apr":     pos.CurrentBorrowAPR,
 		"funding_apr":            pos.FundingAPR,
-		"fee_apr":                pos.FeeAPR,
+		"fee_pct":                pos.FeePct,
 		"current_funding_apr":    pos.CurrentFundingAPR,
-		"current_fee_apr":        pos.CurrentFeeAPR,
+		"current_fee_pct":        pos.CurrentFeePct,
 		"current_net_yield_apr":  pos.CurrentNetYieldAPR,
 		"yield_data_source":      pos.YieldDataSource,
 		"yield_snapshot_at":      pos.YieldSnapshotAt,
@@ -237,6 +237,104 @@ func (s *Server) handleSpotManualOpen(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, Response{OK: true})
 }
 
+// handleSpotCheckPriceGap fetches live spot and futures BBOs for a one-off price gap check.
+func (s *Server) handleSpotCheckPriceGap(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Symbol    string `json:"symbol"`
+		Exchange  string `json:"exchange"`
+		Direction string `json:"direction"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "invalid JSON"})
+		return
+	}
+
+	req.Symbol = strings.ToUpper(strings.TrimSpace(req.Symbol))
+	req.Exchange = strings.ToLower(strings.TrimSpace(req.Exchange))
+	req.Direction = strings.TrimSpace(req.Direction)
+	if req.Symbol == "" || req.Exchange == "" || req.Direction == "" {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "symbol, exchange, direction required"})
+		return
+	}
+
+	futExch, ok := s.exchanges[req.Exchange]
+	if !ok {
+		writeJSON(w, http.StatusNotFound, Response{Error: "exchange not found"})
+		return
+	}
+	spotExch, ok := futExch.(exchange.SpotMarginExchange)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "exchange does not support spot margin"})
+		return
+	}
+
+	futBBO, err := getFuturesBBOForAPI(futExch, req.Symbol)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, Response{Error: err.Error()})
+		return
+	}
+	spotBBO, err := spotExch.GetSpotBBO(req.Symbol)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, Response{Error: err.Error()})
+		return
+	}
+
+	var gapPct float64
+	switch req.Direction {
+	case "borrow_sell_long":
+		if spotBBO.Bid <= 0 {
+			writeJSON(w, http.StatusInternalServerError, Response{Error: "invalid spot bid"})
+			return
+		}
+		gapPct = (futBBO.Ask - spotBBO.Bid) / spotBBO.Bid * 100
+	case "buy_spot_short":
+		if futBBO.Bid <= 0 {
+			writeJSON(w, http.StatusInternalServerError, Response{Error: "invalid futures bid"})
+			return
+		}
+		gapPct = (spotBBO.Ask - futBBO.Bid) / futBBO.Bid * 100
+	default:
+		writeJSON(w, http.StatusBadRequest, Response{Error: "invalid direction"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: map[string]interface{}{
+		"spot_bid":    spotBBO.Bid,
+		"spot_ask":    spotBBO.Ask,
+		"futures_bid": futBBO.Bid,
+		"futures_ask": futBBO.Ask,
+		"gap_pct":     gapPct,
+		"direction":   req.Direction,
+	}})
+}
+
+func getFuturesBBOForAPI(exch exchange.Exchange, symbol string) (exchange.BBO, error) {
+	if bbo, ok := exch.GetBBO(symbol); ok {
+		if bbo.Bid > 0 && bbo.Ask > 0 {
+			return bbo, nil
+		}
+	}
+
+	ob, err := exch.GetOrderbook(symbol, 5)
+	if err != nil {
+		return exchange.BBO{}, fmt.Errorf("GetOrderbook: %w", err)
+	}
+	if len(ob.Bids) == 0 || len(ob.Asks) == 0 {
+		return exchange.BBO{}, fmt.Errorf("empty orderbook for %s", symbol)
+	}
+	bid := ob.Bids[0].Price
+	ask := ob.Asks[0].Price
+	if bid <= 0 || ask <= 0 {
+		return exchange.BBO{}, fmt.Errorf("invalid orderbook prices for %s", symbol)
+	}
+	return exchange.BBO{Bid: bid, Ask: ask}, nil
+}
+
 // handleSpotTestInject injects synthetic test opportunities for lifecycle verification.
 func (s *Server) handleSpotTestInject(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -279,8 +377,8 @@ func (s *Server) handleSpotAutoConfig(w http.ResponseWriter, r *http.Request) {
 			MinHoldHours          *int     `json:"min_hold_hours"`
 			EnableSettlementGuard *bool    `json:"enable_settlement_guard"`
 			SettlementWindowMin   *int     `json:"settlement_window_min"`
-			EnableBasisGate       *bool    `json:"enable_basis_gate"`
-			MaxBasisPct           *float64 `json:"max_basis_pct"`
+			EnablePriceGapGate    *bool    `json:"enable_price_gap_gate"`
+			MaxPriceGapPct        *float64 `json:"max_price_gap_pct"`
 			EnableExitSpreadGate  *bool    `json:"enable_exit_spread_gate"`
 			ExitSpreadPct         *float64 `json:"exit_spread_pct"`
 		}
@@ -322,13 +420,13 @@ func (s *Server) handleSpotAutoConfig(w http.ResponseWriter, r *http.Request) {
 			s.cfg.SpotFuturesSettlementWindowMin = *req.SettlementWindowMin
 			s.db.SetConfigField("spot_futures_settlement_window_min", strconv.Itoa(*req.SettlementWindowMin))
 		}
-		if req.EnableBasisGate != nil {
-			s.cfg.SpotFuturesEnableBasisGate = *req.EnableBasisGate
-			s.db.SetConfigField("spot_futures_enable_basis_gate", strconv.FormatBool(*req.EnableBasisGate))
+		if req.EnablePriceGapGate != nil {
+			s.cfg.SpotFuturesEnablePriceGapGate = *req.EnablePriceGapGate
+			s.db.SetConfigField("spot_futures_enable_price_gap_gate", strconv.FormatBool(*req.EnablePriceGapGate))
 		}
-		if req.MaxBasisPct != nil && *req.MaxBasisPct > 0 {
-			s.cfg.SpotFuturesMaxBasisPct = *req.MaxBasisPct
-			s.db.SetConfigField("spot_futures_max_basis_pct", fmt.Sprintf("%.4f", *req.MaxBasisPct))
+		if req.MaxPriceGapPct != nil && *req.MaxPriceGapPct > 0 {
+			s.cfg.SpotFuturesMaxPriceGapPct = *req.MaxPriceGapPct
+			s.db.SetConfigField("spot_futures_max_price_gap_pct", fmt.Sprintf("%.4f", *req.MaxPriceGapPct))
 		}
 		if req.EnableExitSpreadGate != nil {
 			s.cfg.SpotFuturesEnableExitSpreadGate = *req.EnableExitSpreadGate
@@ -388,19 +486,19 @@ func (s *Server) handleSpotManualClose(w http.ResponseWriter, r *http.Request) {
 // spotAutoConfigResponse builds the shared response for GET and POST /api/spot/config/auto.
 func (s *Server) spotAutoConfigResponse() map[string]interface{} {
 	return map[string]interface{}{
-		"auto_enabled":           s.cfg.SpotFuturesAutoEnabled,
-		"dry_run":                s.cfg.SpotFuturesDryRun,
-		"persistence_scans":      s.cfg.SpotFuturesPersistenceScans,
-		"max_positions":          s.cfg.SpotFuturesMaxPositions,
-		"capital_separate_usdt": s.cfg.SpotFuturesCapitalSeparate,
-		"capital_unified_usdt":  s.cfg.SpotFuturesCapitalUnified,
+		"auto_enabled":            s.cfg.SpotFuturesAutoEnabled,
+		"dry_run":                 s.cfg.SpotFuturesDryRun,
+		"persistence_scans":       s.cfg.SpotFuturesPersistenceScans,
+		"max_positions":           s.cfg.SpotFuturesMaxPositions,
+		"capital_separate_usdt":   s.cfg.SpotFuturesCapitalSeparate,
+		"capital_unified_usdt":    s.cfg.SpotFuturesCapitalUnified,
 		"native_scanner_enabled":  s.cfg.SpotFuturesNativeScannerEnabled,
 		"enable_min_hold":         s.cfg.SpotFuturesEnableMinHold,
 		"min_hold_hours":          s.cfg.SpotFuturesMinHoldHours,
 		"enable_settlement_guard": s.cfg.SpotFuturesEnableSettlementGuard,
 		"settlement_window_min":   s.cfg.SpotFuturesSettlementWindowMin,
-		"enable_basis_gate":       s.cfg.SpotFuturesEnableBasisGate,
-		"max_basis_pct":           s.cfg.SpotFuturesMaxBasisPct,
+		"enable_price_gap_gate":   s.cfg.SpotFuturesEnablePriceGapGate,
+		"max_price_gap_pct":       s.cfg.SpotFuturesMaxPriceGapPct,
 		"enable_exit_spread_gate": s.cfg.SpotFuturesEnableExitSpreadGate,
 		"exit_spread_pct":         s.cfg.SpotFuturesExitSpreadPct,
 	}
@@ -437,10 +535,10 @@ type lifecycleSpotResult struct {
 
 // lifecycleDirAResult holds the full Dir A verification report.
 type lifecycleDirAResult struct {
-	Open        *lifecycleStepResult    `json:"open"`
-	VerifyOpen  *lifecycleDirAOpenVfy   `json:"verify_open,omitempty"`
-	Close       *lifecycleStepResult    `json:"close,omitempty"`
-	VerifyClose *lifecycleDirACloseVfy  `json:"verify_close,omitempty"`
+	Open        *lifecycleStepResult   `json:"open"`
+	VerifyOpen  *lifecycleDirAOpenVfy  `json:"verify_open,omitempty"`
+	Close       *lifecycleStepResult   `json:"close,omitempty"`
+	VerifyClose *lifecycleDirACloseVfy `json:"verify_close,omitempty"`
 }
 
 type lifecycleDirAOpenVfy struct {
@@ -473,10 +571,10 @@ type lifecycleDirBCloseVfy struct {
 
 // lifecycleReport is the top-level response payload.
 type lifecycleReport struct {
-	Exchange string               `json:"exchange"`
-	Symbol   string               `json:"symbol"`
-	DirA     lifecycleDirAResult  `json:"dir_a"`
-	DirB     lifecycleDirBResult  `json:"dir_b"`
+	Exchange string              `json:"exchange"`
+	Symbol   string              `json:"symbol"`
+	DirA     lifecycleDirAResult `json:"dir_a"`
+	DirB     lifecycleDirBResult `json:"dir_b"`
 }
 
 // handleSpotTestLifecycle automates Dir A + Dir B lifecycle testing for a given

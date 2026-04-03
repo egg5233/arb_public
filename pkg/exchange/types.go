@@ -333,6 +333,9 @@ type SpotMarginExchange interface {
 	// PlaceSpotMarginOrder places a buy or sell order on spot margin.
 	PlaceSpotMarginOrder(params SpotMarginOrderParams) (orderID string, err error)
 
+	// GetSpotBBO returns the current best bid/offer for the spot market.
+	GetSpotBBO(symbol string) (BBO, error)
+
 	// GetMarginInterestRate returns the current borrow interest rate for a coin.
 	GetMarginInterestRate(coin string) (*MarginInterestRate, error)
 
@@ -345,7 +348,6 @@ type SpotMarginExchange interface {
 
 	// TransferFromMargin moves funds from the margin account back to main/futures.
 	TransferFromMargin(coin string, amount string) error
-
 }
 
 // SpotMarginOrderQuerier is an optional interface for exchanges that can

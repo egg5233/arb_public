@@ -130,9 +130,9 @@ export interface SpotPosition {
   current_borrow_apr: number;
   borrow_cost_accrued: number;
   funding_apr: number;
-  fee_apr: number;
+  fee_pct: number;
   current_funding_apr: number;
-  current_fee_apr: number;
+  current_fee_pct: number;
   current_net_yield_apr: number;
   yield_data_source: string;
   yield_snapshot_at: string;
@@ -161,11 +161,20 @@ export interface SpotOpportunity {
   direction: string;
   funding_apr: number;
   borrow_apr: number;
-  fee_apr: number;
+  fee_pct: number;
   net_apr: number;
   source: string;
   timestamp: string;
   filter_status?: string;
+}
+
+export interface PriceGapResult {
+  spot_bid: number;
+  spot_ask: number;
+  futures_bid: number;
+  futures_ask: number;
+  gap_pct: number;
+  direction: string;
 }
 
 export interface LossLimitStatus {

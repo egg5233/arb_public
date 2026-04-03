@@ -1282,7 +1282,7 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
   // =========================================================================
   const renderSfDiscoveryTab = () => {
     const sfNativeScannerEnabled = getByPath(config, ['spot_futures', 'native_scanner_enabled']) === true;
-    const sfEnableBasisGate = getByPath(config, ['spot_futures', 'enable_basis_gate']) === true;
+    const sfEnablePriceGapGate = getByPath(config, ['spot_futures', 'enable_price_gap_gate']) === true;
 
     return (
       <div className="space-y-4">
@@ -1342,21 +1342,21 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
               </div>
               <div className="flex items-center gap-3">
                 <ToggleSwitch
-                  on={sfEnableBasisGate}
-                  onChange={(v) => handleBoolChange(['spot_futures', 'enable_basis_gate'], v)}
+                  on={sfEnablePriceGapGate}
+                  onChange={(v) => handleBoolChange(['spot_futures', 'enable_price_gap_gate'], v)}
                 />
-                <span className={`text-sm font-semibold ${sfEnableBasisGate ? 'text-green-400' : 'text-red-400'}`}>
-                  {sfEnableBasisGate ? 'ON' : 'OFF'}
+                <span className={`text-sm font-semibold ${sfEnablePriceGapGate ? 'text-green-400' : 'text-red-400'}`}>
+                  {sfEnablePriceGapGate ? 'ON' : 'OFF'}
                 </span>
               </div>
             </div>
-            <div className={!sfEnableBasisGate ? 'opacity-50' : ''}>
+            <div className={!sfEnablePriceGapGate ? 'opacity-50' : ''}>
               <NumberField
                 label={t('cfg.sf.maxBasisPct')}
                 desc={t('cfg.sf.maxBasisPctDesc')}
-                value={getByPath(config, ['spot_futures', 'max_basis_pct'])}
+                value={getByPath(config, ['spot_futures', 'max_price_gap_pct'])}
                 unit="%"
-                onChange={(v) => handleChange(['spot_futures', 'max_basis_pct'], v)}
+                onChange={(v) => handleChange(['spot_futures', 'max_price_gap_pct'], v)}
               />
             </div>
           </div>

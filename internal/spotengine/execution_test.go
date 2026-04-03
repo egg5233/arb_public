@@ -94,7 +94,7 @@ func (s *closeTestExchange) GetFundingFees(string, time.Time) ([]exchange.Fundin
 func (s *closeTestExchange) GetClosePnL(string, time.Time) ([]exchange.ClosePnL, error) {
 	return nil, nil
 }
-func (s *closeTestExchange) WithdrawFeeInclusive() bool                     { return false }
+func (s *closeTestExchange) WithdrawFeeInclusive() bool { return false }
 func (s *closeTestExchange) GetWithdrawFee(string, string) (float64, error) {
 	return 0, fmt.Errorf("not implemented")
 }
@@ -141,6 +141,9 @@ func (s *closeTestSpotMargin) GetMarginBalance(string) (*exchange.MarginBalance,
 		return s.marginBal, nil
 	}
 	return &exchange.MarginBalance{}, nil
+}
+func (s *closeTestSpotMargin) GetSpotBBO(string) (exchange.BBO, error) {
+	return exchange.BBO{Bid: 100, Ask: 100.1}, nil
 }
 func (s *closeTestSpotMargin) TransferToMargin(string, string) error   { return nil }
 func (s *closeTestSpotMargin) TransferFromMargin(string, string) error { return nil }
@@ -362,8 +365,8 @@ func TestManualOpen_RejectsConcurrentEntry(t *testing.T) {
 	defer mr.Close()
 
 	engine.cfg = &config.Config{
-		SpotFuturesMaxPositions:       1,
-		SpotFuturesLeverage:           3,
+		SpotFuturesMaxPositions:   1,
+		SpotFuturesLeverage:       3,
 		SpotFuturesCapitalUnified: 100,
 	}
 	engine.api = api.NewServer(engine.db, engine.cfg, nil)
@@ -460,8 +463,8 @@ func TestManualOpen_FailsClosedWhenEntryLockIsLost(t *testing.T) {
 	})
 
 	engine.cfg = &config.Config{
-		SpotFuturesMaxPositions:       1,
-		SpotFuturesLeverage:           3,
+		SpotFuturesMaxPositions:   1,
+		SpotFuturesLeverage:       3,
 		SpotFuturesCapitalUnified: 100,
 	}
 	engine.api = api.NewServer(engine.db, engine.cfg, nil)
@@ -546,8 +549,8 @@ func TestManualOpen_PersistsPendingEntryUntilSpotConfirmationRecovers(t *testing
 	defer mr.Close()
 
 	engine.cfg = &config.Config{
-		SpotFuturesMaxPositions:       1,
-		SpotFuturesLeverage:           3,
+		SpotFuturesMaxPositions:   1,
+		SpotFuturesLeverage:       3,
 		SpotFuturesCapitalUnified: 100,
 	}
 	engine.api = api.NewServer(engine.db, engine.cfg, nil)
@@ -640,14 +643,14 @@ func TestManualOpen_PendingEntryReconcilesAllocatorExposureToActualNotional(t *t
 	defer mr.Close()
 
 	engine.cfg = &config.Config{
-		EnableCapitalAllocator:        true,
-		MaxTotalExposureUSDT:          1000,
-		MaxPerpPerpPct:                1,
-		MaxSpotFuturesPct:             1,
-		MaxPerExchangePct:             1,
-		ReservationTTLSec:             300,
-		SpotFuturesMaxPositions:       1,
-		SpotFuturesLeverage:           3,
+		EnableCapitalAllocator:    true,
+		MaxTotalExposureUSDT:      1000,
+		MaxPerpPerpPct:            1,
+		MaxSpotFuturesPct:         1,
+		MaxPerExchangePct:         1,
+		ReservationTTLSec:         300,
+		SpotFuturesMaxPositions:   1,
+		SpotFuturesLeverage:       3,
 		SpotFuturesCapitalUnified: 100,
 	}
 	engine.allocator = risk.NewCapitalAllocator(engine.db, engine.cfg)
@@ -728,8 +731,8 @@ func TestManualOpen_CleansUpAcceptedSpotOrderWhenPendingEntrySaveFails(t *testin
 	failRedis.Close()
 
 	engine.cfg = &config.Config{
-		SpotFuturesMaxPositions:       1,
-		SpotFuturesLeverage:           3,
+		SpotFuturesMaxPositions:   1,
+		SpotFuturesLeverage:       3,
 		SpotFuturesCapitalUnified: 100,
 	}
 
@@ -813,8 +816,8 @@ func TestManualOpen_ReversesAndRepaysBorrowWhenPendingEntrySaveFails(t *testing.
 	failRedis.Close()
 
 	engine.cfg = &config.Config{
-		SpotFuturesMaxPositions:       1,
-		SpotFuturesLeverage:           3,
+		SpotFuturesMaxPositions:   1,
+		SpotFuturesLeverage:       3,
 		SpotFuturesCapitalUnified: 100,
 	}
 
@@ -900,8 +903,8 @@ func TestManualOpen_ReportsManualInterventionWhenCleanupOrderOnlyPartiallyFills(
 	failRedis.Close()
 
 	engine.cfg = &config.Config{
-		SpotFuturesMaxPositions:       1,
-		SpotFuturesLeverage:           3,
+		SpotFuturesMaxPositions:   1,
+		SpotFuturesLeverage:       3,
 		SpotFuturesCapitalUnified: 100,
 	}
 
@@ -975,14 +978,14 @@ func TestManualOpen_PersistsManualRecoveryPositionWhenCleanupOnlyPartiallyFills(
 	failRedis.Close()
 
 	engine.cfg = &config.Config{
-		EnableCapitalAllocator:        true,
-		MaxTotalExposureUSDT:          1000,
-		MaxPerpPerpPct:                1,
-		MaxSpotFuturesPct:             1,
-		MaxPerExchangePct:             1,
-		ReservationTTLSec:             300,
-		SpotFuturesMaxPositions:       1,
-		SpotFuturesLeverage:           3,
+		EnableCapitalAllocator:    true,
+		MaxTotalExposureUSDT:      1000,
+		MaxPerpPerpPct:            1,
+		MaxSpotFuturesPct:         1,
+		MaxPerExchangePct:         1,
+		ReservationTTLSec:         300,
+		SpotFuturesMaxPositions:   1,
+		SpotFuturesLeverage:       3,
 		SpotFuturesCapitalUnified: 100,
 	}
 	engine.allocator = risk.NewCapitalAllocator(workingDB, engine.cfg)
@@ -1098,14 +1101,14 @@ func TestManualOpen_RetainsPendingRecordWhenManualRecoverySaveFails(t *testing.T
 	failRedis.Close()
 
 	engine.cfg = &config.Config{
-		SpotFuturesMaxPositions:       1,
-		SpotFuturesLeverage:           3,
+		SpotFuturesMaxPositions:   1,
+		SpotFuturesLeverage:       3,
 		SpotFuturesCapitalUnified: 100,
-		EnableCapitalAllocator:        true,
-		MaxTotalExposureUSDT:          1000,
-		MaxPerpPerpPct:                1,
-		MaxSpotFuturesPct:             1,
-		MaxPerExchangePct:             1,
+		EnableCapitalAllocator:    true,
+		MaxTotalExposureUSDT:      1000,
+		MaxPerpPerpPct:            1,
+		MaxSpotFuturesPct:         1,
+		MaxPerExchangePct:         1,
 	}
 	engine.allocator = risk.NewCapitalAllocator(engine.db, engine.cfg)
 

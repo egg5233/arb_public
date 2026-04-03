@@ -12,26 +12,49 @@ import (
 	"github.com/alicebob/miniredis/v2"
 )
 
-// basisStubExchange returns a fixed bid/ask orderbook for basis calculation tests.
-type basisStubExchange struct {
+// priceGapStubExchange returns fixed futures and spot BBOs for price-gap tests.
+type priceGapStubExchange struct {
 	priceStubExchange
-	bid float64
-	ask float64
-	err error // if non-nil, GetOrderbook returns this error
+	futBid  float64
+	futAsk  float64
+	spotBid float64
+	spotAsk float64
+	futErr  error
+	spotErr error
 }
 
-func (s basisStubExchange) GetOrderbook(string, int) (*exchange.Orderbook, error) {
-	if s.err != nil {
-		return nil, s.err
+func (s priceGapStubExchange) GetOrderbook(string, int) (*exchange.Orderbook, error) {
+	if s.futErr != nil {
+		return nil, s.futErr
 	}
 	return &exchange.Orderbook{
-		Bids: []exchange.PriceLevel{{Price: s.bid, Quantity: 1}},
-		Asks: []exchange.PriceLevel{{Price: s.ask, Quantity: 1}},
+		Bids: []exchange.PriceLevel{{Price: s.futBid, Quantity: 1}},
+		Asks: []exchange.PriceLevel{{Price: s.futAsk, Quantity: 1}},
 	}, nil
 }
 
-// newBasisGateEngine creates a SpotEngine with miniredis and configurable exchange stub.
-func newBasisGateEngine(t *testing.T, cfg *config.Config, exchStub exchange.Exchange) (*SpotEngine, *miniredis.Miniredis) {
+func (s priceGapStubExchange) GetSpotBBO(string) (exchange.BBO, error) {
+	if s.spotErr != nil {
+		return exchange.BBO{}, s.spotErr
+	}
+	return exchange.BBO{Bid: s.spotBid, Ask: s.spotAsk}, nil
+}
+
+func (s priceGapStubExchange) MarginBorrow(exchange.MarginBorrowParams) error { return nil }
+func (s priceGapStubExchange) MarginRepay(exchange.MarginRepayParams) error   { return nil }
+func (s priceGapStubExchange) PlaceSpotMarginOrder(exchange.SpotMarginOrderParams) (string, error) {
+	return "", nil
+}
+func (s priceGapStubExchange) GetMarginInterestRate(string) (*exchange.MarginInterestRate, error) {
+	return nil, nil
+}
+func (s priceGapStubExchange) GetMarginBalance(string) (*exchange.MarginBalance, error) {
+	return &exchange.MarginBalance{}, nil
+}
+func (s priceGapStubExchange) TransferToMargin(string, string) error   { return nil }
+func (s priceGapStubExchange) TransferFromMargin(string, string) error { return nil }
+
+func newPriceGapGateEngine(t *testing.T, cfg *config.Config, stub priceGapStubExchange) (*SpotEngine, *miniredis.Miniredis) {
 	t.Helper()
 	mr, err := miniredis.Run()
 	if err != nil {
@@ -42,261 +65,255 @@ func newBasisGateEngine(t *testing.T, cfg *config.Config, exchStub exchange.Exch
 		mr.Close()
 		t.Fatalf("database.New: %v", err)
 	}
-	exchanges := map[string]exchange.Exchange{}
-	if exchStub != nil {
-		exchanges["testexch"] = exchStub
-	}
+	exchanges := map[string]exchange.Exchange{"testexch": stub}
+	spotMargin := map[string]exchange.SpotMarginExchange{"testexch": stub}
 	return &SpotEngine{
-		cfg:       cfg,
-		db:        db,
-		exchanges: exchanges,
-		log:       utils.NewLogger("test"),
+		cfg:        cfg,
+		db:         db,
+		exchanges:  exchanges,
+		spotMargin: spotMargin,
+		log:        utils.NewLogger("test"),
 	}, mr
 }
 
-// ---------------------------------------------------------------------------
-// TestBasisGateEntry verifies that the basis gate rejects entries when the
-// spread-based basis proxy exceeds MaxBasisPct, allows entries when below,
-// is skipped entirely when disabled, and is fail-closed on errors.
-// ---------------------------------------------------------------------------
-
-func TestBasisGateEntry(t *testing.T) {
+func TestPriceGapGateEntry(t *testing.T) {
 	tests := []struct {
 		name       string
 		enabled    bool
-		bid        float64
-		ask        float64
-		maxBasis   float64
-		exchErr    error  // force GetOrderbook error
-		wantReason string // expected rejection reason (empty = allowed)
+		direction  string
+		futBid     float64
+		futAsk     float64
+		spotBid    float64
+		spotAsk    float64
+		maxGap     float64
+		futErr     error
+		spotErr    error
+		wantReason string
 	}{
 		{
-			name:       "basis exceeds threshold: rejected",
+			name:       "dir A gap exceeds threshold",
 			enabled:    true,
-			bid:        99.5,
-			ask:        100.5, // spread = 1.0, mid = 100.0, basis = 1.0%
-			maxBasis:   0.5,
-			wantReason: "basis_1.00%>0.50%",
+			direction:  "borrow_sell_long",
+			futBid:     100.8,
+			futAsk:     101.0,
+			spotBid:    100.0,
+			spotAsk:    100.1,
+			maxGap:     0.5,
+			wantReason: "price_gap_1.00%>0.50%",
 		},
 		{
-			name:       "basis at threshold: allowed",
+			name:       "dir B gap exceeds threshold",
 			enabled:    true,
-			bid:        99.75,
-			ask:        100.25, // spread = 0.50, mid = 100.0, basis = 0.50%
-			maxBasis:   0.5,
-			wantReason: "", // 0.50% <= 0.5% — allowed
+			direction:  "buy_spot_short",
+			futBid:     100.0,
+			futAsk:     100.1,
+			spotBid:    100.8,
+			spotAsk:    101.0,
+			maxGap:     0.5,
+			wantReason: "price_gap_1.00%>0.50%",
 		},
 		{
-			name:       "basis below threshold: allowed",
+			name:       "gap at threshold allowed",
 			enabled:    true,
-			bid:        99.95,
-			ask:        100.05, // spread = 0.10, mid = 100.0, basis = 0.10%
-			maxBasis:   0.5,
+			direction:  "borrow_sell_long",
+			futBid:     100.4,
+			futAsk:     100.5,
+			spotBid:    100.0,
+			spotAsk:    100.1,
+			maxGap:     0.5,
 			wantReason: "",
 		},
 		{
-			name:       "gate disabled: wide basis allowed",
+			name:       "gate disabled",
 			enabled:    false,
-			bid:        99.0,
-			ask:        101.0, // spread = 2.0, basis = 2.0%
-			maxBasis:   0.5,
+			direction:  "borrow_sell_long",
+			futBid:     100.8,
+			futAsk:     101.0,
+			spotBid:    100.0,
+			spotAsk:    100.1,
+			maxGap:     0.5,
 			wantReason: "",
 		},
 		{
-			name:       "exchange error: fail-closed",
+			name:       "futures error fails closed",
 			enabled:    true,
-			bid:        100.0,
-			ask:        100.0,
-			maxBasis:   0.5,
-			exchErr:    fmt.Errorf("connection timeout"),
-			wantReason: "basis_check_error",
+			direction:  "borrow_sell_long",
+			futBid:     100.0,
+			futAsk:     100.1,
+			spotBid:    100.0,
+			spotAsk:    100.1,
+			maxGap:     0.5,
+			futErr:     fmt.Errorf("connection timeout"),
+			wantReason: "price_gap_check_error",
 		},
 		{
-			name:       "default maxBasis when config is 0",
+			name:       "spot error fails closed",
 			enabled:    true,
-			bid:        99.5,
-			ask:        100.5, // basis = 1.0%, default threshold = 0.5%
-			maxBasis:   0,     // should fall back to 0.5
-			wantReason: "basis_1.00%>0.50%",
+			direction:  "buy_spot_short",
+			futBid:     100.0,
+			futAsk:     100.1,
+			spotBid:    100.0,
+			spotAsk:    100.1,
+			maxGap:     0.5,
+			spotErr:    fmt.Errorf("spot timeout"),
+			wantReason: "price_gap_check_error",
+		},
+		{
+			name:       "default threshold when config is zero",
+			enabled:    true,
+			direction:  "borrow_sell_long",
+			futBid:     100.8,
+			futAsk:     101.0,
+			spotBid:    100.0,
+			spotAsk:    100.1,
+			maxGap:     0,
+			wantReason: "price_gap_1.00%>0.50%",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &config.Config{
-				SpotFuturesEnableBasisGate:  tc.enabled,
-				SpotFuturesMaxBasisPct:      tc.maxBasis,
-				SpotFuturesMaxPositions:     5,
-				SpotFuturesPersistenceScans: 0,
+				SpotFuturesEnablePriceGapGate: tc.enabled,
+				SpotFuturesMaxPriceGapPct:     tc.maxGap,
+				SpotFuturesMaxPositions:       5,
+				SpotFuturesPersistenceScans:   0,
 			}
-			stub := basisStubExchange{bid: tc.bid, ask: tc.ask, err: tc.exchErr}
-			eng, mr := newBasisGateEngine(t, cfg, stub)
+			eng, mr := newPriceGapGateEngine(t, cfg, priceGapStubExchange{
+				futBid:  tc.futBid,
+				futAsk:  tc.futAsk,
+				spotBid: tc.spotBid,
+				spotAsk: tc.spotAsk,
+				futErr:  tc.futErr,
+				spotErr: tc.spotErr,
+			})
 			defer mr.Close()
 
-			opp := SpotArbOpportunity{
+			result := eng.checkRiskGate(SpotArbOpportunity{
 				Symbol:    "BTCUSDT",
 				Exchange:  "testexch",
-				Direction: "buy_spot_short",
+				Direction: tc.direction,
 				NetAPR:    0.5,
-			}
-
-			result := eng.checkRiskGate(opp)
+			})
 
 			if tc.wantReason == "" {
-				// Should be allowed (unless dry-run is on).
 				if !result.Allowed {
-					t.Errorf("expected allowed, got blocked: reason=%q", result.Reason)
+					t.Fatalf("expected allowed, got blocked: %q", result.Reason)
 				}
-			} else {
-				if result.Allowed {
-					t.Error("expected blocked, got allowed")
-				}
-				if result.Reason != tc.wantReason {
-					t.Errorf("reason = %q, want %q", result.Reason, tc.wantReason)
-				}
+				return
+			}
+			if result.Allowed {
+				t.Fatal("expected blocked, got allowed")
+			}
+			if result.Reason != tc.wantReason {
+				t.Fatalf("reason = %q, want %q", result.Reason, tc.wantReason)
 			}
 		})
 	}
 }
 
-// ---------------------------------------------------------------------------
-// TestBasisGateBeforeDryRun verifies that the basis gate (check 5) fires
-// BEFORE dry-run (check 6). When both are active and basis is too wide,
-// the rejection reason must be "basis_*" not "dry_run".
-// ---------------------------------------------------------------------------
-
-func TestBasisGateBeforeDryRun(t *testing.T) {
+func TestPriceGapGateBeforeDryRun(t *testing.T) {
 	cfg := &config.Config{
-		SpotFuturesEnableBasisGate:  true,
-		SpotFuturesMaxBasisPct:      0.5,
-		SpotFuturesDryRun:           true,
-		SpotFuturesMaxPositions:     5,
-		SpotFuturesPersistenceScans: 0,
+		SpotFuturesEnablePriceGapGate: true,
+		SpotFuturesMaxPriceGapPct:     0.5,
+		SpotFuturesDryRun:             true,
+		SpotFuturesMaxPositions:       5,
+		SpotFuturesPersistenceScans:   0,
 	}
-	stub := basisStubExchange{bid: 99.0, ask: 101.0} // basis = 2.0%
-	eng, mr := newBasisGateEngine(t, cfg, stub)
+	eng, mr := newPriceGapGateEngine(t, cfg, priceGapStubExchange{
+		futBid:  100.8,
+		futAsk:  101.0,
+		spotBid: 100.0,
+		spotAsk: 100.1,
+	})
 	defer mr.Close()
 
 	result := eng.checkRiskGate(SpotArbOpportunity{
-		Symbol:   "BTCUSDT",
-		Exchange: "testexch",
-		NetAPR:   0.5,
+		Symbol:    "BTCUSDT",
+		Exchange:  "testexch",
+		Direction: "borrow_sell_long",
+		NetAPR:    0.5,
 	})
-
 	if result.Allowed {
 		t.Fatal("expected blocked, got allowed")
 	}
-	if result.Reason != "basis_2.00%>0.50%" {
-		t.Errorf("expected basis rejection before dry_run, got %q", result.Reason)
+	if result.Reason != "price_gap_1.00%>0.50%" {
+		t.Fatalf("expected price-gap rejection before dry_run, got %q", result.Reason)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// TestBasisGateDryRunPassthrough verifies that when basis check passes but
-// dry-run is enabled, the rejection reason is "dry_run" (not basis).
-// ---------------------------------------------------------------------------
-
-func TestBasisGateDryRunPassthrough(t *testing.T) {
+func TestPriceGapGateDryRunPassthrough(t *testing.T) {
 	cfg := &config.Config{
-		SpotFuturesEnableBasisGate:  true,
-		SpotFuturesMaxBasisPct:      0.5,
-		SpotFuturesDryRun:           true,
-		SpotFuturesMaxPositions:     5,
-		SpotFuturesPersistenceScans: 0,
+		SpotFuturesEnablePriceGapGate: true,
+		SpotFuturesMaxPriceGapPct:     0.5,
+		SpotFuturesDryRun:             true,
+		SpotFuturesMaxPositions:       5,
+		SpotFuturesPersistenceScans:   0,
 	}
-	stub := basisStubExchange{bid: 99.99, ask: 100.01} // basis = 0.02%
-	eng, mr := newBasisGateEngine(t, cfg, stub)
+	eng, mr := newPriceGapGateEngine(t, cfg, priceGapStubExchange{
+		futBid:  100.0,
+		futAsk:  100.2,
+		spotBid: 100.0,
+		spotAsk: 100.1,
+	})
 	defer mr.Close()
 
 	result := eng.checkRiskGate(SpotArbOpportunity{
-		Symbol:   "BTCUSDT",
-		Exchange: "testexch",
-		NetAPR:   0.5,
+		Symbol:    "BTCUSDT",
+		Exchange:  "testexch",
+		Direction: "borrow_sell_long",
+		NetAPR:    0.5,
 	})
-
 	if result.Allowed {
 		t.Fatal("expected dry_run block, got allowed")
 	}
 	if result.Reason != "dry_run" {
-		t.Errorf("expected dry_run reason (basis passed), got %q", result.Reason)
+		t.Fatalf("expected dry_run reason, got %q", result.Reason)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// TestCalculateEntryBasis verifies the basis calculation helper directly.
-// ---------------------------------------------------------------------------
-
-func TestCalculateEntryBasis(t *testing.T) {
-	tests := []struct {
-		name    string
-		bid     float64
-		ask     float64
-		wantPct float64
-		wantErr bool
-	}{
-		{
-			name:    "normal spread",
-			bid:     99.95,
-			ask:     100.05,
-			wantPct: 0.1, // (0.10/100.0)*100 = 0.1%
-		},
-		{
-			name:    "wide spread",
-			bid:     99.0,
-			ask:     101.0,
-			wantPct: 2.0, // (2.0/100.0)*100 = 2.0%
-		},
-		{
-			name:    "zero spread",
-			bid:     100.0,
-			ask:     100.0,
-			wantPct: 0.0,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			eng := &SpotEngine{
-				cfg: &config.Config{},
-				exchanges: map[string]exchange.Exchange{
-					"testexch": basisStubExchange{bid: tc.bid, ask: tc.ask},
-				},
-				log: utils.NewLogger("test"),
-			}
-
-			got, err := eng.calculateEntryBasis("BTCUSDT", "testexch")
-			if tc.wantErr {
-				if err == nil {
-					t.Error("expected error, got nil")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			diff := got - tc.wantPct
-			if diff > 0.01 || diff < -0.01 {
-				t.Errorf("basis = %.4f%%, want ~%.4f%%", got, tc.wantPct)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// TestCalculateEntryBasis_ExchangeNotFound verifies fail-closed when exchange
-// does not exist.
-// ---------------------------------------------------------------------------
-
-func TestCalculateEntryBasis_ExchangeNotFound(t *testing.T) {
+func TestCalculateEntryPriceGap(t *testing.T) {
 	eng := &SpotEngine{
-		cfg:       &config.Config{},
-		exchanges: map[string]exchange.Exchange{},
-		log:       utils.NewLogger("test"),
+		exchanges: map[string]exchange.Exchange{
+			"testexch": priceGapStubExchange{futBid: 100.0, futAsk: 101.0, spotBid: 99.0, spotAsk: 100.5},
+		},
+		spotMargin: map[string]exchange.SpotMarginExchange{
+			"testexch": priceGapStubExchange{futBid: 100.0, futAsk: 101.0, spotBid: 99.0, spotAsk: 100.5},
+		},
+		log: utils.NewLogger("test"),
 	}
 
-	_, err := eng.calculateEntryBasis("BTCUSDT", "nonexistent")
-	if err == nil {
-		t.Error("expected error for missing exchange, got nil")
+	t.Run("dir A", func(t *testing.T) {
+		got, err := eng.calculateEntryPriceGap("BTCUSDT", "testexch", "borrow_sell_long")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := (101.0 - 99.0) / 99.0 * 100
+		if diff := got - want; diff > 0.01 || diff < -0.01 {
+			t.Fatalf("gap = %.4f%%, want %.4f%%", got, want)
+		}
+	})
+
+	t.Run("dir B", func(t *testing.T) {
+		got, err := eng.calculateEntryPriceGap("BTCUSDT", "testexch", "buy_spot_short")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := (100.5 - 100.0) / 100.0 * 100
+		if diff := got - want; diff > 0.01 || diff < -0.01 {
+			t.Fatalf("gap = %.4f%%, want %.4f%%", got, want)
+		}
+	})
+}
+
+func TestCalculateEntryPriceGap_ExchangeNotFound(t *testing.T) {
+	eng := &SpotEngine{
+		exchanges:  map[string]exchange.Exchange{},
+		spotMargin: map[string]exchange.SpotMarginExchange{},
+		log:        utils.NewLogger("test"),
+	}
+
+	if _, err := eng.calculateEntryPriceGap("BTCUSDT", "missing", "borrow_sell_long"); err == nil {
+		t.Fatal("expected error for missing exchange")
 	}
 }

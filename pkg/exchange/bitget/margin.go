@@ -246,6 +246,39 @@ func (a *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarg
 	return order, err
 }
 
+// GetSpotBBO returns the current best bid/offer for the Bitget spot market.
+func (a *Adapter) GetSpotBBO(symbol string) (exchange.BBO, error) {
+	raw, err := a.client.Get("/api/v2/spot/market/tickers", map[string]string{"symbol": symbol})
+	if err != nil {
+		return exchange.BBO{}, fmt.Errorf("GetSpotBBO: %w", err)
+	}
+
+	var resp struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+		Data []struct {
+			BidPr string `json:"bidPr"`
+			AskPr string `json:"askPr"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		return exchange.BBO{}, fmt.Errorf("GetSpotBBO unmarshal: %w", err)
+	}
+	if resp.Code != "00000" {
+		return exchange.BBO{}, fmt.Errorf("GetSpotBBO failed: code=%s msg=%s", resp.Code, resp.Msg)
+	}
+	if len(resp.Data) == 0 {
+		return exchange.BBO{}, fmt.Errorf("GetSpotBBO: no data for %s", symbol)
+	}
+
+	bid, _ := strconv.ParseFloat(resp.Data[0].BidPr, 64)
+	ask, _ := strconv.ParseFloat(resp.Data[0].AskPr, 64)
+	if bid <= 0 || ask <= 0 {
+		return exchange.BBO{}, fmt.Errorf("GetSpotBBO: invalid bid/ask for %s", symbol)
+	}
+	return exchange.BBO{Bid: bid, Ask: ask}, nil
+}
+
 // populateBitgetFeeDeducted queries spot or margin fills for an order and sets FeeDeducted
 // when the fee is paid in the base coin (i.e., deducted from the received coin on BUY orders).
 func (a *Adapter) populateBitgetFeeDeducted(order *exchange.SpotMarginOrderStatus, orderID, symbol string) {

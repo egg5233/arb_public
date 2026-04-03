@@ -351,8 +351,8 @@ type configSpotFuturesResponse struct {
 	MinHoldHours               int      `json:"min_hold_hours"`
 	EnableSettlementGuard      bool     `json:"enable_settlement_guard"`
 	SettlementWindowMin        int      `json:"settlement_window_min"`
-	EnableBasisGate            bool     `json:"enable_basis_gate"`
-	MaxBasisPct                float64  `json:"max_basis_pct"`
+	EnablePriceGapGate         bool     `json:"enable_price_gap_gate"`
+	MaxPriceGapPct             float64  `json:"max_price_gap_pct"`
 	EnableExitSpreadGate       bool     `json:"enable_exit_spread_gate"`
 	ExitSpreadPct              float64  `json:"exit_spread_pct"`
 }
@@ -641,8 +641,8 @@ func (s *Server) buildConfigResponse() configResponse {
 		MinHoldHours:               s.cfg.SpotFuturesMinHoldHours,
 		EnableSettlementGuard:      s.cfg.SpotFuturesEnableSettlementGuard,
 		SettlementWindowMin:        s.cfg.SpotFuturesSettlementWindowMin,
-		EnableBasisGate:            s.cfg.SpotFuturesEnableBasisGate,
-		MaxBasisPct:                s.cfg.SpotFuturesMaxBasisPct,
+		EnablePriceGapGate:         s.cfg.SpotFuturesEnablePriceGapGate,
+		MaxPriceGapPct:             s.cfg.SpotFuturesMaxPriceGapPct,
 		EnableExitSpreadGate:       s.cfg.SpotFuturesEnableExitSpreadGate,
 		ExitSpreadPct:              s.cfg.SpotFuturesExitSpreadPct,
 	}
@@ -754,8 +754,8 @@ type spotFuturesUpdate struct {
 	MinHoldHours               *int     `json:"min_hold_hours"`
 	EnableSettlementGuard      *bool    `json:"enable_settlement_guard"`
 	SettlementWindowMin        *int     `json:"settlement_window_min"`
-	EnableBasisGate            *bool    `json:"enable_basis_gate"`
-	MaxBasisPct                *float64 `json:"max_basis_pct"`
+	EnablePriceGapGate         *bool    `json:"enable_price_gap_gate"`
+	MaxPriceGapPct             *float64 `json:"max_price_gap_pct"`
 	EnableExitSpreadGate       *bool    `json:"enable_exit_spread_gate"`
 	ExitSpreadPct              *float64 `json:"exit_spread_pct"`
 }
@@ -1345,11 +1345,11 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		if sf.SettlementWindowMin != nil && *sf.SettlementWindowMin >= 0 {
 			s.cfg.SpotFuturesSettlementWindowMin = *sf.SettlementWindowMin
 		}
-		if sf.EnableBasisGate != nil {
-			s.cfg.SpotFuturesEnableBasisGate = *sf.EnableBasisGate
+		if sf.EnablePriceGapGate != nil {
+			s.cfg.SpotFuturesEnablePriceGapGate = *sf.EnablePriceGapGate
 		}
-		if sf.MaxBasisPct != nil && *sf.MaxBasisPct >= 0 {
-			s.cfg.SpotFuturesMaxBasisPct = *sf.MaxBasisPct
+		if sf.MaxPriceGapPct != nil && *sf.MaxPriceGapPct >= 0 {
+			s.cfg.SpotFuturesMaxPriceGapPct = *sf.MaxPriceGapPct
 		}
 		if sf.EnableExitSpreadGate != nil {
 			s.cfg.SpotFuturesEnableExitSpreadGate = *sf.EnableExitSpreadGate
@@ -1484,8 +1484,8 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		fields["spot_futures_min_hold_hours"] = strconv.Itoa(sf.MinHoldHours)
 		fields["spot_futures_enable_settlement_guard"] = strconv.FormatBool(sf.EnableSettlementGuard)
 		fields["spot_futures_settlement_window_min"] = strconv.Itoa(sf.SettlementWindowMin)
-		fields["spot_futures_enable_basis_gate"] = strconv.FormatBool(sf.EnableBasisGate)
-		fields["spot_futures_max_basis_pct"] = strconv.FormatFloat(sf.MaxBasisPct, 'f', -1, 64)
+		fields["spot_futures_enable_price_gap_gate"] = strconv.FormatBool(sf.EnablePriceGapGate)
+		fields["spot_futures_max_price_gap_pct"] = strconv.FormatFloat(sf.MaxPriceGapPct, 'f', -1, 64)
 		fields["spot_futures_enable_exit_spread_gate"] = strconv.FormatBool(sf.EnableExitSpreadGate)
 		fields["spot_futures_exit_spread_pct"] = strconv.FormatFloat(sf.ExitSpreadPct, 'f', -1, 64)
 	}

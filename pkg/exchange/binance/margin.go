@@ -195,6 +195,29 @@ func (b *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarg
 	return result, nil
 }
 
+// GetSpotBBO returns the current best bid/offer for the Binance spot market.
+func (b *Adapter) GetSpotBBO(symbol string) (exchange.BBO, error) {
+	body, err := b.client.SpotGet("/api/v3/ticker/bookTicker", map[string]string{"symbol": symbol})
+	if err != nil {
+		return exchange.BBO{}, fmt.Errorf("GetSpotBBO: %w", err)
+	}
+
+	var resp struct {
+		BidPrice string `json:"bidPrice"`
+		AskPrice string `json:"askPrice"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return exchange.BBO{}, fmt.Errorf("GetSpotBBO unmarshal: %w", err)
+	}
+
+	bid, _ := strconv.ParseFloat(resp.BidPrice, 64)
+	ask, _ := strconv.ParseFloat(resp.AskPrice, 64)
+	if bid <= 0 || ask <= 0 {
+		return exchange.BBO{}, fmt.Errorf("GetSpotBBO: invalid bid/ask for %s", symbol)
+	}
+	return exchange.BBO{Bid: bid, Ask: ask}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Spot Margin: Interest Rate
 // ---------------------------------------------------------------------------

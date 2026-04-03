@@ -2,6 +2,8 @@ package spotengine
 
 import (
 	"fmt"
+
+	"arb/pkg/exchange"
 )
 
 // RiskGateResult holds the outcome of a pre-entry risk gate evaluation.
@@ -55,21 +57,21 @@ func (e *SpotEngine) checkRiskGate(opp SpotArbOpportunity) RiskGateResult {
 		}
 	}
 
-	// 5. Basis gate: reject entry if spot-futures basis is too wide (per D-10).
-	if e.cfg.SpotFuturesEnableBasisGate {
-		basisPct, err := e.calculateEntryBasis(symbol, exchName)
+	// 5. Price gap gate: reject entry if spot-vs-futures gap is too wide.
+	if e.cfg.SpotFuturesEnablePriceGapGate {
+		gapPct, err := e.calculateEntryPriceGap(symbol, exchName, opp.Direction)
 		if err != nil {
-			e.log.Warn("risk-gate: basis check failed for %s on %s: %v", symbol, exchName, err)
-			return RiskGateResult{Allowed: false, Reason: "basis_check_error"}
+			e.log.Warn("risk-gate: price gap check failed for %s on %s: %v", symbol, exchName, err)
+			return RiskGateResult{Allowed: false, Reason: "price_gap_check_error"}
 		}
-		maxBasis := e.cfg.SpotFuturesMaxBasisPct
-		if maxBasis <= 0 {
-			maxBasis = 0.5
+		maxGap := e.cfg.SpotFuturesMaxPriceGapPct
+		if maxGap <= 0 {
+			maxGap = 0.5
 		}
-		if basisPct > maxBasis {
+		if gapPct > maxGap {
 			return RiskGateResult{
 				Allowed: false,
-				Reason:  fmt.Sprintf("basis_%.2f%%>%.2f%%", basisPct, maxBasis),
+				Reason:  fmt.Sprintf("price_gap_%.2f%%>%.2f%%", gapPct, maxGap),
 			}
 		}
 	}
@@ -84,28 +86,54 @@ func (e *SpotEngine) checkRiskGate(opp SpotArbOpportunity) RiskGateResult {
 	return RiskGateResult{Allowed: true}
 }
 
-// calculateEntryBasis estimates the spot-futures basis as a percentage.
-// Uses the futures orderbook bid-ask spread as a proxy for basis since
-// we don't have a separate spot price feed. For USDT pairs, this is
-// a conservative estimate (actual basis is typically smaller than the
-// full bid-ask spread).
-func (e *SpotEngine) calculateEntryBasis(symbol, exchName string) (float64, error) {
-	exch, ok := e.exchanges[exchName]
+// calculateEntryPriceGap calculates the real spot-vs-futures entry gap as a percentage.
+func (e *SpotEngine) calculateEntryPriceGap(symbol, exchName, direction string) (float64, error) {
+	futExch, ok := e.exchanges[exchName]
 	if !ok {
 		return 0, fmt.Errorf("exchange %s not found", exchName)
 	}
+	spotExch, ok := e.spotMargin[exchName]
+	if !ok {
+		return 0, fmt.Errorf("spot margin exchange %s not found", exchName)
+	}
+
+	futBBO, err := getFuturesBBO(futExch, symbol)
+	if err != nil {
+		return 0, err
+	}
+	spotBBO, err := spotExch.GetSpotBBO(symbol)
+	if err != nil {
+		return 0, fmt.Errorf("GetSpotBBO: %w", err)
+	}
+	if spotBBO.Bid <= 0 || spotBBO.Ask <= 0 {
+		return 0, fmt.Errorf("invalid spot bid/ask for %s", symbol)
+	}
+
+	if direction == "borrow_sell_long" {
+		return (futBBO.Ask - spotBBO.Bid) / spotBBO.Bid * 100, nil
+	}
+	if futBBO.Bid <= 0 {
+		return 0, fmt.Errorf("invalid futures bid for %s", symbol)
+	}
+	return (spotBBO.Ask - futBBO.Bid) / futBBO.Bid * 100, nil
+}
+
+func getFuturesBBO(exch exchange.Exchange, symbol string) (exchange.BBO, error) {
+	if bbo, ok := exch.GetBBO(symbol); ok {
+		if bbo.Bid > 0 && bbo.Ask > 0 {
+			return bbo, nil
+		}
+	}
+
 	ob, err := exch.GetOrderbook(symbol, 5)
 	if err != nil {
-		return 0, fmt.Errorf("GetOrderbook: %w", err)
+		return exchange.BBO{}, fmt.Errorf("GetOrderbook: %w", err)
 	}
 	if len(ob.Bids) == 0 || len(ob.Asks) == 0 {
-		return 0, fmt.Errorf("empty orderbook for %s", symbol)
+		return exchange.BBO{}, fmt.Errorf("empty orderbook for %s", symbol)
 	}
-	mid := (ob.Bids[0].Price + ob.Asks[0].Price) / 2
-	if mid <= 0 {
-		return 0, fmt.Errorf("zero mid price for %s", symbol)
+	if ob.Bids[0].Price <= 0 || ob.Asks[0].Price <= 0 {
+		return exchange.BBO{}, fmt.Errorf("invalid futures bid/ask for %s", symbol)
 	}
-	// Spread as basis proxy: (ask - bid) / mid * 100.
-	spreadPct := (ob.Asks[0].Price - ob.Bids[0].Price) / mid * 100
-	return spreadPct, nil
+	return exchange.BBO{Bid: ob.Bids[0].Price, Ask: ob.Asks[0].Price}, nil
 }

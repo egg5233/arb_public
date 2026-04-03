@@ -233,6 +233,33 @@ func (a *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarg
 	return result, nil
 }
 
+// GetSpotBBO returns the current best bid/offer for the OKX spot market.
+func (a *Adapter) GetSpotBBO(symbol string) (exchange.BBO, error) {
+	instID := toOKXSpotInstID(symbol)
+	data, err := a.client.Get("/api/v5/market/ticker", map[string]string{"instId": instID})
+	if err != nil {
+		return exchange.BBO{}, fmt.Errorf("GetSpotBBO: %w", err)
+	}
+
+	var resp []struct {
+		BidPx string `json:"bidPx"`
+		AskPx string `json:"askPx"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return exchange.BBO{}, fmt.Errorf("GetSpotBBO unmarshal: %w", err)
+	}
+	if len(resp) == 0 {
+		return exchange.BBO{}, fmt.Errorf("GetSpotBBO: no data for %s", symbol)
+	}
+
+	bid, _ := strconv.ParseFloat(resp[0].BidPx, 64)
+	ask, _ := strconv.ParseFloat(resp[0].AskPx, 64)
+	if bid <= 0 || ask <= 0 {
+		return exchange.BBO{}, fmt.Errorf("GetSpotBBO: invalid bid/ask for %s", symbol)
+	}
+	return exchange.BBO{Bid: bid, Ask: ask}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Spot Margin: Interest Rate
 // ---------------------------------------------------------------------------

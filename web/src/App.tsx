@@ -161,6 +161,7 @@ function App() {
             spotOpportunities={ws.spotOpportunities}
             onOpen={api.openPosition}
             onSpotOpen={api.spotManualOpen}
+            onCheckPriceGap={api.checkSpotPriceGap}
             blacklist={blacklist}
             onBlacklistToggle={handleBlacklistToggle}
           />

@@ -174,7 +174,7 @@ type Config struct {
 	// Spot-futures arbitrage engine
 	SpotFuturesEnabled            bool
 	SpotFuturesMaxPositions       int
-	SpotFuturesLeverage int
+	SpotFuturesLeverage           int
 	SpotFuturesMonitorIntervalSec int
 	SpotFuturesMinNetYieldAPR     float64  // minimum net APR after costs (decimal, e.g. 0.10 = 10%)
 	SpotFuturesMaxBorrowAPR       float64  // maximum borrow APR for Direction A (decimal, e.g. 0.50 = 50%)
@@ -196,8 +196,8 @@ type Config struct {
 
 	// Separate-account exchange support (Binance/Bitget)
 	SpotFuturesProfitTransferEnabled bool    // enable auto profit-to-margin transfers after exit (default: false)
-	SpotFuturesCapitalSeparate float64 // capital per position for separate-account exchanges (default: 200)
-	SpotFuturesCapitalUnified  float64 // capital per position for unified-account exchanges (default: 500)
+	SpotFuturesCapitalSeparate       float64 // capital per position for separate-account exchanges (default: 200)
+	SpotFuturesCapitalUnified        float64 // capital per position for unified-account exchanges (default: 500)
 
 	// Phase 2: native scanner + exit/entry guards
 	SpotFuturesNativeScannerEnabled  bool    // use Loris-based native scanner instead of CoinGlass (default: true)
@@ -205,8 +205,8 @@ type Config struct {
 	SpotFuturesMinHoldHours          int     // hours before yield-based exit allowed (default: 8)
 	SpotFuturesEnableSettlementGuard bool    // skip exit eval during settlement window (default: false)
 	SpotFuturesSettlementWindowMin   int     // minutes around settlement to guard (default: 10)
-	SpotFuturesEnableBasisGate       bool    // reject entry when basis too wide (default: false)
-	SpotFuturesMaxBasisPct           float64 // max basis % for entry (default: 0.5)
+	SpotFuturesEnablePriceGapGate    bool    // reject entry when spot-vs-futures price gap is too wide (default: false)
+	SpotFuturesMaxPriceGapPct        float64 // max spot-vs-futures price gap % for entry (default: 0.5)
 	SpotFuturesEnableExitSpreadGate  bool    // gate exits by unwind slippage (default: false)
 	SpotFuturesExitSpreadPct         float64 // max slippage % to allow exit (default: 0.3)
 
@@ -218,7 +218,7 @@ type Config struct {
 	// Safety: perp-perp Telegram notifications (struct field only; remaining
 	// touch points -- JSON, default, apply, toJSON, fromEnv -- added in Plan 03)
 	// ---------------------------------------------------------------------------
-	EnablePerpTelegram  bool // On/off for perp-perp Telegram alerts (default OFF per D-10)
+	EnablePerpTelegram  bool    // On/off for perp-perp Telegram alerts (default OFF per D-10)
 	EnableLossLimits    bool    // Master on/off for rolling loss limits (default OFF per D-10)
 	DailyLossLimitUSDT  float64 // 24-hour rolling net loss threshold in USDT
 	WeeklyLossLimitUSDT float64 // 7-day rolling net loss threshold in USDT
@@ -239,7 +239,7 @@ type jsonConfig struct {
 	SpotArb     *jsonSpotArb            `json:"spot_arb"`
 	SpotFutures *jsonSpotFutures        `json:"spot_futures"`
 	Telegram    *jsonTelegram           `json:"telegram"`
-	Safety      *jsonSafety            `json:"safety"`
+	Safety      *jsonSafety             `json:"safety"`
 }
 
 type jsonSafety struct {
@@ -263,8 +263,8 @@ type jsonSpotArb struct {
 
 type jsonSpotFutures struct {
 	Enabled                    *bool    `json:"enabled"`
-	MaxPositions *int `json:"max_positions"`
-	Leverage     *int `json:"leverage"`
+	MaxPositions               *int     `json:"max_positions"`
+	Leverage                   *int     `json:"leverage"`
 	MonitorIntervalSec         *int     `json:"monitor_interval_sec"`
 	MinNetYieldAPR             *float64 `json:"min_net_yield_apr"`
 	MaxBorrowAPR               *float64 `json:"max_borrow_apr"`
@@ -294,12 +294,14 @@ type jsonSpotFutures struct {
 	MinHoldHours          *int     `json:"min_hold_hours"`
 	EnableSettlementGuard *bool    `json:"enable_settlement_guard"`
 	SettlementWindowMin   *int     `json:"settlement_window_min"`
-	EnableBasisGate       *bool    `json:"enable_basis_gate"`
-	MaxBasisPct           *float64 `json:"max_basis_pct"`
+	EnablePriceGapGate    *bool    `json:"enable_price_gap_gate"`
+	MaxPriceGapPct        *float64 `json:"max_price_gap_pct"`
 	EnableExitSpreadGate  *bool    `json:"enable_exit_spread_gate"`
 	ExitSpreadPct         *float64 `json:"exit_spread_pct"`
 
 	// Backward-compat: accept old key names from existing config files.
+	LegacyEnableBasisGate     *bool    `json:"enable_basis_gate"`
+	LegacyMaxBasisPct         *float64 `json:"max_basis_pct"`
 	LegacySeparateAcctMaxUSDT *float64 `json:"separate_acct_max_usdt"`
 	LegacyUnifiedAcctMaxUSDT  *float64 `json:"unified_acct_max_usdt"`
 }
@@ -456,102 +458,102 @@ func detectChromePath() string {
 // Priority: env var > config.json > default value.
 func Load() *Config {
 	c := &Config{
-		MinHoldTime:                     16 * time.Hour,
-		MaxCostRatio:                    0.50,
-		MaxPositions:                    1,
-		Leverage:                        3,
-		SlippageBPS:                     50,
-		RebalanceScanMinute:             10,
-		TopOpportunities:                25,
-		PriceGapFreeBPS:                 40,
-		MaxPriceGapBPS:                  200,
-		MaxGapRecoveryIntervals:         1.0,
-		EntryTimeoutSec:                 300,
-		MinChunkUSDT:                    10,
-		MarginL3Threshold:               0.50,
-		MarginL4Threshold:               0.80,
-		MarginL5Threshold:               0.95,
-		L4ReduceFraction:                0.30,
-		MarginSafetyMultiplier:          2.0,
-		ExitDepthTimeoutSec:             300,
-		ExitMaxGapBPS:                   10.0,
-		RiskMonitorIntervalSec:          300,
-		EnableLiqTrendTracking:          false,
-		LiqProjectionMinutes:            15,
-		LiqWarningSlopeThresh:           0.002,
-		LiqCriticalSlopeThresh:          0.004,
-		LiqMinSamples:                   5,
-		MaxPerpPerpPct:                  0.60,
-		MaxSpotFuturesPct:               0.60,
-		MaxPerExchangePct:               0.60,
-		ReservationTTLSec:               300,
-		EnableExchangeHealthScoring:     false,
-		ExchHealthLatencyMs:             2000,
-		ExchHealthMinUptime:             0.95,
-		ExchHealthMinFillRate:           0.80,
-		ExchHealthMinScore:              0.50,
-		ExchHealthWindowMin:             60,
-		PersistLookback1h:               90 * time.Minute,
-		PersistMinCount1h:               1,
-		PersistLookback4h:               180 * time.Minute,
-		PersistMinCount4h:               1,
-		PersistLookback8h:               360 * time.Minute,
-		PersistMinCount8h:               1,
-		SpreadStabilityRatio1h:          0.5,
-		SpreadStabilityOIRank1h:         0,
-		EnableSpreadStabilityGate:       false,
-		SpreadVolatilityMaxCV:           0,
-		SpreadVolatilityMinSamples:      10,
-		SpreadStabilityStricterForAuto:  true,
-		SpreadStabilityAutoCVMultiplier: 0.7,
-		FundingWindowMin:                30,
-		LossCooldownHours:               4.0,
-		BacktestDays:                    3,
-		DelistFilterEnabled:             true,
-		ScanMinutes:                     []int{10, 20, 30, 35, 40, 45, 50},
-		EntryScanMinute:                 40,
-		ExitScanMinute:                  30,
-		RotateScanMinute:                35,
-		RotationThresholdBPS:            100,
-		RotationCooldownMin:             180,
-		EnableSpreadReversal:            true,
-		SpreadReversalTolerance:         1,
-		ZeroSpreadTolerance:             2,
-		ReEnterCooldownHours:            1.0,
-		RedisAddr:                       "localhost:6379",
-		RedisDB:                         2,
-		DashboardAddr:                   ":8080",
-		AIModel:                         "gpt-5.4",
-		AIMaxTokens:                     4096,
-		SpotArbSchedule:                 "15,35",
-		SpotArbChromePath:               detectChromePath(),
-		SpotFuturesMaxPositions:         1,
-		SpotFuturesLeverage: 3,
-		SpotFuturesMonitorIntervalSec:   60,
-		SpotFuturesMinNetYieldAPR:       0.10, // 10%
-		SpotFuturesMaxBorrowAPR:         0.50, // 50%
-		EnableBorrowSpikeDetection:      false,
-		BorrowSpikeWindowMin:            60,
-		BorrowSpikeMultiplier:           2.0,
-		BorrowSpikeMinAbsolute:          0.10,
-		SpotFuturesScanIntervalMin:      10,
-		SpotFuturesBorrowGraceMin:       30,
-		SpotFuturesPriceExitPct:         20.0,
-		SpotFuturesPriceEmergencyPct:    30.0,
-		SpotFuturesMarginExitPct:        85.0,
-		SpotFuturesMarginEmergencyPct:   95.0,
-		SpotFuturesLossCooldownHours:    4,
-		SpotFuturesDryRun:               true,
-		SpotFuturesPersistenceScans:     2,
-		SpotFuturesCapitalSeparate: 200,
-		SpotFuturesCapitalUnified:  500,
+		MinHoldTime:                      16 * time.Hour,
+		MaxCostRatio:                     0.50,
+		MaxPositions:                     1,
+		Leverage:                         3,
+		SlippageBPS:                      50,
+		RebalanceScanMinute:              10,
+		TopOpportunities:                 25,
+		PriceGapFreeBPS:                  40,
+		MaxPriceGapBPS:                   200,
+		MaxGapRecoveryIntervals:          1.0,
+		EntryTimeoutSec:                  300,
+		MinChunkUSDT:                     10,
+		MarginL3Threshold:                0.50,
+		MarginL4Threshold:                0.80,
+		MarginL5Threshold:                0.95,
+		L4ReduceFraction:                 0.30,
+		MarginSafetyMultiplier:           2.0,
+		ExitDepthTimeoutSec:              300,
+		ExitMaxGapBPS:                    10.0,
+		RiskMonitorIntervalSec:           300,
+		EnableLiqTrendTracking:           false,
+		LiqProjectionMinutes:             15,
+		LiqWarningSlopeThresh:            0.002,
+		LiqCriticalSlopeThresh:           0.004,
+		LiqMinSamples:                    5,
+		MaxPerpPerpPct:                   0.60,
+		MaxSpotFuturesPct:                0.60,
+		MaxPerExchangePct:                0.60,
+		ReservationTTLSec:                300,
+		EnableExchangeHealthScoring:      false,
+		ExchHealthLatencyMs:              2000,
+		ExchHealthMinUptime:              0.95,
+		ExchHealthMinFillRate:            0.80,
+		ExchHealthMinScore:               0.50,
+		ExchHealthWindowMin:              60,
+		PersistLookback1h:                90 * time.Minute,
+		PersistMinCount1h:                1,
+		PersistLookback4h:                180 * time.Minute,
+		PersistMinCount4h:                1,
+		PersistLookback8h:                360 * time.Minute,
+		PersistMinCount8h:                1,
+		SpreadStabilityRatio1h:           0.5,
+		SpreadStabilityOIRank1h:          0,
+		EnableSpreadStabilityGate:        false,
+		SpreadVolatilityMaxCV:            0,
+		SpreadVolatilityMinSamples:       10,
+		SpreadStabilityStricterForAuto:   true,
+		SpreadStabilityAutoCVMultiplier:  0.7,
+		FundingWindowMin:                 30,
+		LossCooldownHours:                4.0,
+		BacktestDays:                     3,
+		DelistFilterEnabled:              true,
+		ScanMinutes:                      []int{10, 20, 30, 35, 40, 45, 50},
+		EntryScanMinute:                  40,
+		ExitScanMinute:                   30,
+		RotateScanMinute:                 35,
+		RotationThresholdBPS:             100,
+		RotationCooldownMin:              180,
+		EnableSpreadReversal:             true,
+		SpreadReversalTolerance:          1,
+		ZeroSpreadTolerance:              2,
+		ReEnterCooldownHours:             1.0,
+		RedisAddr:                        "localhost:6379",
+		RedisDB:                          2,
+		DashboardAddr:                    ":8080",
+		AIModel:                          "gpt-5.4",
+		AIMaxTokens:                      4096,
+		SpotArbSchedule:                  "15,35",
+		SpotArbChromePath:                detectChromePath(),
+		SpotFuturesMaxPositions:          1,
+		SpotFuturesLeverage:              3,
+		SpotFuturesMonitorIntervalSec:    60,
+		SpotFuturesMinNetYieldAPR:        0.10, // 10%
+		SpotFuturesMaxBorrowAPR:          0.50, // 50%
+		EnableBorrowSpikeDetection:       false,
+		BorrowSpikeWindowMin:             60,
+		BorrowSpikeMultiplier:            2.0,
+		BorrowSpikeMinAbsolute:           0.10,
+		SpotFuturesScanIntervalMin:       10,
+		SpotFuturesBorrowGraceMin:        30,
+		SpotFuturesPriceExitPct:          20.0,
+		SpotFuturesPriceEmergencyPct:     30.0,
+		SpotFuturesMarginExitPct:         85.0,
+		SpotFuturesMarginEmergencyPct:    95.0,
+		SpotFuturesLossCooldownHours:     4,
+		SpotFuturesDryRun:                true,
+		SpotFuturesPersistenceScans:      2,
+		SpotFuturesCapitalSeparate:       200,
+		SpotFuturesCapitalUnified:        500,
 		SpotFuturesNativeScannerEnabled:  false,
 		SpotFuturesEnableMinHold:         false,
 		SpotFuturesMinHoldHours:          8,
 		SpotFuturesEnableSettlementGuard: false,
 		SpotFuturesSettlementWindowMin:   10,
-		SpotFuturesEnableBasisGate:       false,
-		SpotFuturesMaxBasisPct:           0.5,
+		SpotFuturesEnablePriceGapGate:    false,
+		SpotFuturesMaxPriceGapPct:        0.5,
 		SpotFuturesEnableExitSpreadGate:  false,
 		SpotFuturesExitSpreadPct:         0.3,
 
@@ -1094,11 +1096,15 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if sf.SettlementWindowMin != nil && *sf.SettlementWindowMin > 0 {
 			c.SpotFuturesSettlementWindowMin = *sf.SettlementWindowMin
 		}
-		if sf.EnableBasisGate != nil {
-			c.SpotFuturesEnableBasisGate = *sf.EnableBasisGate
+		if sf.EnablePriceGapGate != nil {
+			c.SpotFuturesEnablePriceGapGate = *sf.EnablePriceGapGate
+		} else if sf.LegacyEnableBasisGate != nil {
+			c.SpotFuturesEnablePriceGapGate = *sf.LegacyEnableBasisGate
 		}
-		if sf.MaxBasisPct != nil && *sf.MaxBasisPct > 0 {
-			c.SpotFuturesMaxBasisPct = *sf.MaxBasisPct
+		if sf.MaxPriceGapPct != nil && *sf.MaxPriceGapPct > 0 {
+			c.SpotFuturesMaxPriceGapPct = *sf.MaxPriceGapPct
+		} else if sf.LegacyMaxBasisPct != nil && *sf.LegacyMaxBasisPct > 0 {
+			c.SpotFuturesMaxPriceGapPct = *sf.LegacyMaxBasisPct
 		}
 		if sf.EnableExitSpreadGate != nil {
 			c.SpotFuturesEnableExitSpreadGate = *sf.EnableExitSpreadGate
@@ -1368,12 +1374,14 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	sf["min_hold_hours"] = c.SpotFuturesMinHoldHours
 	sf["enable_settlement_guard"] = c.SpotFuturesEnableSettlementGuard
 	sf["settlement_window_min"] = c.SpotFuturesSettlementWindowMin
-	sf["enable_basis_gate"] = c.SpotFuturesEnableBasisGate
-	sf["max_basis_pct"] = c.SpotFuturesMaxBasisPct
+	sf["enable_price_gap_gate"] = c.SpotFuturesEnablePriceGapGate
+	sf["max_price_gap_pct"] = c.SpotFuturesMaxPriceGapPct
 	sf["enable_exit_spread_gate"] = c.SpotFuturesEnableExitSpreadGate
 	sf["exit_spread_pct"] = c.SpotFuturesExitSpreadPct
 	// Clean up old keys if present in the config file.
 	delete(sf, "capital_per_position")
+	delete(sf, "enable_basis_gate")
+	delete(sf, "max_basis_pct")
 	delete(sf, "separate_acct_max_usdt")
 	delete(sf, "unified_acct_max_usdt")
 
@@ -1603,12 +1611,18 @@ func (c *Config) loadEnvOverrides() {
 			c.SpotFuturesSettlementWindowMin = i
 		}
 	}
-	if v := os.Getenv("SPOT_FUTURES_ENABLE_BASIS_GATE"); v != "" {
-		c.SpotFuturesEnableBasisGate = v == "1" || v == "true" || v == "yes"
+	if v := os.Getenv("SPOT_FUTURES_ENABLE_PRICE_GAP_GATE"); v != "" {
+		c.SpotFuturesEnablePriceGapGate = v == "1" || v == "true" || v == "yes"
+	} else if v := os.Getenv("SPOT_FUTURES_ENABLE_BASIS_GATE"); v != "" {
+		c.SpotFuturesEnablePriceGapGate = v == "1" || v == "true" || v == "yes"
 	}
-	if v := os.Getenv("SPOT_FUTURES_MAX_BASIS_PCT"); v != "" {
+	if v := os.Getenv("SPOT_FUTURES_MAX_PRICE_GAP_PCT"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			c.SpotFuturesMaxBasisPct = f
+			c.SpotFuturesMaxPriceGapPct = f
+		}
+	} else if v := os.Getenv("SPOT_FUTURES_MAX_BASIS_PCT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			c.SpotFuturesMaxPriceGapPct = f
 		}
 	}
 	if v := os.Getenv("SPOT_FUTURES_ENABLE_EXIT_SPREAD_GATE"); v != "" {

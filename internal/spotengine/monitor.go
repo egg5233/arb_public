@@ -245,36 +245,36 @@ func (e *SpotEngine) broadcastHealth(pos *models.SpotFuturesPosition) {
 // engine uses.
 func (e *SpotEngine) updateLiveEconomics(pos *models.SpotFuturesPosition, isDirA bool) {
 	now := time.Now()
-	var currentFundingAPR, feeAPR float64
+	var currentFundingAPR, feePct float64
 	source := "entry_fallback"
 
 	if opp, found := e.lookupCurrentOpp(pos.Symbol, pos.Exchange, pos.Direction); found {
 		currentFundingAPR = opp.FundingAPR
-		feeAPR = opp.FeeAPR
+		feePct = opp.FeePct
 		source = "live_scan"
 	} else {
 		currentFundingAPR = pos.FundingAPR
-		feeAPR = pos.FeeAPR
+		feePct = pos.FeePct
 	}
 
-	// Last-resort feeAPR for legacy positions predating FeeAPR field.
-	if feeAPR == 0 {
+	// Last-resort feePct for legacy positions predating FeePct field.
+	if feePct == 0 {
 		takerFee := spotFees[pos.Exchange]
 		if takerFee == 0 {
 			takerFee = 0.0005
 		}
-		feeAPR = takerFee * 4 * (365.0 / assumedHoldDays)
+		feePct = takerFee * 4
 	}
 
 	borrowAPR := pos.CurrentBorrowAPR
 	if !isDirA {
 		borrowAPR = 0
 	}
-	netYield := currentFundingAPR - borrowAPR - feeAPR
+	netYield := currentFundingAPR - borrowAPR
 
 	_ = e.lockedUpdatePosition(pos.ID, func(p *models.SpotFuturesPosition) bool {
 		p.CurrentFundingAPR = currentFundingAPR
-		p.CurrentFeeAPR = feeAPR
+		p.CurrentFeePct = feePct
 		p.CurrentNetYieldAPR = netYield
 		p.YieldDataSource = source
 		p.YieldSnapshotAt = &now

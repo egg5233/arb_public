@@ -252,6 +252,37 @@ func (a *Adapter) getSpotMarginOrderFromPath(path string, params map[string]stri
 	}, nil
 }
 
+// GetSpotBBO returns the current best bid/offer for the Bybit spot market.
+func (a *Adapter) GetSpotBBO(symbol string) (exchange.BBO, error) {
+	result, err := a.client.Get("/v5/market/tickers", map[string]string{
+		"category": "spot",
+		"symbol":   symbol,
+	})
+	if err != nil {
+		return exchange.BBO{}, fmt.Errorf("GetSpotBBO: %w", err)
+	}
+
+	var resp struct {
+		List []struct {
+			Bid1Price string `json:"bid1Price"`
+			Ask1Price string `json:"ask1Price"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return exchange.BBO{}, fmt.Errorf("GetSpotBBO unmarshal: %w", err)
+	}
+	if len(resp.List) == 0 {
+		return exchange.BBO{}, fmt.Errorf("GetSpotBBO: no data for %s", symbol)
+	}
+
+	bid, _ := strconv.ParseFloat(resp.List[0].Bid1Price, 64)
+	ask, _ := strconv.ParseFloat(resp.List[0].Ask1Price, 64)
+	if bid <= 0 || ask <= 0 {
+		return exchange.BBO{}, fmt.Errorf("GetSpotBBO: invalid bid/ask for %s", symbol)
+	}
+	return exchange.BBO{Bid: bid, Ask: ask}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Spot Margin: Interest Rate
 // ---------------------------------------------------------------------------

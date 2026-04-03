@@ -198,8 +198,13 @@ func (e *SpotEngine) pushOppsToAPI(opps []SpotArbOpportunity) {
 	e.latestOpps = opps
 	e.oppsMu.Unlock()
 
-	items := make([]interface{}, len(opps))
-	for i, o := range opps {
+	apiOpps := opps
+	if len(apiOpps) > 100 {
+		apiOpps = apiOpps[:100]
+	}
+
+	items := make([]interface{}, len(apiOpps))
+	for i, o := range apiOpps {
 		items[i] = o
 	}
 	e.api.SetSpotOpportunities(items)
@@ -237,26 +242,26 @@ func (e *SpotEngine) InjectTestOpportunity(symbol, exchName string) {
 	now := time.Now()
 	testOpps := []SpotArbOpportunity{
 		{
-			Symbol:    symbol,
-			BaseCoin:  baseCoin,
-			Exchange:  exchName,
-			Direction: "borrow_sell_long",
+			Symbol:     symbol,
+			BaseCoin:   baseCoin,
+			Exchange:   exchName,
+			Direction:  "borrow_sell_long",
 			FundingAPR: 0.10,
 			BorrowAPR:  0.05,
-			FeeAPR:     0.002,
-			NetAPR:     0.048,
+			FeePct:     0.002,
+			NetAPR:     0.05,
 			Source:     "test-inject",
 			Timestamp:  now,
 		},
 		{
-			Symbol:    symbol,
-			BaseCoin:  baseCoin,
-			Exchange:  exchName,
-			Direction: "buy_spot_short",
+			Symbol:     symbol,
+			BaseCoin:   baseCoin,
+			Exchange:   exchName,
+			Direction:  "buy_spot_short",
 			FundingAPR: 0.10,
 			BorrowAPR:  0,
-			FeeAPR:     0.002,
-			NetAPR:     0.098,
+			FeePct:     0.002,
+			NetAPR:     0.10,
 			Source:     "test-inject",
 			Timestamp:  now,
 		},
@@ -267,13 +272,8 @@ func (e *SpotEngine) InjectTestOpportunity(symbol, exchName string) {
 	e.oppsMu.Unlock()
 
 	// Broadcast to dashboard.
-	items := make([]interface{}, len(e.latestOpps))
 	opps := e.getLatestOpps()
-	for i, o := range opps {
-		items[i] = o
-	}
-	e.api.SetSpotOpportunities(items)
-	e.api.BroadcastSpotOpportunities(items)
+	e.pushOppsToAPI(opps)
 
 	e.log.Info("InjectTestOpportunity: added %s on %s (Dir A + Dir B) — %d total opps", symbol, exchName, len(opps))
 }

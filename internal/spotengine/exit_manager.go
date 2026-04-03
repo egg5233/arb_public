@@ -21,16 +21,17 @@ type exitState struct {
 // An empty reason means no trigger fired.
 //
 // Priority ordering:
-//   Phase 1: ALWAYS-ON SAFETY TRIGGERS (bypass all guards)
-//     1. Price Spike
-//     2. Margin Health
-//   Phase 2: GUARD GATES (block yield-based triggers only)
-//     3. Min-hold gate
-//     4. Settlement window guard
-//     5. Exit spread gate
-//   Phase 3: YIELD-BASED TRIGGERS (gated by Phase 2)
-//     6. Borrow Cost Drift (Dir A only)
-//     7. Funding Rate Drop
+//
+//	Phase 1: ALWAYS-ON SAFETY TRIGGERS (bypass all guards)
+//	  1. Price Spike
+//	  2. Margin Health
+//	Phase 2: GUARD GATES (block yield-based triggers only)
+//	  3. Min-hold gate
+//	  4. Settlement window guard
+//	  5. Exit spread gate
+//	Phase 3: YIELD-BASED TRIGGERS (gated by Phase 2)
+//	  6. Borrow Cost Drift (Dir A only)
+//	  7. Funding Rate Drop
 func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason string, isEmergency bool) {
 	isDirA := pos.Direction == "borrow_sell_long"
 
@@ -281,25 +282,25 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 	// ---------------------------------------------------------------
 	// 7. Funding Rate Drop
 	// ---------------------------------------------------------------
-	var currentFundingAPR, feeAPR float64
+	var currentFundingAPR, feePct float64
 	var hasFundingData bool
 	if opp, found := e.lookupCurrentOpp(pos.Symbol, pos.Exchange, pos.Direction); found {
 		currentFundingAPR = opp.FundingAPR
-		feeAPR = opp.FeeAPR
+		feePct = opp.FeePct
 		hasFundingData = true
 	} else {
 		// Symbol not in latest scan — fall back to entry-time data.
 		currentFundingAPR = pos.FundingAPR
-		feeAPR = pos.FeeAPR
+		feePct = pos.FeePct
 		hasFundingData = currentFundingAPR > 0
 	}
-	// Last-resort feeAPR: calculate from spotFees if position predates FeeAPR field.
-	if feeAPR == 0 {
+	// Last-resort feePct: calculate from spotFees if position predates FeePct field.
+	if feePct == 0 {
 		takerFee := spotFees[pos.Exchange]
 		if takerFee == 0 {
 			takerFee = 0.0005
 		}
-		feeAPR = takerFee * 4 * (365.0 / assumedHoldDays)
+		feePct = takerFee * 4
 	}
 	if hasFundingData {
 		borrowAPR := pos.CurrentBorrowAPR
@@ -307,11 +308,11 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 			borrowAPR = 0 // Direction B has no borrow
 		}
 		minNet := e.cfg.SpotFuturesMinNetYieldAPR
-		netYield := currentFundingAPR - borrowAPR - feeAPR
+		netYield := currentFundingAPR - borrowAPR
 		if netYield < minNet {
-			e.log.Warn("exit trigger: %s net yield %.2f%% < min %.2f%% (funding=%.2f%% borrow=%.2f%% fees=%.2f%%)",
+			e.log.Warn("exit trigger: %s net yield %.2f%% < min %.2f%% (funding=%.2f%% borrow=%.2f%% fee=%.2f%% one-time)",
 				pos.Symbol, netYield*100, minNet*100,
-				currentFundingAPR*100, borrowAPR*100, feeAPR*100)
+				currentFundingAPR*100, borrowAPR*100, feePct*100)
 			return "yield_below_minimum", false
 		}
 	}

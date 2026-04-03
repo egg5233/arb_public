@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, type FC } from 'react';
-import type { Opportunity, SpotOpportunity } from '../types.ts';
+import type { Opportunity, SpotOpportunity, PriceGapResult } from '../types.ts';
 import { useLocale } from '../i18n/index.ts';
 import { ExchangeLink } from '../utils/tradingUrl.tsx';
 
@@ -10,6 +10,7 @@ interface OpportunitiesProps {
   spotOpportunities?: SpotOpportunity[];
   onOpen?: (symbol: string, longExchange: string, shortExchange: string, force?: boolean) => Promise<void>;
   onSpotOpen?: (symbol: string, exchange: string, direction: string) => Promise<void>;
+  onCheckPriceGap?: (symbol: string, exchange: string, direction: string) => Promise<PriceGapResult>;
   blacklist?: string[];
   onBlacklistToggle?: (symbol: string) => Promise<void>;
 }
@@ -44,13 +45,15 @@ function formatTimestamp(ts?: string): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunities = [], onOpen, onSpotOpen, blacklist = [], onBlacklistToggle }) => {
+const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunities = [], onOpen, onSpotOpen, onCheckPriceGap, blacklist = [], onBlacklistToggle }) => {
   const { t } = useLocale();
   const [tab, setTab] = useState<Tab>('perp');
   const [openingOpp, setOpeningOpp] = useState<Opportunity | null>(null);
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
   const [spotOpening, setSpotOpening] = useState<string | null>(null);
+  const [gapChecking, setGapChecking] = useState<string | null>(null);
+  const [gapResults, setGapResults] = useState<Record<string, PriceGapResult>>({});
   const [spotError, setSpotError] = useState<string | null>(null);
 
   const dismissModal = useCallback(() => { if (!opening) setOpeningOpp(null); }, [opening]);
@@ -228,6 +231,7 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
                 <th className="pb-2 text-right">{t('spot.borrow')}</th>
                 <th className="pb-2 text-right">{t('spot.fees')}</th>
                 <th className="pb-2 text-right">{t('spot.netApr')}</th>
+                <th className="pb-2">{t('spot.priceGap')}</th>
                 <th className="pb-2">{t('spot.status')}</th>
                 <th className="pb-2">{t('spot.reason')}</th>
                 <th className="pb-2"></th>
@@ -240,6 +244,7 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
                 const oppKey = `${opp.symbol}-${opp.exchange}-${opp.direction}`;
                 const dirLabel = isA ? t('spot.dirA') : t('spot.dirB');
                 const dirDesc = isA ? t('spot.dirADesc') : t('spot.dirBDesc');
+                const gapResult = gapResults[oppKey];
                 return (
                   <tr
                     key={`${opp.symbol}-${opp.exchange}-${opp.direction}`}
@@ -265,12 +270,45 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
                       {opp.borrow_apr > 0 ? `${(opp.borrow_apr * 100).toFixed(1)}%` : '-'}
                     </td>
                     <td className={`py-2 text-right font-mono ${filtered ? '' : 'text-gray-400'}`}>
-                      {(opp.fee_apr * 100).toFixed(1)}%
+                      {(opp.fee_pct * 100).toFixed(2)}%
                     </td>
                     <td className={`py-2 text-right font-mono font-semibold ${
                       filtered ? '' : opp.net_apr >= 0 ? 'text-emerald-400' : 'text-red-400'
                     }`}>
                       {(opp.net_apr * 100).toFixed(1)}%
+                    </td>
+                    <td className="py-2 whitespace-nowrap">
+                      {!filtered && onCheckPriceGap && (
+                        <div className="inline-flex items-center gap-2">
+                          <button
+                            disabled={gapChecking === oppKey}
+                            onClick={async () => {
+                              setGapChecking(oppKey);
+                              setSpotError(null);
+                              try {
+                                const result = await onCheckPriceGap(opp.symbol, opp.exchange, opp.direction);
+                                setGapResults((prev) => ({ ...prev, [oppKey]: result }));
+                              } catch (err: unknown) {
+                                setSpotError(err instanceof Error ? err.message : 'Check failed');
+                              } finally {
+                                setGapChecking(null);
+                              }
+                            }}
+                            className={`px-2 py-0.5 text-xs rounded transition-colors ${
+                              gapChecking === oppKey
+                                ? 'bg-gray-700 text-gray-400 cursor-wait'
+                                : 'bg-sky-600/20 text-sky-300 hover:bg-sky-600/40'
+                            }`}
+                          >
+                            {gapChecking === oppKey ? '...' : t('spot.checkGap')}
+                          </button>
+                          {gapResult && (
+                            <span className={`text-xs font-mono ${gapResult.gap_pct < 0.3 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                              {gapResult.gap_pct.toFixed(3)}%
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </td>
                     <td className="py-2">
                       {filtered ? (
@@ -322,7 +360,7 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
               })}
               {spotOpportunities.length === 0 && (
                 <tr>
-                  <td colSpan={11} className="py-8 text-center text-gray-500">
+                  <td colSpan={12} className="py-8 text-center text-gray-500">
                     {t('spot.noOpportunities')}
                   </td>
                 </tr>
