@@ -26,9 +26,10 @@ func newTestServer(t *testing.T) (*Server, *miniredis.Miniredis) {
 		t.Fatalf("database.New: %v", err)
 	}
 	s := &Server{
-		db:  db,
-		cfg: &config.Config{},
-		log: utils.NewLogger("test"),
+		db:             db,
+		cfg:            &config.Config{},
+		log:            utils.NewLogger("test"),
+		configNotifier: config.NewConfigNotifier(),
 	}
 	return s, mr
 }

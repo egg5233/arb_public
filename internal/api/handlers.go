@@ -324,7 +324,7 @@ type configSafetyResponse struct {
 type configSpotFuturesResponse struct {
 	Enabled                    bool     `json:"enabled"`
 	MaxPositions               int      `json:"max_positions"`
-	Leverage int `json:"leverage"`
+	Leverage                   int      `json:"leverage"`
 	MonitorIntervalSec         int      `json:"monitor_interval_sec"`
 	MinNetYieldAPR             float64  `json:"min_net_yield_apr"`
 	MaxBorrowAPR               float64  `json:"max_borrow_apr"`
@@ -343,18 +343,18 @@ type configSpotFuturesResponse struct {
 	AutoEnabled                bool     `json:"auto_enabled"`
 	DryRun                     bool     `json:"auto_dry_run"`
 	PersistenceScans           int      `json:"persistence_scans"`
-	ProfitTransferEnabled bool    `json:"profit_transfer_enabled"`
-	CapitalSeparateUSDT   float64 `json:"capital_separate_usdt"`
-	CapitalUnifiedUSDT    float64 `json:"capital_unified_usdt"`
-	NativeScannerEnabled  bool    `json:"native_scanner_enabled"`
-	EnableMinHold         bool    `json:"enable_min_hold"`
-	MinHoldHours          int     `json:"min_hold_hours"`
-	EnableSettlementGuard bool    `json:"enable_settlement_guard"`
-	SettlementWindowMin   int     `json:"settlement_window_min"`
-	EnableBasisGate       bool    `json:"enable_basis_gate"`
-	MaxBasisPct           float64 `json:"max_basis_pct"`
-	EnableExitSpreadGate  bool    `json:"enable_exit_spread_gate"`
-	ExitSpreadPct         float64 `json:"exit_spread_pct"`
+	ProfitTransferEnabled      bool     `json:"profit_transfer_enabled"`
+	CapitalSeparateUSDT        float64  `json:"capital_separate_usdt"`
+	CapitalUnifiedUSDT         float64  `json:"capital_unified_usdt"`
+	NativeScannerEnabled       bool     `json:"native_scanner_enabled"`
+	EnableMinHold              bool     `json:"enable_min_hold"`
+	MinHoldHours               int      `json:"min_hold_hours"`
+	EnableSettlementGuard      bool     `json:"enable_settlement_guard"`
+	SettlementWindowMin        int      `json:"settlement_window_min"`
+	EnableBasisGate            bool     `json:"enable_basis_gate"`
+	MaxBasisPct                float64  `json:"max_basis_pct"`
+	EnableExitSpreadGate       bool     `json:"enable_exit_spread_gate"`
+	ExitSpreadPct              float64  `json:"exit_spread_pct"`
 }
 
 type configExchangeResponse struct {
@@ -614,7 +614,7 @@ func (s *Server) buildConfigResponse() configResponse {
 	resp.SpotFutures = &configSpotFuturesResponse{
 		Enabled:                    s.cfg.SpotFuturesEnabled,
 		MaxPositions:               s.cfg.SpotFuturesMaxPositions,
-		Leverage: s.cfg.SpotFuturesLeverage,
+		Leverage:                   s.cfg.SpotFuturesLeverage,
 		MonitorIntervalSec:         s.cfg.SpotFuturesMonitorIntervalSec,
 		MinNetYieldAPR:             s.cfg.SpotFuturesMinNetYieldAPR,
 		MaxBorrowAPR:               s.cfg.SpotFuturesMaxBorrowAPR,
@@ -634,17 +634,17 @@ func (s *Server) buildConfigResponse() configResponse {
 		DryRun:                     s.cfg.SpotFuturesDryRun,
 		PersistenceScans:           s.cfg.SpotFuturesPersistenceScans,
 		ProfitTransferEnabled:      s.cfg.SpotFuturesProfitTransferEnabled,
-		CapitalSeparateUSDT: s.cfg.SpotFuturesCapitalSeparate,
-		CapitalUnifiedUSDT:  s.cfg.SpotFuturesCapitalUnified,
-		NativeScannerEnabled:  s.cfg.SpotFuturesNativeScannerEnabled,
-		EnableMinHold:         s.cfg.SpotFuturesEnableMinHold,
-		MinHoldHours:          s.cfg.SpotFuturesMinHoldHours,
-		EnableSettlementGuard: s.cfg.SpotFuturesEnableSettlementGuard,
-		SettlementWindowMin:   s.cfg.SpotFuturesSettlementWindowMin,
-		EnableBasisGate:       s.cfg.SpotFuturesEnableBasisGate,
-		MaxBasisPct:           s.cfg.SpotFuturesMaxBasisPct,
-		EnableExitSpreadGate:  s.cfg.SpotFuturesEnableExitSpreadGate,
-		ExitSpreadPct:         s.cfg.SpotFuturesExitSpreadPct,
+		CapitalSeparateUSDT:        s.cfg.SpotFuturesCapitalSeparate,
+		CapitalUnifiedUSDT:         s.cfg.SpotFuturesCapitalUnified,
+		NativeScannerEnabled:       s.cfg.SpotFuturesNativeScannerEnabled,
+		EnableMinHold:              s.cfg.SpotFuturesEnableMinHold,
+		MinHoldHours:               s.cfg.SpotFuturesMinHoldHours,
+		EnableSettlementGuard:      s.cfg.SpotFuturesEnableSettlementGuard,
+		SettlementWindowMin:        s.cfg.SpotFuturesSettlementWindowMin,
+		EnableBasisGate:            s.cfg.SpotFuturesEnableBasisGate,
+		MaxBasisPct:                s.cfg.SpotFuturesMaxBasisPct,
+		EnableExitSpreadGate:       s.cfg.SpotFuturesEnableExitSpreadGate,
+		ExitSpreadPct:              s.cfg.SpotFuturesExitSpreadPct,
 	}
 	return resp
 }
@@ -726,7 +726,7 @@ type safetyUpdate struct {
 type spotFuturesUpdate struct {
 	Enabled                    *bool    `json:"enabled"`
 	MaxPositions               *int     `json:"max_positions"`
-	Leverage *int `json:"leverage"`
+	Leverage                   *int     `json:"leverage"`
 	MonitorIntervalSec         *int     `json:"monitor_interval_sec"`
 	MinNetYieldAPR             *float64 `json:"min_net_yield_apr"`
 	MaxBorrowAPR               *float64 `json:"max_borrow_apr"`
@@ -746,18 +746,18 @@ type spotFuturesUpdate struct {
 	DryRun                     *bool    `json:"auto_dry_run"`
 	LegacyDryRun               *bool    `json:"dry_run"`
 	PersistenceScans           *int     `json:"persistence_scans"`
-	ProfitTransferEnabled *bool    `json:"profit_transfer_enabled"`
-	CapitalSeparateUSDT   *float64 `json:"capital_separate_usdt"`
-	CapitalUnifiedUSDT    *float64 `json:"capital_unified_usdt"`
-	NativeScannerEnabled  *bool    `json:"native_scanner_enabled"`
-	EnableMinHold         *bool    `json:"enable_min_hold"`
-	MinHoldHours          *int     `json:"min_hold_hours"`
-	EnableSettlementGuard *bool    `json:"enable_settlement_guard"`
-	SettlementWindowMin   *int     `json:"settlement_window_min"`
-	EnableBasisGate       *bool    `json:"enable_basis_gate"`
-	MaxBasisPct           *float64 `json:"max_basis_pct"`
-	EnableExitSpreadGate  *bool    `json:"enable_exit_spread_gate"`
-	ExitSpreadPct         *float64 `json:"exit_spread_pct"`
+	ProfitTransferEnabled      *bool    `json:"profit_transfer_enabled"`
+	CapitalSeparateUSDT        *float64 `json:"capital_separate_usdt"`
+	CapitalUnifiedUSDT         *float64 `json:"capital_unified_usdt"`
+	NativeScannerEnabled       *bool    `json:"native_scanner_enabled"`
+	EnableMinHold              *bool    `json:"enable_min_hold"`
+	MinHoldHours               *int     `json:"min_hold_hours"`
+	EnableSettlementGuard      *bool    `json:"enable_settlement_guard"`
+	SettlementWindowMin        *int     `json:"settlement_window_min"`
+	EnableBasisGate            *bool    `json:"enable_basis_gate"`
+	MaxBasisPct                *float64 `json:"max_basis_pct"`
+	EnableExitSpreadGate       *bool    `json:"enable_exit_spread_gate"`
+	ExitSpreadPct              *float64 `json:"exit_spread_pct"`
 }
 
 type exchangeUpdate struct {

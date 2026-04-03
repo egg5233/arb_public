@@ -272,6 +272,151 @@ func TestHandleConfig_BorrowSpikeDetectionRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHandleConfig_SpotFuturesDiscoveryFieldsRoundTrip(t *testing.T) {
+	s, mr := newTestServer(t)
+	defer mr.Close()
+
+	s.cfg.SpotFuturesNativeScannerEnabled = true
+	s.cfg.SpotFuturesEnableMinHold = false
+	s.cfg.SpotFuturesMinHoldHours = 8
+	s.cfg.SpotFuturesEnableSettlementGuard = false
+	s.cfg.SpotFuturesSettlementWindowMin = 10
+	s.cfg.SpotFuturesEnableBasisGate = false
+	s.cfg.SpotFuturesMaxBasisPct = 0.5
+	s.cfg.SpotFuturesEnableExitSpreadGate = false
+	s.cfg.SpotFuturesExitSpreadPct = 0.3
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	initialConfig := `{
+  "spot_futures": {
+    "native_scanner_enabled": true,
+    "enable_min_hold": false,
+    "min_hold_hours": 8,
+    "enable_settlement_guard": false,
+    "settlement_window_min": 10,
+    "enable_basis_gate": false,
+    "max_basis_pct": 0.5,
+    "enable_exit_spread_gate": false,
+    "exit_spread_pct": 0.3
+  }
+}`
+	if err := os.WriteFile(configPath, []byte(initialConfig), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("CONFIG_FILE", configPath)
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	getW := httptest.NewRecorder()
+	s.handleGetConfig(getW, getReq)
+	if getW.Code != http.StatusOK {
+		t.Fatalf("GET expected 200, got %d: %s", getW.Code, getW.Body.String())
+	}
+
+	var getResp struct {
+		OK   bool                   `json:"ok"`
+		Data map[string]interface{} `json:"data"`
+	}
+	if err := json.NewDecoder(getW.Body).Decode(&getResp); err != nil {
+		t.Fatalf("decode GET response: %v", err)
+	}
+	spotFutures, ok := getResp.Data["spot_futures"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("spot_futures payload missing or wrong type: %#v", getResp.Data["spot_futures"])
+	}
+	if spotFutures["native_scanner_enabled"] != true {
+		t.Fatalf("expected native_scanner_enabled=true, got %#v", spotFutures["native_scanner_enabled"])
+	}
+	if spotFutures["enable_basis_gate"] != false {
+		t.Fatalf("expected enable_basis_gate=false, got %#v", spotFutures["enable_basis_gate"])
+	}
+
+	postReq := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"spot_futures":{"native_scanner_enabled":false,"enable_min_hold":true,"min_hold_hours":12,"enable_settlement_guard":true,"settlement_window_min":15,"enable_basis_gate":true,"max_basis_pct":0.9,"enable_exit_spread_gate":true,"exit_spread_pct":0.45}}`))
+	postW := httptest.NewRecorder()
+	s.handlePostConfig(postW, postReq)
+	if postW.Code != http.StatusOK {
+		t.Fatalf("POST expected 200, got %d: %s", postW.Code, postW.Body.String())
+	}
+
+	if s.cfg.SpotFuturesNativeScannerEnabled {
+		t.Fatal("expected SpotFuturesNativeScannerEnabled=false after POST")
+	}
+	if !s.cfg.SpotFuturesEnableMinHold {
+		t.Fatal("expected SpotFuturesEnableMinHold=true after POST")
+	}
+	if s.cfg.SpotFuturesMinHoldHours != 12 {
+		t.Fatalf("expected SpotFuturesMinHoldHours=12, got %d", s.cfg.SpotFuturesMinHoldHours)
+	}
+	if !s.cfg.SpotFuturesEnableSettlementGuard {
+		t.Fatal("expected SpotFuturesEnableSettlementGuard=true after POST")
+	}
+	if s.cfg.SpotFuturesSettlementWindowMin != 15 {
+		t.Fatalf("expected SpotFuturesSettlementWindowMin=15, got %d", s.cfg.SpotFuturesSettlementWindowMin)
+	}
+	if !s.cfg.SpotFuturesEnableBasisGate {
+		t.Fatal("expected SpotFuturesEnableBasisGate=true after POST")
+	}
+	if s.cfg.SpotFuturesMaxBasisPct != 0.9 {
+		t.Fatalf("expected SpotFuturesMaxBasisPct=0.9, got %v", s.cfg.SpotFuturesMaxBasisPct)
+	}
+	if !s.cfg.SpotFuturesEnableExitSpreadGate {
+		t.Fatal("expected SpotFuturesEnableExitSpreadGate=true after POST")
+	}
+	if s.cfg.SpotFuturesExitSpreadPct != 0.45 {
+		t.Fatalf("expected SpotFuturesExitSpreadPct=0.45, got %v", s.cfg.SpotFuturesExitSpreadPct)
+	}
+
+	persisted, err := s.db.GetConfigField("spot_futures_native_scanner_enabled")
+	if err != nil {
+		t.Fatalf("redis get spot_futures_native_scanner_enabled: %v", err)
+	}
+	if persisted != "false" {
+		t.Fatalf("expected redis spot_futures_native_scanner_enabled=false, got %q", persisted)
+	}
+	persisted, err = s.db.GetConfigField("spot_futures_enable_basis_gate")
+	if err != nil {
+		t.Fatalf("redis get spot_futures_enable_basis_gate: %v", err)
+	}
+	if persisted != "true" {
+		t.Fatalf("expected redis spot_futures_enable_basis_gate=true, got %q", persisted)
+	}
+	persisted, err = s.db.GetConfigField("spot_futures_exit_spread_pct")
+	if err != nil {
+		t.Fatalf("redis get spot_futures_exit_spread_pct: %v", err)
+	}
+	if persisted != "0.45" {
+		t.Fatalf("expected redis spot_futures_exit_spread_pct=0.45, got %q", persisted)
+	}
+
+	reloaded := config.Load()
+	if reloaded.SpotFuturesNativeScannerEnabled {
+		t.Fatal("expected reloaded SpotFuturesNativeScannerEnabled=false")
+	}
+	if !reloaded.SpotFuturesEnableMinHold {
+		t.Fatal("expected reloaded SpotFuturesEnableMinHold=true")
+	}
+	if reloaded.SpotFuturesMinHoldHours != 12 {
+		t.Fatalf("expected reloaded SpotFuturesMinHoldHours=12, got %d", reloaded.SpotFuturesMinHoldHours)
+	}
+	if !reloaded.SpotFuturesEnableSettlementGuard {
+		t.Fatal("expected reloaded SpotFuturesEnableSettlementGuard=true")
+	}
+	if reloaded.SpotFuturesSettlementWindowMin != 15 {
+		t.Fatalf("expected reloaded SpotFuturesSettlementWindowMin=15, got %d", reloaded.SpotFuturesSettlementWindowMin)
+	}
+	if !reloaded.SpotFuturesEnableBasisGate {
+		t.Fatal("expected reloaded SpotFuturesEnableBasisGate=true")
+	}
+	if reloaded.SpotFuturesMaxBasisPct != 0.9 {
+		t.Fatalf("expected reloaded SpotFuturesMaxBasisPct=0.9, got %v", reloaded.SpotFuturesMaxBasisPct)
+	}
+	if !reloaded.SpotFuturesEnableExitSpreadGate {
+		t.Fatal("expected reloaded SpotFuturesEnableExitSpreadGate=true")
+	}
+	if reloaded.SpotFuturesExitSpreadPct != 0.45 {
+		t.Fatalf("expected reloaded SpotFuturesExitSpreadPct=0.45, got %v", reloaded.SpotFuturesExitSpreadPct)
+	}
+}
+
 func TestHandleConfig_ExchangeHealthScoringRoundTrip(t *testing.T) {
 	s, mr := newTestServer(t)
 	defer mr.Close()

@@ -370,6 +370,7 @@ internal/
     health_test.go                 Health level tests
     spread_stability.go            Redis-backed spread CV gate (SpreadStabilityChecker) called at entry time
     spread_stability_test.go       Spread stability gate tests
+    loss_limit.go                  Rolling-window loss limit checker (24h/7d) via Redis sorted sets
   models/
     interfaces.go                  Discoverer, RiskChecker, StateStore abstractions
     opportunity.go                 Opportunity struct (with IntervalHours, Source)
@@ -612,6 +613,7 @@ Implemented by: all five `SpotMarginExchange` adapters. Use type assertion `exch
 10. Per-exchange capital exposure cap (60% of total) — bypassed when cross-strategy allocator is active
 11. Cross-strategy capital allocator reserve (if `enable_capital_allocator` is true)
 12. Exchange concentration warning (>60% of positions)
+13. Rolling loss limit gate: reject if 24h or 7d realized PnL exceeds configured thresholds (`EnableLossLimits`, `DailyLossLimitUSDT`, `WeeklyLossLimitUSDT`)
 
 #### Active Monitoring: Risk Monitor (configurable interval, default 300s)
 
@@ -701,6 +703,7 @@ arb:transfers                       HASH    transferID → JSON(TransferRecord)
 arb:transfers:history               LIST    Transfer IDs (FIFO, max 200)
 arb:lossCooldown:{symbol}           STRING  Loss cooldown flag (auto-expires via TTL)
 arb:reEnterCooldown:{symbol}        STRING  Re-entry cooldown flag (auto-expires via TTL)
+arb:loss_events                     ZSET    Realized PnL events (score=timestamp, pruned >8d)
 ```
 
 ### 2.7 Dashboard & API
@@ -739,6 +742,7 @@ arb:reEnterCooldown:{symbol}        STRING  Re-entry cooldown flag (auto-expires
 - `stats` — PnL stats
 - `alert` — risk alerts
 - `binary_drift` — broadcast when drift monitor detects stale running binary
+- `loss_limits` — rolling loss limit status (24h/7d used, thresholds, breached flags)
 
 ### 2.8 Startup Sequence (cmd/main.go)
 
@@ -896,6 +900,7 @@ The spot-futures engine is **fully independent** — separate goroutines, separa
 - Redis client connection
 - API server (for route registration and WebSocket hub)
 - Config loader
+- TelegramNotifier instance (shared; perp-perp engine uses it for SL/emergency/API-error/loss-limit alerts with per-event-type cooldown)
 
 No coordination is needed between the two engines; they can run concurrently without interference.
 
