@@ -906,6 +906,11 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 	if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
 		if needsPnLUpdate {
 			fresh.RealizedPnL = reconciledPnL
+			// Persist PnL decomposition fields alongside the reconciled total.
+			fresh.ExitFees = totalFees
+			// BasisGainLoss isolates price-movement P/L: net_pnl - funding - rotation + fees
+			// (adding fees back because they are costs subtracted from net PnL but not part of price movement)
+			fresh.BasisGainLoss = reconciledPnL - reconciledFunding - pos.RotationPnL + totalFees
 		}
 		if needsFundingUpdate {
 			fresh.FundingCollected = reconciledFunding
@@ -949,6 +954,11 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 	// Broadcast corrected PnL to frontend.
 	if updated, err := e.db.GetPosition(pos.ID); err == nil && updated != nil {
 		e.api.BroadcastPositionUpdate(updated)
+
+		// Record analytics snapshot for position close.
+		if e.snapshotWriter != nil {
+			e.snapshotWriter.RecordPerpClose(updated)
+		}
 	}
 
 	return true

@@ -2479,6 +2479,17 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 	pos.LongEntry = finalLongEntry
 	pos.ShortEntry = finalShortEntry
 
+	// BBO slippage estimation (best-effort, non-blocking).
+	// Buy (long entry): positive = worse than ask. Sell (short entry): positive = worse than bid.
+	var entrySlippage float64
+	if longBBO.Ask > 0 && pos.LongEntry > 0 {
+		entrySlippage += pos.LongEntry - longBBO.Ask
+	}
+	if shortBBO.Bid > 0 && pos.ShortEntry > 0 {
+		entrySlippage += shortBBO.Bid - pos.ShortEntry
+	}
+	pos.Slippage = entrySlippage
+
 	pos.Status = models.StatusActive
 	pos.UpdatedAt = time.Now().UTC()
 	if err := e.db.SavePosition(pos); err != nil {
@@ -3083,6 +3094,16 @@ fillLoop:
 	pos.ShortSize = minFill
 	pos.LongEntry = finalLongEntry
 	pos.ShortEntry = finalShortEntry
+
+	// BBO slippage estimation (best-effort, non-blocking).
+	var slippageV2 float64
+	if bbo, ok := longExch.GetBBO(opp.Symbol); ok && bbo.Ask > 0 && pos.LongEntry > 0 {
+		slippageV2 += pos.LongEntry - bbo.Ask
+	}
+	if bbo, ok := shortExch.GetBBO(opp.Symbol); ok && bbo.Bid > 0 && pos.ShortEntry > 0 {
+		slippageV2 += bbo.Bid - pos.ShortEntry
+	}
+	pos.Slippage = slippageV2
 
 	pos.Status = models.StatusActive
 	pos.UpdatedAt = time.Now().UTC()

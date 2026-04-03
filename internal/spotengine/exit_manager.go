@@ -553,6 +553,10 @@ func (e *SpotEngine) completeExit(pos *models.SpotFuturesPosition, reason string
 		if err := e.db.AddToSpotHistory(updated); err != nil {
 			e.log.Error("completeExit: failed to add %s to history: %v", pos.ID, err)
 		}
+		// Record analytics snapshot for spot position close.
+		if e.snapshotWriter != nil {
+			e.snapshotWriter.RecordSpotClose(updated)
+		}
 	}
 
 	// Update stats.
