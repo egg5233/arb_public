@@ -35,10 +35,10 @@ Requirements for Milestone 1. Each maps to roadmap phases.
 
 ### Capital Allocation
 
-- [ ] **CA-01**: Unified capital pool -- single deposit, system allocates across both strategies and all exchanges
-- [ ] **CA-02**: Risk preference profiles (conservative/balanced/aggressive) that bundle position size, max positions, entry thresholds, and allocation weights
-- [ ] **CA-03**: Strategy-weighted allocation dynamically adjusts perp-perp vs spot-futures split based on recent performance metrics
-- [ ] **CA-04**: Dynamic rebalancing shifts capital to available strategies when one strategy has no opportunities (e.g., spot-futures unavailable -> increase perp-perp allocation)
+- [x] **CA-01**: Unified capital pool -- single deposit, system allocates across both strategies and all exchanges
+- [x] **CA-02**: Risk preference profiles (conservative/balanced/aggressive) that bundle position size, max positions, entry thresholds, and allocation weights
+- [x] **CA-03**: Strategy-weighted allocation dynamically adjusts perp-perp vs spot-futures split based on recent performance metrics
+- [x] **CA-04**: Dynamic rebalancing shifts capital to available strategies when one strategy has no opportunities (e.g., spot-futures unavailable -> increase perp-perp allocation)
 
 ## v2 Requirements
 
@@ -93,10 +93,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | AN-04 | Phase 4 | Pending |
 | AN-05 | Phase 4 | Pending |
 | AN-06 | Phase 4 | Pending |
-| CA-01 | Phase 5 | Pending |
-| CA-02 | Phase 5 | Pending |
-| CA-03 | Phase 5 | Pending |
-| CA-04 | Phase 5 | Pending |
+| CA-01 | Phase 5 | Complete |
+| CA-02 | Phase 5 | Complete |
+| CA-03 | Phase 5 | Complete |
+| CA-04 | Phase 5 | Complete |
 
 **Coverage:**
 - v1 requirements: 21 total
