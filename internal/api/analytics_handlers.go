@@ -17,7 +17,7 @@ func (s *Server) handleGetAnalyticsPnLHistory(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if s.analyticsStore == nil {
-		writeJSON(w, http.StatusServiceUnavailable, Response{Error: "analytics not available"})
+		writeJSON(w, http.StatusOK, Response{OK: true, Data: []interface{}{}})
 		return
 	}
 
