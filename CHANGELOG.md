@@ -25,6 +25,14 @@ All notable changes to this project will be documented in this file.
 ## [0.26.0] - 2026-04-03
 
 ### Added
+- **Pool-Based Capital Allocator (B&B)** — replaces sequential greedy rebalance with Branch-and-Bound solver that optimally assigns opportunities to exchange pairs, maximizing deployed capital while respecting per-exchange capacity constraints
+- **Top-K Exchange Pairs** — ranker now returns up to K alternative exchange pairs per symbol (config: `TopPairsPerSymbol`, default 1). Allocator can choose alternative pairs when primary exchange is at capacity
+- **Dynamic Trading Fees** — new `TradingFeeProvider` interface implemented by all 6 adapters. Fees queried from exchange APIs at startup, replacing hardcoded fee map. Fallback to hardcoded values on error
+- **Idle Funds Protection (L5 Prevention)** — donor exchanges with active positions are now capped by `capByMarginHealth`: transfer amount limited to keep margin ratio below L3 threshold. Prevents rebalance-induced emergency closes
+- **Allocator Override Pipeline** — allocator's chosen pairs stored and applied at entry scan. Overrides validated against current scan's fresh data; stale pairs rejected
+- **Solver Feasible Fallback** — when best allocation is infeasible for transfers, solver iteratively drops lowest-value opp until a feasible subset is found
+- **Config**: `TopPairsPerSymbol`, `AllocatorTimeoutMs`, `TransferPenaltyPerUSDT`
+- **Dashboard**: pool allocator settings moved to Schedule tab with i18n section headers
 - **Perp-perp Telegram notifications** for critical events: SL triggers, L4/L5 emergency closes, 3+ consecutive API errors. Per-event-type cooldown (5 min default) prevents notification spam. Shared TelegramNotifier instance across both engines.
 - **Rolling-window loss limits**: 24h and 7d net realized PnL tracking via Redis sorted sets (`arb:loss_events`). Pre-entry gate halts new entries when loss limit breached (existing positions continue). Loss limit status broadcast via WebSocket (`loss_limits` message type).
 - **Dashboard Config "Safety" tab** with toggles and thresholds for loss limits and Telegram alerts. Overview page loss limit banner: green (ok), yellow (>80%), red (breached).
@@ -32,12 +40,30 @@ All notable changes to this project will be documented in this file.
 - i18n support for all safety features (en + zh-TW)
 
 ### Fixed
+- **BingX withdraw chain name** — `Withdraw()` now uses `mapChainToBingXNetwork` (APT→APT, BEP20→BEP20) instead of wrong `mapChainToBingX` (APT→Aptos, BEP20→BSC)
+- **Bitget maxTransferOut** — fresh `GetFuturesBalance()` query before `TransferToSpot`, capped at 99% of real-time limit
+- **BingX rollback rate limit** — 2s delay before rollback `TransferToFutures` (BingX only)
+- **Allocator formula** — uses `MinHoldTime * spread * notional / 10000 - tradingFees` (consistent with ranker), not single-period which produced negative values
+- **Net-fee donor overflow** — OKX/Bitget/Bybit donors subtract actual withdraw fee from contribution so total debit stays within health cap
+- **Bitget GetTradingFee** — corrected JSON field names to `makerFeeRate`/`takerFeeRate`
+- **OKX GetTradingFee** — reads `makerU`/`takerU` fields for USDT-margined swaps
+- **Gate.io GetTradingFee** — uses `/wallet/fee` endpoint with `futures_maker_fee`/`futures_taker_fee`
+- **CoinGlass fee path** — now uses dynamic fees instead of hardcoded map
+- **SimulateApprovalForPair** — overrides spread/rate/interval from alternative pair data, not stale primary pair values
 - **Native scanner defaults** — `NativeScannerEnabled` now defaults to `false` (was `true`)
 - **Spot opportunity API cap** — `/api/spot/opportunities` capped to 100 entries
 - **Dir A/B funding sign** — Dir A (long futures) now correctly shows negative funding when rate is positive; Dir B (short futures) shows positive
 - **[spot-futures] Discovery filters missing spot markets in both native and CoinGlass paths** — spot-futures discovery now probes spot-market availability before marking rows actionable, caches the result in Redis (`arb:spot_market_exists:{exchange}:{symbol}`, 24h TTL), and persists the cache across restarts so impossible rows such as missing OKX spot instruments are consistently labeled `spot market unavailable` instead of failing later in `ManualOpen` or the dashboard gap check (`internal/spotengine/discovery.go`, `internal/database/spot_state.go`)
 - **[binance] GetSpotBBO uses unsigned public spot endpoint** — `GetSpotBBO()` now calls Binance `/api/v3/ticker/bookTicker` without `timestamp` or `signature`, fixing `-1104 Not all sent parameters were read` on the dashboard spot-futures price-gap action (`pkg/exchange/binance/client.go`, `pkg/exchange/binance/margin.go`)
 - **[okx] GetSpotBBO maps missing spot instruments to domain error** — OKX `51001` responses from the spot ticker endpoint are now normalized to `no OKX spot market for SYMBOL`, allowing discovery to cache and filter those rows cleanly instead of surfacing raw exchange errors in the UI (`pkg/exchange/okx/margin.go`)
+
+### Removed
+- **Old sequential rebalance path** (~580 lines) — replaced entirely by pool allocator
+
+## [0.25.2] - 2026-04-02
+
+### Fixed
+- **Bitget "Exceeded max transferable quantity" (43117)** — rebalance now re-queries fresh `maxTransferOut` from exchange immediately before futures→spot transfer, with 1% safety margin, preventing stale balance data from causing transfer failures.
 
 ## [0.25.1] - 2026-04-02
 

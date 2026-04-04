@@ -16,6 +16,7 @@ import (
 
 // Compile-time check that *Adapter satisfies exchange.Exchange.
 var _ exchange.Exchange = (*Adapter)(nil)
+var _ exchange.TradingFeeProvider = (*Adapter)(nil)
 
 // Adapter implements the exchange.Exchange interface for Binance USDT-M Futures.
 type Adapter struct {
@@ -1058,4 +1059,35 @@ func (b *Adapter) Close() {
 		b.privConn = nil
 	}
 	b.priceMu.Unlock()
+}
+
+// GetTradingFee returns the authenticated user's maker/taker fee rates for USDT-M futures.
+func (b *Adapter) GetTradingFee() (*exchange.TradingFee, error) {
+	params := map[string]string{"symbol": "BTCUSDT"}
+	body, err := b.client.Get("/fapi/v1/commissionRate", params)
+	if err != nil {
+		return nil, fmt.Errorf("binance GetTradingFee: %w", err)
+	}
+
+	var resp struct {
+		MakerCommissionRate string `json:"makerCommissionRate"`
+		TakerCommissionRate string `json:"takerCommissionRate"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("binance GetTradingFee unmarshal: %w", err)
+	}
+
+	maker, err := strconv.ParseFloat(resp.MakerCommissionRate, 64)
+	if err != nil {
+		return nil, fmt.Errorf("binance GetTradingFee parse maker: %w", err)
+	}
+	taker, err := strconv.ParseFloat(resp.TakerCommissionRate, 64)
+	if err != nil {
+		return nil, fmt.Errorf("binance GetTradingFee parse taker: %w", err)
+	}
+
+	return &exchange.TradingFee{
+		MakerRate: maker,
+		TakerRate: taker,
+	}, nil
 }

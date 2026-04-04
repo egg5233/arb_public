@@ -14,6 +14,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+var _ exchange.TradingFeeProvider = (*Adapter)(nil)
+
 // getCtVal returns the contract value (ctVal) for a given internal symbol.
 // OKX sizes are in contracts; ctVal converts: base_units = contracts * ctVal.
 func (a *Adapter) getCtVal(symbol string) float64 {
@@ -701,6 +703,8 @@ func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 			Eq        string `json:"eq"`
 			AvailEq   string `json:"availEq"`
 			FrozenBal string `json:"frozenBal"`
+			MgnRatio  string `json:"mgnRatio"`
+			Mmr       string `json:"mmr"`
 		} `json:"details"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -716,6 +720,21 @@ func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 		mgnRatio, _ := strconv.ParseFloat(raw[0].MgnRatio, 64)
 		if mgnRatio > 0 {
 			marginRatio = 1.0 / mgnRatio
+		}
+
+		// Futures mode: top-level mgnRatio is empty.
+		// Read mmr (maintenance margin requirement) from details[USDT] and compute ratio directly.
+		if marginRatio <= 0 {
+			for _, d := range raw[0].Details {
+				if d.Ccy == "USDT" {
+					mmr, _ := strconv.ParseFloat(d.Mmr, 64)
+					eq, _ := strconv.ParseFloat(d.Eq, 64)
+					if mmr > 0 && eq > 0 {
+						marginRatio = mmr / eq
+					}
+					break
+				}
+			}
 		}
 
 		for _, d := range raw[0].Details {
@@ -1351,4 +1370,40 @@ func (a *Adapter) getPositionMode() string {
 		return resp[0].PosMode
 	}
 	return ""
+}
+
+// GetTradingFee returns the authenticated user's maker/taker fee rates for SWAP.
+// OKX convention: negative value = fee charged, positive = rebate.
+// We negate to return positive fee rates.
+func (a *Adapter) GetTradingFee() (*exchange.TradingFee, error) {
+	data, err := a.client.Get("/api/v5/account/trade-fee", map[string]string{"instType": "SWAP"})
+	if err != nil {
+		return nil, fmt.Errorf("okx GetTradingFee: %w", err)
+	}
+
+	var resp []struct {
+		MakerU string `json:"makerU"`
+		TakerU string `json:"takerU"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("okx GetTradingFee unmarshal: %w", err)
+	}
+	if len(resp) == 0 {
+		return nil, fmt.Errorf("okx GetTradingFee: empty response")
+	}
+
+	maker, err := strconv.ParseFloat(resp[0].MakerU, 64)
+	if err != nil {
+		return nil, fmt.Errorf("okx GetTradingFee parse maker: %w", err)
+	}
+	taker, err := strconv.ParseFloat(resp[0].TakerU, 64)
+	if err != nil {
+		return nil, fmt.Errorf("okx GetTradingFee parse taker: %w", err)
+	}
+
+	// OKX: negative = fee, positive = rebate. Negate to get positive fee rates.
+	return &exchange.TradingFee{
+		MakerRate: -maker,
+		TakerRate: -taker,
+	}, nil
 }

@@ -47,6 +47,19 @@ func main() {
 	}
 	log.Info("Connected to Redis (db %d)", cfg.RedisDB)
 
+	// Config persistence architecture:
+	// - config.json is the PRIMARY persistence layer. The dashboard POST handler
+	//   (handlers.go) writes ALL 75+ config fields to config.json on every save.
+	// - config.Load() already reads config.json at startup (before this point),
+	//   so all dashboard-changed settings survive restarts automatically.
+	// - Redis hash arb:config is a SECONDARY backup written alongside config.json.
+	//   It is not loaded on startup because config.json is authoritative and complete.
+	if n, err := db.GetAllConfig(); err != nil {
+		log.Warn("Redis config hash unreadable (config.json is authoritative): %v", err)
+	} else {
+		log.Info("Redis config hash has %d fields (config.json is authoritative)", len(n))
+	}
+
 	// Initialize enabled exchanges
 	exchanges := make(map[string]exchange.Exchange)
 	for _, name := range cfg.EnabledExchanges() {
@@ -133,6 +146,7 @@ func main() {
 	// Initialize components
 	scanner := discovery.NewScanner(exchanges, db, cfg)
 	scanner.SetContracts(allContracts)
+	scanner.InitTradingFees(exchanges)
 	allocator := risk.NewCapitalAllocator(db, cfg)
 	if err := allocator.Reconcile(); err != nil {
 		log.Warn("capital allocator reconcile failed: %v", err)

@@ -120,7 +120,9 @@ type Config struct {
 	RotateScanMinute int   // minute mark that triggers rotation checks (default 45)
 
 	// Rebalance scheduling
-	RebalanceAfterExit bool // run rebalance after exit scan instead of on its own tick (default false)
+	EnablePoolAllocator    bool
+	TopPairsPerSymbol      int
+	AllocatorTimeoutMs int
 
 	// Leg rotation parameters
 	RotationThresholdBPS float64 // min spread improvement to trigger rotation (default: 20)
@@ -345,17 +347,19 @@ type jsonAI struct {
 }
 
 type jsonStrategy struct {
-	TopOpportunities    *int           `json:"top_opportunities"`
-	ScanMinutes         []int          `json:"scan_minutes"`
-	EntryScanMinute     *int           `json:"entry_scan_minute"`
-	ExitScanMinute      *int           `json:"exit_scan_minute"`
-	RotateScanMinute    *int           `json:"rotate_scan_minute"`
-	RebalanceScanMinute *int           `json:"rebalance_scan_minute"`
-	RebalanceAfterExit  *bool          `json:"rebalance_after_exit"`
-	Discovery           *jsonDiscovery `json:"discovery"`
-	Entry               *jsonEntry     `json:"entry"`
-	Exit                *jsonExit      `json:"exit"`
-	Rotation            *jsonRotation  `json:"rotation"`
+	TopOpportunities       *int           `json:"top_opportunities"`
+	ScanMinutes            []int          `json:"scan_minutes"`
+	EntryScanMinute        *int           `json:"entry_scan_minute"`
+	ExitScanMinute         *int           `json:"exit_scan_minute"`
+	RotateScanMinute       *int           `json:"rotate_scan_minute"`
+	RebalanceScanMinute    *int           `json:"rebalance_scan_minute"`
+	EnablePoolAllocator    *bool          `json:"enable_pool_allocator"`
+	TopPairsPerSymbol      *int           `json:"top_pairs_per_symbol"`
+	AllocatorTimeoutMs *int           `json:"allocator_timeout_ms"`
+	Discovery          *jsonDiscovery `json:"discovery"`
+	Entry                  *jsonEntry     `json:"entry"`
+	Exit                   *jsonExit      `json:"exit"`
+	Rotation               *jsonRotation  `json:"rotation"`
 }
 
 type jsonDiscovery struct {
@@ -476,6 +480,9 @@ func Load() *Config {
 		Leverage:                         3,
 		SlippageBPS:                      50,
 		RebalanceScanMinute:              10,
+		EnablePoolAllocator:              false,
+		TopPairsPerSymbol:                1,
+		AllocatorTimeoutMs:               5,
 		TopOpportunities:                 25,
 		PriceGapFreeBPS:                  40,
 		MaxPriceGapBPS:                   200,
@@ -684,8 +691,14 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if s.RebalanceScanMinute != nil {
 			c.RebalanceScanMinute = *s.RebalanceScanMinute
 		}
-		if s.RebalanceAfterExit != nil {
-			c.RebalanceAfterExit = *s.RebalanceAfterExit
+		if s.EnablePoolAllocator != nil {
+			c.EnablePoolAllocator = *s.EnablePoolAllocator
+		}
+		if s.TopPairsPerSymbol != nil && *s.TopPairsPerSymbol > 0 {
+			c.TopPairsPerSymbol = *s.TopPairsPerSymbol
+		}
+		if s.AllocatorTimeoutMs != nil && *s.AllocatorTimeoutMs > 0 {
+			c.AllocatorTimeoutMs = *s.AllocatorTimeoutMs
 		}
 
 		// Discovery
@@ -1232,7 +1245,9 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	strategy["exit_scan_minute"] = c.ExitScanMinute
 	strategy["rotate_scan_minute"] = c.RotateScanMinute
 	strategy["rebalance_scan_minute"] = c.RebalanceScanMinute
-	strategy["rebalance_after_exit"] = c.RebalanceAfterExit
+	strategy["enable_pool_allocator"] = c.EnablePoolAllocator
+	strategy["top_pairs_per_symbol"] = c.TopPairsPerSymbol
+	strategy["allocator_timeout_ms"] = c.AllocatorTimeoutMs
 
 	disc := getMap(strategy, "discovery")
 	disc["min_hold_time_hours"] = int(c.MinHoldTime.Hours())

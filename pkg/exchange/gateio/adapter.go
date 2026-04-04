@@ -12,6 +12,8 @@ import (
 	"arb/pkg/exchange"
 )
 
+var _ exchange.TradingFeeProvider = (*Adapter)(nil)
+
 // Adapter implements the exchange.Exchange interface for Gate.io USDT-M Futures.
 type Adapter struct {
 	client    *Client
@@ -1403,4 +1405,34 @@ func (a *Adapter) EnsureOneWayMode() error {
 		return fmt.Errorf("EnsureOneWayMode: %w", err)
 	}
 	return nil
+}
+
+// GetTradingFee returns the authenticated user's maker/taker fee rates for USDT-M futures.
+func (a *Adapter) GetTradingFee() (*exchange.TradingFee, error) {
+	data, err := a.client.Get("/wallet/fee", nil)
+	if err != nil {
+		return nil, fmt.Errorf("gateio GetTradingFee: %w", err)
+	}
+
+	var resp struct {
+		FuturesTakerFee string `json:"futures_taker_fee"`
+		FuturesMakerFee string `json:"futures_maker_fee"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("gateio GetTradingFee unmarshal: %w", err)
+	}
+
+	maker, err := strconv.ParseFloat(resp.FuturesMakerFee, 64)
+	if err != nil {
+		return nil, fmt.Errorf("gateio GetTradingFee parse maker: %w", err)
+	}
+	taker, err := strconv.ParseFloat(resp.FuturesTakerFee, 64)
+	if err != nil {
+		return nil, fmt.Errorf("gateio GetTradingFee parse taker: %w", err)
+	}
+
+	return &exchange.TradingFee{
+		MakerRate: math.Abs(maker),
+		TakerRate: taker,
+	}, nil
 }

@@ -28,6 +28,17 @@ type Adapter struct {
 	privateWS            *PrivateWS
 	wsMetricsCallback    exchange.WSMetricsCallback
 	orderMetricsCallback exchange.OrderMetricsCallback
+
+	// Funding rate batch cache
+	fundingRateCache     map[string]*exchange.FundingRate
+	fundingRateCacheMu   sync.Mutex
+	fundingRateCacheTime time.Time
+
+	// Funding fees batch cache — one API call returns all symbols
+	fundingFeesCache      map[string][]exchange.FundingPayment // keyed by internal symbol
+	fundingFeesCacheMu    sync.Mutex
+	fundingFeesCacheTime  time.Time
+	fundingFeesCacheSince time.Time // the 'since' param used for this cache
 }
 
 func (a *Adapter) SetMetricsCallback(fn exchange.MetricsCallback) {
@@ -530,17 +541,14 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 
 // ---------- Funding Rate ----------
 
-// GetFundingRate returns the current funding rate for a symbol.
-func (a *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
-	params := map[string]string{
-		"symbol": toBingXSymbol(symbol),
-	}
-	result, err := a.client.Get("/openApi/swap/v2/quote/premiumIndex", params)
+// fetchAllFundingRates queries all funding rates in a single API call (no symbol param).
+func (a *Adapter) fetchAllFundingRates() (map[string]*exchange.FundingRate, error) {
+	result, err := a.client.Get("/openApi/swap/v2/quote/premiumIndex", map[string]string{})
 	if err != nil {
-		return nil, fmt.Errorf("bingx GetFundingRate: %w", err)
+		return nil, fmt.Errorf("bingx fetchAllFundingRates: %w", err)
 	}
 
-	var resp struct {
+	var items []struct {
 		Symbol               string `json:"symbol"`
 		LastFundingRate      string `json:"lastFundingRate"`
 		NextFundingTime      int64  `json:"nextFundingTime"`
@@ -550,37 +558,69 @@ func (a *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
 		MinFundingRate       string `json:"minFundingRate"`
 		MaxFundingRate       string `json:"maxFundingRate"`
 	}
-	if err := json.Unmarshal(result, &resp); err != nil {
-		return nil, fmt.Errorf("bingx GetFundingRate parse: %w", err)
+	if err := json.Unmarshal(result, &items); err != nil {
+		return nil, fmt.Errorf("bingx fetchAllFundingRates parse: %w", err)
 	}
 
-	rate, _ := strconv.ParseFloat(resp.LastFundingRate, 64)
-	nextTime := time.UnixMilli(resp.NextFundingTime)
+	cache := make(map[string]*exchange.FundingRate, len(items))
+	for _, item := range items {
+		rate, _ := strconv.ParseFloat(item.LastFundingRate, 64)
+		nextTime := time.UnixMilli(item.NextFundingTime)
 
-	interval := 8 * time.Hour
-	if resp.FundingIntervalHours > 0 {
-		interval = time.Duration(resp.FundingIntervalHours) * time.Hour
+		interval := 8 * time.Hour
+		if item.FundingIntervalHours > 0 {
+			interval = time.Duration(item.FundingIntervalHours) * time.Hour
+		}
+
+		fr := &exchange.FundingRate{
+			Symbol:      fromBingXSymbol(item.Symbol),
+			Rate:        rate,
+			Interval:    interval,
+			NextFunding: nextTime,
+		}
+
+		if item.MaxFundingRate != "" {
+			if v, err := strconv.ParseFloat(item.MaxFundingRate, 64); err == nil {
+				fr.MaxRate = &v
+			}
+		}
+		if item.MinFundingRate != "" {
+			if v, err := strconv.ParseFloat(item.MinFundingRate, 64); err == nil {
+				fr.MinRate = &v
+			}
+		}
+
+		cache[fromBingXSymbol(item.Symbol)] = fr
 	}
 
-	fr := &exchange.FundingRate{
-		Symbol:      fromBingXSymbol(resp.Symbol),
-		Rate:        rate,
-		Interval:    interval,
-		NextFunding: nextTime,
-	}
+	return cache, nil
+}
 
-	if resp.MaxFundingRate != "" {
-		if v, err := strconv.ParseFloat(resp.MaxFundingRate, 64); err == nil {
-			fr.MaxRate = &v
+// GetFundingRate returns the current funding rate for a symbol.
+// Uses a batch cache (30s TTL) to avoid per-symbol API calls.
+func (a *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
+	a.fundingRateCacheMu.Lock()
+	defer a.fundingRateCacheMu.Unlock()
+
+	// Return from cache if fresh enough
+	if a.fundingRateCache != nil && time.Since(a.fundingRateCacheTime) < 30*time.Second {
+		if fr, ok := a.fundingRateCache[symbol]; ok {
+			return fr, nil
 		}
 	}
-	if resp.MinFundingRate != "" {
-		if v, err := strconv.ParseFloat(resp.MinFundingRate, 64); err == nil {
-			fr.MinRate = &v
-		}
-	}
 
-	return fr, nil
+	// Refresh cache with batch query
+	cache, err := a.fetchAllFundingRates()
+	if err != nil {
+		return nil, err
+	}
+	a.fundingRateCache = cache
+	a.fundingRateCacheTime = time.Now()
+
+	if fr, ok := cache[symbol]; ok {
+		return fr, nil
+	}
+	return nil, fmt.Errorf("bingx GetFundingRate: symbol %s not found", symbol)
 }
 
 // GetFundingInterval returns the funding interval for a symbol.
@@ -714,7 +754,7 @@ func (a *Adapter) TransferToFutures(coin string, amount string) error {
 func (a *Adapter) Withdraw(params exchange.WithdrawParams) (*exchange.WithdrawResult, error) {
 	reqParams := map[string]string{
 		"coin":    params.Coin,
-		"network": mapChainToBingX(params.Chain),
+		"network": mapChainToBingXNetwork(params.Chain),
 		"address": params.Address,
 		"amount":  params.Amount,
 	}
@@ -784,17 +824,6 @@ func mapChainToBingXNetwork(chain string) string {
 		return "APT"
 	case "BEP20":
 		return "BEP20"
-	default:
-		return chain
-	}
-}
-
-func mapChainToBingX(chain string) string {
-	switch chain {
-	case "BEP20":
-		return "BSC"
-	case "APT":
-		return "Aptos"
 	default:
 		return chain
 	}
@@ -1032,36 +1061,73 @@ func (a *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 
 // ---------- Funding Fee History ----------
 
-// GetFundingFees returns funding fee history for a symbol since the given time.
-func (a *Adapter) GetFundingFees(symbol string, since time.Time) ([]exchange.FundingPayment, error) {
+// fetchAllFundingFees calls the income endpoint WITHOUT symbol to get all symbols' funding fees in one request.
+func (a *Adapter) fetchAllFundingFees(since time.Time) (map[string][]exchange.FundingPayment, error) {
 	params := map[string]string{
-		"symbol":     toBingXSymbol(symbol),
 		"incomeType": "FUNDING_FEE",
 		"startTime":  strconv.FormatInt(since.UnixMilli(), 10),
-		"limit":      "50",
+		"limit":      "1000",
 	}
 	result, err := a.client.Get("/openApi/swap/v2/user/income", params)
 	if err != nil {
-		return nil, fmt.Errorf("bingx GetFundingFees: %w", err)
+		return nil, fmt.Errorf("bingx fetchAllFundingFees: %w", err)
 	}
 
 	var records []struct {
+		Symbol string `json:"symbol"`
 		Income string `json:"income"`
 		Time   int64  `json:"time"`
 	}
 	if err := json.Unmarshal(result, &records); err != nil {
-		return nil, fmt.Errorf("bingx GetFundingFees parse: %w", err)
+		return nil, fmt.Errorf("bingx fetchAllFundingFees parse: %w", err)
 	}
 
-	out := make([]exchange.FundingPayment, 0, len(records))
+	out := make(map[string][]exchange.FundingPayment, len(records))
 	for _, r := range records {
+		sym := fromBingXSymbol(r.Symbol)
 		amt, _ := strconv.ParseFloat(r.Income, 64)
-		out = append(out, exchange.FundingPayment{
+		out[sym] = append(out[sym], exchange.FundingPayment{
 			Amount: amt,
 			Time:   time.UnixMilli(r.Time),
 		})
 	}
 	return out, nil
+}
+
+// GetFundingFees returns funding fee history for a symbol since the given time.
+// Uses a batch cache (30s TTL) so multiple per-symbol calls share one API request.
+func (a *Adapter) GetFundingFees(symbol string, since time.Time) ([]exchange.FundingPayment, error) {
+	a.fundingFeesCacheMu.Lock()
+	defer a.fundingFeesCacheMu.Unlock()
+
+	now := time.Now()
+	// Cache is valid if fresh AND covers the requested time range (since >= cached since).
+	cacheValid := a.fundingFeesCache != nil &&
+		now.Sub(a.fundingFeesCacheTime) < 30*time.Second &&
+		!since.Before(a.fundingFeesCacheSince)
+
+	if !cacheValid {
+		fees, err := a.fetchAllFundingFees(since)
+		if err != nil {
+			return nil, err
+		}
+		a.fundingFeesCache = fees
+		a.fundingFeesCacheTime = now
+		a.fundingFeesCacheSince = since
+	}
+
+	// Filter cached results to only return payments after caller's since.
+	allPayments, ok := a.fundingFeesCache[symbol]
+	if !ok {
+		return nil, nil
+	}
+	var filtered []exchange.FundingPayment
+	for _, p := range allPayments {
+		if !p.Time.Before(since) {
+			filtered = append(filtered, p)
+		}
+	}
+	return filtered, nil
 }
 
 // ---------- Close PnL ----------
@@ -1158,6 +1224,7 @@ func generateUUID() string {
 
 // Ensure Adapter implements exchange.Exchange at compile time.
 var _ exchange.Exchange = (*Adapter)(nil)
+var _ exchange.TradingFeeProvider = (*Adapter)(nil)
 
 // EnsureOneWayMode is a no-op for BingX — position mode is set via UI only.
 // The adapter already uses positionSide=BOTH (one-way mode).
@@ -1173,4 +1240,27 @@ func (a *Adapter) Close() {
 
 func (a *Adapter) EnsureOneWayMode() error {
 	return nil
+}
+
+// GetTradingFee returns the authenticated user's maker/taker fee rates.
+func (a *Adapter) GetTradingFee() (*exchange.TradingFee, error) {
+	result, err := a.client.Get("/openApi/swap/v2/user/commissionRate", map[string]string{})
+	if err != nil {
+		return nil, fmt.Errorf("bingx GetTradingFee: %w", err)
+	}
+
+	var resp struct {
+		Commission struct {
+			TakerCommissionRate float64 `json:"takerCommissionRate"`
+			MakerCommissionRate float64 `json:"makerCommissionRate"`
+		} `json:"commission"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return nil, fmt.Errorf("bingx GetTradingFee unmarshal: %w", err)
+	}
+
+	return &exchange.TradingFee{
+		MakerRate: resp.Commission.MakerCommissionRate,
+		TakerRate: resp.Commission.TakerCommissionRate,
+	}, nil
 }

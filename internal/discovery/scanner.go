@@ -76,6 +76,10 @@ type Scanner struct {
 	lorisBackoffMu    sync.RWMutex
 	lorisBackoffUntil time.Time
 
+	// Dynamic trading fees loaded at startup (percentage format, e.g. 0.04 = 0.04%).
+	dynamicFees   map[string]FeeSchedule
+	dynamicFeesMu sync.RWMutex
+
 	oppChan       chan ScanResult
 	stopCh        chan struct{}
 	configChanged <-chan struct{}
@@ -112,6 +116,52 @@ func (s *Scanner) SetRejectionStore(store *models.RejectionStore) {
 // SetContracts stores loaded contract maps for symbol validation.
 func (s *Scanner) SetContracts(contracts map[string]map[string]exchange.ContractInfo) {
 	s.contracts = contracts
+}
+
+// InitTradingFees queries each exchange for the user's actual trading fee tier
+// and caches the results. Exchanges that do not implement TradingFeeProvider
+// or return errors fall back to the hardcoded exchangeFees defaults.
+// Call once at startup after adapters are initialized.
+func (s *Scanner) InitTradingFees(exchanges map[string]exchange.Exchange) {
+	fees := make(map[string]FeeSchedule, len(exchanges))
+	for name, exch := range exchanges {
+		provider, ok := exch.(exchange.TradingFeeProvider)
+		if !ok {
+			continue
+		}
+		tf, err := provider.GetTradingFee()
+		if err != nil || tf == nil {
+			s.log.Warn("InitTradingFees: %s query failed (using default): %v", name, err)
+			continue
+		}
+		// API returns decimal fractions (e.g. 0.0004 = 0.04%).
+		// Ranker uses percentage format (e.g. 0.04 = 0.04%), so multiply by 100.
+		fees[name] = FeeSchedule{
+			Maker: tf.MakerRate * 100,
+			Taker: tf.TakerRate * 100,
+		}
+		s.log.Info("InitTradingFees: %s maker=%.4f%% taker=%.4f%%", name, tf.MakerRate*100, tf.TakerRate*100)
+	}
+
+	s.dynamicFeesMu.Lock()
+	s.dynamicFees = fees
+	s.dynamicFeesMu.Unlock()
+}
+
+// GetExchangeFees returns the effective fee schedule for all exchanges,
+// with dynamic fees overriding hardcoded defaults. The returned map uses
+// percentage format (e.g. 0.04 = 0.04%).
+func (s *Scanner) GetExchangeFees() map[string]FeeSchedule {
+	result := make(map[string]FeeSchedule, len(exchangeFees))
+	for name, fee := range exchangeFees {
+		result[name] = fee
+	}
+	s.dynamicFeesMu.RLock()
+	for name, fee := range s.dynamicFees {
+		result[name] = fee
+	}
+	s.dynamicFeesMu.RUnlock()
+	return result
 }
 
 // activeExchanges returns the names of exchanges that have loaded adapters.
@@ -250,71 +300,6 @@ func (s *Scanner) Scan() []models.Opportunity {
 	return s.GetOpportunities()
 }
 
-// FilterForEntry applies the same 6 entry-level filters to an opportunity list.
-// Used by V2 rebalance to ensure parity with entryScan filtering.
-func (s *Scanner) FilterForEntry(opps []models.Opportunity) []models.Opportunity {
-	// 1. Persistence
-	var filtered []models.Opportunity
-	for _, opp := range opps {
-		if reason := s.isPersistent(opp); reason == "" {
-			filtered = append(filtered, opp)
-		}
-	}
-
-	// 2. Volatility
-	var stable []models.Opportunity
-	for _, opp := range filtered {
-		if reason := s.isSpreadVolatile(opp); reason == "" {
-			stable = append(stable, opp)
-		}
-	}
-	filtered = stable
-
-	// 3. Cooldown
-	var notCooling []models.Opportunity
-	for _, opp := range filtered {
-		if reason := s.isSymbolCoolingDown(opp.Symbol); reason == "" {
-			notCooling = append(notCooling, opp)
-		}
-	}
-	filtered = notCooling
-
-	// 4. Interval
-	if s.cfg.MaxIntervalHours > 0 {
-		var intervalOK []models.Opportunity
-		for _, opp := range filtered {
-			if opp.IntervalHours > 0 && opp.IntervalHours > s.cfg.MaxIntervalHours {
-				continue
-			}
-			intervalOK = append(intervalOK, opp)
-		}
-		filtered = intervalOK
-	}
-
-	// 5. Funding window
-	maxWindow := time.Duration(s.cfg.FundingWindowMin) * time.Minute
-	var imminent []models.Opportunity
-	for _, opp := range filtered {
-		if opp.NextFunding.IsZero() || time.Until(opp.NextFunding) <= maxWindow {
-			imminent = append(imminent, opp)
-		}
-	}
-	filtered = imminent
-
-	// 6. Backtest
-	if s.cfg.BacktestDays > 0 {
-		var backtested []models.Opportunity
-		for _, opp := range filtered {
-			if pass, _ := s.backtestFundingHistory(opp); pass {
-				backtested = append(backtested, opp)
-			}
-		}
-		filtered = backtested
-	}
-
-	return filtered
-}
-
 // GetOpportunities returns the latest ranked opportunities (thread-safe).
 func (s *Scanner) GetOpportunities() []models.Opportunity {
 	s.mu.RLock()
@@ -420,8 +405,9 @@ func (s *Scanner) coinGlassToOpportunities(cg *models.CoinGlassResponse) []model
 		spreadBpsH := annualDecimal * 10000 / 8760.0
 
 		// Fee filter (same logic as ranker)
-		feesA := exchangeFees[longEx]
-		feesB := exchangeFees[shortEx]
+		dynFees := s.getEffectiveFees()
+		feesA := dynFees[longEx]
+		feesB := dynFees[shortEx]
 		totalFeePct := feesA.Taker + feesB.Taker + feesA.Taker + feesB.Taker
 		totalFeeBps := totalFeePct * 100
 
@@ -823,7 +809,7 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 	s.recordScanHistory(verified)
 
 	// 5c. Apply persistence filter (entry + rebalance + exit scans)
-	if scanType == EntryScan || scanType == RebalanceScan || scanType == ExitScan {
+	if scanType == EntryScan || scanType == RebalanceScan || scanType == ExitScan || scanType == RotateScan {
 		var persistent []models.Opportunity
 		for _, opp := range verified {
 			if reason := s.isPersistent(opp); reason == "" {
@@ -843,7 +829,7 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 	}
 
 	// 5d. Apply spread volatility filter (entry + rebalance + exit scans)
-	if scanType == EntryScan || scanType == RebalanceScan || scanType == ExitScan {
+	if scanType == EntryScan || scanType == RebalanceScan || scanType == ExitScan || scanType == RotateScan {
 		var stable []models.Opportunity
 		for _, opp := range verified {
 			if reason := s.isSpreadVolatile(opp); reason == "" {
@@ -863,7 +849,7 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 	}
 
 	// 5e. Apply symbol cooldown filter (entry + rebalance + exit scans)
-	if scanType == EntryScan || scanType == RebalanceScan || scanType == ExitScan {
+	if scanType == EntryScan || scanType == RebalanceScan || scanType == ExitScan || scanType == RotateScan {
 		var notCooling []models.Opportunity
 		for _, opp := range verified {
 			if reason := s.isSymbolCoolingDown(opp.Symbol); reason == "" {
@@ -883,7 +869,7 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 	}
 
 	// 5f. Filter by max funding interval hours (entry + rebalance + exit scans)
-	if (scanType == EntryScan || scanType == RebalanceScan || scanType == ExitScan) && s.cfg.MaxIntervalHours > 0 {
+	if (scanType == EntryScan || scanType == RebalanceScan || scanType == ExitScan || scanType == RotateScan) && s.cfg.MaxIntervalHours > 0 {
 		var intervalOK []models.Opportunity
 		for _, opp := range verified {
 			if opp.IntervalHours > 0 && opp.IntervalHours > s.cfg.MaxIntervalHours {
@@ -903,10 +889,10 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 	}
 
 	// 6. Filter to only opportunities with imminent funding.
-	// ExitScan skips this — when RebalanceAfterExit is on, rebalance needs to
-	// prepare funds BEFORE the funding window opens. RebalanceScan keeps the
-	// filter so its standalone behavior is unchanged.
-	if scanType == EntryScan || scanType == RebalanceScan {
+	// ExitScan skips this so rebalance can prepare funds BEFORE the funding
+	// window opens. RebalanceScan keeps the filter so its standalone behavior
+	// is unchanged.
+	if scanType == EntryScan || scanType == RebalanceScan || scanType == RotateScan {
 		maxFundingWindow := time.Duration(s.cfg.FundingWindowMin) * time.Minute
 		var imminent []models.Opportunity
 		for _, opp := range verified {
@@ -927,7 +913,7 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 	}
 
 	// 7. Apply historical backtest filter (entry + rebalance + exit scans).
-	if (scanType == EntryScan || scanType == RebalanceScan || scanType == ExitScan) && s.cfg.BacktestDays > 0 {
+	if (scanType == EntryScan || scanType == RebalanceScan || scanType == ExitScan || scanType == RotateScan) && s.cfg.BacktestDays > 0 {
 		var backtested []models.Opportunity
 		for _, opp := range verified {
 			if pass, reason := s.backtestFundingHistory(opp); pass {

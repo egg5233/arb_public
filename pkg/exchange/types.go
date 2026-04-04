@@ -358,6 +358,20 @@ type SpotMarginOrderQuerier interface {
 	GetSpotMarginOrder(orderID, symbol string) (*SpotMarginOrderStatus, error)
 }
 
+// TradingFee holds the authenticated user's maker/taker fee rates.
+type TradingFee struct {
+	MakerRate float64 // decimal fraction, e.g. 0.0002 = 0.02%
+	TakerRate float64 // decimal fraction, e.g. 0.0004 = 0.04%
+}
+
+// TradingFeeProvider is optionally implemented by exchanges that support
+// querying the authenticated user's trading fee tier.
+type TradingFeeProvider interface {
+	// GetTradingFee returns the current user's maker/taker fee rates.
+	// Rates are decimal fractions (e.g. 0.0004 = 0.04%).
+	GetTradingFee() (*TradingFee, error)
+}
+
 // FlashRepayer is an optional interface for exchanges that support flash-repay
 // (exchange converts collateral to repay borrow in one step, no buy order needed).
 // Used by Dir A close to skip the spot buyback entirely.
