@@ -1,4 +1,4 @@
-import { useState, type FC } from 'react';
+import { useState, useEffect, type FC } from 'react';
 import type { Position, Stats, ExchangeInfo, SpotPosition, LossLimitStatus } from '../types.ts';
 import StatusBadge from '../components/StatusBadge.tsx';
 import { useLocale } from '../i18n/index.ts';
@@ -41,6 +41,30 @@ const Overview: FC<OverviewProps> = ({
   const [resolvingSpotId, setResolvingSpotId] = useState<string | null>(null);
   const [spotResolveErrorId, setSpotResolveErrorId] = useState<string | null>(null);
   const [spotResolveError, setSpotResolveError] = useState<string | null>(null);
+
+  // Allocation summary
+  const [allocation, setAllocation] = useState<{
+    total_exposure: number;
+    by_strategy: Record<string, number>;
+    by_exchange: Record<string, number>;
+    effective_perp_pct: number;
+    effective_spot_pct: number;
+    pool_total: number;
+    capital_per_leg: number;
+  } | null>(null);
+
+  useEffect(() => {
+    const token = localStorage.getItem('arb_token');
+    if (!token) return;
+    fetch('/api/allocation', {
+      headers: { 'Authorization': `Bearer ${token}` },
+    })
+      .then(res => res.ok ? res.json() : null)
+      .then(resp => {
+        if (resp && resp.ok && resp.data) setAllocation(resp.data);
+      })
+      .catch(() => {});
+  }, []);
 
   const activeSpotPositions = spotPositions.filter((p) =>
     p.status === 'active' ||
@@ -169,6 +193,57 @@ const Overview: FC<OverviewProps> = ({
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Allocation Summary */}
+      {allocation && allocation.pool_total > 0 && (
+        <div className="bg-gray-900 rounded-xl border border-gray-800 p-4">
+          <h3 className="text-sm font-semibold text-gray-300 mb-3">{t('overview.alloc.title')}</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div>
+              <div className="text-xs text-gray-500">{t('overview.alloc.poolTotal')}</div>
+              <div className="text-lg font-bold text-gray-100">
+                ${allocation.pool_total.toLocaleString()}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500">{t('overview.alloc.capitalPerLeg')}</div>
+              <div className="text-lg font-bold text-gray-100">
+                ${allocation.capital_per_leg.toFixed(2)}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500">{t('overview.alloc.perpSplit')}</div>
+              <div className="text-lg font-bold text-violet-400">
+                {(allocation.effective_perp_pct * 100).toFixed(0)}%
+              </div>
+              <div className="text-xs text-gray-500">
+                {t('overview.alloc.committed')}: ${(allocation.by_strategy?.perp_perp || 0).toLocaleString()}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500">{t('overview.alloc.spotSplit')}</div>
+              <div className="text-lg font-bold text-violet-400">
+                {(allocation.effective_spot_pct * 100).toFixed(0)}%
+              </div>
+              <div className="text-xs text-gray-500">
+                {t('overview.alloc.committed')}: ${(allocation.by_strategy?.spot_futures || 0).toLocaleString()}
+              </div>
+            </div>
+          </div>
+          {Object.keys(allocation.by_exchange || {}).length > 0 && (
+            <div className="mt-3 pt-3 border-t border-gray-800">
+              <div className="flex flex-wrap gap-3">
+                {Object.entries(allocation.by_exchange).map(([exch, amount]) => (
+                  <div key={exch} className="text-xs">
+                    <span className="text-gray-500">{exch}:</span>{' '}
+                    <span className="text-gray-300">${(amount as number).toLocaleString()}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

@@ -12,7 +12,7 @@ interface ConfigProps {
 // ---------------------------------------------------------------------------
 // Tab definitions
 // ---------------------------------------------------------------------------
-type Strategy = 'exchanges' | 'perp' | 'spot' | 'risk' | 'safety' | 'analytics';
+type Strategy = 'exchanges' | 'perp' | 'spot' | 'risk' | 'safety' | 'analytics' | 'allocation';
 type PerpTabId = 'fund' | 'schedule' | 'discovery' | 'persist' | 'entry' | 'exit';
 type SpotTabId = 'sf-general' | 'sf-sizing' | 'sf-discovery' | 'sf-exit';
 type RiskTabId = 'risk-margins' | 'risk-liq' | 'risk-alloc';
@@ -1602,6 +1602,103 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
   };
 
   // =========================================================================
+  // Allocation tab
+  // =========================================================================
+  const renderAllocationTab = () => {
+    const enabled = getByPath(config, ['allocation', 'enable_unified_capital']) === true;
+    const currentProfile = (getByPath(config, ['allocation', 'risk_profile']) || 'balanced') as string;
+
+    const handleProfileChange = (profile: string) => {
+      handleChange(['allocation', 'risk_profile'], profile);
+    };
+
+    return (
+      <div className="space-y-4">
+        {/* Master Toggle */}
+        <ToggleField
+          label={t('cfg.alloc.enableUnifiedCapital')}
+          desc={t('cfg.alloc.enableUnifiedCapitalDesc')}
+          value={enabled}
+          onChange={(v) => handleBoolChange(['allocation', 'enable_unified_capital'], v)}
+        />
+
+        <div className={!enabled ? 'opacity-50 space-y-4' : 'space-y-4'}>
+          {/* Risk Profile Selector */}
+          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+            <div className="flex items-center gap-2 mb-2">
+              <label className="text-sm font-medium">{t('cfg.alloc.riskProfile')}</label>
+              <Tooltip text={t('cfg.alloc.riskProfileDesc')} />
+            </div>
+            <div className="flex gap-2">
+              {['conservative', 'balanced', 'aggressive'].map(p => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => handleProfileChange(p)}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
+                    currentProfile === p
+                      ? 'bg-violet-600 text-white'
+                      : 'bg-gray-800 text-gray-400 hover:text-gray-200 hover:bg-gray-700'
+                  }`}
+                >
+                  {t(`cfg.alloc.profile.${p}` as TranslationKey)}
+                </button>
+              ))}
+            </div>
+            {currentProfile === 'custom' && (
+              <p className="mt-2 text-xs text-yellow-400">{t('cfg.alloc.profileCustomNote')}</p>
+            )}
+          </div>
+
+          {/* Capital Pool */}
+          <h4 className="text-sm font-semibold text-gray-400 border-t border-gray-800 pt-4">
+            {t('cfg.alloc.capitalPool')}
+          </h4>
+          <NumberField
+            label={t('cfg.alloc.totalCapital')}
+            desc={t('cfg.alloc.totalCapitalDesc')}
+            value={getByPath(config, ['allocation', 'total_capital_usdt']) ?? 0}
+            unit="USDT"
+            onChange={(v) => handleChange(['allocation', 'total_capital_usdt'], v)}
+          />
+          <NumberField
+            label={t('cfg.alloc.sizeMultiplier')}
+            desc={t('cfg.alloc.sizeMultiplierDesc')}
+            value={getByPath(config, ['allocation', 'size_multiplier']) ?? 1.0}
+            onChange={(v) => handleChange(['allocation', 'size_multiplier'], v)}
+          />
+
+          {/* Allocation Bounds */}
+          <h4 className="text-sm font-semibold text-gray-400 border-t border-gray-800 pt-4">
+            {t('cfg.alloc.bounds')}
+          </h4>
+          <NumberField
+            label={t('cfg.alloc.floorPct')}
+            desc={t('cfg.alloc.floorPctDesc')}
+            value={getByPath(config, ['allocation', 'allocation_floor_pct']) ?? 0.20}
+            unit="%"
+            onChange={(v) => handleChange(['allocation', 'allocation_floor_pct'], v)}
+          />
+          <NumberField
+            label={t('cfg.alloc.ceilingPct')}
+            desc={t('cfg.alloc.ceilingPctDesc')}
+            value={getByPath(config, ['allocation', 'allocation_ceiling_pct']) ?? 0.80}
+            unit="%"
+            onChange={(v) => handleChange(['allocation', 'allocation_ceiling_pct'], v)}
+          />
+          <NumberField
+            label={t('cfg.alloc.lookbackDays')}
+            desc={t('cfg.alloc.lookbackDaysDesc')}
+            value={getByPath(config, ['allocation', 'allocation_lookback_days']) ?? 7}
+            unit={t('cfg.alloc.days')}
+            onChange={(v) => handleChange(['allocation', 'allocation_lookback_days'], v)}
+          />
+        </div>
+      </div>
+    );
+  };
+
+  // =========================================================================
   // Render active tab content
   // =========================================================================
   const renderSafetyTab = () => (
@@ -1674,6 +1771,7 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
     if (strategy === 'exchanges') return renderExchangesTab();
     if (strategy === 'safety') return renderSafetyTab();
     if (strategy === 'analytics') return renderAnalyticsTab();
+    if (strategy === 'allocation') return renderAllocationTab();
     switch (activeTab) {
       case 'fund': return renderFundTab();
       case 'schedule': return renderScheduleTab();
@@ -1765,10 +1863,21 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
         >
           {t('cfg.tab.analytics')}
         </button>
+        <button
+          type="button"
+          onClick={() => setStrategy('allocation')}
+          className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all duration-150 ${
+            strategy === 'allocation'
+              ? 'bg-violet-900/60 text-violet-200 shadow-sm'
+              : 'text-gray-500 hover:text-gray-300'
+          }`}
+        >
+          {t('cfg.tab.allocation')}
+        </button>
       </div>
 
-      {/* Tab bar (hidden for exchanges, safety, analytics — no sub-tabs) */}
-      {strategy !== 'exchanges' && strategy !== 'safety' && strategy !== 'analytics' && <div
+      {/* Tab bar (hidden for exchanges, safety, analytics, allocation — no sub-tabs) */}
+      {strategy !== 'exchanges' && strategy !== 'safety' && strategy !== 'analytics' && strategy !== 'allocation' && <div
         ref={tabBarRef}
         className="flex gap-1 overflow-x-auto pb-3 mb-4 scrollbar-none"
         style={{ scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' }}

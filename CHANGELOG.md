@@ -2,9 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.27.0] - 2026-04-04 — Performance Analytics
+## [0.27.0] - 2026-04-04
 
-### Added
+### Added — Performance Analytics (Phase 4)
 - **Analytics page**: Cumulative PnL chart (Recharts), strategy comparison, per-exchange metrics table
 - **PnL decomposition**: Entry fees, exit fees, funding, basis gain/loss, slippage tracked per position
 - **History drill-down**: Click any closed position row to see full PnL breakdown
@@ -12,12 +12,25 @@ All notable changes to this project will be documented in this file.
 - **Config toggle**: `enable_analytics` (default OFF) gates all analytics features
 - **APR & win rate**: Annualized return and win rate segmented by strategy and exchange
 - **i18n**: Full English and Traditional Chinese support for all analytics strings
-- **Risk profile presets** (conservative/balanced/aggressive) bundling MaxPositions, Leverage, MaxCostRatio, MinNetYieldAPR, allocation weights, and SizeMultiplier
-- **Unified capital allocation config fields** (7 new fields): EnableUnifiedCapital, TotalCapitalUSDT, RiskProfile, AllocationLookbackDays, AllocationFloorPct, AllocationCeilingPct, SizeMultiplier
-- **Performance-weighted allocation** via `ComputeEffectiveAllocation` — blends profile base split with trailing APR data, clamped to floor/ceiling bounds
-- **Derived capital-per-leg** via `EffectiveCapitalPerLeg` — derives from TotalCapitalUSDT/MaxPositions/2 with SizeMultiplier
-- **Dynamic strategy shifting** via `DynamicStrategyPct` — frees uncommitted capital from idle strategy
-- **CapitalSummary** extended with EffectivePerpPct, EffectiveSpotPct, PoolTotal, CapitalPerLeg fields
+
+### Added — Capital Allocation (Phase 5)
+- Unified capital allocation: single USDT pool distributes across both strategies and all exchanges (CA-01)
+- Risk profile presets: conservative, balanced, aggressive -- one-click configuration bundling (CA-02)
+- Performance-weighted allocation: strategy split tilts based on trailing APR from analytics (CA-03)
+- Dynamic capital shifting: unused allocation from idle strategy freed to active strategy per scan cycle (CA-04)
+- New Allocation tab in Config dashboard for profile selection and pool configuration
+- Allocation summary card on Overview page showing pool status, strategy splits, and exchange exposure
+- GET /api/allocation endpoint for allocation state
+
+### Changed
+- Engine and risk manager now derive CapitalPerLeg from unified pool when enabled
+- Spot-futures engine reads capital from unified pool when EnableUnifiedCapital is true
+- CapitalAllocator.strategyPct() now dynamic, reading cached performance-weighted percentages
+
+### Notes
+- Capital allocation defaults to OFF (EnableUnifiedCapital=false) for backward compatibility
+- Set TotalCapitalUSDT=0 to preserve existing CapitalPerLeg behavior
+- Manual CapitalPerLeg > 0 always takes precedence over derived value
 
 ## [0.26.1] - 2026-04-04
 

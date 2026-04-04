@@ -93,10 +93,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | AN-04 | Phase 4 | Complete |
 | AN-05 | Phase 4 | Complete |
 | AN-06 | Phase 4 | Complete |
-| CA-01 | Phase 5 | In Progress |
-| CA-02 | Phase 5 | In Progress |
-| CA-03 | Phase 5 | In Progress |
-| CA-04 | Phase 5 | In Progress |
+| CA-01 | Phase 5 | Complete |
+| CA-02 | Phase 5 | Complete |
+| CA-03 | Phase 5 | Complete |
+| CA-04 | Phase 5 | Complete |
 
 **Coverage:**
 - v1 requirements: 21 total
