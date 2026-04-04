@@ -152,6 +152,7 @@ T+?        EXIT (per exit mode, see §1.5)
 - **Exchange diversity**: Soft preference — warn if >60% of positions on same exchange
 - **Capital exposure cap**: 60% of total capital per single exchange (hard limit); bypassed when the cross-strategy allocator is active
 - **Cross-strategy capital allocator** (`internal/risk/allocator.go`): optional Redis-backed module that enforces shared USDT budgets across perp-perp and spot-futures. Configure via `enable_capital_allocator` (default `false`). Supports `max_total_exposure_usdt`, per-strategy caps (`max_perp_perp_pct`, `max_spot_futures_pct`), per-exchange cap (`max_per_exchange_pct`), and configurable reservation TTL. Reserve → Commit → Release lifecycle; reservations auto-expire if a trade never commits.
+- **Unified Capital Allocation** (`internal/risk/allocator.go`, Phase 5): optional single-pool system that derives `CapitalPerLeg` from a shared `TotalCapitalUSDT` budget. Enable via `enable_unified_capital` (default `false`). Supports risk profile presets (`conservative`, `balanced`, `aggressive`), performance-weighted strategy splits (tilts toward higher-APR strategy using analytics data, CA-03), and dynamic capital shifting — idle strategy's unused allocation freed to active strategy each scan cycle (CA-04). When enabled, the Allocation tab in Config drives all sizing; Fund and Risk tabs show "Managed by Allocation" badges on affected fields. Manual `CapitalPerLeg > 0` always takes precedence.
 
 **Position Sizing** (two modes):
 1. **Fixed** (`CAPITAL_PER_LEG > 0`): `notional = capitalPerLeg * leverage`, clamped to available balance
@@ -704,6 +705,7 @@ arb:transfers:history               LIST    Transfer IDs (FIFO, max 200)
 arb:lossCooldown:{symbol}           STRING  Loss cooldown flag (auto-expires via TTL)
 arb:reEnterCooldown:{symbol}        STRING  Re-entry cooldown flag (auto-expires via TTL)
 arb:loss_events                     ZSET    Realized PnL events (score=timestamp, pruned >8d)
+arb:spot_opportunities_cache        STRING  Last spot-futures scan results (JSON); written after each discovery cycle, no TTL; stale results served until next scan
 ```
 
 ### 2.7 Dashboard & API
@@ -808,7 +810,13 @@ SpotEngine.discoveryLoop (every scan_interval_min minutes)
      g. Filter by min_net_yield_apr
   3. Rank by net APR descending, limit to top N (always preserving entries for active positions)
   4. Update Redis persistence counters (per-symbol, 20-min TTL)
-  5. Push results to API server (GET /api/spot/opportunities)
+  5. Cache full results to Redis key `arb:spot_opportunities_cache` (no TTL) for instant dashboard display after restart
+  6. Push results to API server (GET /api/spot/opportunities)
+
+Scanner mode (config: `scanner_mode`):
+  - `"native"`: Loris only
+  - `"coinglass"`: CoinGlass only
+  - `"both"`: merge both sources, each capped at 100 entries independently before merge to prevent one source from crowding out the other
 
 Fallback path:
 CoinGlass scraper → Redis (coinGlassSpotArb)
@@ -863,6 +871,8 @@ Env overrides: `SPOT_FUTURES_ENABLED`, `SPOT_FUTURES_MAX_POSITIONS`, `SPOT_FUTUR
 | `/api/spot/config/auto` | GET/POST | View/update auto-entry config; response includes `max_positions`, `capital_separate_usdt`, and `capital_unified_usdt` guardrail fields |
 | `/api/spot/test-inject` | POST | Inject synthetic Dir A + Dir B opportunities for lifecycle testing when no real opportunity is available |
 | `/api/spot/test-lifecycle` | POST | Automated Dir A + Dir B lifecycle verification: opens two test positions, waits for fills, closes both, and returns a structured pass/fail report |
+| `/api/spot/batch-check-gap` | POST | Check live price gaps for all provided opportunities at once; returns `{symbol, exchange, gap_bps, error}` per item; unlisted symbols return `error: true` |
+| `/api/spot/batch-check-borrowable` | POST | Check max borrowable quantity for all provided Dir A items at once; Binance -3045 and OKX "coin not found" normalized to `max_borrowable=0` |
 
 WebSocket events: `spot_position_update` (single position), `spot_positions` (full active list), `spot_opportunities` (discovery results broadcast), `spot_position_health` (real-time health tick).
 

@@ -22,15 +22,34 @@ All notable changes to this project will be documented in this file.
 - Allocation summary card on Overview page showing pool status, strategy splits, and exchange exposure
 - GET /api/allocation endpoint for allocation state
 
+### Added — Dashboard & API Improvements
+- **Spot-futures split-view redesign**: source-branded panels (emerald for Native/Loris, amber for CoinGlass), compact tables, and comparison summary bar showing top opportunities side by side
+- **Pagination**: 20 items per page for spot opportunities in both split-view and single-view modes
+- **Batch gap check** (POST `/api/spot/batch-check-gap`): checks live price gaps for all visible opportunities at once, instead of one-by-one
+- **Batch borrowable check** (POST `/api/spot/batch-check-borrowable`): checks max borrowable quantity for all visible Dir A items at once
+- **Dir A/B info legend**: inline legend explaining gap color thresholds and borrow status icons
+- **i18n**: all new UI strings translated in both English and Traditional Chinese (確認價差, 確認可借數量, direction legends, gap/borrow status descriptions)
+
+### Added — Spot Engine
+- **Per-source cap**: when scanner mode is "both", each source (Native and CoinGlass) is capped at 100 entries independently — previously CoinGlass entries were truncated when native results filled the shared slice
+- **Redis result cache**: last scan results stored in Redis (`arb:spot_opportunities_cache`) so the dashboard can display instant results after a restart without waiting for the next scan cycle
+
 ### Changed
 - Engine and risk manager now derive CapitalPerLeg from unified pool when enabled
 - Spot-futures engine reads capital from unified pool when EnableUnifiedCapital is true
 - CapitalAllocator.strategyPct() now dynamic, reading cached performance-weighted percentages
+- **Dashboard Fund and Risk tabs**: show "Managed by Allocation" badges on CapitalPerLeg and risk fields when unified capital is enabled, consolidating the UX into the Allocation tab
+
+### Fixed
+- **Analytics 503**: `GET /api/analytics/*` now returns an empty array instead of 503 Service Unavailable when the analytics store is disabled, allowing the dashboard to render cleanly without an error toast
+- **Batch gap check — unlisted symbols**: symbols not listed on a given exchange now return an `error` flag instead of a negative sentinel gap value, preventing the dashboard from misinterpreting the result as an extreme spread
+- **Batch borrowable check — not-borrowable errors**: Binance error -3045 ("not borrowable") and OKX "coin not found in margin" are now normalized to `max_borrowable=0` instead of surfacing as error responses, so the borrow column shows 0 rather than a red error state
 
 ### Notes
 - Capital allocation defaults to OFF (EnableUnifiedCapital=false) for backward compatibility
 - Set TotalCapitalUSDT=0 to preserve existing CapitalPerLeg behavior
 - Manual CapitalPerLeg > 0 always takes precedence over derived value
+- Redis spot opportunities cache key: `arb:spot_opportunities_cache` (no TTL — stale results shown until next scan)
 
 ## [0.26.1] - 2026-04-04
 
