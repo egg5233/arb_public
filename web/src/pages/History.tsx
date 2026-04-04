@@ -26,6 +26,7 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
   const [limit, setLimit] = useState(50);
   const [loading, setLoading] = useState(false);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'failed'>('all');
 
   const load = useCallback(async (n: number) => {
     setLoading(true);
@@ -47,9 +48,32 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
     setLimit((prev) => prev + 50);
   };
 
+  const filteredTrades = trades.filter((tr) => {
+    if (statusFilter === 'success') return !tr.failure_reason;
+    if (statusFilter === 'failed') return !!tr.failure_reason;
+    return true;
+  });
+
   return (
     <div className="space-y-6">
-      <h2 className="text-xl font-bold text-gray-100">{t('hist.title')}</h2>
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-bold text-gray-100">{t('hist.title')}</h2>
+        <div className="flex gap-1 bg-gray-800 rounded-lg p-1">
+          {(['all', 'success', 'failed'] as const).map((f) => (
+            <button
+              key={f}
+              onClick={() => setStatusFilter(f)}
+              className={`px-3 py-1 text-sm rounded-md transition-colors ${
+                statusFilter === f
+                  ? f === 'failed' ? 'bg-red-600 text-white' : f === 'success' ? 'bg-green-600 text-white' : 'bg-gray-600 text-white'
+                  : 'text-gray-400 hover:text-gray-200'
+              }`}
+            >
+              {t(f === 'all' ? 'hist.filterAll' : f === 'success' ? 'hist.filterSuccess' : 'hist.filterFailed')}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -69,11 +93,13 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
               <th className="pb-2 text-right">{t('hist.duration')}</th>
               <th className="pb-2 text-right">{t('hist.rotations')}</th>
               <th className="pb-2">{t('hist.exitReason')}</th>
+              <th className="pb-2 whitespace-nowrap">{t('hist.status')}</th>
+              <th className="pb-2 whitespace-nowrap">{t('hist.failureReason')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-800">
-            {trades.map((tr) => (
-              <tr key={tr.id} className="text-gray-100">
+            {filteredTrades.map((tr) => (
+              <tr key={tr.id} className={`text-gray-100 ${tr.failure_reason ? 'border-l-2 border-l-red-500 bg-red-950/20' : ''}`}>
                 <td className="py-2 text-gray-400 text-xs">{new Date(tr.created_at).toLocaleString()}</td>
                 <td className="py-2 text-gray-400 text-xs">{new Date(tr.updated_at).toLocaleString()}</td>
                 <td className="py-2 font-mono">{tr.symbol}</td>
@@ -112,11 +138,21 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
                     <span className="block truncate">{tr.exit_reason || '-'}</span>
                   )}
                 </td>
+                <td className="py-2 whitespace-nowrap">
+                  {tr.failure_reason ? (
+                    <span className="px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-400">{t('hist.statusFailed')}</span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded text-xs font-medium bg-green-500/20 text-green-400">{t('hist.statusSuccess')}</span>
+                  )}
+                </td>
+                <td className="py-2 text-red-400 text-xs max-w-[200px]">
+                  <span className="block truncate">{tr.failure_reason || ''}</span>
+                </td>
               </tr>
             ))}
-            {trades.length === 0 && (
+            {filteredTrades.length === 0 && (
               <tr>
-                <td colSpan={15} className="py-4 text-center text-gray-500">{t('hist.noHistory')}</td>
+                <td colSpan={17} className="py-4 text-center text-gray-500">{t('hist.noHistory')}</td>
               </tr>
             )}
           </tbody>

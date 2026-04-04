@@ -3,6 +3,7 @@ package bitget
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"strconv"
 	"strings"
@@ -96,6 +97,8 @@ func (a *Adapter) CheckPermissions() exchange.PermissionResult {
 // ==================== Orders ====================
 
 func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
+	log.Printf("[bitget] PlaceOrder: symbol=%s side=%s type=%s size=%s price=%s force=%s reduceOnly=%v",
+		req.Symbol, req.Side, req.OrderType, req.Size, req.Price, req.Force, req.ReduceOnly)
 	params := map[string]string{
 		"symbol":      req.Symbol,
 		"productType": productTypeUSDTFutures,

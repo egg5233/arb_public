@@ -502,579 +502,12 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			e.log.Info("rebalance: complete")
 			return
 		} else {
-			e.log.Warn("rebalance: pool allocator infeasible, falling back to sequential")
+			e.log.Warn("rebalance: pool allocator infeasible, skipping rebalance")
+			return
 		}
-	}
-
-	// ---------------------------------------------------------------------------
-	// Sequential allocation fallback (original path).
-	// Budget-aware: iterate opps by score and only count needs for positions
-	// the exchanges can actually afford.
-	// ---------------------------------------------------------------------------
-	available := map[string]float64{}
-	for name, bal := range balances {
-		total := bal.futures + bal.spot
-		// Unified accounts: spot and futures share the same pool, don't double-count.
-		type unifiedChecker interface{ IsUnified() bool }
-		if name == "okx" || name == "bybit" {
-			total = bal.futures
-		} else if uc, ok := e.exchanges[name].(unifiedChecker); ok && uc.IsUnified() {
-			total = bal.futures
-		}
-		available[name] = total
-	}
-
-	needs := map[string]float64{}
-	selectedSymbols := make(map[string]bool)     // prevent same-batch duplicates
-	reserved := map[string]float64{}             // cumulative margin reserved per exchange
-	plannedTransfers := map[string]float64{}     // cross-exchange transfer plan: recipient → amount
-	selected := 0
-
-	for _, opp := range opps {
-		if selected >= remainingSlots {
-			break
-		}
-		if activeSymbols[opp.Symbol] || selectedSymbols[opp.Symbol] {
-			continue
-		}
-
-		// Run full approval simulation (same checks as risk.Approve, no side effects)
-		approval, err := e.risk.SimulateApproval(opp, reserved)
-		if err != nil {
-			e.log.Info("rebalance: skip %s — simulate error: %v", opp.Symbol, err)
-			continue
-		}
-		if !approval.Approved {
-			// Check if rejection is margin-related and cross-exchange transfer could help.
-			isMarginRejection := strings.Contains(approval.Reason, "insufficient margin buffer") ||
-				strings.Contains(approval.Reason, "post-trade margin ratio") ||
-				strings.Contains(approval.Reason, "insufficient capital")
-			if !isMarginRejection {
-				e.log.Info("rebalance: skip %s — %s", opp.Symbol, approval.Reason)
-				continue
-			}
-
-			// Margin-related rejection: check if cross-exchange transfer from a donor could help.
-			estMargin := e.cfg.CapitalPerLeg * e.cfg.MarginSafetyMultiplier
-			if estMargin <= 0 {
-				if approval.RequiredMargin > 0 {
-					estMargin = approval.RequiredMargin
-				} else {
-					estMargin = 50 * e.cfg.MarginSafetyMultiplier
-				}
-			}
-			canRescue := true
-			for _, legExch := range []string{opp.LongExchange, opp.ShortExchange} {
-				bal := balances[legExch]
-				effectiveAvail := bal.futures - reserved[legExch]
-				if effectiveAvail >= estMargin {
-					continue
-				}
-				deficit := estMargin - effectiveAvail
-				foundDonor := false
-				for donorName, donorBal := range balances {
-					if donorName == legExch {
-						continue
-					}
-					if balances[donorName].marginRatio >= e.cfg.MarginL3Threshold {
-						continue
-					}
-					donorSurplus := donorBal.futures + donorBal.spot - reserved[donorName] - plannedTransfers[donorName+"_out"]
-					type unifiedChecker interface{ IsUnified() bool }
-					if donorName == "okx" || donorName == "bybit" {
-						donorSurplus = donorBal.futures - reserved[donorName] - plannedTransfers[donorName+"_out"]
-					} else if uc, ok := e.exchanges[donorName].(unifiedChecker); ok && uc.IsUnified() {
-						donorSurplus = donorBal.futures - reserved[donorName] - plannedTransfers[donorName+"_out"]
-					}
-					// Cap donor surplus by margin health to prevent draining exchanges with active positions.
-					if balances[donorName].hasPositions && balances[donorName].marginRatio > 0 && balances[donorName].futuresTotal > 0 && e.cfg.MarginL3Threshold > 0 {
-						maint := balances[donorName].marginRatio * balances[donorName].futuresTotal
-						healthCap := balances[donorName].futuresTotal - maint/e.cfg.MarginL3Threshold
-						if healthCap < donorSurplus {
-							donorSurplus = healthCap
-						}
-					}
-					if donorSurplus > 10 {
-						plannedTransfers[legExch] += deficit
-						plannedTransfers[donorName+"_out"] += deficit
-						foundDonor = true
-						e.log.Info("rebalance: %s needs %.2f transfer from %s for %s (margin rescue)",
-							legExch, deficit, donorName, opp.Symbol)
-						break
-					}
-				}
-				if !foundDonor {
-					canRescue = false
-					break
-				}
-			}
-			if !canRescue {
-				e.log.Info("rebalance: skip %s — %s (no donor available)", opp.Symbol, approval.Reason)
-				continue
-			}
-
-			needs[opp.LongExchange] += estMargin
-			needs[opp.ShortExchange] += estMargin
-			reserved[opp.LongExchange] += estMargin
-			reserved[opp.ShortExchange] += estMargin
-			selectedSymbols[opp.Symbol] = true
-			selected++
-			e.log.Info("rebalance: selected %s via cross-exchange rescue (margin=%.2f per leg)", opp.Symbol, estMargin)
-			continue
-		}
-
-		// Approval passed. Check if exchanges need cross-exchange transfers.
-		requiredMargin := approval.RequiredMargin
-		if requiredMargin <= 0 {
-			requiredMargin = e.cfg.CapitalPerLeg * e.cfg.MarginSafetyMultiplier
-		}
-
-		needsTransfer := false
-		for _, leg := range []struct {
-			exchange string
-		}{
-			{opp.LongExchange},
-			{opp.ShortExchange},
-		} {
-			bal := balances[leg.exchange]
-			effectiveAvail := bal.futures - reserved[leg.exchange]
-			if effectiveAvail < requiredMargin {
-				deficit := requiredMargin - effectiveAvail
-				foundDonor := false
-				for donorName, donorBal := range balances {
-					if donorName == leg.exchange {
-						continue
-					}
-					donorSurplus := donorBal.futures + donorBal.spot - reserved[donorName] - plannedTransfers[donorName+"_out"]
-					type unifiedChecker interface{ IsUnified() bool }
-					if donorName == "okx" || donorName == "bybit" {
-						donorSurplus = donorBal.futures - reserved[donorName] - plannedTransfers[donorName+"_out"]
-					} else if uc, ok := e.exchanges[donorName].(unifiedChecker); ok && uc.IsUnified() {
-						donorSurplus = donorBal.futures - reserved[donorName] - plannedTransfers[donorName+"_out"]
-					}
-					if balances[donorName].marginRatio >= e.cfg.MarginL3Threshold {
-						continue
-					}
-					// Cap donor surplus by margin health to prevent draining exchanges with active positions.
-					if balances[donorName].hasPositions && balances[donorName].marginRatio > 0 && balances[donorName].futuresTotal > 0 && e.cfg.MarginL3Threshold > 0 {
-						maint := balances[donorName].marginRatio * balances[donorName].futuresTotal
-						healthCap := balances[donorName].futuresTotal - maint/e.cfg.MarginL3Threshold
-						if healthCap < donorSurplus {
-							donorSurplus = healthCap
-						}
-					}
-					if donorSurplus > 10 {
-						plannedTransfers[leg.exchange] += deficit
-						plannedTransfers[donorName+"_out"] += deficit
-						foundDonor = true
-						e.log.Debug("rebalance: %s needs %.2f transfer from %s for %s",
-							leg.exchange, deficit, donorName, opp.Symbol)
-						break
-					}
-				}
-				if !foundDonor {
-					e.log.Debug("rebalance: skip %s — no donor for %s deficit=%.2f",
-						opp.Symbol, leg.exchange, deficit)
-					needsTransfer = true
-					break
-				}
-			}
-		}
-		if needsTransfer {
-			continue
-		}
-
-		needs[opp.LongExchange] += requiredMargin
-		needs[opp.ShortExchange] += requiredMargin
-		reserved[opp.LongExchange] += requiredMargin
-		reserved[opp.ShortExchange] += requiredMargin
-		selectedSymbols[opp.Symbol] = true
-		selected++
-		e.log.Info("rebalance: selected %s (margin=%.2f per leg)", opp.Symbol, requiredMargin)
-	}
-
-	e.log.Info("rebalance: analyzed %d opportunities, selected %d, needs: %v, plannedTransfers: %v", len(opps), selected, needs, plannedTransfers)
-
-	// Phase 1: Same-exchange spot→futures transfers (instant).
-	type seqDeficit struct {
-		exchange string
-		amount   float64
-	}
-	var crossDeficits []seqDeficit
-
-	for name, need := range needs {
-		bal := balances[name]
-		targetFreeRatio := 1 - e.cfg.MarginL4Threshold
-		if targetFreeRatio <= 0 {
-			targetFreeRatio = 0.20
-		}
-
-		if bal.futures >= need {
-			if bal.spot > 0 && bal.futuresTotal > 0 {
-				projectedAvail := bal.futures - need
-				if projectedAvail < 0 {
-					projectedAvail = 0
-				}
-				projectedRatio := 1 - projectedAvail/bal.futuresTotal
-				if projectedRatio >= e.cfg.MarginL4Threshold {
-					extra := (need - bal.futuresTotal*targetFreeRatio) / targetFreeRatio
-					if extra > bal.spot {
-						extra = bal.spot
-					}
-					if extra >= 1.0 {
-						amtStr := fmt.Sprintf("%.4f", extra)
-						postRatio := 1 - (bal.futures+extra-need)/(bal.futuresTotal+extra)
-						e.log.Info("rebalance: %s spot→futures %s USDT (margin ratio relief, projected=%.2f post=%.2f L4=%.2f)",
-							name, amtStr, projectedRatio, postRatio, e.cfg.MarginL4Threshold)
-						if !e.cfg.DryRun {
-							if err := e.exchanges[name].TransferToFutures("USDT", amtStr); err != nil {
-								e.log.Error("rebalance: %s spot→futures failed: %v", name, err)
-							} else {
-								bi := balances[name]
-								bi.futures += extra
-								bi.spot -= extra
-								balances[name] = bi
-							}
-						}
-					}
-				}
-			}
-			continue
-		}
-
-		shortfall := need - bal.futures
-		l4Extra := need/targetFreeRatio - bal.futuresTotal - shortfall
-		if l4Extra < 0 {
-			l4Extra = 0
-		}
-		if l4Extra > shortfall {
-			l4Extra = shortfall
-		}
-		transferAmt := shortfall + l4Extra
-		if bal.spot > 0 {
-			actualTransfer := transferAmt
-			if actualTransfer > bal.spot {
-				actualTransfer = bal.spot
-			}
-			if actualTransfer < 1.0 {
-				e.log.Debug("rebalance: %s spot→futures skip (%.4f USDT below minimum)", name, actualTransfer)
-				if transferAmt > 10 {
-					crossDeficits = append(crossDeficits, seqDeficit{name, transferAmt})
-				}
-				continue
-			}
-			postTotal := bal.futuresTotal + actualTransfer
-			postRatio := 1 - (bal.futures+actualTransfer-need)/postTotal
-			amtStr := fmt.Sprintf("%.4f", actualTransfer)
-			e.log.Info("rebalance: %s spot→futures %s USDT (same-exchange, instant, post-ratio=%.2f L4=%.2f)", name, amtStr, postRatio, e.cfg.MarginL4Threshold)
-			if !e.cfg.DryRun {
-				if err := e.exchanges[name].TransferToFutures("USDT", amtStr); err != nil {
-					e.log.Error("rebalance: %s spot→futures failed: %v", name, err)
-				} else {
-					transferAmt -= actualTransfer
-					bi := balances[name]
-					bi.futures += actualTransfer
-					bi.spot -= actualTransfer
-					balances[name] = bi
-				}
-			}
-		}
-		if transferAmt > 10 {
-			crossDeficits = append(crossDeficits, seqDeficit{name, transferAmt})
-		}
-	}
-
-	if len(crossDeficits) == 0 {
-		e.log.Info("rebalance: all exchanges funded, no cross-exchange transfers needed")
+	} else {
+		e.log.Info("rebalance: pool allocator disabled, skipping")
 		return
-	}
-
-	// Phase 2: Cross-exchange transfers for remaining deficits.
-	surplus := map[string]float64{}
-	for name, exch := range e.exchanges {
-		bal := balances[name]
-		avail := bal.futures + bal.spot
-		type unifiedChecker interface{ IsUnified() bool }
-		if name == "okx" || name == "bybit" {
-			avail = bal.futures
-		} else if uc, ok := exch.(unifiedChecker); ok && uc.IsUnified() {
-			avail = bal.futures
-		}
-		surplus[name] = avail - needs[name]
-		// Cap surplus by margin health to prevent draining exchanges with active positions.
-		if balances[name].hasPositions && balances[name].marginRatio > 0 && balances[name].futuresTotal > 0 && e.cfg.MarginL3Threshold > 0 {
-			maint := balances[name].marginRatio * balances[name].futuresTotal
-			healthCap := balances[name].futuresTotal - maint/e.cfg.MarginL3Threshold
-			if healthCap < surplus[name] {
-				surplus[name] = healthCap
-			}
-		}
-	}
-
-	// Phase 2a: Execute withdrawals.
-	pendingDeposits := map[string]float64{}
-	pendingStartBal := map[string]float64{}
-
-	for i := range crossDeficits {
-		remaining := crossDeficits[i].amount
-		exchName := crossDeficits[i].exchange
-
-		for remaining > 10 {
-			var bestDonor string
-			var bestSurplus float64
-			for name, s := range surplus {
-				if name == exchName || s <= 10 {
-					continue
-				}
-				if balances[name].marginRatio >= e.cfg.MarginL3Threshold {
-					e.log.Info("rebalance: skipping donor %s (marginRatio=%.4f >= L3=%.4f)", name, balances[name].marginRatio, e.cfg.MarginL3Threshold)
-					continue
-				}
-				if s > bestSurplus {
-					bestDonor = name
-					bestSurplus = s
-				}
-			}
-
-			if bestDonor == "" {
-				e.log.Warn("rebalance: no donor found for %s remaining deficit=%.2f", exchName, remaining)
-				break
-			}
-
-			contribution := remaining
-			if contribution > bestSurplus {
-				contribution = bestSurplus
-			}
-
-			e.cfg.RLock()
-			origAddrs := e.cfg.ExchangeAddresses[exchName]
-			recipientAddrs := make(map[string]string, len(origAddrs))
-			for k, v := range origAddrs {
-				recipientAddrs[k] = v
-			}
-			e.cfg.RUnlock()
-			if len(recipientAddrs) == 0 {
-				e.log.Warn("rebalance: no deposit addresses for %s", exchName)
-				break
-			}
-
-			var chain, destAddr string
-			for _, c := range []string{"APT", "BEP20"} {
-				if addr, ok := recipientAddrs[c]; ok && addr != "" {
-					chain = c
-					destAddr = addr
-					break
-				}
-			}
-			if chain == "" {
-				e.log.Warn("rebalance: no shared chain between %s and %s", bestDonor, exchName)
-				surplus[bestDonor] = 0
-				continue
-			}
-
-			fee, feeErr := e.exchanges[bestDonor].GetWithdrawFee("USDT", chain)
-			if feeErr != nil {
-				e.log.Warn("rebalance: %s GetWithdrawFee failed: %v, skipping donor", bestDonor, feeErr)
-				surplus[bestDonor] = 0
-				continue
-			}
-			e.log.Info("rebalance: %s withdraw fee=%.4f USDT via %s", bestDonor, fee, chain)
-
-			netAmount := contribution
-			// For net-fee exchanges with active positions, subtract fee from netAmount
-			// so total debit (netAmount + fee) stays within the donor's health cap.
-			if !e.exchanges[bestDonor].WithdrawFeeInclusive() && balances[bestDonor].hasPositions {
-				netAmount -= fee
-				if netAmount < 10 {
-					e.log.Warn("rebalance: %s contribution %.2f too low after fee %.4f deduction, skipping donor", bestDonor, netAmount+fee, fee)
-					surplus[bestDonor] = 0
-					continue
-				}
-			}
-			requiredSpot := netAmount + fee
-
-			e.log.Info("rebalance: cross-exchange %s→%s net=%.2f fee=%.4f required=%.2f USDT via %s",
-				bestDonor, exchName, netAmount, fee, requiredSpot, chain)
-
-			if e.cfg.DryRun {
-				e.log.Info("[DRY RUN] would transfer %.2f USDT (net) from %s to %s via %s (fee=%.4f)",
-					netAmount, bestDonor, exchName, chain, fee)
-				remaining -= netAmount
-				surplus[bestDonor] -= requiredSpot
-				continue
-			}
-
-			// Move funds from futures→spot if donor spot is insufficient.
-			// Skip for Binance (auto-transfers) and Gate.io / unified accounts.
-			var movedToSpot float64
-			skipOuterTransfer := bestDonor == "binance" || bestDonor == "gateio"
-			if !skipOuterTransfer {
-				if uc, ok := e.exchanges[bestDonor].(interface{ IsUnified() bool }); ok && uc.IsUnified() {
-					skipOuterTransfer = true
-				}
-			}
-			donorBal := balances[bestDonor]
-			if !skipOuterTransfer && donorBal.spot < requiredSpot {
-				moveAmt := requiredSpot - donorBal.spot
-				maxMove := donorBal.maxTransferOut
-				if maxMove <= 0 {
-					maxMove = donorBal.futures - needs[bestDonor]
-					if donorBal.marginRatio > 0 && donorBal.futuresTotal > 0 && e.cfg.MarginL4Threshold > 0 {
-						safeMax := donorBal.futuresTotal * (1.0 - donorBal.marginRatio/e.cfg.MarginL4Threshold)
-						safeMax -= needs[bestDonor]
-						if safeMax < maxMove {
-							maxMove = safeMax
-						}
-					}
-				} else {
-					maxMove -= needs[bestDonor]
-				}
-				// Refresh maxTransferOut from exchange to avoid stale cached value
-				// (Bitget fix: cached maxTransferOut may be outdated after prior transfers).
-				if freshBal, freshErr := e.exchanges[bestDonor].GetFuturesBalance(); freshErr == nil && freshBal.MaxTransferOut > 0 {
-					cap := freshBal.MaxTransferOut * 0.99
-					if moveAmt > cap {
-						e.log.Info("rebalance: %s capping moveAmt %.4f to fresh maxTransferOut %.4f (99%%)", bestDonor, moveAmt, cap)
-						moveAmt = cap
-					}
-				}
-				if moveAmt > maxMove && maxMove > 0 {
-					moveAmt = maxMove
-				}
-				if moveAmt <= 0 {
-					e.log.Warn("rebalance: %s has no excess futures to move to spot", bestDonor)
-					surplus[bestDonor] = 0
-					continue
-				}
-				moveStr := fmt.Sprintf("%.4f", moveAmt)
-				e.log.Info("rebalance: %s futures→spot %s USDT", bestDonor, moveStr)
-				if err := e.exchanges[bestDonor].TransferToSpot("USDT", moveStr); err != nil {
-					e.log.Error("rebalance: %s futures→spot failed: %v", bestDonor, err)
-					surplus[bestDonor] = 0
-					continue
-				}
-				e.recordTransfer(bestDonor, bestDonor+" spot", "USDT", "internal", moveStr, "0", "", "completed", "rebalance-prep")
-				movedToSpot = moveAmt
-			}
-
-			donorSpotBal, err := e.exchanges[bestDonor].GetSpotBalance()
-			if err != nil {
-				e.log.Error("rebalance: %s get spot balance failed: %v", bestDonor, err)
-				surplus[bestDonor] = 0
-				continue
-			}
-
-			grossRequired := netAmount + fee
-			isGross := e.exchanges[bestDonor].WithdrawFeeInclusive()
-
-			if donorSpotBal.Available < grossRequired {
-				netAmount = donorSpotBal.Available - fee
-			}
-			if netAmount < 10 {
-				e.log.Warn("rebalance: %s spot balance too low to withdraw (available=%.2f, fee=%.4f)", bestDonor, donorSpotBal.Available, fee)
-				surplus[bestDonor] = 0
-				continue
-			}
-
-			var withdrawAmtForAPI float64
-			if isGross {
-				withdrawAmtForAPI = netAmount + fee
-			} else {
-				withdrawAmtForAPI = netAmount
-			}
-			amtStr := fmt.Sprintf("%.4f", withdrawAmtForAPI)
-
-			result, err := e.exchanges[bestDonor].Withdraw(exchange.WithdrawParams{
-				Coin:    "USDT",
-				Chain:   chain,
-				Address: destAddr,
-				Amount:  amtStr,
-			})
-			if err != nil {
-				e.log.Error("rebalance: withdraw from %s failed: %v", bestDonor, err)
-				if movedToSpot > 0 {
-					rollbackStr := fmt.Sprintf("%.4f", movedToSpot)
-					e.log.Info("rebalance: rollback %s spot→futures %s USDT", bestDonor, rollbackStr)
-					// BingX needs a brief delay before rollback to avoid rate-limit errors.
-					if bestDonor == "bingx" {
-						time.Sleep(2 * time.Second)
-					}
-					if rbErr := e.exchanges[bestDonor].TransferToFutures("USDT", rollbackStr); rbErr != nil {
-						e.log.Error("rebalance: rollback failed: %v", rbErr)
-					}
-				}
-				surplus[bestDonor] = 0
-				continue
-			}
-
-			var recipientReceives float64
-			if isGross {
-				recipientReceives = withdrawAmtForAPI - fee
-			} else {
-				recipientReceives = netAmount
-			}
-			e.log.Info("rebalance: withdraw from %s txid=%s (apiAmt=%.2f, recipient=%.2f, fee=%.4f, gross=%v) → %s",
-				bestDonor, result.TxID, withdrawAmtForAPI, recipientReceives, fee, isGross, exchName)
-			e.recordTransfer(bestDonor, exchName, "USDT", chain, amtStr, result.Fee, result.TxID, "completed", "rebalance")
-
-			if _, exists := pendingStartBal[exchName]; !exists {
-				pendingStartBal[exchName] = balances[exchName].spot
-			}
-			pendingDeposits[exchName] += recipientReceives
-			actualCost := netAmount + fee
-			surplus[bestDonor] -= actualCost
-			bi := balances[bestDonor]
-			bi.futures -= movedToSpot
-			bi.spot -= (netAmount + fee - movedToSpot)
-			if bi.spot < 0 {
-				bi.spot = 0
-			}
-			balances[bestDonor] = bi
-			remaining -= recipientReceives
-		}
-	}
-
-	// Phase 2b: Poll for ALL pending deposits, then sweep into futures.
-	for recipient, totalPending := range pendingDeposits {
-		if totalPending <= 0 {
-			continue
-		}
-		recipientExch := e.exchanges[recipient]
-		startBal := pendingStartBal[recipient]
-		e.log.Info("rebalance: waiting for %.2f USDT total deposits on %s (startBal=%.2f)...",
-			totalPending, recipient, startBal)
-
-		arrived := false
-		pollDeadline := time.Now().Add(5 * time.Minute)
-		for time.Now().Before(pollDeadline) {
-			time.Sleep(5 * time.Second)
-			spotBal, err := recipientExch.GetSpotBalance()
-			if err != nil {
-				continue
-			}
-			if spotBal.Available >= startBal+totalPending*0.9 {
-				arrived = true
-				e.log.Info("rebalance: all deposits confirmed on %s (spot=%.2f)", recipient, spotBal.Available)
-				break
-			}
-		}
-
-		if !arrived {
-			e.log.Warn("rebalance: deposits on %s not confirmed within 5min, skipping spot→futures", recipient)
-			continue
-		}
-
-		transferAmt := totalPending
-		if transferAmt < 1.0 {
-			continue
-		}
-		transferStr := fmt.Sprintf("%.4f", transferAmt)
-		if err := recipientExch.TransferToFutures("USDT", transferStr); err != nil {
-			e.log.Error("rebalance: %s spot→futures failed: %v", recipient, err)
-		} else {
-			e.log.Info("rebalance: %s spot→futures %s USDT (rebalance deposit)", recipient, transferStr)
-			e.recordTransfer(recipient+" spot", recipient, "USDT", "internal", transferStr, "0", "", "completed", "rebalance-recv")
-		}
 	}
 
 	e.log.Info("rebalance: complete")
@@ -1287,9 +720,13 @@ func (e *Engine) run() {
 				e.checkExitsV2()
 				e.log.Info("run loop: exitScan handler done")
 			case discovery.RotateScan:
+				e.log.Info("rotateScan: starting checkRotations")
 				e.checkRotations()
+				e.log.Info("rotateScan: checkRotations done")
 				if e.cfg.EnablePoolAllocator {
+					e.log.Info("rotateScan: starting rebalanceFunds")
 					e.rebalanceFunds()
+					e.log.Info("rotateScan: rebalanceFunds done")
 				}
 				e.log.Info("run loop: rotateScan handler done")
 			case discovery.EntryScan:
@@ -2370,7 +1807,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 			if err := e.executeTradeV2WithPos(c.opp, c.pos, c.size, c.price, c.gapBPS); err != nil {
 				e.releasePerpReservation(c.reservation)
 				e.log.Error("trade execution failed for %s: %v", c.opp.Symbol, err)
-				e.cleanupFailedPosition(c.opp.Symbol)
+				e.cleanupFailedPosition(c.opp.Symbol, err.Error())
 				return
 			}
 			if err := e.commitPerpCapital(c.reservation, c.pos.ID); err != nil {
@@ -2583,8 +2020,9 @@ func (e *Engine) MergeExistingDuplicates() {
 
 // cleanupFailedPosition finds pending or partial positions for the given symbol
 // with zero fills on both legs and marks them as closed so they don't block
-// MAX_POSITIONS capacity.
-func (e *Engine) cleanupFailedPosition(symbol string) {
+// MAX_POSITIONS capacity. The reason parameter is stored as failure metadata
+// and the position is added to history for post-mortem analysis.
+func (e *Engine) cleanupFailedPosition(symbol string, reason string) {
 	positions, err := e.db.GetActivePositions()
 	if err != nil {
 		e.log.Error("cleanupFailedPosition: failed to get positions: %v", err)
@@ -2601,9 +2039,16 @@ func (e *Engine) cleanupFailedPosition(symbol string) {
 		if pos.LongSize > 0 || pos.ShortSize > 0 {
 			continue
 		}
-		e.log.Info("cleaning up orphaned %s position %s (status=%s)", symbol, pos.ID, pos.Status)
+		e.log.Info("cleaning up orphaned %s position %s (status=%s reason=%s)", symbol, pos.ID, pos.Status, reason)
 		pos.Status = models.StatusClosed
+		pos.FailureReason = reason
+		pos.FailureStage = deriveFailureStage(reason)
+		pos.ExitReason = "entry_failed: " + reason
 		pos.UpdatedAt = time.Now().UTC()
+		// Persist to history before saving state so the record is not lost.
+		if err := e.db.AddToHistory(pos); err != nil {
+			e.log.Error("cleanupFailedPosition: AddToHistory failed for %s: %v", pos.ID, err)
+		}
 		if err := e.db.SavePosition(pos); err != nil {
 			e.log.Error("cleanupFailedPosition: failed to close %s: %v", pos.ID, err)
 		}
@@ -2612,6 +2057,154 @@ func (e *Engine) cleanupFailedPosition(symbol string) {
 			e.api.BroadcastPositionUpdate(pos)
 		}
 	}
+}
+
+// deriveFailureStage maps an error message to a human-readable failure stage.
+func deriveFailureStage(reason string) string {
+	r := strings.ToLower(reason)
+	switch {
+	case strings.Contains(r, "depth data not available"), strings.Contains(r, "depth subscribe"):
+		return "depth_subscribe"
+	case strings.Contains(r, "depth fill"), strings.Contains(r, "below minimum"):
+		return "depth_fill"
+	case strings.Contains(r, "circuit breaker"), strings.Contains(r, "consecutive fail"):
+		return "circuit_breaker"
+	case strings.Contains(r, "margin"), strings.Contains(r, "insufficient"):
+		return "margin"
+	case strings.Contains(r, "place order"), strings.Contains(r, "placeorder"):
+		return "order_placement"
+	case strings.Contains(r, "leverage"), strings.Contains(r, "margin mode"):
+		return "setup"
+	default:
+		return "unknown"
+	}
+}
+
+// retrySecondLeg retries the second leg of a trade with escalating slippage.
+// Attempts 0-1 use normal slippage, 2-3 use double slippage. If IOC attempts
+// fail, switches to market orders and retries until filled or margin error.
+// The goal: once leg 1 is filled, leg 2 MUST be filled to match.
+func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol string, side exchange.Side, remainingSize float64, refPrice float64) (filled float64, avgPrice float64) {
+	baseSlippage := e.cfg.SlippageBPS / 10000.0
+	var totalFilled, totalNotional float64
+
+	// Phase 1: IOC with escalating slippage (attempts 0-3).
+	for attempt := 0; attempt < 4 && remainingSize > 0; attempt++ {
+		if attempt > 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
+
+		bbo, ok := exch.GetBBO(symbol)
+		if !ok {
+			bbo = exchange.BBO{Bid: refPrice, Ask: refPrice}
+		}
+
+		slippage := baseSlippage
+		if attempt >= 2 {
+			slippage = baseSlippage * 2
+		}
+
+		var orderPrice float64
+		if side == exchange.SideBuy {
+			orderPrice = bbo.Ask * (1 + slippage)
+		} else {
+			orderPrice = bbo.Bid * (1 - slippage)
+		}
+
+		sizeStr := utils.FormatSize(remainingSize, 6)
+		params := exchange.PlaceOrderParams{
+			Symbol:    symbol,
+			Side:      side,
+			OrderType: "limit",
+			Price:     e.formatPrice(exchName, symbol, orderPrice),
+			Size:      sizeStr,
+			Force:     "ioc",
+		}
+		e.log.Info("retrySecondLeg[IOC-%d] %s %s: price=%s size=%s slippage=%.4f",
+			attempt, exchName, symbol, params.Price, sizeStr, slippage)
+
+		orderID, err := exch.PlaceOrder(params)
+		if err != nil {
+			e.log.Warn("retrySecondLeg[IOC-%d] %s %s: PlaceOrder failed: %v", attempt, exchName, symbol, err)
+			if isMarginError(err) {
+				e.log.Error("retrySecondLeg: margin error on %s, aborting", exchName)
+				goto done
+			}
+			continue
+		}
+		e.ownOrders.Store(exchName+":"+orderID, struct{}{})
+
+		time.Sleep(500 * time.Millisecond)
+		filledQty, qErr := exch.GetOrderFilledQty(orderID, symbol)
+		if qErr != nil {
+			e.log.Warn("retrySecondLeg[IOC-%d] %s %s: GetOrderFilledQty failed: %v", attempt, exchName, symbol, qErr)
+			continue
+		}
+		if filledQty > 0 {
+			totalFilled += filledQty
+			totalNotional += filledQty * orderPrice
+			remainingSize -= filledQty
+			e.log.Info("retrySecondLeg[IOC-%d] %s %s: filled=%.6f remaining=%.6f",
+				attempt, exchName, symbol, filledQty, remainingSize)
+		} else {
+			e.log.Info("retrySecondLeg[IOC-%d] %s %s: no fill", attempt, exchName, symbol)
+		}
+	}
+
+	// Phase 2: Market order — keep retrying until fully filled.
+	// Leg 1 is already open, we MUST match it.
+	for mktAttempt := 0; remainingSize > 0 && mktAttempt < 10; mktAttempt++ {
+		if mktAttempt > 0 {
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		bbo, ok := exch.GetBBO(symbol)
+		if !ok {
+			bbo = exchange.BBO{Bid: refPrice, Ask: refPrice}
+		}
+
+		sizeStr := utils.FormatSize(remainingSize, 6)
+		e.log.Info("retrySecondLeg[MKT-%d] %s %s: MARKET size=%s", mktAttempt, exchName, symbol, sizeStr)
+
+		orderID, err := exch.PlaceOrder(exchange.PlaceOrderParams{
+			Symbol:    symbol,
+			Side:      side,
+			OrderType: "market",
+			Size:      sizeStr,
+		})
+		if err != nil {
+			e.log.Warn("retrySecondLeg[MKT-%d] %s %s: PlaceOrder failed: %v", mktAttempt, exchName, symbol, err)
+			if isMarginError(err) {
+				e.log.Error("retrySecondLeg: margin error on %s, aborting market retries", exchName)
+				break
+			}
+			continue
+		}
+		e.ownOrders.Store(exchName+":"+orderID, struct{}{})
+
+		time.Sleep(500 * time.Millisecond)
+		filledQty, qErr := exch.GetOrderFilledQty(orderID, symbol)
+		if qErr != nil {
+			e.log.Warn("retrySecondLeg[MKT-%d] %s %s: GetOrderFilledQty failed: %v", mktAttempt, exchName, symbol, qErr)
+			continue
+		}
+		if filledQty > 0 {
+			fillPrice := (bbo.Bid + bbo.Ask) / 2
+			totalFilled += filledQty
+			totalNotional += filledQty * fillPrice
+			remainingSize -= filledQty
+			e.log.Info("retrySecondLeg[MKT-%d] %s %s: filled=%.6f remaining=%.6f",
+				mktAttempt, exchName, symbol, filledQty, remainingSize)
+		} else {
+			e.log.Info("retrySecondLeg[MKT-%d] %s %s: no fill", mktAttempt, exchName, symbol)
+		}
+	}
+
+done:
+	if totalFilled > 0 {
+		avgPrice = totalNotional / totalFilled
+	}
+	return totalFilled, avgPrice
 }
 
 // executeTrade opens a delta-neutral position across two exchanges using
@@ -2949,12 +2542,17 @@ func (e *Engine) executeTradeV2WithPos(opp models.Opportunity, pos *models.Arbit
 		}
 	}
 	if !depthReady {
-		pos.Status = models.StatusClosed
-		pos.UpdatedAt = time.Now().UTC()
-		_ = e.db.SavePosition(pos)
 		_, lok := longExch.GetDepth(opp.Symbol)
 		_, sok := shortExch.GetDepth(opp.Symbol)
-		return fmt.Errorf("depth data not available after 8s for %s (long=%v short=%v)", opp.Symbol, lok, sok)
+		reason := fmt.Sprintf("depth data not available after 8s for %s (long=%v short=%v)", opp.Symbol, lok, sok)
+		pos.Status = models.StatusClosed
+		pos.FailureReason = reason
+		pos.FailureStage = "depth_subscribe"
+		pos.ExitReason = "entry_failed: " + reason
+		pos.UpdatedAt = time.Now().UTC()
+		_ = e.db.AddToHistory(pos)
+		_ = e.db.SavePosition(pos)
+		return fmt.Errorf("%s", reason)
 	}
 
 	// ---------------------------------------------------------------
@@ -3213,6 +2811,7 @@ fillLoop:
 				opp.Symbol, shortSizeStr, bidPrice, askPrice, spreadBPS)
 
 			// Short leg first (sell into bids)
+			e.log.Info("depth-fill %s: placing SELL order on %s size=%s price=%s (IOC)", opp.Symbol, opp.ShortExchange, shortSizeStr, shortPriceStr)
 			shortOID, err := shortExch.PlaceOrder(exchange.PlaceOrderParams{
 				Symbol:    opp.Symbol,
 				Side:      exchange.SideSell,
@@ -3243,6 +2842,7 @@ fillLoop:
 
 			// Long leg second (buy from asks) — only fill what short filled
 			longSizeStr := e.formatSize(opp.LongExchange, opp.Symbol, shortFilled)
+			e.log.Info("depth-fill %s: placing BUY order on %s size=%s price=%s (IOC)", opp.Symbol, opp.LongExchange, longSizeStr, longPriceStr)
 			longOID, err := longExch.PlaceOrder(exchange.PlaceOrderParams{
 				Symbol:    opp.Symbol,
 				Side:      exchange.SideBuy,
@@ -3252,20 +2852,40 @@ fillLoop:
 				Force:     "ioc",
 			})
 			if err != nil {
-				longConsecFails++
 				e.recordAPIError(opp.LongExchange, err)
 				if isMarginError(err) {
 					e.log.Warn("depth tick: long IOC margin insufficient for %s after short filled, invalidating cache", opp.Symbol)
 					lastBalCheck = time.Time{}
 				}
-				e.log.Warn("depth tick: long IOC failed (%d/%d) after short filled %.6f, closing short: %v", longConsecFails, maxConsecFails, shortFilled, err)
-				e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
-				continue
+				e.log.Warn("depth tick: long IOC failed after short filled %.6f, retrying second leg: %v", shortFilled, err)
+				retryFilled, retryAvg := e.retrySecondLeg(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, shortFilled, askPrice)
+				if retryFilled > 0 {
+					longFilled = retryFilled
+					longAvg = retryAvg
+					longConsecFails = 0
+				} else {
+					e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
+					longConsecFails++
+					continue
+				}
+			} else {
+				e.recordAPISuccess(opp.LongExchange)
+				longFilled, longAvg = e.confirmFill(longExch, longOID, opp.Symbol)
+				if longFilled == 0 {
+					e.log.Warn("depth tick: long confirmFill got 0 after short filled %.6f, retrying second leg", shortFilled)
+					retryFilled, retryAvg := e.retrySecondLeg(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, shortFilled, askPrice)
+					if retryFilled > 0 {
+						longFilled = retryFilled
+						longAvg = retryAvg
+						longConsecFails = 0
+					} else {
+						e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
+						longConsecFails++
+						continue
+					}
+				}
 			}
-			e.recordAPISuccess(opp.LongExchange)
-			longConsecFails = 0
-			longFilled, longAvg = e.confirmFill(longExch, longOID, opp.Symbol)
-			if longFilled < shortFilled {
+			if longFilled > 0 && longFilled < shortFilled {
 				excess := shortFilled - longFilled
 				e.log.Info("depth tick: trimming short excess %.6f", excess)
 				e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, excess)
@@ -3276,6 +2896,7 @@ fillLoop:
 				opp.Symbol, longSizeStr, bidPrice, askPrice, spreadBPS)
 
 			// Long leg first (buy from asks)
+			e.log.Info("depth-fill %s: placing BUY order on %s size=%s price=%s (IOC)", opp.Symbol, opp.LongExchange, longSizeStr, longPriceStr)
 			longOID, err := longExch.PlaceOrder(exchange.PlaceOrderParams{
 				Symbol:    opp.Symbol,
 				Side:      exchange.SideBuy,
@@ -3306,6 +2927,7 @@ fillLoop:
 
 			// Short leg second — only fill what long filled
 			shortSizeStr := e.formatSize(opp.ShortExchange, opp.Symbol, longFilled)
+			e.log.Info("depth-fill %s: placing SELL order on %s size=%s price=%s (IOC)", opp.Symbol, opp.ShortExchange, shortSizeStr, shortPriceStr)
 			shortOID, err := shortExch.PlaceOrder(exchange.PlaceOrderParams{
 				Symbol:    opp.Symbol,
 				Side:      exchange.SideSell,
@@ -3315,20 +2937,40 @@ fillLoop:
 				Force:     "ioc",
 			})
 			if err != nil {
-				shortConsecFails++
 				e.recordAPIError(opp.ShortExchange, err)
 				if isMarginError(err) {
 					e.log.Warn("depth tick: short IOC margin insufficient for %s after long filled, invalidating cache", opp.Symbol)
 					lastBalCheck = time.Time{}
 				}
-				e.log.Warn("depth tick: short IOC failed (%d/%d) after long filled %.6f, closing long: %v", shortConsecFails, maxConsecFails, longFilled, err)
-				e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
-				continue
+				e.log.Warn("depth tick: short IOC failed after long filled %.6f, retrying second leg: %v", longFilled, err)
+				retryFilled, retryAvg := e.retrySecondLeg(shortExch, opp.ShortExchange, opp.Symbol, exchange.SideSell, longFilled, bidPrice)
+				if retryFilled > 0 {
+					shortFilled = retryFilled
+					shortAvg = retryAvg
+					shortConsecFails = 0
+				} else {
+					e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
+					shortConsecFails++
+					continue
+				}
+			} else {
+				e.recordAPISuccess(opp.ShortExchange)
+				shortFilled, shortAvg = e.confirmFill(shortExch, shortOID, opp.Symbol)
+				if shortFilled == 0 {
+					e.log.Warn("depth tick: short confirmFill got 0 after long filled %.6f, retrying second leg", longFilled)
+					retryFilled, retryAvg := e.retrySecondLeg(shortExch, opp.ShortExchange, opp.Symbol, exchange.SideSell, longFilled, bidPrice)
+					if retryFilled > 0 {
+						shortFilled = retryFilled
+						shortAvg = retryAvg
+						shortConsecFails = 0
+					} else {
+						e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
+						shortConsecFails++
+						continue
+					}
+				}
 			}
-			e.recordAPISuccess(opp.ShortExchange)
-			shortConsecFails = 0
-			shortFilled, shortAvg = e.confirmFill(shortExch, shortOID, opp.Symbol)
-			if shortFilled < longFilled {
+			if shortFilled > 0 && shortFilled < longFilled {
 				excess := longFilled - shortFilled
 				e.log.Info("depth tick: trimming long excess %.6f", excess)
 				e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, excess)
@@ -3390,10 +3032,15 @@ fillLoop:
 		if confirmedShort > 0 {
 			e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, confirmedShort)
 		}
+		reason := fmt.Sprintf("depth fills below minimum (%s: long=%.6f short=%.6f)", opp.Symbol, confirmedLong, confirmedShort)
 		pos.Status = models.StatusClosed
+		pos.FailureReason = reason
+		pos.FailureStage = "depth_fill"
+		pos.ExitReason = "entry_failed: " + reason
 		pos.UpdatedAt = time.Now().UTC()
+		_ = e.db.AddToHistory(pos)
 		_ = e.db.SavePosition(pos)
-		return fmt.Errorf("depth fills below minimum (%s: long=%.6f short=%.6f)", opp.Symbol, confirmedLong, confirmedShort)
+		return fmt.Errorf("%s", reason)
 	}
 
 	// Trim excess from the larger leg

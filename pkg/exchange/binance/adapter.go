@@ -3,6 +3,7 @@ package binance
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"strconv"
 	"strings"
@@ -113,6 +114,8 @@ func (b *Adapter) Name() string { return "binance" }
 // ---------------------------------------------------------------------------
 
 func (b *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
+	log.Printf("[binance] PlaceOrder: symbol=%s side=%s type=%s size=%s price=%s force=%s reduceOnly=%v",
+		req.Symbol, req.Side, req.OrderType, req.Size, req.Price, req.Force, req.ReduceOnly)
 	params := map[string]string{
 		"symbol":   req.Symbol,
 		"side":     mapSide(req.Side),

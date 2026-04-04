@@ -35,6 +35,8 @@ type ArbitragePosition struct {
 	ZeroSpreadCount  int       `json:"zero_spread_count,omitempty"` // consecutive zero-spread occurrences
 	EntryFees        float64   `json:"entry_fees,omitempty"`        // total entry trading fees (both legs)
 	ExitReason         string           `json:"exit_reason,omitempty"`         // why the position was closed
+	FailureReason      string           `json:"failure_reason,omitempty"`      // why it failed (e.g. "circuit breaker", "insufficient balance", "depth timeout")
+	FailureStage       string           `json:"failure_stage,omitempty"`       // at what stage (e.g. "depth_subscribe", "depth_fill", "order_placement")
 	LongUnrealizedPnL  float64          `json:"long_unrealized_pnl,omitempty"`
 	ShortUnrealizedPnL float64          `json:"short_unrealized_pnl,omitempty"`
 	RotationHistory    []RotationRecord `json:"rotation_history,omitempty"`

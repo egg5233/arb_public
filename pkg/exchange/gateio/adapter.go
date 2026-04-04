@@ -3,6 +3,7 @@ package gateio
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"strconv"
 	"strings"
@@ -141,6 +142,8 @@ func fromGateSymbol(symbol string) string {
 // ---------------------------------------------------------------------------
 
 func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
+	log.Printf("[gateio] PlaceOrder: symbol=%s side=%s type=%s size=%s price=%s force=%s reduceOnly=%v",
+		req.Symbol, req.Side, req.OrderType, req.Size, req.Price, req.Force, req.ReduceOnly)
 	contract := toGateSymbol(req.Symbol)
 
 	// Gate.io uses signed integer size in contracts.

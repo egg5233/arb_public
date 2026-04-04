@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.26.1] - 2026-04-04
+
+### Fixed
+- **Dust orphan infinite loop** — consolidator now directly places market ReduceOnly order for dust positions (below minSize), bypassing `closeFullyWithRetry` minSize guard. Successful close suppresses future retries; failed close retries next cycle
+- **Second leg retry** — `retrySecondLeg` split into Phase 1 (IOC x4 with escalating slippage) and Phase 2 (market order x10 persistent retry). Leg 1 is kept open while leg 2 retries until filled; only margin error aborts
+- **BingX rate limit (100410)** — added 5-second cache on `GetAllPositions` and `GetFuturesBalance` in BingX adapter to reduce concurrent API calls from health monitor, risk monitor, and consolidator
+- **History table layout** — fixed status column text wrapping on History page
+
 ## [0.26.0] - 2026-04-03
 
 ### Added

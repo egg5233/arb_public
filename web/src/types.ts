@@ -42,6 +42,7 @@ export interface Position {
   short_sl_order_id?: string;
   entry_fees?: number;
   exit_reason?: string;
+  failure_reason?: string;
   long_unrealized_pnl?: number;
   short_unrealized_pnl?: number;
   rotation_history?: RotationRecord[];

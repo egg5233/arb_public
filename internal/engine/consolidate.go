@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"arb/internal/models"
@@ -25,7 +26,12 @@ func (e *Engine) runConsolidator() {
 	// to guard against transient API glitches returning empty positions.
 	missCount := map[string]int{}
 
-	e.consolidatePositions(missCount)
+	// dustIgnore tracks orphan positions that are below exchange minSize and
+	// cannot be closed via API. Prevents infinite consolidation loops.
+	// key: "exchange:symbol:side"
+	dustIgnore := map[string]bool{}
+
+	e.consolidatePositions(missCount, dustIgnore)
 
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
@@ -33,7 +39,7 @@ func (e *Engine) runConsolidator() {
 	for {
 		select {
 		case <-ticker.C:
-			e.consolidatePositions(missCount)
+			e.consolidatePositions(missCount, dustIgnore)
 		case <-e.stopCh:
 			e.log.Info("consolidator stopped")
 			return
@@ -43,7 +49,7 @@ func (e *Engine) runConsolidator() {
 
 // consolidatePositions compares local position records with exchange state
 // and fixes mismatches.
-func (e *Engine) consolidatePositions(missCount map[string]int) {
+func (e *Engine) consolidatePositions(missCount map[string]int, dustIgnore map[string]bool) {
 	positions, err := e.db.GetActivePositions()
 	if err != nil {
 		e.log.Error("consolidate: failed to get positions: %v", err)
@@ -165,12 +171,18 @@ func (e *Engine) consolidatePositions(missCount map[string]int) {
 					continue
 				}
 
+				// Skip orphan positions already closed as dust.
+				dustKey := fmt.Sprintf("%s:%s:%s", name, ep.Symbol, ep.HoldSide)
+				if dustIgnore[dustKey] {
+					e.log.Debug("consolidate: skipping dust-ignored orphan %s %s on %s", ep.Symbol, ep.HoldSide, name)
+					continue
+				}
+
 				markPrice, _ := utils.ParseFloat(ep.MarkPrice)
 				notional := size * markPrice
 				e.log.Warn("consolidate: orphan position on %s: %s %s size=%.6f notional=%.2f USDT",
 					name, ep.Symbol, ep.HoldSide, size, notional)
 
-				// Auto-close orphan positions via reduce-only market IOC.
 				if e.cfg.DryRun {
 					e.log.Info("[DRY RUN] would close orphan %s %s on %s", ep.Symbol, ep.HoldSide, name)
 					continue
@@ -181,6 +193,49 @@ func (e *Engine) consolidatePositions(missCount map[string]int) {
 				} else {
 					closeSide = exchange.SideBuy
 				}
+
+				// Check if dust (below minSize). Dust can't go through
+				// closeFullyWithRetry because the minSize guard blocks it.
+				// Place a direct market ReduceOnly order instead.
+				var minSize float64
+				if e.contracts != nil {
+					if exContracts, ok := e.contracts[name]; ok {
+						if ci, ok := exContracts[ep.Symbol]; ok {
+							minSize = ci.MinSize
+						}
+					}
+				}
+				if minSize > 0 && size < minSize {
+					// Bypass formatSize (step-rounding may floor to 0). Send raw
+					// size so the exchange's ReduceOnly logic caps to actual position.
+					sizeStr := e.formatSize(name, ep.Symbol, size)
+					if sizeF, _ := strconv.ParseFloat(sizeStr, 64); sizeF <= 0 {
+						sizeStr = strconv.FormatFloat(size, 'f', -1, 64)
+					}
+					e.log.Info("consolidate: dust close %s %s on %s size=%s (below minSize %.6f)",
+						ep.Symbol, ep.HoldSide, name, sizeStr, minSize)
+					oid, err := exch.PlaceOrder(exchange.PlaceOrderParams{
+						Symbol:     ep.Symbol,
+						Side:       closeSide,
+						OrderType:  "market",
+						Size:       sizeStr,
+						Force:      "ioc",
+						ReduceOnly: true,
+					})
+					if err != nil {
+						e.log.Error("consolidate: dust close failed %s %s on %s: %v — will retry next cycle",
+							ep.Symbol, ep.HoldSide, name, err)
+					} else {
+						e.log.Info("consolidate: dust close order placed %s %s on %s oid=%s",
+							ep.Symbol, ep.HoldSide, name, oid)
+						e.ownOrders.Store(name+":"+oid, struct{}{})
+						// Only suppress future retries on successful order placement.
+						// Next cycle will re-check; if position is gone, no action needed.
+						dustIgnore[dustKey] = true
+					}
+					continue
+				}
+
 				e.log.Info("consolidate: closing orphan %s %s on %s size=%.6f (verified retry)",
 					ep.Symbol, ep.HoldSide, name, size)
 				e.closeFullyWithRetry(exch, ep.Symbol, closeSide, size)
