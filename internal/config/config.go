@@ -679,16 +679,16 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if len(s.ScanMinutes) > 0 {
 			c.ScanMinutes = s.ScanMinutes
 		}
-		if s.EntryScanMinute != nil {
+		if s.EntryScanMinute != nil && *s.EntryScanMinute > 0 {
 			c.EntryScanMinute = *s.EntryScanMinute
 		}
-		if s.ExitScanMinute != nil {
+		if s.ExitScanMinute != nil && *s.ExitScanMinute > 0 {
 			c.ExitScanMinute = *s.ExitScanMinute
 		}
-		if s.RotateScanMinute != nil {
+		if s.RotateScanMinute != nil && *s.RotateScanMinute > 0 {
 			c.RotateScanMinute = *s.RotateScanMinute
 		}
-		if s.RebalanceScanMinute != nil {
+		if s.RebalanceScanMinute != nil && *s.RebalanceScanMinute > 0 {
 			c.RebalanceScanMinute = *s.RebalanceScanMinute
 		}
 		if s.EnablePoolAllocator != nil {
