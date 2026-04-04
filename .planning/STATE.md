@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-stopped_at: Phase 01 Plan 03 Task 1 complete, checkpoint pending
-last_updated: "2026-04-02T05:24:46.349Z"
-last_activity: 2026-04-02
+status: verifying
+stopped_at: Completed 05-01-PLAN.md
+last_updated: "2026-04-04T03:04:35.241Z"
+last_activity: 2026-04-04
 progress:
   total_phases: 5
-  completed_phases: 1
-  total_plans: 3
-  completed_plans: 3
-  percent: 0
+  completed_phases: 3
+  total_plans: 9
+  completed_plans: 10
+  percent: 60
 ---
 
 # Project State
@@ -27,8 +27,8 @@ See: .planning/PROJECT.md (updated 2026-04-01)
 
 Phase: 3
 Plan: 3 of 3
-Status: Executing Phase 03 (Plan 03 checkpoint pending)
-Last activity: 2026-04-03
+Status: Phase complete — ready for verification
+Last activity: 2026-04-04
 
 Progress: [██████░░░░] 60%
 
@@ -52,6 +52,7 @@ Progress: [██████░░░░] 60%
 - Trend: stable
 
 *Updated after each plan completion*
+| Phase 05 P01 | 7min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -69,6 +70,9 @@ Recent decisions affecting current work:
 - [Phase 03-02]: Fail-open on Redis query errors -- loss event query failure does not block entries
 - [Phase 03-03]: Safety tab uses emerald color to distinguish from amber-colored Global Risk tab
 - [Phase 03-03]: VERSION bumped to 0.26.0 to cover all Phase 3 operational safety work
+- [Phase 05]: New allocation JSON section in config -- groups all Phase 5 fields together
+- [Phase 05]: ComputeEffectiveAllocation is a pure function (not method) for easy unit testing
+- [Phase 05]: SizeMultiplier applied only in EffectiveCapitalPerLeg derivation, not during profile application
 
 ### Pending Todos
 
@@ -81,6 +85,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-03T01:22:50Z
-Stopped at: Phase 03 Plan 03 Tasks 1-2 complete, Task 3 human-verify checkpoint pending
+Last session: 2026-04-04T03:04:35.237Z
+Stopped at: Completed 05-01-PLAN.md
 Resume file: None
