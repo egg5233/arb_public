@@ -12,6 +12,12 @@ All notable changes to this project will be documented in this file.
 - **Config toggle**: `enable_analytics` (default OFF) gates all analytics features
 - **APR & win rate**: Annualized return and win rate segmented by strategy and exchange
 - **i18n**: Full English and Traditional Chinese support for all analytics strings
+- **Risk profile presets** (conservative/balanced/aggressive) bundling MaxPositions, Leverage, MaxCostRatio, MinNetYieldAPR, allocation weights, and SizeMultiplier
+- **Unified capital allocation config fields** (7 new fields): EnableUnifiedCapital, TotalCapitalUSDT, RiskProfile, AllocationLookbackDays, AllocationFloorPct, AllocationCeilingPct, SizeMultiplier
+- **Performance-weighted allocation** via `ComputeEffectiveAllocation` — blends profile base split with trailing APR data, clamped to floor/ceiling bounds
+- **Derived capital-per-leg** via `EffectiveCapitalPerLeg` — derives from TotalCapitalUSDT/MaxPositions/2 with SizeMultiplier
+- **Dynamic strategy shifting** via `DynamicStrategyPct` — frees uncommitted capital from idle strategy
+- **CapitalSummary** extended with EffectivePerpPct, EffectiveSpotPct, PoolTotal, CapitalPerLeg fields
 
 ## [0.26.1] - 2026-04-04
 

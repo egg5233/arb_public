@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"arb/internal/config"
@@ -44,10 +46,14 @@ type allocatorPosition struct {
 }
 
 type CapitalSummary struct {
-	TotalExposure float64              `json:"total_exposure"`
-	ByStrategy    map[Strategy]float64 `json:"by_strategy"`
-	ByExchange    map[string]float64   `json:"by_exchange"`
-	Reservations  int                  `json:"reservations"`
+	TotalExposure    float64              `json:"total_exposure"`
+	ByStrategy       map[Strategy]float64 `json:"by_strategy"`
+	ByExchange       map[string]float64   `json:"by_exchange"`
+	Reservations     int                  `json:"reservations"`
+	EffectivePerpPct float64              `json:"effective_perp_pct"`
+	EffectiveSpotPct float64              `json:"effective_spot_pct"`
+	PoolTotal        float64              `json:"pool_total"`
+	CapitalPerLeg    float64              `json:"capital_per_leg"`
 }
 
 type allocatorState struct {
@@ -63,6 +69,11 @@ type CapitalAllocator struct {
 	db  *database.Client
 	cfg *config.Config
 	log *utils.Logger
+
+	// Dynamic allocation state (updated per scan cycle)
+	mu               sync.RWMutex
+	effectivePerpPct float64
+	effectiveSpotPct float64
 }
 
 func NewCapitalAllocator(db *database.Client, cfg *config.Config) *CapitalAllocator {
@@ -308,11 +319,20 @@ func (a *CapitalAllocator) Summary() (*CapitalSummary, error) {
 		return nil, err
 	}
 
+	a.mu.RLock()
+	perpPct := a.effectivePerpPct
+	spotPct := a.effectiveSpotPct
+	a.mu.RUnlock()
+
 	return &CapitalSummary{
-		TotalExposure: state.total,
-		ByStrategy:    state.byStrategy,
-		ByExchange:    state.byExchange,
-		Reservations:  state.reservations,
+		TotalExposure:    state.total,
+		ByStrategy:       state.byStrategy,
+		ByExchange:       state.byExchange,
+		Reservations:     state.reservations,
+		EffectivePerpPct: perpPct,
+		EffectiveSpotPct: spotPct,
+		PoolTotal:        a.cfg.TotalCapitalUSDT,
+		CapitalPerLeg:    a.EffectiveCapitalPerLeg(),
 	}, nil
 }
 
@@ -536,6 +556,21 @@ func (a *CapitalAllocator) checkCaps(state allocatorState, strategy Strategy, ex
 }
 
 func (a *CapitalAllocator) strategyPct(strategy Strategy) float64 {
+	if a.cfg.EnableUnifiedCapital {
+		a.mu.RLock()
+		defer a.mu.RUnlock()
+		switch strategy {
+		case StrategySpotFutures:
+			if a.effectiveSpotPct > 0 {
+				return a.effectiveSpotPct
+			}
+		default:
+			if a.effectivePerpPct > 0 {
+				return a.effectivePerpPct
+			}
+		}
+	}
+	// Fallback to static config
 	switch strategy {
 	case StrategySpotFutures:
 		return a.cfg.MaxSpotFuturesPct
@@ -576,6 +611,128 @@ func (a *CapitalAllocator) readFloatKey(ctx context.Context, reader redis.Cmdabl
 		return 0, fmt.Errorf("parse float %s=%q: %w", key, val, err)
 	}
 	return parsed, nil
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic allocation: performance-weighted split + derived sizing + shifting
+// ---------------------------------------------------------------------------
+
+// ComputeEffectiveAllocation computes dynamic strategy percentages by blending
+// the profile's base split with trailing APR performance data. Returns (perpPct, spotPct)
+// that sum to 1.0, clamped within [floor, ceiling].
+func ComputeEffectiveAllocation(
+	perpAPR, spotAPR float64,
+	basePerpPct, baseSpotPct float64,
+	floorPct, ceilingPct float64,
+) (perpPct, spotPct float64) {
+	totalAPR := perpAPR + spotAPR
+	if totalAPR <= 0 {
+		return basePerpPct, baseSpotPct
+	}
+	perfPerp := perpAPR / totalAPR
+	perfSpot := spotAPR / totalAPR
+
+	// 50/50 blend of base and performance-weighted
+	perpPct = 0.5*basePerpPct + 0.5*perfPerp
+	spotPct = 0.5*baseSpotPct + 0.5*perfSpot
+
+	// Clamp to floor/ceiling
+	perpPct = clamp(perpPct, floorPct, ceilingPct)
+	spotPct = clamp(spotPct, floorPct, ceilingPct)
+
+	// Normalize to sum to 1.0
+	total := perpPct + spotPct
+	if total > 0 {
+		perpPct /= total
+		spotPct /= total
+	}
+	return
+}
+
+// SetEffectiveAllocation caches the performance-weighted allocation percentages.
+// Called once per scan cycle by the caller after computing via ComputeEffectiveAllocation.
+func (a *CapitalAllocator) SetEffectiveAllocation(perpPct, spotPct float64) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.effectivePerpPct = perpPct
+	a.effectiveSpotPct = spotPct
+}
+
+// EffectiveCapitalPerLeg returns the USDT amount per position leg.
+// Priority: (1) manual CapitalPerLeg override, (2) derived from TotalCapitalUSDT, (3) 0 (auto from balance).
+func (a *CapitalAllocator) EffectiveCapitalPerLeg() float64 {
+	if a == nil || a.cfg == nil {
+		return 0
+	}
+	if a.cfg.CapitalPerLeg > 0 {
+		return a.cfg.CapitalPerLeg // manual override always wins
+	}
+	if !a.cfg.EnableUnifiedCapital || a.cfg.TotalCapitalUSDT <= 0 {
+		return 0 // auto from balance (existing behavior)
+	}
+	maxPos := a.cfg.MaxPositions
+	if maxPos <= 0 {
+		maxPos = 1
+	}
+	derived := a.cfg.TotalCapitalUSDT / float64(maxPos) / 2.0
+	mult := a.cfg.SizeMultiplier
+	if mult <= 0 {
+		mult = 1.0
+	}
+	return derived * mult
+}
+
+// DynamicStrategyPct returns the effective cap for the given strategy,
+// optionally shifting unused allocation from a strategy with no opportunities.
+// committedByStrategy is the current committed capital per strategy.
+func (a *CapitalAllocator) DynamicStrategyPct(
+	strategy Strategy,
+	perpHasOpps, spotHasOpps bool,
+	committedByStrategy map[Strategy]float64,
+) float64 {
+	if a == nil || a.cfg == nil || !a.cfg.EnableUnifiedCapital {
+		return a.strategyPct(strategy)
+	}
+
+	a.mu.RLock()
+	perpPct := a.effectivePerpPct
+	spotPct := a.effectiveSpotPct
+	a.mu.RUnlock()
+
+	if perpPct <= 0 && spotPct <= 0 {
+		return a.strategyPct(strategy) // not yet computed, use static
+	}
+
+	totalCap := a.cfg.MaxTotalExposureUSDT
+	if totalCap <= 0 {
+		return a.strategyPct(strategy)
+	}
+	ceiling := a.cfg.AllocationCeilingPct
+
+	switch strategy {
+	case StrategyPerpPerp:
+		if !spotHasOpps {
+			// Spot has no opps -- free its uncommitted portion for perp
+			spotCommitted := committedByStrategy[StrategySpotFutures]
+			spotAllocation := spotPct * totalCap
+			freed := math.Max(0, spotAllocation-spotCommitted) / totalCap
+			return clamp(perpPct+freed, 0, ceiling)
+		}
+		return perpPct
+	case StrategySpotFutures:
+		if !perpHasOpps {
+			perpCommitted := committedByStrategy[StrategyPerpPerp]
+			perpAllocation := perpPct * totalCap
+			freed := math.Max(0, perpAllocation-perpCommitted) / totalCap
+			return clamp(spotPct+freed, 0, ceiling)
+		}
+		return spotPct
+	default:
+		return a.strategyPct(strategy)
+	}
 }
 
 func cleanExposures(exposures map[string]float64) map[string]float64 {

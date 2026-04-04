@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 5 context gathered
-last_updated: "2026-04-04T01:58:20.492Z"
-last_activity: 2026-04-03
+stopped_at: Completed 05-01-PLAN.md
+last_updated: "2026-04-04T03:04:35.241Z"
+last_activity: 2026-04-04
 progress:
   total_phases: 5
   completed_phases: 4
-  total_plans: 13
-  completed_plans: 13
-  percent: 60
+  total_plans: 16
+  completed_plans: 14
+  percent: 87
 ---
 
 # Project State
@@ -21,22 +21,22 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-01)
 
 **Core value:** "I deposit USDT, select my risk preference, and the system automatically finds opportunities across both strategies, opens positions, collects funding, exits when profitable, and I can see exactly how much each position earned."
-**Current focus:** Phase 04 — performance-analytics
+**Current focus:** Phase 05 — capital-allocation
 
 ## Current Position
 
 Phase: 5
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-04-03
+Plan: 1 of 3 complete
+Status: Executing Wave 2
+Last activity: 2026-04-04
 
-Progress: [██████░░░░] 60%
+Progress: [████████░░] 87%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 3
+- Total plans completed: 14
 - Average duration: 14 min
 - Total execution time: 0.7 hours
 
@@ -55,6 +55,7 @@ Progress: [██████░░░░] 60%
 | Phase 04 P01 | 6min | 2 tasks | 6 files |
 | Phase 04 P03 | 19min | 2 tasks | 10 files |
 | Phase 04 P04 | 8 | 3 tasks | 16 files |
+| Phase 05 P01 | 7min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -78,6 +79,9 @@ Recent decisions affecting current work:
 - [Phase 04]: SnapshotWriter uses non-blocking buffered channel (100) — analytics never blocks trading
 - [Phase 04]: BasisGainLoss formula: reconciledPnL - reconciledFunding - rotationPnL + totalFees
 - [Phase 04]: Analytics tab uses same pattern as Safety tab (no sub-tabs) in Config strategy toggle bar
+- [Phase 05]: New allocation JSON section in config -- groups all Phase 5 fields together
+- [Phase 05]: ComputeEffectiveAllocation is a pure function (not method) for easy unit testing
+- [Phase 05]: SizeMultiplier applied only in EffectiveCapitalPerLeg derivation, not during profile application
 
 ### Pending Todos
 
@@ -90,6 +94,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-04T01:58:20.488Z
-Stopped at: Phase 5 context gathered
-Resume file: .planning/phases/05-capital-allocation/05-CONTEXT.md
+Last session: 2026-04-04T03:04:35.237Z
+Stopped at: Completed 05-01-PLAN.md
+Resume file: None

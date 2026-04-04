@@ -217,6 +217,17 @@ type Config struct {
 	TelegramChatID   string
 
 	// ---------------------------------------------------------------------------
+	// Unified capital allocation (Phase 5)
+	// ---------------------------------------------------------------------------
+	EnableUnifiedCapital   bool    // Master on/off for unified capital (default OFF per D-13)
+	TotalCapitalUSDT       float64 // Total USDT pool; 0 = disabled, use CapitalPerLeg (per D-09)
+	RiskProfile            string  // "conservative", "balanced", "aggressive", "custom" (per D-03)
+	AllocationLookbackDays int     // Performance lookback window in days (default 7, per D-07)
+	AllocationFloorPct     float64 // Min allocation per strategy (default 0.20, per D-06)
+	AllocationCeilingPct   float64 // Max allocation per strategy (default 0.80, per D-06)
+	SizeMultiplier         float64 // Profile-driven position size multiplier (default 1.0)
+
+	// ---------------------------------------------------------------------------
 	// Safety: perp-perp Telegram notifications (struct field only; remaining
 	// touch points -- JSON, default, apply, toJSON, fromEnv -- added in Plan 03)
 	// ---------------------------------------------------------------------------
@@ -249,11 +260,22 @@ type jsonConfig struct {
 	Telegram    *jsonTelegram           `json:"telegram"`
 	Safety      *jsonSafety             `json:"safety"`
 	Analytics   *jsonAnalytics          `json:"analytics"`
+	Allocation  *jsonAllocation        `json:"allocation"`
 }
 
 type jsonAnalytics struct {
 	EnableAnalytics *bool   `json:"enable_analytics"`
 	AnalyticsDBPath *string `json:"analytics_db_path,omitempty"`
+}
+
+type jsonAllocation struct {
+	EnableUnifiedCapital   *bool    `json:"enable_unified_capital"`
+	TotalCapitalUSDT       *float64 `json:"total_capital_usdt"`
+	RiskProfile            *string  `json:"risk_profile"`
+	AllocationLookbackDays *int     `json:"allocation_lookback_days"`
+	AllocationFloorPct     *float64 `json:"allocation_floor_pct"`
+	AllocationCeilingPct   *float64 `json:"allocation_ceiling_pct"`
+	SizeMultiplier         *float64 `json:"size_multiplier"`
 }
 
 type jsonSafety struct {
@@ -570,6 +592,15 @@ func Load() *Config {
 		SpotFuturesMaxPriceGapPct:        0.5,
 		SpotFuturesEnableExitSpreadGate:  false,
 		SpotFuturesExitSpreadPct:         0.3,
+
+		// Unified capital allocation defaults (Phase 5)
+		EnableUnifiedCapital:   false,
+		TotalCapitalUSDT:       0,
+		RiskProfile:            "balanced",
+		AllocationLookbackDays: 7,
+		AllocationFloorPct:     0.20,
+		AllocationCeilingPct:   0.80,
+		SizeMultiplier:         1.0,
 
 		// Safety defaults (all off by default per D-10)
 		EnablePerpTelegram:  false,
@@ -1153,6 +1184,31 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		}
 	}
 
+	// Allocation (Phase 5)
+	if alloc := jc.Allocation; alloc != nil {
+		if alloc.EnableUnifiedCapital != nil {
+			c.EnableUnifiedCapital = *alloc.EnableUnifiedCapital
+		}
+		if alloc.TotalCapitalUSDT != nil && *alloc.TotalCapitalUSDT >= 0 {
+			c.TotalCapitalUSDT = *alloc.TotalCapitalUSDT
+		}
+		if alloc.RiskProfile != nil {
+			c.RiskProfile = *alloc.RiskProfile
+		}
+		if alloc.AllocationLookbackDays != nil && *alloc.AllocationLookbackDays > 0 {
+			c.AllocationLookbackDays = *alloc.AllocationLookbackDays
+		}
+		if alloc.AllocationFloorPct != nil && *alloc.AllocationFloorPct >= 0 {
+			c.AllocationFloorPct = *alloc.AllocationFloorPct
+		}
+		if alloc.AllocationCeilingPct != nil && *alloc.AllocationCeilingPct > 0 {
+			c.AllocationCeilingPct = *alloc.AllocationCeilingPct
+		}
+		if alloc.SizeMultiplier != nil && *alloc.SizeMultiplier > 0 {
+			c.SizeMultiplier = *alloc.SizeMultiplier
+		}
+	}
+
 	// Safety
 	if sa := jc.Safety; sa != nil {
 		if sa.EnableLossLimits != nil {
@@ -1422,6 +1478,16 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	sf["exit_spread_pct"] = c.SpotFuturesExitSpreadPct
 	delete(sf, "capital_per_position") // removed field
 
+	// Allocation (Phase 5)
+	alloc := getMap(raw, "allocation")
+	alloc["enable_unified_capital"] = c.EnableUnifiedCapital
+	alloc["total_capital_usdt"] = c.TotalCapitalUSDT
+	alloc["risk_profile"] = c.RiskProfile
+	alloc["allocation_lookback_days"] = c.AllocationLookbackDays
+	alloc["allocation_floor_pct"] = c.AllocationFloorPct
+	alloc["allocation_ceiling_pct"] = c.AllocationCeilingPct
+	alloc["size_multiplier"] = c.SizeMultiplier
+
 	// Safety
 	safety := getMap(raw, "safety")
 	safety["enable_loss_limits"] = c.EnableLossLimits
@@ -1686,6 +1752,24 @@ func (c *Config) loadEnvOverrides() {
 	}
 	if v := os.Getenv("TELEGRAM_CHAT_ID"); v != "" {
 		c.TelegramChatID = v
+	}
+
+	// Allocation (Phase 5)
+	if v := os.Getenv("ENABLE_UNIFIED_CAPITAL"); v == "true" || v == "1" {
+		c.EnableUnifiedCapital = true
+	}
+	if v := os.Getenv("TOTAL_CAPITAL_USDT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			c.TotalCapitalUSDT = f
+		}
+	}
+	if v := os.Getenv("RISK_PROFILE"); v != "" {
+		c.RiskProfile = v
+	}
+	if v := os.Getenv("ALLOCATION_LOOKBACK_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			c.AllocationLookbackDays = n
+		}
 	}
 
 	// Safety
