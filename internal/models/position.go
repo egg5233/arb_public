@@ -38,6 +38,8 @@ type ArbitragePosition struct {
 	BasisGainLoss    float64   `json:"basis_gain_loss,omitempty"`   // price-based P/L excluding funding and fees
 	Slippage         float64   `json:"slippage,omitempty"`          // estimated slippage from BBO at order time
 	ExitReason         string           `json:"exit_reason,omitempty"`         // why the position was closed
+	FailureReason      string           `json:"failure_reason,omitempty"`      // why it failed (e.g. "circuit breaker", "insufficient balance", "depth timeout")
+	FailureStage       string           `json:"failure_stage,omitempty"`       // at what stage (e.g. "depth_subscribe", "depth_fill", "order_placement")
 	LongUnrealizedPnL  float64          `json:"long_unrealized_pnl,omitempty"`
 	ShortUnrealizedPnL float64          `json:"short_unrealized_pnl,omitempty"`
 	RotationHistory    []RotationRecord `json:"rotation_history,omitempty"`

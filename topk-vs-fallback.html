@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>開倉流程：原始模式 vs Top-K 模式</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0f; color: #e2e8f0; font-family: -apple-system, 'Segoe UI', sans-serif; padding: 40px 20px; }
+  .container { max-width: 1200px; margin: 0 auto; }
+  h1 { text-align: center; font-size: 26px; margin-bottom: 40px; color: #f1f5f9; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin-bottom: 40px; }
+
+  .card { background: #111827; border: 1px solid #1e293b; border-radius: 16px; padding: 28px; }
+  .card-title { font-size: 20px; font-weight: 700; margin-bottom: 6px; padding-bottom: 12px; border-bottom: 2px solid; }
+  .card-old .card-title { color: #f87171; border-color: #991b1b; }
+  .card-new .card-title { color: #34d399; border-color: #059669; }
+  .subtitle { font-size: 13px; color: #64748b; margin-bottom: 18px; }
+
+  .flow { display: flex; flex-direction: column; gap: 0; }
+  .step { padding: 12px 16px; border-radius: 10px; font-size: 14px; line-height: 1.6; }
+  .step-scan { background: #1e1b4b; border: 1px solid #3730a3; }
+  .step-rank { background: #172554; border: 1px solid #1e40af; }
+  .step-alloc { background: #0c4a6e; border: 1px solid #0369a1; }
+  .step-check { background: #164e63; border: 1px solid #0891b2; }
+  .step-ok { background: #064e3b; border: 1px solid #059669; }
+  .step-fail { background: #450a0a; border: 1px solid #991b1b; }
+  .step-override { background: #312e81; border: 1px solid #4338ca; }
+  .step-fallback { background: #78350f; border: 1px solid #b45309; }
+
+  .step-label { font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px; }
+  .lbl-scan { color: #a78bfa; }
+  .lbl-rank { color: #60a5fa; }
+  .lbl-alloc { color: #38bdf8; }
+  .lbl-check { color: #22d3ee; }
+  .lbl-ok { color: #34d399; }
+  .lbl-fail { color: #f87171; }
+  .lbl-override { color: #818cf8; }
+  .lbl-fallback { color: #fbbf24; }
+
+  .arrow { text-align: center; color: #475569; font-size: 18px; line-height: 1; padding: 3px 0; }
+  .arrow-fail { color: #f87171; }
+  .arrow-ok { color: #34d399; }
+
+  .pair-table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 13px; }
+  .pair-table th { text-align: left; color: #64748b; font-weight: 500; padding: 4px 8px; border-bottom: 1px solid #1e293b; }
+  .pair-table td { padding: 5px 8px; }
+  .pair-table tr.selected { background: #0f766e33; }
+  .pair-table tr.dim { color: #475569; }
+
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .badge-best { background: #059669; color: #fff; }
+  .badge-alt { background: #1e40af; color: #93c5fd; }
+  .badge-skip { background: #991b1b; color: #fca5a5; }
+  .badge-only { background: #475569; color: #e2e8f0; }
+
+  .highlight { color: #fbbf24; font-weight: 600; }
+  .dim { color: #64748b; }
+  .red { color: #f87171; }
+  .green { color: #34d399; }
+
+  .scenario { margin: 12px 0; padding: 10px 14px; border-radius: 8px; font-size: 13px; }
+  .scenario-bad { background: #1c1917; border: 1px dashed #78350f; color: #fbbf24; }
+  .scenario-good { background: #052e16; border: 1px dashed #059669; color: #34d399; }
+
+  .compare { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  .compare th, .compare td { padding: 12px 16px; text-align: left; border-bottom: 1px solid #1e293b; font-size: 14px; }
+  .compare th { color: #94a3b8; font-weight: 500; background: #0f172a; }
+  .compare td:first-child { color: #94a3b8; font-weight: 500; }
+  .col-old { color: #f87171; }
+  .col-new { color: #34d399; }
+
+  .decision { display: flex; gap: 12px; margin: 8px 0; }
+  .branch { flex: 1; background: #0f172a; border-radius: 8px; padding: 10px 12px; font-size: 13px; border: 1px solid #1e293b; text-align: center; }
+  .branch-yes { border-color: #059669; }
+  .branch-no { border-color: #991b1b; }
+  .branch-label { font-size: 11px; font-weight: 700; margin-bottom: 4px; }
+  .branch-label-yes { color: #34d399; }
+  .branch-label-no { color: #f87171; }
+
+  .phase-header { font-size: 12px; font-weight: 700; color: #94a3b8; margin: 14px 0 6px; text-transform: uppercase; letter-spacing: 1px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>開倉流程：原始單配對模式 vs Top-K 多配對模式</h1>
+
+  <div class="grid">
+    <!-- OLD: Original single-pair -->
+    <div class="card card-old">
+      <div class="card-title">原始模式（TopPairsPerSymbol = 1）</div>
+      <div class="subtitle">1 個機會 = 1 個交易對，不行就放棄</div>
+
+      <div class="flow">
+        <div class="step step-scan">
+          <div class="step-label lbl-scan">Scanner 掃描</div>
+          Loris API 拉取全部交易所資金費率<br>
+          發現 BARDUSDT 有套利空間
+        </div>
+        <div class="arrow">▼</div>
+
+        <div class="step step-rank">
+          <div class="step-label lbl-rank">Ranker 排名</div>
+          計算所有可行配對，排序後<strong>只取第 1 名</strong>
+          <table class="pair-table">
+            <tr><th>#</th><th>多方</th><th>空方</th><th>Spread</th><th></th></tr>
+            <tr class="selected"><td>1</td><td>okx</td><td>bingx</td><td>9.46 bps/h</td><td><span class="badge badge-only">唯一</span></td></tr>
+            <tr class="dim"><td>2</td><td>okx</td><td>gateio</td><td>4.08</td><td class="dim">不產出</td></tr>
+            <tr class="dim"><td>3</td><td>okx</td><td>binance</td><td>2.64</td><td class="dim">不產出</td></tr>
+          </table>
+          <span class="dim">Alternatives = 空，沒有備選</span>
+        </div>
+        <div class="arrow">▼</div>
+
+        <div class="step step-check">
+          <div class="step-label lbl-check">Risk Approve 檢查</div>
+          okx 有容量？bingx 有容量？
+          <div class="decision">
+            <div class="branch branch-yes">
+              <div class="branch-label branch-label-yes">✅ 都有空間</div>
+              開倉 okx/bingx
+            </div>
+            <div class="branch branch-no">
+              <div class="branch-label branch-label-no">❌ 任一滿容</div>
+              <strong>直接拒絕</strong><br>
+              無替代方案
+            </div>
+          </div>
+        </div>
+        <div class="arrow arrow-fail">▼ 若被拒絕</div>
+
+        <div class="step step-fail">
+          <div class="step-label lbl-fail">結果：機會浪費</div>
+          bingx 滿容 → 這個機會被跳過<br>
+          <span class="red">即使 gateio、binance 有空間也不會嘗試</span>
+        </div>
+
+        <div class="scenario scenario-bad">
+          <strong>問題場景：</strong><br>
+          bingx 已有 6 個空頭倉位（滿容），但 gateio 完全空閒。<br>
+          原始模式只看 #1 配對 → bingx 滿 → 放棄。<br>
+          <strong>資金閒置在 gateio，無法被利用。</strong>
+        </div>
+      </div>
+    </div>
+
+    <!-- NEW: Top-K -->
+    <div class="card card-new">
+      <div class="card-title">Top-K 模式（TopPairsPerSymbol = 3）</div>
+      <div class="subtitle">1 個機會 = K 個備選交易對，分配器選最優可行方案</div>
+
+      <div class="flow">
+        <div class="step step-scan">
+          <div class="step-label lbl-scan">Scanner 掃描</div>
+          同樣發現 BARDUSDT 套利機會
+        </div>
+        <div class="arrow">▼</div>
+
+        <div class="step step-rank">
+          <div class="step-label lbl-rank">Ranker 排名 — 產出 Top-K</div>
+          計算所有可行配對，<strong>取前 K 名</strong>
+          <table class="pair-table">
+            <tr><th>#</th><th>多方</th><th>空方</th><th>Spread</th><th></th></tr>
+            <tr class="selected"><td>1</td><td>okx</td><td>bingx</td><td>9.46 bps/h</td><td><span class="badge badge-best">主配對</span></td></tr>
+            <tr><td>2</td><td>okx</td><td>gateio</td><td>4.08 bps/h</td><td><span class="badge badge-alt">備選</span></td></tr>
+            <tr><td>3</td><td>okx</td><td>binance</td><td>2.64 bps/h</td><td><span class="badge badge-alt">備選</span></td></tr>
+          </table>
+          <span class="dim">Alternatives = [#2, #3] 存在備選陣列</span>
+        </div>
+        <div class="arrow">▼</div>
+
+        <div class="phase-header">:35 Rebalance Scan</div>
+        <div class="step step-alloc">
+          <div class="step-label lbl-alloc">B&B Allocator 分配器</div>
+          收集所有機會的 Top-K 配對<br>
+          用 Branch-and-Bound 求解器，考慮：<br>
+          • 各交易所容量上限<br>
+          • 各配對的 spread / score<br>
+          • 跨所轉帳成本<br>
+          <strong>→ 選出全域最優的配對組合</strong>
+        </div>
+        <div class="arrow">▼</div>
+
+        <div class="step step-override">
+          <div class="step-label lbl-override">存儲 Allocator Override</div>
+          決策結果存入 allocOverrides<br>
+          <span class="dim">例：BARDUSDT → okx/gateio（因 bingx 滿容）</span>
+        </div>
+        <div class="arrow">▼</div>
+
+        <div class="phase-header">:40 Entry Scan — 三層 Fallback</div>
+        <div class="step step-check">
+          <div class="step-label lbl-check">Tier 1：即時重新掃描 + 內聯 Allocator</div>
+          :40 觸發新一輪掃描，拿到最新數據<br>
+          即時跑一次 B&B 分配器<br>
+          <span class="green">✅ 成功 → 用最新結果開倉</span>
+        </div>
+        <div class="arrow arrow-fail">▼ 若 Tier 1 失敗（分配器 error 或無結果）</div>
+
+        <div class="step step-override">
+          <div class="step-label lbl-override">Tier 2：套用 :35 Allocator Overrides</div>
+          用 :35 存的分配決策，搭配 :40 新鮮掃描數據驗證<br>
+          確認配對仍存在於當前 Alternatives 中<br>
+          <span class="green">✅ 配對仍有效 → 用備選配對開倉</span><br>
+          <span class="red">❌ 配對過期 → 跳過</span>
+        </div>
+        <div class="arrow arrow-fail">▼ 若 Tier 2 也沒有可用結果</div>
+
+        <div class="step step-fallback">
+          <div class="step-label lbl-fallback">Tier 3：Fallback 回原始 Rank 模式</div>
+          不經分配器，直接用 Ranker 排名的 #1 配對<br>
+          <span class="dim">等同原始模式的行為</span>
+        </div>
+        <div class="arrow arrow-ok">▼</div>
+
+        <div class="step step-ok">
+          <div class="step-label lbl-ok">結果：三層保障，盡可能成功開倉</div>
+          Tier 1 最優（即時數據 + 分配器）<br>
+          Tier 2 次優（:35 決策 + :40 驗證）<br>
+          Tier 3 保底（原始 rank，至少不會空手）
+        </div>
+
+        <div class="scenario scenario-good">
+          <strong>同一場景：</strong><br>
+          bingx 滿容 → 分配器自動選 gateio<br>
+          gateio 的閒置資金被部署，持續產生收益。<br>
+          <strong>資本利用率最大化。</strong>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Rebalance + Transfer Flow -->
+  <div class="card" style="border-color: #334155; margin-bottom: 32px;">
+    <div class="card-title" style="color: #f59e0b; border-color: #92400e;">:35 Rebalance 完整流程（含轉帳 + Feasible Fallback）</div>
+    <div class="subtitle">分配器決定開哪些倉 → 計算是否需要轉帳 → 轉帳不可行就降級</div>
+    <div class="flow">
+      <div class="step step-alloc">
+        <div class="step-label lbl-alloc">Step 1：B&B 分配器求解</div>
+        收集所有機會的 Top-K 配對<br>
+        求解最優配對組合，最大化部署資金
+        <table class="pair-table" style="margin-top:8px;">
+          <tr><th>#</th><th>幣種</th><th>配對</th><th>需要資金</th></tr>
+          <tr><td>1</td><td>BARDUSDT</td><td>okx/bingx</td><td>$500</td></tr>
+          <tr><td>2</td><td>SIRENUSDT</td><td>binance/bingx</td><td>$400</td></tr>
+          <tr><td>3</td><td>ONTUSDT</td><td>bitget/bingx</td><td>$350</td></tr>
+          <tr><td>4</td><td>GASUSDT</td><td>okx/bingx</td><td>$200</td></tr>
+          <tr><td>5</td><td>REZUSDT</td><td>gateio/bingx</td><td>$150</td></tr>
+        </table>
+        <span class="dim">最優解需要 bingx 端 $1,600</span>
+      </div>
+      <div class="arrow">▼</div>
+
+      <div class="step step-check">
+        <div class="step-label lbl-check">Step 2：計算跨所轉帳需求</div>
+        bingx 現有餘額 $1,100，缺 $500<br>
+        需要從 okx 轉 $500 到 bingx
+      </div>
+      <div class="arrow">▼</div>
+
+      <div class="step" style="background:#1e1b4b; border:1px solid #3730a3;">
+        <div class="step-label" style="color:#a78bfa;">Step 3：轉帳可行性檢查（Idle Funds Protection）</div>
+        okx 有持倉，轉出 $500 會讓 margin ratio 超過 L3 閾值<br>
+        <span class="red"><strong>→ 轉帳不可行</strong>（會觸發 L3/L4 風控）</span>
+      </div>
+      <div class="arrow arrow-fail">▼ 不可行</div>
+
+      <div class="step step-fallback">
+        <div class="step-label lbl-fallback">Step 4：Feasible Fallback — 逐步降級</div>
+        <div style="display:flex; gap:12px; margin:8px 0;">
+          <div class="branch branch-no" style="flex:1;">
+            <div class="branch-label branch-label-no">Round 1</div>
+            丟掉 #5 REZUSDT ($150)<br>
+            仍需轉帳 $350<br>
+            <span class="badge badge-skip">不可行</span>
+          </div>
+          <div class="branch branch-no" style="flex:1;">
+            <div class="branch-label branch-label-no">Round 2</div>
+            再丟 #4 GASUSDT ($200)<br>
+            仍需轉帳 $150<br>
+            <span class="badge badge-skip">不可行</span>
+          </div>
+          <div class="branch branch-yes" style="flex:1;">
+            <div class="branch-label branch-label-yes">Round 3</div>
+            再丟 #3 ONTUSDT ($350)<br>
+            不需轉帳<br>
+            <span class="badge badge-best">可行 ✅</span>
+          </div>
+        </div>
+      </div>
+      <div class="arrow arrow-ok">▼</div>
+
+      <div class="step step-ok">
+        <div class="step-label lbl-ok">Step 5：存儲可行方案</div>
+        開 2 個倉位（#1 BARDUSDT + #2 SIRENUSDT），總 $900<br>
+        不需要跨所轉帳，資金安全<br>
+        <span class="green">→ 存入 allocOverrides，等 :40 Entry Scan 執行</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Comparison Table -->
+  <div class="card" style="border-color: #334155;">
+    <div class="card-title" style="color: #f1f5f9; border-color: #334155;">差異對照</div>
+    <table class="compare">
+      <tr>
+        <th></th>
+        <th class="col-old">原始模式</th>
+        <th class="col-new">Top-K 模式</th>
+      </tr>
+      <tr>
+        <td>每個機會的配對數</td>
+        <td>1 個（固定）</td>
+        <td>K 個（可配置，預設 1）</td>
+      </tr>
+      <tr>
+        <td>交易所滿容時</td>
+        <td class="col-old">直接拒絕，機會浪費</td>
+        <td class="col-new">自動切換備選交易對</td>
+      </tr>
+      <tr>
+        <td>分配決策</td>
+        <td>無（先到先得）</td>
+        <td>B&B 求解器全域最優分配</td>
+      </tr>
+      <tr>
+        <td>跨幣種協調</td>
+        <td class="col-old">無 — 各幣獨立判斷</td>
+        <td class="col-new">有 — 分配器同時考慮所有機會的交易所容量</td>
+      </tr>
+      <tr>
+        <td>資本效率</td>
+        <td class="col-old">低 — 閒置交易所無法被利用</td>
+        <td class="col-new">高 — 最大化部署到有空間的交易所</td>
+      </tr>
+      <tr>
+        <td>數據新鮮度</td>
+        <td>開倉時即時</td>
+        <td>:35 決策 + :40 驗證（雙重確認）</td>
+      </tr>
+      <tr>
+        <td>配置</td>
+        <td>無需配置</td>
+        <td>TopPairsPerSymbol、AllocatorTimeoutMs</td>
+      </tr>
+    </table>
+  </div>
+</div>
+</body>
+</html>

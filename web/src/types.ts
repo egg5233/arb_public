@@ -45,6 +45,7 @@ export interface Position {
   basis_gain_loss?: number;
   slippage?: number;
   exit_reason?: string;
+  failure_reason?: string;
   long_unrealized_pnl?: number;
   short_unrealized_pnl?: number;
   rotation_history?: RotationRecord[];

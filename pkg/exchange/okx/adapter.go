@@ -3,6 +3,7 @@ package okx
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"strconv"
 	"strings"
@@ -172,6 +173,8 @@ func fromOKXInstID(instID string) string {
 // ---------------------------------------------------------------------------
 
 func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
+	log.Printf("[okx] PlaceOrder: symbol=%s side=%s type=%s size=%s price=%s force=%s reduceOnly=%v",
+		req.Symbol, req.Side, req.OrderType, req.Size, req.Price, req.Force, req.ReduceOnly)
 	instID := toOKXInstID(req.Symbol)
 
 	// OKX sz is in contracts. Engine sends base units, so divide by ctVal.

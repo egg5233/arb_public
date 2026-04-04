@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"crypto/hmac"
@@ -50,6 +51,11 @@ type Client struct {
 	secretKey       string
 	httpClient      *http.Client
 	metricsCallback exchange.MetricsCallback
+
+	// Rate limiter: serialize signed API calls with minimum interval
+	// to avoid BingX 100410 frequency limit bans.
+	rateMu   sync.Mutex
+	lastCall time.Time
 }
 
 // NewClient creates a new BingX REST API client.
@@ -258,7 +264,17 @@ func isRetryable(err error) bool {
 }
 
 // retryDo performs an HTTP request with exponential backoff retry on transient errors.
+// All calls are serialized with a minimum 150ms interval to stay under BingX's
+// 10/s per-UID rate limit across concurrent goroutines.
 func (c *Client) retryDo(method, path string, params map[string]string, maxRetries int) (json.RawMessage, error) {
+	// Rate limit: serialize and enforce minimum interval between calls.
+	c.rateMu.Lock()
+	if elapsed := time.Since(c.lastCall); elapsed < 150*time.Millisecond {
+		time.Sleep(150*time.Millisecond - elapsed)
+	}
+	c.lastCall = time.Now()
+	c.rateMu.Unlock()
+
 	var lastErr error
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {

@@ -39,6 +39,7 @@ type Adapter struct {
 	fundingFeesCacheMu    sync.Mutex
 	fundingFeesCacheTime  time.Time
 	fundingFeesCacheSince time.Time // the 'since' param used for this cache
+
 }
 
 func (a *Adapter) SetMetricsCallback(fn exchange.MetricsCallback) {
@@ -190,6 +191,8 @@ func toBingXOrderType(orderType string) string {
 
 // PlaceOrder places a new order on BingX.
 func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
+	log.Info("PlaceOrder: symbol=%s side=%s type=%s size=%s price=%s force=%s reduceOnly=%v",
+		req.Symbol, req.Side, req.OrderType, req.Size, req.Price, req.Force, req.ReduceOnly)
 	params := map[string]string{
 		"symbol":   toBingXSymbol(req.Symbol),
 		"type":     toBingXOrderType(req.OrderType),

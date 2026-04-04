@@ -172,6 +172,8 @@ func toBybitOrderType(orderType string) string {
 
 // PlaceOrder places a new order on Bybit.
 func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
+	log.Info("PlaceOrder: symbol=%s side=%s type=%s size=%s price=%s force=%s reduceOnly=%v",
+		req.Symbol, req.Side, req.OrderType, req.Size, req.Price, req.Force, req.ReduceOnly)
 	params := map[string]string{
 		"category":    "linear",
 		"symbol":      req.Symbol,
