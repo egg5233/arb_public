@@ -2,12 +2,12 @@
 phase: 05
 slug: capital-allocation
 status: draft
-nyquist_compliant: false
-wave_0_complete: false
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-04-04
 ---
 
-# Phase 05 — Validation Strategy
+# Phase 05 -- Validation Strategy
 
 > Per-phase validation contract for feedback sampling during execution.
 
@@ -18,7 +18,7 @@ created: 2026-04-04
 | Property | Value |
 |----------|-------|
 | **Framework** | go test (stdlib) |
-| **Config file** | none — uses test helpers |
+| **Config file** | none -- uses test helpers |
 | **Quick run command** | `go test ./internal/risk/... ./internal/config/... -count=1 -short` |
 | **Full suite command** | `go test ./... -count=1 -short` |
 | **Estimated runtime** | ~15 seconds |
@@ -36,23 +36,27 @@ created: 2026-04-04
 
 ## Per-Task Verification Map
 
-| Task ID | Plan | Wave | Requirement | Test Type | Automated Command | File Exists | Status |
-|---------|------|------|-------------|-----------|-------------------|-------------|--------|
-| 05-01-01 | 01 | 1 | CA-01, CA-02 | unit | `go test ./internal/risk/... -run TestProfile -count=1` | ❌ W0 | ⬜ pending |
-| 05-01-02 | 01 | 1 | CA-03 | unit | `go test ./internal/risk/... -run TestAllocation -count=1` | ❌ W0 | ⬜ pending |
-| 05-02-01 | 02 | 2 | CA-01 | integration | `go test ./internal/risk/... ./internal/engine/... -count=1 -short` | ❌ W0 | ⬜ pending |
-| 05-03-01 | 03 | 3 | CA-04 | unit | `go test ./internal/risk/... -run TestDynamic -count=1` | ❌ W0 | ⬜ pending |
+| Task ID | Plan | Wave | Requirement | Test Type | Automated Command | Wave 0 | Status |
+|---------|------|------|-------------|-----------|-------------------|--------|--------|
+| 05-01-01 | 01 | 1 | CA-01, CA-02 | unit (TDD) | `go test ./internal/risk/... -run TestProfile -count=1` | TDD task creates tests in RED phase | pending |
+| 05-01-02 | 01 | 1 | CA-03, CA-04 | unit (TDD) | `go test ./internal/risk/... -run TestAllocation -count=1` | TDD task creates tests in RED phase | pending |
+| 05-02-01 | 02 | 2 | CA-01 | integration | `go test ./internal/engine/... ./internal/risk/... -count=1 -short` | Extends existing test infra | pending |
+| 05-02-02 | 02 | 2 | CA-03, CA-04 | integration | `go build ./... && go test ./internal/engine/... ./internal/spotengine/... -count=1 -short` | Compilation + existing tests | pending |
+| 05-02-03 | 02 | 2 | CA-02 | integration | `go build ./... && go test ./internal/api/... -count=1 -short` | Extends existing test infra | pending |
+| 05-03-01 | 03 | 3 | CA-01, CA-02 | build | `make build-frontend` | N/A (frontend build) | pending |
+| 05-03-02 | 03 | 3 | CA-01-CA-04 | build | `make build-frontend && cat VERSION` | N/A (frontend build) | pending |
 
-*Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
+*Status: pending / green / red / flaky*
 
 ---
 
-## Wave 0 Requirements
+## Wave 0 Strategy
 
-- [ ] `internal/risk/allocator_test.go` — extend with profile and dynamic allocation tests
-- [ ] `internal/config/config_test.go` — profile config round-trip tests
+Plan 01 tasks are `tdd="true"`. The TDD RED phase creates test files as the first step of execution -- this IS the Wave 0 activity. Tests are written before implementation code, satisfying the Nyquist requirement that automated verification exists before production code.
 
-*Existing infrastructure covers test framework — no new framework install needed.*
+Plan 02 and 03 tasks extend existing test infrastructure (risk, engine, api, spotengine packages all have existing test files). No new test scaffolds needed.
+
+**Wave 0 is satisfied by TDD execution flow (Plan 01) and existing test infrastructure (Plans 02-03).**
 
 ---
 
@@ -67,11 +71,11 @@ created: 2026-04-04
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 15s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covered by TDD execution (Plan 01) and existing test infra (Plans 02-03)
+- [x] No watch-mode flags
+- [x] Feedback latency < 15s
+- [x] `nyquist_compliant: true` set in frontmatter
 
 **Approval:** pending
