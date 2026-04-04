@@ -95,12 +95,12 @@ Plans:
   2. User can select a risk profile (conservative/balanced/aggressive) and the system adjusts position sizes, max positions, entry thresholds, and allocation weights accordingly
   3. Allocation weights between strategies adjust based on recent performance metrics from Phase 4 analytics
   4. When one strategy has no opportunities (e.g., no spot-futures candidates), the system dynamically shifts available capital to the other strategy
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 05-01: TBD
-- [ ] 05-02: TBD
-- [ ] 05-03: TBD
+- [ ] 05-01-PLAN.md -- Config fields (6-touch-point), risk profile presets, allocator dynamic allocation + derived capital + tests
+- [ ] 05-02-PLAN.md -- Engine + risk manager integration, API layer (allocation endpoint, config section, profile handling)
+- [ ] 05-03-PLAN.md -- Frontend: Allocation config tab, Overview allocation card, i18n, version bump
 
 ## Progress
 
