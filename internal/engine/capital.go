@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"arb/internal/analytics"
 	"arb/internal/models"
 	"arb/internal/risk"
 	"arb/pkg/utils"
@@ -62,6 +63,87 @@ func (e *Engine) effectiveCapitalPerLeg() float64 {
 		}
 	}
 	return e.cfg.CapitalPerLeg
+}
+
+// updateAllocation recomputes effective strategy allocation percentages using
+// trailing APR from Phase 4 analytics. Called once per EntryScan cycle.
+// This activates CA-03 (performance weighting) and feeds CA-04 (dynamic shifting).
+func (e *Engine) updateAllocation() {
+	if e.allocator == nil || !e.cfg.EnableUnifiedCapital {
+		return
+	}
+
+	// Load closed positions for trailing APR computation.
+	perps, err := e.db.GetHistory(200)
+	if err != nil {
+		e.log.Warn("updateAllocation: failed to load perp history: %v", err)
+		return
+	}
+	spots, err := e.db.GetSpotHistory(200)
+	if err != nil {
+		e.log.Warn("updateAllocation: failed to load spot history: %v", err)
+		return
+	}
+
+	// Compute per-strategy summary (APR, trade count).
+	summaries := analytics.ComputeStrategySummary(perps, spots)
+
+	var perpAPR, spotAPR float64
+	var perpTrades, spotTrades int
+	for _, s := range summaries {
+		switch s.Strategy {
+		case "perp":
+			perpAPR = s.APR
+			perpTrades = s.TradeCount
+		case "spot":
+			spotAPR = s.APR
+			spotTrades = s.TradeCount
+		}
+	}
+
+	// Check minimum trade threshold: need >= 3 trades per strategy for meaningful APR.
+	minTrades := 3
+	if perpTrades < minTrades || spotTrades < minTrades {
+		// Insufficient data -- use base profile split, no performance tilt.
+		e.allocator.SetEffectiveAllocation(
+			e.cfg.MaxPerpPerpPct,
+			e.cfg.MaxSpotFuturesPct,
+		)
+		e.log.Info("updateAllocation: insufficient trades (perp=%d, spot=%d, min=%d), using base split %.0f/%.0f",
+			perpTrades, spotTrades, minTrades,
+			e.cfg.MaxPerpPerpPct*100, e.cfg.MaxSpotFuturesPct*100)
+		return
+	}
+
+	// Compute performance-weighted allocation (CA-03).
+	perpPct, spotPct := risk.ComputeEffectiveAllocation(
+		perpAPR, spotAPR,
+		e.cfg.MaxPerpPerpPct, e.cfg.MaxSpotFuturesPct,
+		e.cfg.AllocationFloorPct, e.cfg.AllocationCeilingPct,
+	)
+
+	// Cache in allocator for use by strategyPct and DynamicStrategyPct.
+	e.allocator.SetEffectiveAllocation(perpPct, spotPct)
+	e.log.Info("updateAllocation: perpAPR=%.2f%% spotAPR=%.2f%% -> effective split %.1f/%.1f",
+		perpAPR, spotAPR, perpPct*100, spotPct*100)
+}
+
+// dynamicStrategyPct returns the effective strategy percentage cap for this scan cycle,
+// accounting for dynamic shifting when the other strategy has no opportunities (CA-04).
+func (e *Engine) dynamicStrategyPct(strategy risk.Strategy, perpHasOpps, spotHasOpps bool) float64 {
+	if e.allocator == nil || !e.cfg.EnableUnifiedCapital {
+		return 0
+	}
+	summary, err := e.allocator.Summary()
+	if err != nil {
+		e.log.Warn("dynamicStrategyPct: summary failed: %v", err)
+		return 0
+	}
+	committed := map[risk.Strategy]float64{
+		risk.StrategyPerpPerp:    summary.ByStrategy[risk.StrategyPerpPerp],
+		risk.StrategySpotFutures: summary.ByStrategy[risk.StrategySpotFutures],
+	}
+	return e.allocator.DynamicStrategyPct(strategy, perpHasOpps, spotHasOpps, committed)
 }
 
 func (e *Engine) releasePerpReservation(res *risk.CapitalReservation) {

@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"arb/internal/analytics"
 	"arb/internal/api"
 	"arb/internal/config"
 	"arb/internal/database"
@@ -182,6 +183,7 @@ func (e *SpotEngine) discoveryLoop() {
 	e.logDiscoveryResults(passed)
 	e.pushOppsToAPI(opps)
 	e.updatePersistenceCounts(passed)
+	e.updateAllocation() // refresh allocation before auto-entries
 	e.attemptAutoEntries(passed)
 
 	for {
@@ -198,6 +200,7 @@ func (e *SpotEngine) discoveryLoop() {
 			e.logDiscoveryResults(passed)
 			e.pushOppsToAPI(opps)
 			e.updatePersistenceCounts(passed)
+			e.updateAllocation() // refresh allocation before auto-entries
 			e.attemptAutoEntries(passed)
 		case <-e.configChanged:
 			newInterval := time.Duration(e.cfg.SpotFuturesScanIntervalMin) * time.Minute
@@ -214,6 +217,7 @@ func (e *SpotEngine) discoveryLoop() {
 			e.logDiscoveryResults(passed)
 			e.pushOppsToAPI(opps)
 			e.updatePersistenceCounts(passed)
+			e.updateAllocation() // refresh allocation before auto-entries
 			e.attemptAutoEntries(passed)
 		}
 	}
@@ -369,6 +373,58 @@ func isSeparateAccount(exchName string) bool {
 	default:
 		return false
 	}
+}
+
+// updateAllocation refreshes the allocator's effective allocation from analytics data.
+// Called each discovery cycle before auto-entry decisions.
+func (e *SpotEngine) updateAllocation() {
+	if e.allocator == nil || !e.cfg.EnableUnifiedCapital {
+		return
+	}
+
+	perps, err := e.db.GetHistory(200)
+	if err != nil {
+		e.log.Warn("updateAllocation: failed to load perp history: %v", err)
+		return
+	}
+	spots, err := e.db.GetSpotHistory(200)
+	if err != nil {
+		e.log.Warn("updateAllocation: failed to load spot history: %v", err)
+		return
+	}
+
+	summaries := analytics.ComputeStrategySummary(perps, spots)
+
+	var perpAPR, spotAPR float64
+	var perpTrades, spotTrades int
+	for _, s := range summaries {
+		switch s.Strategy {
+		case "perp":
+			perpAPR = s.APR
+			perpTrades = s.TradeCount
+		case "spot":
+			spotAPR = s.APR
+			spotTrades = s.TradeCount
+		}
+	}
+
+	minTrades := 3
+	if perpTrades < minTrades || spotTrades < minTrades {
+		e.allocator.SetEffectiveAllocation(
+			e.cfg.MaxPerpPerpPct,
+			e.cfg.MaxSpotFuturesPct,
+		)
+		return
+	}
+
+	perpPct, spotPct := risk.ComputeEffectiveAllocation(
+		perpAPR, spotAPR,
+		e.cfg.MaxPerpPerpPct, e.cfg.MaxSpotFuturesPct,
+		e.cfg.AllocationFloorPct, e.cfg.AllocationCeilingPct,
+	)
+	e.allocator.SetEffectiveAllocation(perpPct, spotPct)
+	e.log.Info("updateAllocation: effective split %.1f/%.1f (perpAPR=%.2f%%, spotAPR=%.2f%%)",
+		perpPct*100, spotPct*100, perpAPR, spotAPR)
 }
 
 // capitalForExchange returns the position capital limit appropriate for the

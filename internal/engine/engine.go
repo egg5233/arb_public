@@ -1304,6 +1304,17 @@ func (e *Engine) run() {
 				}
 				e.log.Info("run loop: rotateScan handler done")
 			case discovery.EntryScan:
+				// Update performance-weighted allocation before entry decisions (CA-03/CA-04).
+				e.updateAllocation()
+
+				// Determine opportunity presence for dynamic shifting.
+				perpHasOpps := len(result.Opps) > 0
+				spotHasOpps := e.cfg.SpotFuturesEnabled // conservative: assume spot has opps if engine is enabled
+				perpCap := e.dynamicStrategyPct(risk.StrategyPerpPerp, perpHasOpps, spotHasOpps)
+				if perpCap > 0 {
+					e.log.Info("dynamic strategy cap: perp=%.1f%% (perpOpps=%v, spotOpps=%v)", perpCap*100, perpHasOpps, spotHasOpps)
+				}
+
 				if len(result.Opps) > 0 {
 					e.log.Info("entry scan complete, triggering trade execution")
 
