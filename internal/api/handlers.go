@@ -352,7 +352,7 @@ type configSpotFuturesResponse struct {
 	ProfitTransferEnabled      bool     `json:"profit_transfer_enabled"`
 	CapitalSeparateUSDT        float64  `json:"capital_separate_usdt"`
 	CapitalUnifiedUSDT         float64  `json:"capital_unified_usdt"`
-	NativeScannerEnabled       bool     `json:"native_scanner_enabled"`
+	ScannerMode                string   `json:"scanner_mode"`
 	EnableMinHold              bool     `json:"enable_min_hold"`
 	MinHoldHours               int      `json:"min_hold_hours"`
 	EnableSettlementGuard      bool     `json:"enable_settlement_guard"`
@@ -650,7 +650,7 @@ func (s *Server) buildConfigResponse() configResponse {
 		ProfitTransferEnabled:      s.cfg.SpotFuturesProfitTransferEnabled,
 		CapitalSeparateUSDT:        s.cfg.SpotFuturesCapitalSeparate,
 		CapitalUnifiedUSDT:         s.cfg.SpotFuturesCapitalUnified,
-		NativeScannerEnabled:       s.cfg.SpotFuturesNativeScannerEnabled,
+		ScannerMode:                s.cfg.SpotFuturesScannerMode,
 		EnableMinHold:              s.cfg.SpotFuturesEnableMinHold,
 		MinHoldHours:               s.cfg.SpotFuturesMinHoldHours,
 		EnableSettlementGuard:      s.cfg.SpotFuturesEnableSettlementGuard,
@@ -769,7 +769,7 @@ type spotFuturesUpdate struct {
 	ProfitTransferEnabled      *bool    `json:"profit_transfer_enabled"`
 	CapitalSeparateUSDT        *float64 `json:"capital_separate_usdt"`
 	CapitalUnifiedUSDT         *float64 `json:"capital_unified_usdt"`
-	NativeScannerEnabled       *bool    `json:"native_scanner_enabled"`
+	ScannerMode                *string  `json:"scanner_mode"`
 	EnableMinHold              *bool    `json:"enable_min_hold"`
 	MinHoldHours               *int     `json:"min_hold_hours"`
 	EnableSettlementGuard      *bool    `json:"enable_settlement_guard"`
@@ -1358,8 +1358,8 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		if sf.CapitalUnifiedUSDT != nil && *sf.CapitalUnifiedUSDT > 0 {
 			s.cfg.SpotFuturesCapitalUnified = *sf.CapitalUnifiedUSDT
 		}
-		if sf.NativeScannerEnabled != nil {
-			s.cfg.SpotFuturesNativeScannerEnabled = *sf.NativeScannerEnabled
+		if sf.ScannerMode != nil && (*sf.ScannerMode == "native" || *sf.ScannerMode == "coinglass" || *sf.ScannerMode == "both") {
+			s.cfg.SpotFuturesScannerMode = *sf.ScannerMode
 		}
 		if sf.EnableMinHold != nil {
 			s.cfg.SpotFuturesEnableMinHold = *sf.EnableMinHold
@@ -1518,7 +1518,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		fields["spot_futures_persistence_scans"] = strconv.Itoa(sf.PersistenceScans)
 		fields["spot_futures_profit_transfer_enabled"] = strconv.FormatBool(sf.ProfitTransferEnabled)
 		fields["spot_futures_capital_unified_usdt"] = strconv.FormatFloat(sf.CapitalUnifiedUSDT, 'f', -1, 64)
-		fields["spot_futures_native_scanner_enabled"] = strconv.FormatBool(sf.NativeScannerEnabled)
+		fields["spot_futures_scanner_mode"] = sf.ScannerMode
 		fields["spot_futures_enable_min_hold"] = strconv.FormatBool(sf.EnableMinHold)
 		fields["spot_futures_min_hold_hours"] = strconv.Itoa(sf.MinHoldHours)
 		fields["spot_futures_enable_settlement_guard"] = strconv.FormatBool(sf.EnableSettlementGuard)

@@ -65,12 +65,28 @@ var spotFees = map[string]float64{
 
 const lorisURL = "https://api.loris.tools/funding"
 
-// runDiscoveryScan routes to native Loris scanner when enabled, CoinGlass fallback otherwise.
+// runDiscoveryScan routes to the configured scanner mode: native, coinglass, or both.
 func (e *SpotEngine) runDiscoveryScan() []SpotArbOpportunity {
-	if e.cfg.SpotFuturesNativeScannerEnabled {
+	switch e.cfg.SpotFuturesScannerMode {
+	case "both":
+		return e.runBothScanners()
+	case "coinglass":
+		return e.runCoinGlassFallback()
+	default: // "native"
 		return e.runNativeDiscoveryScan()
 	}
-	return e.runCoinGlassFallback()
+}
+
+// runBothScanners runs native and CoinGlass scanners, returning all results
+// from both sources without deduplication. Each opportunity retains its Source
+// field ("native" or "coinglass_spot") so the dashboard can display them separately.
+func (e *SpotEngine) runBothScanners() []SpotArbOpportunity {
+	native := e.runNativeDiscoveryScan()
+	cg := e.runCoinGlassFallback()
+	all := make([]SpotArbOpportunity, 0, len(native)+len(cg))
+	all = append(all, native...)
+	all = append(all, cg...)
+	return all
 }
 
 // pollLoris fetches and parses the latest Loris funding rate data.

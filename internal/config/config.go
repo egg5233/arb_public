@@ -202,7 +202,7 @@ type Config struct {
 	SpotFuturesCapitalUnified        float64 // capital per position for unified-account exchanges (default: 500)
 
 	// Phase 2: native scanner + exit/entry guards
-	SpotFuturesNativeScannerEnabled  bool    // use Loris-based native scanner instead of CoinGlass (default: true)
+	SpotFuturesScannerMode           string  // scanner data source: "native", "coinglass", or "both" (default: "native")
 	SpotFuturesEnableMinHold         bool    // enable min-hold gate before yield-based exit (default: false)
 	SpotFuturesMinHoldHours          int     // hours before yield-based exit allowed (default: 8)
 	SpotFuturesEnableSettlementGuard bool    // skip exit eval during settlement window (default: false)
@@ -303,7 +303,8 @@ type jsonSpotFutures struct {
 	CapitalUnifiedUSDT    *float64 `json:"capital_unified_usdt"`
 
 	// Phase 2: native scanner + exit/entry guards
-	NativeScannerEnabled  *bool    `json:"native_scanner_enabled"`
+	NativeScannerEnabled  *bool    `json:"native_scanner_enabled"`  // deprecated: backward compat
+	ScannerMode           *string  `json:"scanner_mode"`
 	EnableMinHold         *bool    `json:"enable_min_hold"`
 	MinHoldHours          *int     `json:"min_hold_hours"`
 	EnableSettlementGuard *bool    `json:"enable_settlement_guard"`
@@ -560,7 +561,7 @@ func Load() *Config {
 		SpotFuturesPersistenceScans:      2,
 		SpotFuturesCapitalSeparate:       200,
 		SpotFuturesCapitalUnified:        500,
-		SpotFuturesNativeScannerEnabled:  false,
+		SpotFuturesScannerMode:           "native",
 		SpotFuturesEnableMinHold:         false,
 		SpotFuturesMinHoldHours:          8,
 		SpotFuturesEnableSettlementGuard: false,
@@ -605,6 +606,11 @@ func (c *Config) RLock() { c.mu.RLock() }
 
 // RUnlock releases the config read lock.
 func (c *Config) RUnlock() { c.mu.RUnlock() }
+
+// isValidScannerMode returns true if mode is one of the accepted scanner modes.
+func isValidScannerMode(mode string) bool {
+	return mode == "native" || mode == "coinglass" || mode == "both"
+}
 
 // EnsureScanMinutes adds rebalance/exit/entry/rotate minutes to ScanMinutes
 // if they are not already present, then sorts the slice.
@@ -1101,8 +1107,15 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if sf.CapitalUnifiedUSDT != nil && *sf.CapitalUnifiedUSDT > 0 {
 			c.SpotFuturesCapitalUnified = *sf.CapitalUnifiedUSDT
 		}
-		if sf.NativeScannerEnabled != nil {
-			c.SpotFuturesNativeScannerEnabled = *sf.NativeScannerEnabled
+		if sf.ScannerMode != nil && isValidScannerMode(*sf.ScannerMode) {
+			c.SpotFuturesScannerMode = *sf.ScannerMode
+		} else if sf.NativeScannerEnabled != nil {
+			// Backward compat: map old bool to new mode.
+			if *sf.NativeScannerEnabled {
+				c.SpotFuturesScannerMode = "native"
+			} else {
+				c.SpotFuturesScannerMode = "coinglass"
+			}
 		}
 		if sf.EnableMinHold != nil {
 			c.SpotFuturesEnableMinHold = *sf.EnableMinHold
@@ -1397,7 +1410,8 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	sf["profit_transfer_enabled"] = c.SpotFuturesProfitTransferEnabled
 	sf["capital_separate_usdt"] = c.SpotFuturesCapitalSeparate
 	sf["capital_unified_usdt"] = c.SpotFuturesCapitalUnified
-	sf["native_scanner_enabled"] = c.SpotFuturesNativeScannerEnabled
+	sf["scanner_mode"] = c.SpotFuturesScannerMode
+	delete(sf, "native_scanner_enabled") // clean old key
 	sf["enable_min_hold"] = c.SpotFuturesEnableMinHold
 	sf["min_hold_hours"] = c.SpotFuturesMinHoldHours
 	sf["enable_settlement_guard"] = c.SpotFuturesEnableSettlementGuard
@@ -1615,8 +1629,17 @@ func (c *Config) loadEnvOverrides() {
 			c.BorrowSpikeMinAbsolute = f
 		}
 	}
-	if v := os.Getenv("SPOT_FUTURES_NATIVE_SCANNER_ENABLED"); v != "" {
-		c.SpotFuturesNativeScannerEnabled = v == "1" || v == "true" || v == "yes"
+	if v := os.Getenv("SPOT_FUTURES_SCANNER_MODE"); v != "" {
+		if isValidScannerMode(v) {
+			c.SpotFuturesScannerMode = v
+		}
+	} else if v := os.Getenv("SPOT_FUTURES_NATIVE_SCANNER_ENABLED"); v != "" {
+		// Backward compat: map old env var to new mode.
+		if v == "1" || v == "true" || v == "yes" {
+			c.SpotFuturesScannerMode = "native"
+		} else {
+			c.SpotFuturesScannerMode = "coinglass"
+		}
 	}
 	if v := os.Getenv("SPOT_FUTURES_ENABLE_MIN_HOLD"); v != "" {
 		c.SpotFuturesEnableMinHold = v == "1" || v == "true" || v == "yes"

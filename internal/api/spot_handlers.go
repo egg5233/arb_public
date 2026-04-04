@@ -372,7 +372,7 @@ func (s *Server) handleSpotAutoConfig(w http.ResponseWriter, r *http.Request) {
 			Enabled               *bool    `json:"enabled"`
 			DryRun                *bool    `json:"dry_run"`
 			PersistenceScans      *int     `json:"persistence_scans"`
-			NativeScannerEnabled  *bool    `json:"native_scanner_enabled"`
+			ScannerMode           *string  `json:"scanner_mode"`
 			EnableMinHold         *bool    `json:"enable_min_hold"`
 			MinHoldHours          *int     `json:"min_hold_hours"`
 			EnableSettlementGuard *bool    `json:"enable_settlement_guard"`
@@ -400,9 +400,9 @@ func (s *Server) handleSpotAutoConfig(w http.ResponseWriter, r *http.Request) {
 			s.cfg.SpotFuturesPersistenceScans = *req.PersistenceScans
 			s.db.SetConfigField("spot_futures_persistence_scans", strconv.Itoa(*req.PersistenceScans))
 		}
-		if req.NativeScannerEnabled != nil {
-			s.cfg.SpotFuturesNativeScannerEnabled = *req.NativeScannerEnabled
-			s.db.SetConfigField("spot_futures_native_scanner_enabled", strconv.FormatBool(*req.NativeScannerEnabled))
+		if req.ScannerMode != nil && (*req.ScannerMode == "native" || *req.ScannerMode == "coinglass" || *req.ScannerMode == "both") {
+			s.cfg.SpotFuturesScannerMode = *req.ScannerMode
+			s.db.SetConfigField("spot_futures_scanner_mode", *req.ScannerMode)
 		}
 		if req.EnableMinHold != nil {
 			s.cfg.SpotFuturesEnableMinHold = *req.EnableMinHold
@@ -492,7 +492,7 @@ func (s *Server) spotAutoConfigResponse() map[string]interface{} {
 		"max_positions":           s.cfg.SpotFuturesMaxPositions,
 		"capital_separate_usdt":   s.cfg.SpotFuturesCapitalSeparate,
 		"capital_unified_usdt":    s.cfg.SpotFuturesCapitalUnified,
-		"native_scanner_enabled":  s.cfg.SpotFuturesNativeScannerEnabled,
+		"scanner_mode":            s.cfg.SpotFuturesScannerMode,
 		"enable_min_hold":         s.cfg.SpotFuturesEnableMinHold,
 		"min_hold_hours":          s.cfg.SpotFuturesMinHoldHours,
 		"enable_settlement_guard": s.cfg.SpotFuturesEnableSettlementGuard,

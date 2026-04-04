@@ -276,7 +276,7 @@ func TestHandleConfig_SpotFuturesDiscoveryFieldsRoundTrip(t *testing.T) {
 	s, mr := newTestServer(t)
 	defer mr.Close()
 
-	s.cfg.SpotFuturesNativeScannerEnabled = true
+	s.cfg.SpotFuturesScannerMode = "native"
 	s.cfg.SpotFuturesEnableMinHold = false
 	s.cfg.SpotFuturesMinHoldHours = 8
 	s.cfg.SpotFuturesEnableSettlementGuard = false
@@ -289,7 +289,7 @@ func TestHandleConfig_SpotFuturesDiscoveryFieldsRoundTrip(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	initialConfig := `{
   "spot_futures": {
-    "native_scanner_enabled": true,
+    "scanner_mode": "native",
     "enable_min_hold": false,
     "min_hold_hours": 8,
     "enable_settlement_guard": false,
@@ -323,22 +323,22 @@ func TestHandleConfig_SpotFuturesDiscoveryFieldsRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatalf("spot_futures payload missing or wrong type: %#v", getResp.Data["spot_futures"])
 	}
-	if spotFutures["native_scanner_enabled"] != true {
-		t.Fatalf("expected native_scanner_enabled=true, got %#v", spotFutures["native_scanner_enabled"])
+	if spotFutures["scanner_mode"] != "native" {
+		t.Fatalf("expected scanner_mode=native, got %#v", spotFutures["scanner_mode"])
 	}
 	if spotFutures["enable_price_gap_gate"] != false {
 		t.Fatalf("expected enable_price_gap_gate=false, got %#v", spotFutures["enable_price_gap_gate"])
 	}
 
-	postReq := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"spot_futures":{"native_scanner_enabled":false,"enable_min_hold":true,"min_hold_hours":12,"enable_settlement_guard":true,"settlement_window_min":15,"enable_price_gap_gate":true,"max_price_gap_pct":0.9,"enable_exit_spread_gate":true,"exit_spread_pct":0.45}}`))
+	postReq := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"spot_futures":{"scanner_mode":"coinglass","enable_min_hold":true,"min_hold_hours":12,"enable_settlement_guard":true,"settlement_window_min":15,"enable_price_gap_gate":true,"max_price_gap_pct":0.9,"enable_exit_spread_gate":true,"exit_spread_pct":0.45}}`))
 	postW := httptest.NewRecorder()
 	s.handlePostConfig(postW, postReq)
 	if postW.Code != http.StatusOK {
 		t.Fatalf("POST expected 200, got %d: %s", postW.Code, postW.Body.String())
 	}
 
-	if s.cfg.SpotFuturesNativeScannerEnabled {
-		t.Fatal("expected SpotFuturesNativeScannerEnabled=false after POST")
+	if s.cfg.SpotFuturesScannerMode != "coinglass" {
+		t.Fatalf("expected SpotFuturesScannerMode=coinglass after POST, got %q", s.cfg.SpotFuturesScannerMode)
 	}
 	if !s.cfg.SpotFuturesEnableMinHold {
 		t.Fatal("expected SpotFuturesEnableMinHold=true after POST")
@@ -365,12 +365,12 @@ func TestHandleConfig_SpotFuturesDiscoveryFieldsRoundTrip(t *testing.T) {
 		t.Fatalf("expected SpotFuturesExitSpreadPct=0.45, got %v", s.cfg.SpotFuturesExitSpreadPct)
 	}
 
-	persisted, err := s.db.GetConfigField("spot_futures_native_scanner_enabled")
+	persisted, err := s.db.GetConfigField("spot_futures_scanner_mode")
 	if err != nil {
-		t.Fatalf("redis get spot_futures_native_scanner_enabled: %v", err)
+		t.Fatalf("redis get spot_futures_scanner_mode: %v", err)
 	}
-	if persisted != "false" {
-		t.Fatalf("expected redis spot_futures_native_scanner_enabled=false, got %q", persisted)
+	if persisted != "coinglass" {
+		t.Fatalf("expected redis spot_futures_scanner_mode=coinglass, got %q", persisted)
 	}
 	persisted, err = s.db.GetConfigField("spot_futures_enable_price_gap_gate")
 	if err != nil {
@@ -388,8 +388,8 @@ func TestHandleConfig_SpotFuturesDiscoveryFieldsRoundTrip(t *testing.T) {
 	}
 
 	reloaded := config.Load()
-	if reloaded.SpotFuturesNativeScannerEnabled {
-		t.Fatal("expected reloaded SpotFuturesNativeScannerEnabled=false")
+	if reloaded.SpotFuturesScannerMode != "coinglass" {
+		t.Fatalf("expected reloaded SpotFuturesScannerMode=coinglass, got %q", reloaded.SpotFuturesScannerMode)
 	}
 	if !reloaded.SpotFuturesEnableMinHold {
 		t.Fatal("expected reloaded SpotFuturesEnableMinHold=true")

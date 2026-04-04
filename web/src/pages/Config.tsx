@@ -1318,26 +1318,26 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
   // Tab: Spot-Futures Discovery
   // =========================================================================
   const renderSfDiscoveryTab = () => {
-    const sfNativeScannerEnabled = getByPath(config, ['spot_futures', 'native_scanner_enabled']) === true;
+    const sfScannerMode = String(getByPath(config, ['spot_futures', 'scanner_mode']) ?? 'native');
     const sfEnablePriceGapGate = getByPath(config, ['spot_futures', 'enable_price_gap_gate']) === true;
 
     return (
       <div className="space-y-4">
-        {/* Native Scanner toggle */}
+        {/* Scanner Mode dropdown */}
         <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
           <div className="flex items-center gap-2 mb-2">
-            <label className="text-sm font-medium">{t('cfg.sf.nativeScannerEnabled')}</label>
-            <Tooltip text={t('cfg.sf.nativeScannerEnabledDesc')} />
+            <label className="text-sm font-medium">{t('cfg.sf.scannerMode')}</label>
+            <Tooltip text={t('cfg.sf.scannerModeDesc')} />
           </div>
-          <div className="flex items-center gap-3">
-            <ToggleSwitch
-              on={sfNativeScannerEnabled}
-              onChange={(v) => handleBoolChange(['spot_futures', 'native_scanner_enabled'], v)}
-            />
-            <span className={`text-sm font-semibold ${sfNativeScannerEnabled ? 'text-green-400' : 'text-red-400'}`}>
-              {sfNativeScannerEnabled ? 'ON' : 'OFF'}
-            </span>
-          </div>
+          <select
+            value={sfScannerMode}
+            onChange={(e) => handleChange(['spot_futures', 'scanner_mode'], e.target.value)}
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg py-2 px-3 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+          >
+            <option value="native">{t('cfg.sf.scannerNative')}</option>
+            <option value="coinglass">{t('cfg.sf.scannerCoinglass')}</option>
+            <option value="both">{t('cfg.sf.scannerBoth')}</option>
+          </select>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

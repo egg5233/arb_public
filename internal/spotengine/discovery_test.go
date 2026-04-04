@@ -28,7 +28,7 @@ func TestRunDiscoveryScan_KeepsActivePositionWithNonPositiveFunding(t *testing.T
 			engine, mr := newExecutionTestEngine(t)
 			defer mr.Close()
 
-			engine.cfg = &config.Config{}
+			engine.cfg = &config.Config{SpotFuturesScannerMode: "coinglass"}
 			engine.spotMargin = map[string]exchange.SpotMarginExchange{
 				"binance": &marginStubExchange{},
 			}
@@ -93,7 +93,7 @@ func TestCoinGlassDiscoveryCachesMissingSpotMarketAcrossRestart(t *testing.T) {
 	engine, mr := newExecutionTestEngine(t)
 	defer mr.Close()
 
-	engine.cfg = &config.Config{SpotFuturesNativeScannerEnabled: false}
+	engine.cfg = &config.Config{SpotFuturesScannerMode: "coinglass"}
 	stub := &nativeScannerStubExchange{
 		bboErr: fmt.Errorf("GetSpotBBO: no OKX spot market for ONTUSDT"),
 	}
@@ -143,7 +143,7 @@ func TestCoinGlassDiscoveryCachesMissingSpotMarketAcrossRestart(t *testing.T) {
 	}
 
 	engine2 := &SpotEngine{
-		cfg:       &config.Config{SpotFuturesNativeScannerEnabled: false},
+		cfg:       &config.Config{SpotFuturesScannerMode: "coinglass"},
 		db:        engine.db,
 		log:       engine.log,
 		stopCh:    make(chan struct{}),
@@ -169,7 +169,7 @@ func TestCoinGlassDiscoveryAbortsQuicklyOnShutdown(t *testing.T) {
 	engine, mr := newExecutionTestEngine(t)
 	defer mr.Close()
 
-	engine.cfg = &config.Config{SpotFuturesNativeScannerEnabled: false}
+	engine.cfg = &config.Config{SpotFuturesScannerMode: "coinglass"}
 	stub := &nativeScannerStubExchange{}
 	engine.spotMargin = map[string]exchange.SpotMarginExchange{
 		"okx": stub,

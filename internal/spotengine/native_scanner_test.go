@@ -94,7 +94,7 @@ func TestNativeScannerDirA(t *testing.T) {
 		"binance": stubExch,
 	}
 	engine.cfg = &config.Config{
-		SpotFuturesNativeScannerEnabled: true,
+		SpotFuturesScannerMode: "native",
 		SpotFuturesMinNetYieldAPR:       0.01, // 1%
 	}
 
@@ -153,7 +153,7 @@ func TestNativeScannerDirB(t *testing.T) {
 		"bybit": stubExch,
 	}
 	engine.cfg = &config.Config{
-		SpotFuturesNativeScannerEnabled: true,
+		SpotFuturesScannerMode: "native",
 		SpotFuturesMinNetYieldAPR:       0.01,
 	}
 
@@ -204,7 +204,7 @@ func TestNativeScannerBothDirections(t *testing.T) {
 		"binance": stubExch,
 	}
 	engine.cfg = &config.Config{
-		SpotFuturesNativeScannerEnabled: true,
+		SpotFuturesScannerMode: "native",
 		SpotFuturesMinNetYieldAPR:       0.01,
 	}
 
@@ -255,7 +255,7 @@ func TestNetYieldRanking(t *testing.T) {
 		},
 	}
 	engine.cfg = &config.Config{
-		SpotFuturesNativeScannerEnabled: true,
+		SpotFuturesScannerMode: "native",
 		SpotFuturesMinNetYieldAPR:       0.0,
 	}
 
@@ -314,7 +314,7 @@ func TestNativeScannerLorisNormalization(t *testing.T) {
 		"binance": stubExch,
 	}
 	engine.cfg = &config.Config{
-		SpotFuturesNativeScannerEnabled: true,
+		SpotFuturesScannerMode: "native",
 		SpotFuturesMinNetYieldAPR:       0.0,
 	}
 
@@ -365,7 +365,7 @@ func TestCoinGlassFallback(t *testing.T) {
 		"binance": stubExch,
 	}
 	engine.cfg = &config.Config{
-		SpotFuturesNativeScannerEnabled: true,
+		SpotFuturesScannerMode: "native",
 	}
 
 	// Use error server to trigger fallback.
@@ -424,7 +424,7 @@ func TestNativeScannerSkipsNoSpotMarginExchange(t *testing.T) {
 		},
 	}
 	engine.cfg = &config.Config{
-		SpotFuturesNativeScannerEnabled: true,
+		SpotFuturesScannerMode: "native",
 		SpotFuturesMinNetYieldAPR:       0.0,
 	}
 
@@ -464,7 +464,7 @@ func TestNativeScannerFilterStatus(t *testing.T) {
 		"binance": stubExch,
 	}
 	engine.cfg = &config.Config{
-		SpotFuturesNativeScannerEnabled: true,
+		SpotFuturesScannerMode: "native",
 		SpotFuturesMinNetYieldAPR:       0.50, // 50% min net yield
 		SpotFuturesMaxBorrowAPR:         0.20, // 20% max borrow
 	}
@@ -504,7 +504,7 @@ func TestNativeScannerCachesMissingSpotMarketAcrossRestart(t *testing.T) {
 		"okx": stubExch,
 	}
 	engine.cfg = &config.Config{
-		SpotFuturesNativeScannerEnabled: true,
+		SpotFuturesScannerMode: "native",
 		SpotFuturesMinNetYieldAPR:       0.01,
 	}
 
@@ -542,7 +542,7 @@ func TestNativeScannerCachesMissingSpotMarketAcrossRestart(t *testing.T) {
 	}
 
 	engine2 := &SpotEngine{
-		cfg:       &config.Config{SpotFuturesNativeScannerEnabled: true, SpotFuturesMinNetYieldAPR: 0.01},
+		cfg:       &config.Config{SpotFuturesScannerMode: "native", SpotFuturesMinNetYieldAPR: 0.01},
 		db:        engine.db,
 		log:       engine.log,
 		stopCh:    make(chan struct{}),
@@ -582,7 +582,7 @@ func TestNativeScannerAbortsQuicklyOnShutdown(t *testing.T) {
 		"okx": stubExch,
 	}
 	engine.cfg = &config.Config{
-		SpotFuturesNativeScannerEnabled: true,
+		SpotFuturesScannerMode: "native",
 		SpotFuturesMinNetYieldAPR:       0.01,
 	}
 
@@ -616,7 +616,7 @@ func TestNativeScannerConfigDefaults(t *testing.T) {
 		got  interface{}
 		want interface{}
 	}{
-		{"SpotFuturesNativeScannerEnabled", cfg.SpotFuturesNativeScannerEnabled, false},
+		{"SpotFuturesScannerMode", cfg.SpotFuturesScannerMode, "native"},
 		{"SpotFuturesEnableMinHold", cfg.SpotFuturesEnableMinHold, false},
 		{"SpotFuturesMinHoldHours", cfg.SpotFuturesMinHoldHours, 8},
 		{"SpotFuturesEnableSettlementGuard", cfg.SpotFuturesEnableSettlementGuard, false},
@@ -651,7 +651,7 @@ func TestNativeScannerSourceField(t *testing.T) {
 		"binance": stubExch,
 	}
 	engine.cfg = &config.Config{
-		SpotFuturesNativeScannerEnabled: true,
+		SpotFuturesScannerMode: "native",
 		SpotFuturesMinNetYieldAPR:       0.0,
 	}
 
