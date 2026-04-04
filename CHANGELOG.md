@@ -34,16 +34,26 @@ All notable changes to this project will be documented in this file.
 - **Per-source cap**: when scanner mode is "both", each source (Native and CoinGlass) is capped at 100 entries independently — previously CoinGlass entries were truncated when native results filled the shared slice
 - **Redis result cache**: last scan results stored in Redis (`arb:spot_opportunities_cache`) so the dashboard can display instant results after a restart without waiting for the next scan cycle
 
+### Added — Balance Display & Gate.io Margin Sweep
+- **Gate.io isolated margin balance**: `GET /margin/accounts` now fetched for Gate.io unified accounts and shown as a separate "Margin" line on the Overview page (catches residual USDT in isolated margin accounts from spot-futures positions)
+- **Margin balance per exchange**: new `margin_balance` field in `/api/overview` exchange info; Binance and Bitget fetch cross-margin USDT via `GetMarginBalance("USDT")`; Gate.io fetches isolated margin via `GetIsolatedMarginUSDT()`
+- **Auto-sweep idle Gate.io isolated margin**: spot-futures engine calls `SweepIsolatedMarginUSDT()` once per scan cycle — idle USDT (no borrows, no interest, ≥1 USDT) is transferred back to spot automatically
+- **`SaveMarginBalance` / `GetMarginBalance`** Redis helpers in `internal/database/state.go` (`arb:exchange:{name}:marginBalance` key)
+- **i18n**: "Margin" / "保證金" label added to both locale files for the per-exchange breakdown line
+
 ### Changed
 - Engine and risk manager now derive CapitalPerLeg from unified pool when enabled
 - Spot-futures engine reads capital from unified pool when EnableUnifiedCapital is true
 - CapitalAllocator.strategyPct() now dynamic, reading cached performance-weighted percentages
 - **Dashboard Fund and Risk tabs**: show "Managed by Allocation" badges on CapitalPerLeg and risk fields when unified capital is enabled, consolidating the UX into the Allocation tab
+- **Overview balance totals**: per-exchange total now sums futures + spot + margin (previously unified exchanges excluded spot, double-counting was possible); `isSpotSameAsFutures` / `hasSeparateMargin` helpers in `cmd/main.go` gate which sub-balances to fetch
 
 ### Fixed
 - **Analytics 503**: `GET /api/analytics/*` now returns an empty array instead of 503 Service Unavailable when the analytics store is disabled, allowing the dashboard to render cleanly without an error toast
 - **Batch gap check — unlisted symbols**: symbols not listed on a given exchange now return an `error` flag instead of a negative sentinel gap value, preventing the dashboard from misinterpreting the result as an extreme spread
 - **Batch borrowable check — not-borrowable errors**: Binance error -3045 ("not borrowable") and OKX "coin not found in margin" are now normalized to `max_borrowable=0` instead of surfacing as error responses, so the borrow column shows 0 rather than a red error state
+- **Gate.io double-count**: unified Gate.io accounts no longer fetch spot balance separately (spot wallet is the same pool as futures), preventing USDT from being counted twice in the Overview total
+- **Bybit/OKX/BingX margin over-fetch**: only Binance and Bitget (exchanges with truly separate cross-margin accounts) call `GetMarginBalance`; unified exchanges skip the call to avoid double-counting
 
 ### Notes
 - Capital allocation defaults to OFF (EnableUnifiedCapital=false) for backward compatibility

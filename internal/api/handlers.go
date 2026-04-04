@@ -1688,10 +1688,11 @@ func (s *Server) handleGetRejections(w http.ResponseWriter, r *http.Request) {
 
 // exchangeInfo is the JSON representation of an enabled exchange.
 type exchangeInfo struct {
-	Name        string  `json:"name"`
-	Balance     float64 `json:"balance"`
-	SpotBalance float64 `json:"spot_balance"`
-	AccountType string  `json:"account_type"` // "unified" or "separate"
+	Name          string  `json:"name"`
+	Balance       float64 `json:"balance"`
+	SpotBalance   float64 `json:"spot_balance"`
+	MarginBalance float64 `json:"margin_balance"` // cross-margin USDT (collateral for spot-futures)
+	AccountType   string  `json:"account_type"`   // "unified" or "separate"
 }
 
 // unifiedExchanges are exchanges with unified account models where
@@ -1738,11 +1739,12 @@ func (s *Server) handleGetExchanges(w http.ResponseWriter, r *http.Request) {
 	for _, name := range names {
 		bal, _ := s.db.GetBalance(name)
 		spotBal, _ := s.db.GetSpotBalance(name)
+		marginBal, _ := s.db.GetMarginBalance(name)
 		acctType := "separate"
 		if s.isUnifiedExchange(name) {
 			acctType = "unified"
 		}
-		exchanges = append(exchanges, exchangeInfo{Name: name, Balance: bal, SpotBalance: spotBal, AccountType: acctType})
+		exchanges = append(exchanges, exchangeInfo{Name: name, Balance: bal, SpotBalance: spotBal, MarginBalance: marginBal, AccountType: acctType})
 	}
 
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: exchanges})

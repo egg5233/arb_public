@@ -596,7 +596,7 @@ Implemented by: all five `SpotMarginExchange` adapters. Use type assertion `exch
 
 **Gate.io quanto multiplier**: Gate.io uses contract-based sizing. The adapter converts between base units and contracts using `quanto_multiplier` in PlaceOrder (divide), GetPosition/GetOrderFilledQty (multiply), and WS order updates (multiply). All other code works in base asset units.
 
-**Gate.io unified account**: On startup, the adapter detects unified account mode via `GET /unified/unified_mode`. In unified mode, `GetFuturesBalance` reads from `/unified/accounts` instead of `/futures/usdt/accounts`, and `TransferToFutures` is a no-op (funds are shared). Falls back to classic mode if detection fails.
+**Gate.io unified account**: On startup, the adapter detects unified account mode via `GET /unified/unified_mode`. In unified mode, `GetFuturesBalance` reads from `/unified/accounts` instead of `/futures/usdt/accounts`, and `TransferToFutures` is a no-op (funds are shared). Falls back to classic mode if detection fails. Gate.io unified mode also exposes two additional methods on the adapter: `GetIsolatedMarginUSDT()` (queries `GET /margin/accounts`, sums available+locked USDT across all isolated pairs) and `SweepIsolatedMarginUSDT()` (transfers idle USDT with no borrows from isolated margin pairs back to spot via `POST /wallet/transfers`). The SpotEngine calls `SweepIsolatedMarginUSDT()` once per scan cycle to reclaim residual USDT left in isolated margin accounts after positions close.
 
 ### 2.4 Risk Management
 
@@ -699,6 +699,8 @@ arb:funding:latest                  HASH    symbol → JSON(rates per exchange)
 arb:funding:snapshots:{symbol}      LIST    Historical snapshots (max 100 per symbol)
 arb:locks:{resource}                STRING  Distributed lock (SET NX + TTL)
 arb:exchange:{name}:balance         STRING  Cached futures balance
+arb:exchange:{name}:spotBalance     STRING  Cached spot balance (0 for unified Gate.io — avoids double-count)
+arb:exchange:{name}:marginBalance   STRING  Cached margin USDT (cross-margin for Binance/Bitget; isolated margin for Gate.io unified)
 arb:stats                           HASH    total_pnl, trade_count, win_count, loss_count
 arb:transfers                       HASH    transferID → JSON(TransferRecord)
 arb:transfers:history               LIST    Transfer IDs (FIFO, max 200)
@@ -723,7 +725,7 @@ arb:spot_opportunities_cache        STRING  Last spot-futures scan results (JSON
 | GET | `/api/opportunities` | Current discovery results |
 | GET | `/api/stats` | PnL, win rate |
 | GET/POST | `/api/config` | View/update runtime config |
-| GET | `/api/exchanges` | Exchange balances |
+| GET | `/api/exchanges` | Exchange balances — returns `{name, balance, spot_balance, margin_balance, account_type}` per exchange; `margin_balance` is cross-margin USDT for Binance/Bitget, isolated margin USDT for Gate.io |
 | POST | `/api/positions/close` | Manual close active position |
 | POST | `/api/positions/open` | Manual open from opportunity |
 | GET | `/api/positions/{id}/funding` | Funding history for a position |
@@ -754,7 +756,7 @@ arb:spot_opportunities_cache        STRING  Last spot-futures scan results (JSON
 4. Load contract specs for all exchanges
 5. Start WebSocket streams (public + private)
 6. Initialize: Scanner, RiskManager, RiskMonitor, HealthMonitor, API Server, Engine
-7. Start balance refresh goroutine (60s)
+7. Start balance refresh goroutine (60s) — fetches futures balance for all exchanges; spot balance only for non-unified exchanges (Gate.io unified skipped to avoid double-count); margin balance from `GetMarginBalance("USDT")` for Binance/Bitget, isolated margin from `GetIsolatedMarginUSDT()` for Gate.io unified
 8. Start all components: Scanner → RiskMon → HealthMon → API (incl. binary drift monitor) → Engine (incl. Consolidator)
 9. If `SpotFuturesEnabled`: create and start SpotEngine
 10. Wait for SIGINT/SIGTERM → graceful shutdown (reverse order, SpotEngine stops first)
@@ -777,7 +779,7 @@ A separate engine (`internal/spotengine/`) that runs **alongside** the perp-perp
 
 | Package | Purpose |
 |---------|---------|
-| `internal/spotengine/engine.go` | `SpotEngine` struct, lifecycle (`Start`/`Stop`), discovery loop, Redis persistence counters, per-exchange capital limits |
+| `internal/spotengine/engine.go` | `SpotEngine` struct, lifecycle (`Start`/`Stop`), discovery loop, Redis persistence counters, per-exchange capital limits, `sweepIsolatedMargin()` called each scan cycle to reclaim idle Gate.io isolated margin USDT |
 | `internal/spotengine/discovery.go` | Reads CoinGlass spot arb data from Redis, queries live borrow rates, scores opportunities, preserves active positions in top-N |
 | `internal/spotengine/execution.go` | Trade entry/exit with per-leg retry (`retryLeg`), idempotency guards (`FuturesExit > 0`), emergency escalation |
 | `internal/spotengine/exit_manager.go` | Exit triggers (spread, yield, price spike, margin health for Dir A + Dir B), `initiateExit`, `completeExit` |

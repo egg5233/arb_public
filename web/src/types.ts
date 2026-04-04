@@ -84,6 +84,7 @@ export interface ExchangeInfo {
   name: string;
   balance: number;
   spot_balance: number;
+  margin_balance: number; // cross-margin USDT collateral
   account_type: string; // "unified" or "separate"
 }
 

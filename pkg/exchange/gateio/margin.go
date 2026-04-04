@@ -333,6 +333,112 @@ func (a *Adapter) GetMarginBalance(coin string) (*exchange.MarginBalance, error)
 	}, nil
 }
 
+// GetIsolatedMarginUSDT returns the total USDT balance across all isolated margin
+// accounts. In unified mode these are residual balances from positions that were
+// opened in isolated margin before the account was upgraded, or from the spot-futures
+// engine which uses isolated margin on certain pairs.
+func (a *Adapter) GetIsolatedMarginUSDT() (float64, error) {
+	data, err := a.client.Get("/margin/accounts", nil)
+	if err != nil {
+		return 0, fmt.Errorf("GetIsolatedMarginUSDT: %w", err)
+	}
+	var accounts []struct {
+		Quote struct {
+			Currency  string `json:"currency"`
+			Available string `json:"available"`
+			Locked    string `json:"locked"`
+		} `json:"quote"`
+	}
+	if err := json.Unmarshal(data, &accounts); err != nil {
+		return 0, fmt.Errorf("GetIsolatedMarginUSDT unmarshal: %w", err)
+	}
+	var total float64
+	for _, acc := range accounts {
+		if strings.EqualFold(acc.Quote.Currency, "USDT") {
+			avail, _ := strconv.ParseFloat(acc.Quote.Available, 64)
+			locked, _ := strconv.ParseFloat(acc.Quote.Locked, 64)
+			total += avail + locked
+		}
+	}
+	return total, nil
+}
+
+// SweepIsolatedMarginUSDT transfers all idle USDT from isolated margin accounts
+// back to the spot wallet. Only sweeps accounts with no borrows (fully idle).
+// Uses GET /margin/accounts to find balances, GET /margin/transferable to check
+// max transferable, and POST /wallet/transfers to move funds.
+// Returns total USDT swept.
+func (a *Adapter) SweepIsolatedMarginUSDT() (float64, error) {
+	data, err := a.client.Get("/margin/accounts", nil)
+	if err != nil {
+		return 0, fmt.Errorf("SweepIsolatedMarginUSDT list: %w", err)
+	}
+	var accounts []struct {
+		CurrencyPair string `json:"currency_pair"`
+		Quote        struct {
+			Currency  string `json:"currency"`
+			Available string `json:"available"`
+			Borrowed  string `json:"borrowed"`
+			Interest  string `json:"interest"`
+		} `json:"quote"`
+	}
+	if err := json.Unmarshal(data, &accounts); err != nil {
+		return 0, fmt.Errorf("SweepIsolatedMarginUSDT unmarshal: %w", err)
+	}
+
+	var totalSwept float64
+	var firstErr error
+	for _, acc := range accounts {
+		if !strings.EqualFold(acc.Quote.Currency, "USDT") {
+			continue
+		}
+		avail, _ := strconv.ParseFloat(acc.Quote.Available, 64)
+		borrowed, _ := strconv.ParseFloat(acc.Quote.Borrowed, 64)
+		interest, _ := strconv.ParseFloat(acc.Quote.Interest, 64)
+		if avail < 1.0 || borrowed > 0 || interest > 0 {
+			continue // skip dust or accounts with active borrows/interest
+		}
+
+		// Check max transferable
+		tData, err := a.client.Get("/margin/transferable", map[string]string{
+			"currency":      "USDT",
+			"currency_pair": acc.CurrencyPair,
+		})
+		if err != nil {
+			firstErr = fmt.Errorf("transferable %s: %w", acc.CurrencyPair, err)
+			continue
+		}
+		var tResp struct {
+			Amount string `json:"amount"`
+		}
+		if json.Unmarshal(tData, &tResp) != nil {
+			continue
+		}
+		transferable, _ := strconv.ParseFloat(tResp.Amount, 64)
+		if transferable < 1.0 {
+			continue
+		}
+		// Round down to 2 decimals to avoid precision issues
+		amt := math.Floor(transferable*100) / 100
+		amtStr := strconv.FormatFloat(amt, 'f', 2, 64)
+
+		body := map[string]string{
+			"currency":      "USDT",
+			"from":          "margin",
+			"to":            "spot",
+			"amount":        amtStr,
+			"currency_pair": acc.CurrencyPair,
+		}
+		bodyBytes, _ := json.Marshal(body)
+		if _, err := a.client.Post("/wallet/transfers", string(bodyBytes)); err != nil {
+			firstErr = fmt.Errorf("transfer %s: %w", acc.CurrencyPair, err)
+			continue // try remaining pairs
+		}
+		totalSwept += amt
+	}
+	return totalSwept, firstErr
+}
+
 // ---------------------------------------------------------------------------
 // Spot Margin: Transfers (no-op for Unified Account)
 // ---------------------------------------------------------------------------

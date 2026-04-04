@@ -73,6 +73,10 @@ func spotBalanceKey(exchange string) string {
 	return fmt.Sprintf("arb:exchange:%s:spotBalance", exchange)
 }
 
+func marginBalanceKey(exchange string) string {
+	return fmt.Sprintf("arb:exchange:%s:marginBalance", exchange)
+}
+
 // ---------------------------------------------------------------------------
 // Config (arb:config HASH)
 // ---------------------------------------------------------------------------
@@ -443,6 +447,25 @@ func (c *Client) SaveSpotBalance(exchange string, balance float64) error {
 func (c *Client) GetSpotBalance(exchange string) (float64, error) {
 	ctx := context.Background()
 	val, err := c.rdb.Get(ctx, spotBalanceKey(exchange)).Result()
+	if err == redis.Nil {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseFloat(val, 64)
+}
+
+// SaveMarginBalance caches the latest cross-margin USDT balance for an exchange.
+func (c *Client) SaveMarginBalance(exchange string, balance float64) error {
+	ctx := context.Background()
+	return c.rdb.Set(ctx, marginBalanceKey(exchange), strconv.FormatFloat(balance, 'f', -1, 64), 0).Err()
+}
+
+// GetMarginBalance retrieves the cached cross-margin USDT balance for an exchange.
+func (c *Client) GetMarginBalance(exchange string) (float64, error) {
+	ctx := context.Background()
+	val, err := c.rdb.Get(ctx, marginBalanceKey(exchange)).Result()
 	if err == redis.Nil {
 		return 0, nil
 	}

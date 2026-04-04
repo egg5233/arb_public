@@ -34,6 +34,7 @@ const en = {
   'overview.unified': 'Unified',
   'overview.futures': 'Futures',
   'overview.spot': 'Spot',
+  'overview.margin': 'Margin',
   'overview.activePositionsSection': 'Active Positions',
   'overview.noPositions': 'No active positions',
   'overview.symbol': 'Symbol',

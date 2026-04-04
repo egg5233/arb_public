@@ -192,6 +192,7 @@ func (e *SpotEngine) discoveryLoop() {
 	e.updatePersistenceCounts(passed)
 	e.updateAllocation() // refresh allocation before auto-entries
 	e.attemptAutoEntries(passed)
+	e.sweepIsolatedMargin()
 
 	for {
 		select {
@@ -209,6 +210,7 @@ func (e *SpotEngine) discoveryLoop() {
 			e.updatePersistenceCounts(passed)
 			e.updateAllocation() // refresh allocation before auto-entries
 			e.attemptAutoEntries(passed)
+			e.sweepIsolatedMargin()
 		case <-e.configChanged:
 			newInterval := time.Duration(e.cfg.SpotFuturesScanIntervalMin) * time.Minute
 			if newInterval < time.Minute {
@@ -255,6 +257,34 @@ func (e *SpotEngine) saveCachedOpps(opps []SpotArbOpportunity) {
 		return
 	}
 	_ = e.db.SetWithTTL(spotOppsCacheKey, string(data), 30*time.Minute)
+}
+
+// sweepIsolatedMargin transfers idle USDT from isolated margin accounts back to
+// spot on exchanges that use isolated margin for spot-futures (currently Gate.io).
+// Called once per scan cycle by the discovery loop.
+func (e *SpotEngine) sweepIsolatedMargin() {
+	for name, exc := range e.exchanges {
+		type isolatedSweeper interface {
+			GetIsolatedMarginUSDT() (float64, error)
+			SweepIsolatedMarginUSDT() (float64, error)
+		}
+		sweeper, ok := exc.(isolatedSweeper)
+		if !ok {
+			continue
+		}
+		idle, err := sweeper.GetIsolatedMarginUSDT()
+		if err != nil || idle < 1.0 {
+			continue
+		}
+		swept, err := sweeper.SweepIsolatedMarginUSDT()
+		if err != nil {
+			e.log.Warn("sweep isolated margin %s: %v", name, err)
+			continue
+		}
+		if swept > 0 {
+			e.log.Info("sweep isolated margin %s: transferred %.2f USDT back to spot", name, swept)
+		}
+	}
 }
 
 func (e *SpotEngine) pushOppsToAPI(opps []SpotArbOpportunity) {

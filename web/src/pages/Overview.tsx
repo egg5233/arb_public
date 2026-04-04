@@ -110,8 +110,7 @@ const Overview: FC<OverviewProps> = ({
 
   const totalFunding = positions.reduce((sum, p) => sum + p.funding_collected, 0);
   const totalBalance = exchanges.reduce((sum, e) => {
-    if (e.account_type === 'unified') return sum + e.balance; // unified: don't double-count spot
-    return sum + e.balance + (e.spot_balance || 0);
+    return sum + e.balance + (e.spot_balance || 0) + (e.margin_balance || 0);
   }, 0);
 
   const statCards = [
@@ -176,20 +175,25 @@ const Overview: FC<OverviewProps> = ({
             {exchanges.map((ex) => (
               <div key={ex.name} className="bg-gray-800/50 rounded-md px-3 py-2">
                 <p className="text-xs text-gray-400 capitalize">{ex.name}</p>
-                {ex.account_type === 'unified' ? (
-                  <p className="font-mono text-sm text-gray-100">
-                    <span className="text-gray-500 text-xs">{t('overview.unified')}: </span>${ex.balance.toFixed(2)}
-                  </p>
-                ) : (
-                  <>
-                    <p className="font-mono text-sm text-gray-100">
-                      <span className="text-gray-500 text-xs">{t('overview.futures')}: </span>${ex.balance.toFixed(2)}
-                    </p>
-                    <p className="font-mono text-xs text-gray-400">
-                      <span className="text-gray-500">{t('overview.spot')}: </span>${(ex.spot_balance || 0).toFixed(2)}
-                    </p>
-                  </>
-                )}
+                {(() => {
+                  const spot = ex.spot_balance || 0;
+                  const margin = ex.margin_balance || 0;
+                  const hasExtra = spot > 0 || margin > 0;
+                  const total = ex.balance + spot + margin;
+                  if (!hasExtra) {
+                    return <p className="font-mono text-sm text-gray-100">${ex.balance.toFixed(2)}</p>;
+                  }
+                  const parts: string[] = [];
+                  parts.push(`${t('overview.futures')}: $${ex.balance.toFixed(2)}`);
+                  if (spot > 0) parts.push(`${t('overview.spot')}: $${spot.toFixed(2)}`);
+                  if (margin > 0) parts.push(`${t('overview.margin')}: $${margin.toFixed(2)}`);
+                  return (
+                    <>
+                      <p className="font-mono text-sm font-semibold text-gray-100">${total.toFixed(2)}</p>
+                      <p className="font-mono text-[10px] text-gray-500">{parts.join(' · ')}</p>
+                    </>
+                  );
+                })()}
               </div>
             ))}
           </div>

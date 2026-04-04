@@ -295,9 +295,42 @@ func main() {
 				// Save Total (equity) so dashboard shows full account value
 				// including margin locked in positions, not just free margin.
 				amount := bal.Total
-				spotBal, err := exc.GetSpotBalance()
-				if err == nil {
-					db.SaveSpotBalance(name, spotBal.Available)
+				// Gate.io unified: /spot/accounts returns the SAME pool as /unified/accounts.
+				// Fetching spot separately would double-count. Skip for unified Gate.io.
+				if !isSpotSameAsFutures(name, exc) {
+					spotBal, err := exc.GetSpotBalance()
+					if err == nil {
+						db.SaveSpotBalance(name, spotBal.Available)
+					}
+				} else {
+					db.SaveSpotBalance(name, 0)
+				}
+				// Fetch cross-margin USDT balance for exchanges with separate margin accounts.
+				// Unified exchanges (Bybit UTA, OKX, Gate.io unified) already include
+				// margin in the futures balance — fetching separately would double-count.
+				if hasSeparateMargin(name, exc) {
+					if smExch, ok := exc.(exchange.SpotMarginExchange); ok {
+						if mb, err := smExch.GetMarginBalance("USDT"); err == nil {
+							db.SaveMarginBalance(name, mb.NetBalance)
+						}
+					} else {
+						db.SaveMarginBalance(name, 0)
+					}
+				} else if isSpotSameAsFutures(name, exc) {
+					// Gate.io unified: also check isolated margin accounts for residual USDT.
+					// These are separate from the unified pool and not included in GetFuturesBalance.
+					if ga, ok := exc.(*gateio.Adapter); ok {
+						if isoMargin, err := ga.GetIsolatedMarginUSDT(); err == nil {
+							db.SaveMarginBalance(name, isoMargin)
+						} else {
+							log.Warn("balance refresh %s isolated margin: %v", name, err)
+							// Don't overwrite — keep previous cached value on transient errors
+						}
+					} else {
+						db.SaveMarginBalance(name, 0)
+					}
+				} else {
+					db.SaveMarginBalance(name, 0)
 				}
 				if err := db.SaveBalance(name, amount); err != nil {
 					log.Warn("save balance %s: %v", name, err)
@@ -420,6 +453,36 @@ func main() {
 	if api.DriftRestartRequested() {
 		log.Info("Drift restart requested — exiting with code 1 for supervisor restart")
 		os.Exit(1)
+	}
+}
+
+// isSpotSameAsFutures returns true when the spot wallet and futures wallet read
+// from the same pool, so fetching both would double-count.
+// Gate.io unified: /spot/accounts and /unified/accounts are the same USDT pool.
+// All other exchanges have truly separate spot wallets (or spot=0 for Bybit FUND).
+func isSpotSameAsFutures(name string, exc exchange.Exchange) bool {
+	if name == "gateio" {
+		type unifiedChecker interface{ IsUnified() bool }
+		if uc, ok := exc.(unifiedChecker); ok {
+			return uc.IsUnified()
+		}
+	}
+	return false
+}
+
+// hasSeparateMargin returns true when an exchange has a distinct cross-margin
+// account that is NOT already included in GetFuturesBalance/GetSpotBalance.
+// For unified exchanges the margin collateral sits inside the futures (trading)
+// balance, so fetching it separately would double-count.
+// Gate.io is runtime-detected: classic mode has separate margin; unified does not.
+func hasSeparateMargin(name string, _ exchange.Exchange) bool {
+	switch name {
+	case "binance", "bitget":
+		return true
+	default:
+		// Gate.io: margin handled via GetIsolatedMarginUSDT (isSpotSameAsFutures path)
+		// bybit, okx, bingx — all unified or no separate margin account
+		return false
 	}
 }
 

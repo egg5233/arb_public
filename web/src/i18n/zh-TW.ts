@@ -36,6 +36,7 @@ const zhTW: Record<TranslationKey, string> = {
   'overview.unified': '統一帳戶',
   'overview.futures': '合約',
   'overview.spot': '現貨',
+  'overview.margin': '保證金',
   'overview.activePositionsSection': '活躍持倉',
   'overview.noPositions': '無活躍持倉',
   'overview.symbol': '交易對',
