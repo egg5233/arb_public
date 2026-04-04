@@ -37,6 +37,7 @@ type Server struct {
 	spotInjectTestOpp func(symbol, exchange string)
 	configNotifier    *config.ConfigNotifier
 	analyticsStore    *analytics.Store
+	allocator         *risk.CapitalAllocator
 }
 
 // NewServer creates a new Dashboard server.
@@ -123,6 +124,9 @@ func (s *Server) Start() {
 	// Analytics
 	mux.HandleFunc("/api/analytics/pnl-history", s.cors(s.authMiddleware(s.handleGetAnalyticsPnLHistory)))
 	mux.HandleFunc("/api/analytics/summary", s.cors(s.authMiddleware(s.handleGetAnalyticsSummary)))
+
+	// Capital allocation
+	mux.HandleFunc("/api/allocation", s.cors(s.authMiddleware(s.handleGetAllocation)))
 
 	// System update
 	mux.HandleFunc("/api/check-update", s.cors(s.authMiddleware(s.handleCheckUpdate)))
@@ -288,6 +292,11 @@ func (s *Server) SetPermissions(perms map[string]exchange.PermissionResult) {
 // SetAnalyticsStore injects the analytics SQLite store for dashboard API endpoints.
 func (s *Server) SetAnalyticsStore(store *analytics.Store) {
 	s.analyticsStore = store
+}
+
+// SetCapitalAllocator injects the capital allocator for the allocation API endpoint.
+func (s *Server) SetCapitalAllocator(allocator *risk.CapitalAllocator) {
+	s.allocator = allocator
 }
 
 // ConfigNotifier returns the shared ConfigNotifier so that other

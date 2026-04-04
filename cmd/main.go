@@ -187,6 +187,7 @@ func main() {
 	apiSrv := api.NewServer(db, cfg, exchanges)
 	apiSrv.SetPermissions(permResults)
 	apiSrv.SetExchangeScorer(scorer)
+	apiSrv.SetCapitalAllocator(allocator)
 	eng := engine.NewEngine(exchanges, scanner, riskMgr, riskMon, healthMon, db, apiSrv, cfg, allocator)
 	eng.SetContracts(allContracts)
 

@@ -14,6 +14,7 @@ import (
 
 	"arb/internal/config"
 	"arb/internal/database"
+	"arb/internal/risk"
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
@@ -312,6 +313,17 @@ type configResponse struct {
 	SpotFutures *configSpotFuturesResponse        `json:"spot_futures,omitempty"`
 	Safety      configSafetyResponse              `json:"safety"`
 	Analytics   configAnalyticsResponse           `json:"analytics"`
+	Allocation  configAllocationResponse          `json:"allocation"`
+}
+
+type configAllocationResponse struct {
+	EnableUnifiedCapital   bool    `json:"enable_unified_capital"`
+	TotalCapitalUSDT       float64 `json:"total_capital_usdt"`
+	RiskProfile            string  `json:"risk_profile"`
+	AllocationLookbackDays int     `json:"allocation_lookback_days"`
+	AllocationFloorPct     float64 `json:"allocation_floor_pct"`
+	AllocationCeilingPct   float64 `json:"allocation_ceiling_pct"`
+	SizeMultiplier         float64 `json:"size_multiplier"`
 }
 
 type configAnalyticsResponse struct {
@@ -624,6 +636,15 @@ func (s *Server) buildConfigResponse() configResponse {
 			EnableAnalytics: s.cfg.EnableAnalytics,
 			AnalyticsDBPath: s.cfg.AnalyticsDBPath,
 		},
+		Allocation: configAllocationResponse{
+			EnableUnifiedCapital:   s.cfg.EnableUnifiedCapital,
+			TotalCapitalUSDT:       s.cfg.TotalCapitalUSDT,
+			RiskProfile:            s.cfg.RiskProfile,
+			AllocationLookbackDays: s.cfg.AllocationLookbackDays,
+			AllocationFloorPct:     s.cfg.AllocationFloorPct,
+			AllocationCeilingPct:   s.cfg.AllocationCeilingPct,
+			SizeMultiplier:         s.cfg.SizeMultiplier,
+		},
 	}
 	resp.SpotFutures = &configSpotFuturesResponse{
 		Enabled:                    s.cfg.SpotFuturesEnabled,
@@ -728,6 +749,17 @@ type configUpdate struct {
 	SpotFutures *spotFuturesUpdate         `json:"spot_futures"`
 	Safety      *safetyUpdate              `json:"safety"`
 	Analytics   *analyticsUpdate           `json:"analytics"`
+	Allocation  *allocationUpdate          `json:"allocation"`
+}
+
+type allocationUpdate struct {
+	EnableUnifiedCapital   *bool    `json:"enable_unified_capital"`
+	TotalCapitalUSDT       *float64 `json:"total_capital_usdt"`
+	RiskProfile            *string  `json:"risk_profile"`
+	AllocationLookbackDays *int     `json:"allocation_lookback_days"`
+	AllocationFloorPct     *float64 `json:"allocation_floor_pct"`
+	AllocationCeilingPct   *float64 `json:"allocation_ceiling_pct"`
+	SizeMultiplier         *float64 `json:"size_multiplier"`
 }
 
 type analyticsUpdate struct {
@@ -1414,6 +1446,63 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if alloc := upd.Allocation; alloc != nil {
+		if alloc.EnableUnifiedCapital != nil {
+			s.cfg.EnableUnifiedCapital = *alloc.EnableUnifiedCapital
+		}
+		if alloc.TotalCapitalUSDT != nil && *alloc.TotalCapitalUSDT >= 0 {
+			s.cfg.TotalCapitalUSDT = *alloc.TotalCapitalUSDT
+		}
+		if alloc.RiskProfile != nil {
+			profileName := *alloc.RiskProfile
+			if profileName != "" && profileName != "custom" {
+				// User selected a named profile -- apply bundled fields.
+				if err := risk.ApplyProfile(s.cfg, profileName); err != nil {
+					s.log.Error("apply profile %s: %v", profileName, err)
+				} else {
+					s.cfg.RiskProfile = profileName
+				}
+			} else {
+				s.cfg.RiskProfile = profileName
+			}
+		}
+		if alloc.AllocationLookbackDays != nil && *alloc.AllocationLookbackDays > 0 {
+			s.cfg.AllocationLookbackDays = *alloc.AllocationLookbackDays
+		}
+		if alloc.AllocationFloorPct != nil && *alloc.AllocationFloorPct >= 0 {
+			s.cfg.AllocationFloorPct = *alloc.AllocationFloorPct
+		}
+		if alloc.AllocationCeilingPct != nil && *alloc.AllocationCeilingPct > 0 {
+			s.cfg.AllocationCeilingPct = *alloc.AllocationCeilingPct
+		}
+		if alloc.SizeMultiplier != nil && *alloc.SizeMultiplier > 0 {
+			s.cfg.SizeMultiplier = *alloc.SizeMultiplier
+		}
+	}
+
+	// Detect manual override of profile-bundled fields -> switch to "custom".
+	if s.cfg.RiskProfile != "" && s.cfg.RiskProfile != "custom" {
+		bundledOverride := false
+		if upd.Fund != nil && (upd.Fund.MaxPositions != nil || upd.Fund.Leverage != nil) {
+			bundledOverride = true
+		}
+		if upd.Strategy != nil && upd.Strategy.Discovery != nil && upd.Strategy.Discovery.MaxCostRatio != nil {
+			bundledOverride = true
+		}
+		if upd.SpotFutures != nil && upd.SpotFutures.MinNetYieldAPR != nil {
+			bundledOverride = true
+		}
+		if upd.Risk != nil && (upd.Risk.MaxPerpPerpPct != nil || upd.Risk.MaxSpotFuturesPct != nil) {
+			bundledOverride = true
+		}
+		if upd.Allocation != nil && upd.Allocation.SizeMultiplier != nil && upd.Allocation.RiskProfile == nil {
+			bundledOverride = true
+		}
+		if bundledOverride {
+			s.cfg.RiskProfile = "custom"
+		}
+	}
+
 	// Persist config fields to Redis HASH (arb:config) using flat keys.
 	snapshot := s.buildConfigResponse()
 
@@ -1529,6 +1618,15 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		fields["spot_futures_exit_spread_pct"] = strconv.FormatFloat(sf.ExitSpreadPct, 'f', -1, 64)
 	}
 
+	// Allocation fields
+	fields["enable_unified_capital"] = strconv.FormatBool(snapshot.Allocation.EnableUnifiedCapital)
+	fields["total_capital_usdt"] = strconv.FormatFloat(snapshot.Allocation.TotalCapitalUSDT, 'f', -1, 64)
+	fields["risk_profile"] = snapshot.Allocation.RiskProfile
+	fields["allocation_lookback_days"] = strconv.Itoa(snapshot.Allocation.AllocationLookbackDays)
+	fields["allocation_floor_pct"] = strconv.FormatFloat(snapshot.Allocation.AllocationFloorPct, 'f', -1, 64)
+	fields["allocation_ceiling_pct"] = strconv.FormatFloat(snapshot.Allocation.AllocationCeilingPct, 'f', -1, 64)
+	fields["size_multiplier"] = strconv.FormatFloat(snapshot.Allocation.SizeMultiplier, 'f', -1, 64)
+
 	// Safety fields
 	fields["enable_loss_limits"] = strconv.FormatBool(snapshot.Safety.EnableLossLimits)
 	fields["daily_loss_limit_usdt"] = strconv.FormatFloat(snapshot.Safety.DailyLossLimitUSDT, 'f', -1, 64)
@@ -1553,6 +1651,26 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	s.configNotifier.Notify()
 
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: snapshot})
+}
+
+// handleGetAllocation returns the current capital allocation summary.
+func (s *Server) handleGetAllocation(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.allocator == nil || !s.allocator.Enabled() {
+		writeJSON(w, http.StatusOK, Response{OK: true, Data: map[string]interface{}{
+			"enabled": false,
+		}})
+		return
+	}
+	summary, err := s.allocator.Summary()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, Response{OK: false, Error: "allocation summary: " + err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: summary})
 }
 
 // handleGetRejections returns the in-memory list of recently rejected opportunities.
