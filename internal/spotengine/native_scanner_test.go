@@ -568,6 +568,42 @@ func TestNativeScannerCachesMissingSpotMarketAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestNativeScannerAbortsQuicklyOnShutdown(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	stubExch := &nativeScannerStubExchange{
+		borrowRate: &exchange.MarginInterestRate{
+			Coin:       "ONT",
+			HourlyRate: 0.00001,
+		},
+	}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{
+		"okx": stubExch,
+	}
+	engine.cfg = &config.Config{
+		SpotFuturesNativeScannerEnabled: true,
+		SpotFuturesMinNetYieldAPR:       0.01,
+	}
+
+	close(engine.stopCh)
+
+	lorisResp := buildTestLorisResponse(
+		[]string{"ONT", "BTC", "ETH"},
+		map[string]map[string]float64{
+			"okx": {"ONT": 10.0, "BTC": 10.0, "ETH": 10.0},
+		},
+	)
+
+	opps := engine.runNativeDiscoveryScanFromLoris(&lorisResp)
+	if len(opps) != 0 {
+		t.Fatalf("expected no opportunities after shutdown, got %d", len(opps))
+	}
+	if stubExch.bboCalls != 0 {
+		t.Fatalf("expected no GetSpotBBO calls after shutdown, got %d", stubExch.bboCalls)
+	}
+}
+
 func TestNativeScannerConfigDefaults(t *testing.T) {
 	// Test: Config defaults for all 9 new fields.
 	// config.Load() sets defaults, then loads JSON + env. We call it in a

@@ -164,3 +164,39 @@ func TestCoinGlassDiscoveryCachesMissingSpotMarketAcrossRestart(t *testing.T) {
 		t.Fatalf("expected no GetSpotBBO call after restart cache hit, got %d", secondStub.bboCalls)
 	}
 }
+
+func TestCoinGlassDiscoveryAbortsQuicklyOnShutdown(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	engine.cfg = &config.Config{SpotFuturesNativeScannerEnabled: false}
+	stub := &nativeScannerStubExchange{}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{
+		"okx": stub,
+	}
+
+	payload := scraper.Payload{
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Data: []scraper.Opportunity{
+			{Symbol: "ONT", Portfolio: "Buy ONT", Exchange: "OKX", APR: "12.50%"},
+			{Symbol: "BTC", Portfolio: "Buy BTC", Exchange: "OKX", APR: "12.50%"},
+		},
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if err := engine.db.SetWithTTL("coinGlassSpotArb", string(raw), time.Minute); err != nil {
+		t.Fatalf("SetWithTTL: %v", err)
+	}
+
+	close(engine.stopCh)
+
+	opps := engine.runDiscoveryScan()
+	if len(opps) != 0 {
+		t.Fatalf("expected no opportunities after shutdown, got %d", len(opps))
+	}
+	if stub.bboCalls != 0 {
+		t.Fatalf("expected no GetSpotBBO calls after shutdown, got %d", stub.bboCalls)
+	}
+}

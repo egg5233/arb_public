@@ -152,9 +152,17 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 	var opps []SpotArbOpportunity
 
 	for _, baseSym := range loris.Symbols {
+		if e.stopping() {
+			e.log.Info("native discovery: shutdown requested, aborting scan early")
+			return opps
+		}
 		symbol := strings.ToUpper(baseSym) + "USDT"
 
 		for exchName, smExch := range e.spotMargin {
+			if e.stopping() {
+				e.log.Info("native discovery: shutdown requested, aborting scan early")
+				return opps
+			}
 			// Check exchange is in allowed list (if configured).
 			if len(allowedExchanges) > 0 && !allowedExchanges[exchName] {
 				continue
@@ -332,6 +340,10 @@ func (e *SpotEngine) runCoinGlassFallback() []SpotArbOpportunity {
 	var opps []SpotArbOpportunity
 
 	for _, item := range payload.Data {
+		if e.stopping() {
+			e.log.Info("spot discovery: shutdown requested, aborting fallback scan early")
+			return opps
+		}
 		// Normalize exchange name.
 		exchName, ok := spotExchangeMap[item.Exchange]
 		if !ok {

@@ -129,6 +129,15 @@ func (e *SpotEngine) Stop() {
 	e.log.Info("Spot-futures engine stopped")
 }
 
+func (e *SpotEngine) stopping() bool {
+	select {
+	case <-e.stopCh:
+		return true
+	default:
+		return false
+	}
+}
+
 // launchExit runs an automated exit in the background and tracks it so Stop
 // waits for in-flight close sequences to finish before returning.
 func (e *SpotEngine) launchExit(pos *models.SpotFuturesPosition, reason string, isEmergency bool) {
@@ -166,6 +175,9 @@ func (e *SpotEngine) discoveryLoop() {
 	// Initial scan on startup.
 	e.log.Info("spot-futures discovery scan (interval: %s)", scanInterval)
 	opps := e.runDiscoveryScan()
+	if e.stopping() {
+		return
+	}
 	passed := filterPassed(opps)
 	e.logDiscoveryResults(passed)
 	e.pushOppsToAPI(opps)
@@ -179,6 +191,9 @@ func (e *SpotEngine) discoveryLoop() {
 		case <-ticker.C:
 			e.log.Info("spot-futures discovery scan")
 			opps := e.runDiscoveryScan()
+			if e.stopping() {
+				return
+			}
 			passed := filterPassed(opps)
 			e.logDiscoveryResults(passed)
 			e.pushOppsToAPI(opps)
@@ -192,6 +207,9 @@ func (e *SpotEngine) discoveryLoop() {
 			ticker.Reset(newInterval)
 			e.log.Info("spot-futures config updated, scan interval now %s — running immediate scan", newInterval)
 			opps := e.runDiscoveryScan()
+			if e.stopping() {
+				return
+			}
 			passed := filterPassed(opps)
 			e.logDiscoveryResults(passed)
 			e.pushOppsToAPI(opps)
