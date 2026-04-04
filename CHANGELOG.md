@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.27.0] - 2026-04-04
+
+### Added
+- **Risk profile presets** (conservative/balanced/aggressive) bundling MaxPositions, Leverage, MaxCostRatio, MinNetYieldAPR, allocation weights, and SizeMultiplier. `ApplyProfile` overwrites all bundled fields; `ProfileBundledFields` enables custom-detection on manual override.
+- **Unified capital allocation config fields** (7 new fields with full 6-touch-point convention): EnableUnifiedCapital, TotalCapitalUSDT, RiskProfile, AllocationLookbackDays, AllocationFloorPct, AllocationCeilingPct, SizeMultiplier. New `allocation` JSON section.
+- **Performance-weighted allocation** via `ComputeEffectiveAllocation` — blends profile base split with trailing APR data, clamped to floor/ceiling bounds.
+- **Derived capital-per-leg** via `EffectiveCapitalPerLeg` — derives from TotalCapitalUSDT/MaxPositions/2 with SizeMultiplier, manual CapitalPerLeg override preserved.
+- **Dynamic strategy shifting** via `DynamicStrategyPct` — frees uncommitted capital from strategy with no opportunities to the other, within ceiling bounds.
+- **CapitalSummary** extended with EffectivePerpPct, EffectiveSpotPct, PoolTotal, CapitalPerLeg fields.
+
 ## [0.26.0] - 2026-04-03
 
 ### Added
