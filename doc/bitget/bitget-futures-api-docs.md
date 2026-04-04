@@ -4,6 +4,17 @@ Crawled from https://www.bitget.com/api-doc/contract/
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: futures trading and market data
+- Repo symbol format: `BTCUSDT`
+- Most relevant behaviors for this repo:
+  - contract metadata
+  - order placement / cancel / fills
+  - balances, positions, leverage, margin mode
+  - funding and ticker/depth data
+- Important repo note: check quantity-vs-notional semantics carefully when comparing futures and spot docs; Bitget uses different conventions across product families
+
 # Market Endpoints
 
 # Get All Tickers
@@ -6417,4 +6428,3 @@ Push Data
 | 95014 | The sub-account has contract orders and cannot be added |
 
 ---
-

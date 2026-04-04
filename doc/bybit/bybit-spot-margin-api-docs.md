@@ -4,11 +4,22 @@ Source: https://bybit-exchange.github.io/docs/v5/spot-margin-uta/
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: spot-margin borrow/repay and spot leg operations for the spot-futures engine
+- Repo symbol format: `BTCUSDT`
+- Most relevant endpoints for this repo:
+  - coin state / state
+  - max borrowable
+  - interest rate history
+  - collateral and margin data
+- Important repo note: Bybit UTA can temporarily lock balances around settlement; do not assume `available` always reflects repayability during those windows
+
 # Get Coin State
 
 ### HTTP Request
 
-GET`/v5/spot-margin-trade/coinstate`Copy
+`GET /v5/spot-margin-trade/coinstate`
 
 ### Request Parameters
 
@@ -53,9 +64,6 @@ print(session.spot_margin_trade_get_coin_state(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -136,11 +144,9 @@ print(session.spot_margin_trade_get_coin_state(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -148,13 +154,13 @@ GitHub
 
 # Get Currency Data
 
-info
+> Info
 
 If the borrowable switch is disabled (`false`), the related configuration fields will return `""`.
 
 ### HTTP Request
 
-GET`/v5/spot-margin-trade/currency-data`Copy
+`GET /v5/spot-margin-trade/currency-data`
 
 ### Request Parameters
 
@@ -207,9 +213,6 @@ print(session.spot_margin_trade_get_currency_data(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -238,11 +241,9 @@ print(session.spot_margin_trade_get_currency_data(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -254,7 +255,7 @@ Get spot automatic repayment mode
 
 ### HTTP Request
 
-GET`/v5/spot-margin-trade/get-auto-repay-mode`Copy
+`GET /v5/spot-margin-trade/get-auto-repay-mode`
 
 ### Request Parameters
 
@@ -300,9 +301,6 @@ print(session.get_auto_repay_mode(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -323,11 +321,9 @@ print(session.get_auto_repay_mode(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -337,7 +333,7 @@ GitHub
 
 You can query up to six months borrowing interest rate of Margin trading.
 
-info
+> Info
 
 - Need authentication, the api key needs "Spot" permission
 - Only supports Unified account
@@ -345,7 +341,7 @@ info
 
 ### HTTP Request
 
-GET`/v5/spot-margin-trade/interest-rate-history`Copy
+`GET /v5/spot-margin-trade/interest-rate-history`
 
 ### Request Parameters
 
@@ -431,11 +427,9 @@ print(session.spot_margin_trade_get_historical_interest_rate(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -445,7 +439,7 @@ GitHub
 
 ### HTTP Request
 
-GET`/v5/spot-margin-trade/max-borrowable`Copy
+`GET /v5/spot-margin-trade/max-borrowable`
 
 ### Request Parameters
 
@@ -489,9 +483,6 @@ print(session.spot_margin_trade_get_max_borrowable(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -508,11 +499,9 @@ print(session.spot_margin_trade_get_max_borrowable(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -520,13 +509,13 @@ GitHub
 
 # Get Position Tiers
 
-info
+> Info
 
 - If `currency` is passed in the input parameter, query by currency; if `currency` is not passed in the input parameter, query all configured currencies
 
 ### HTTP Request
 
-GET`/v5/spot-margin-trade/position-tiers`Copy
+`GET /v5/spot-margin-trade/position-tiers`
 
 ### Request Parameters
 
@@ -576,9 +565,6 @@ print(session.spot_margin_trade_get_position_tiers(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -628,11 +614,9 @@ print(session.spot_margin_trade_get_position_tiers(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -642,7 +626,7 @@ GitHub
 
 ### HTTP Request
 
-GET`/v5/spot-margin-trade/repayment-available-amount`Copy
+`GET /v5/spot-margin-trade/repayment-available-amount`
 
 ### Request Parameters
 
@@ -686,9 +670,6 @@ print(session.spot_margin_trade_get_repayment_available_amount(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -705,11 +686,9 @@ print(session.spot_margin_trade_get_repayment_available_amount(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -719,7 +698,7 @@ GitHub
 
 Set spot automatic repayment mode
 
-info
+> Info
 
 1. If `currency` is not passed, spot automatic repayment will be enabled for all currencies.
 2. If `autoRepayMode` of a currency is set to 1, the system will automatically make repayments without asset conversion to that currency at 0 and 30 minutes every hour.
@@ -728,7 +707,7 @@ info
 
 ### HTTP Request
 
-POST`/v5/spot-margin-trade/set-auto-repay-mode`Copy
+`POST /v5/spot-margin-trade/set-auto-repay-mode`
 
 ### Request Parameters
 
@@ -781,9 +760,6 @@ print(session.set_auto_repay_mode(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -804,11 +780,9 @@ print(session.set_auto_repay_mode(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -826,7 +800,7 @@ The updated leverage must be less than or equal to the maximum leverage of the c
 
 ### HTTP Request
 
-POST`/v5/spot-margin-trade/set-leverage`Copy
+`POST /v5/spot-margin-trade/set-leverage`
 
 ### Request Parameters
 
@@ -875,7 +849,7 @@ print(session.spot_margin_trade_set_leverage(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -906,11 +880,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -922,7 +894,7 @@ Query the Spot margin status and leverage
 
 ### HTTP Request
 
-GET`/v5/spot-margin-trade/state`Copy
+`GET /v5/spot-margin-trade/state`
 
 ### Request Parameters
 
@@ -965,7 +937,7 @@ session = HTTP(
 print(session.spot_margin_trade_get_status_and_leverage())
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -1000,11 +972,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1020,7 +990,7 @@ Your account needs to activate spot margin first; i.e., you must have finished t
 
 ### HTTP Request
 
-POST`/v5/spot-margin-trade/switch-mode`Copy
+`POST /v5/spot-margin-trade/switch-mode`
 
 ### Request Parameters
 
@@ -1070,7 +1040,7 @@ print(session.spot_margin_trade_toggle_margin_trade(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -1103,11 +1073,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1117,13 +1085,13 @@ GitHub
 
 UTA loan tiered collateral ratio
 
-info
+> Info
 
 Does not need authentication.
 
 ### HTTP Request
 
-GET`/v5/spot-margin-trade/collateral`Copy
+`GET /v5/spot-margin-trade/collateral`
 
 ### Request Parameters
 
@@ -1163,9 +1131,6 @@ print(session.get_tiered_collateral_ratio(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -1197,11 +1162,9 @@ print(session.get_tiered_collateral_ratio(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1211,13 +1174,13 @@ GitHub
 
 This margin data is for **Unified account** in particular.
 
-info
+> Info
 
 Does not need authentication.
 
 ### HTTP Request
 
-GET`/v5/spot-margin-trade/data`Copy
+`GET /v5/spot-margin-trade/data`
 
 ### Request Parameters
 
@@ -1266,7 +1229,7 @@ session = HTTP(
 print(session.spot_margin_trade_get_vip_margin_data())
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -1315,13 +1278,10 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
 ---
-

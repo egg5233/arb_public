@@ -4,6 +4,17 @@ Source: https://www.gate.com/docs/developers/apiv4/en/#spot
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: spot market data and spot leg behavior for spot-futures
+- Repo symbol format: `BTCUSDT`
+- Vendor/API spot symbol format usually uses underscore form: `BTC_USDT`
+- Most relevant behaviors for this repo:
+  - currency pair metadata
+  - spot ticker / orderbook
+  - spot trading behavior used by margin-backed spot flows
+- Important repo note: Gate has multiple account/margin modes; confirm whether a change belongs in raw spot docs or unified/margin-specific docs before updating adapters
+
 # Spot
 
 Spot trading

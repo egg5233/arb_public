@@ -4,13 +4,24 @@ Source: https://bybit-exchange.github.io/docs/v5/account/
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: account configuration, balances, transfers, and funding/history support
+- Repo symbol format: `BTCUSDT`
+- Most relevant endpoints for this repo:
+  - account info
+  - wallet balance
+  - transfer / withdrawal capability checks
+  - transaction logs used for funding/PnL support paths
+- Important repo note: this project relies on UTA behavior; account mode and balance semantics should be verified against live adapter expectations
+
 # Get Account Info
 
 Query the account information, like margin mode, account mode, etc.
 
 ### HTTP Request
 
-GET`/v5/account/info`Copy
+`GET /v5/account/info`
 
 ### Request Parameters
 
@@ -58,7 +69,7 @@ session = HTTP(
 print(session.get_account_info())
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -96,11 +107,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -110,7 +119,7 @@ GitHub
 
 ### HTTP Request
 
-POST`/v5/account/set-collateral-switch-batch`Copy
+`POST /v5/account/set-collateral-switch-batch`
 
 ### Request Parameters
 
@@ -188,7 +197,7 @@ print(session.batch_set_collateral_coin(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -249,11 +258,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -261,13 +268,13 @@ GitHub
 
 # Manual Borrow
 
-info
+> Info
 
 Borrowing via OpenAPI endpoint supports variable rate borrowing only.
 
 ### HTTP Request
 
-POST`/v5/account/borrow`Copy
+`POST /v5/account/borrow`
 
 ### Request Parameters
 
@@ -318,9 +325,6 @@ print(session.borrow(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -337,11 +341,9 @@ print(session.borrow(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -353,7 +355,7 @@ Get interest records, sorted in reverse order of creation time.
 
 ### HTTP Request
 
-GET`/v5/account/borrow-history`Copy
+`GET /v5/account/borrow-history`
 
 ### Request Parameters
 
@@ -413,7 +415,7 @@ print(session.get_borrow_history(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -465,11 +467,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -479,13 +479,13 @@ GitHub
 
 Get current account Greeks information
 
-info
+> Info
 
 - During periods of extreme market volatility, this interface may experience increased latency or temporary delays in data delivery
 
 ### HTTP Request
 
-GET`/v5/asset/coin-greeks`Copy
+`GET /v5/asset/coin-greeks`
 
 ### Request Parameters
 
@@ -535,7 +535,7 @@ print(session.get_coin_greeks(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -576,11 +576,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -593,7 +591,7 @@ collateral conversion rate, whether it can be mortgaged as margin, etc.
 
 ### HTTP Request
 
-GET`/v5/account/collateral-info`Copy
+`GET /v5/account/collateral-info`
 
 ### Request Parameters
 
@@ -652,7 +650,7 @@ print(session.get_collateral_info(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -702,11 +700,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -720,7 +716,7 @@ Query the DCP configuration of the account. Before calling the interface, please
 
 - If you only request to activate Spot trading for DCP, the contract and options data will not be returned.
 
-info
+> Info
 
 - Support USDT Perpetuals, USDT Futures, USDC Perpetuals, USDC Futures, Inverse Perpetuals, Inverse Futures \[DERIVATIVES\]
 
@@ -730,7 +726,7 @@ Options \[OPTIONS\]
 
 ### HTTP Request
 
-GET`/v5/account/query-dcp-info`Copy
+`GET /v5/account/query-dcp-info`
 
 ### Request Parameters
 
@@ -770,7 +766,7 @@ session = HTTP(
 print(session.query_dcp_info())
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -816,11 +812,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -832,7 +826,7 @@ Get the trading fee rate.
 
 ### HTTP Request
 
-GET`/v5/account/fee-rate`Copy
+`GET /v5/account/fee-rate`
 
 ### Request Parameters
 
@@ -884,7 +878,7 @@ print(session.get_fee_rates(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -926,11 +920,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -940,7 +932,7 @@ GitHub
 
 ### HTTP Request
 
-GET`/v5/account/mmp-state`Copy
+`GET /v5/account/mmp-state`
 
 ### Request Parameters
 
@@ -994,7 +986,7 @@ print(session.get_mmp_state(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -1038,11 +1030,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1076,7 +1066,7 @@ Default Setting
 
 ### HTTP Request
 
-GET`/v5/account/user-setting-config`Copy
+`GET /v5/account/user-setting-config`
 
 ### Request Parameters
 
@@ -1120,9 +1110,6 @@ session = HTTP(
 print(session.get_user_setting_config())
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -1141,11 +1128,9 @@ print(session.get_user_setting_config())
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1167,7 +1152,7 @@ caution
 
 ### HTTP Request
 
-GET`/v5/account/instruments-info`Copy
+`GET /v5/account/instruments-info`
 
 ### Request Parameters
 
@@ -1429,11 +1414,9 @@ print(session.get_account_instruments_info(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1441,7 +1424,7 @@ GitHub
 
 # Manual Repay Without Asset Conversion
 
-info
+> Info
 
 - If `coin` is passed in input parameter and `amount` is not, the repayment amount will be the available spot balance of that coin.
 
@@ -1455,7 +1438,7 @@ important
 
 ### HTTP Request
 
-POST`/v5/account/no-convert-repay`Copy
+`POST /v5/account/no-convert-repay`
 
 ### Request Parameters
 
@@ -1505,9 +1488,6 @@ print(session.set_no_convert_repay(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -1523,11 +1503,9 @@ print(session.set_no_convert_repay(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1539,7 +1517,7 @@ Query the option asset profit and loss information for each coin under the accou
 
 ### HTTP Request
 
-GET`/v5/account/option-asset-info`Copy
+`GET /v5/account/option-asset-info`
 
 ### Request Parameters
 
@@ -1577,9 +1555,6 @@ X-BAPI-RECV-WINDOW: 5000
 
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -1605,11 +1580,9 @@ X-BAPI-RECV-WINDOW: 5000
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1621,7 +1594,7 @@ Query repayment collateral information for the account before repayment. This da
 
 ### HTTP Request
 
-GET`/v5/account/pay-info`Copy
+`GET /v5/account/pay-info`
 
 ### Request Parameters
 
@@ -1668,9 +1641,6 @@ X-BAPI-RECV-WINDOW: 5000
 
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -1741,11 +1711,9 @@ X-BAPI-RECV-WINDOW: 5000
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1753,7 +1721,7 @@ GitHub
 
 # Manual Repay
 
-info
+> Info
 
 - If neither `coin` nor `amount` is passed in input parameter, then repay all the liabilities.
 - If `coin` is passed in input parameter and `amount` is not, the coin will be repaid in full.
@@ -1770,7 +1738,7 @@ important
 
 ### HTTP Request
 
-POST`/v5/account/repay`Copy
+`POST /v5/account/repay`
 
 ### Request Parameters
 
@@ -1820,9 +1788,6 @@ print(session.repay(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -1838,11 +1803,9 @@ print(session.repay(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1854,7 +1817,7 @@ You can manually repay the liabilities of Unified account
 
 > **Permission**: USDC Contracts
 
-info
+> Info
 
 1. Starting Mar 17, 2026 (gradual rollout, fully released on Mar 24, 2026), BYUSDT can be used for repayment.
 2. MNT will temporarily not be used for repayment, and repaying MNT liabilities through convert-repay is not supported. However, you may still use [Manual Repay Without Asset Conversion](https://bybit-exchange.github.io/docs/v5/account/no-convert-repay) to repay MNT using your existing balance.
@@ -1862,7 +1825,7 @@ info
 
 ### HTTP Request
 
-POST`/v5/account/quick-repayment`Copy
+`POST /v5/account/quick-repayment`
 
 ### Request Parameters
 
@@ -1911,7 +1874,7 @@ print(session.repay_liability(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -1955,11 +1918,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1967,14 +1928,14 @@ GitHub
 
 # Reset MMP
 
-info
+> Info
 
 - Once the mmp triggered, you can unfreeze the account by this endpoint, then `qtyLimit` and `deltaLimit` will be reset to 0.
 - If the account is not frozen, reset action can also remove previous accumulation, i.e., `qtyLimit` and `deltaLimit` will be reset to 0.
 
 ### HTTP Request
 
-POST`/v5/account/mmp-reset`Copy
+`POST /v5/account/mmp-reset`
 
 ### Request Parameters
 
@@ -2018,7 +1979,7 @@ print(session.reset_mmp(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -2046,11 +2007,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2062,7 +2021,7 @@ You can decide whether the assets in the Unified account needs to be collateral 
 
 ### HTTP Request
 
-POST`/v5/account/set-collateral-switch`Copy
+`POST /v5/account/set-collateral-switch`
 
 ### Request Parameters
 
@@ -2114,7 +2073,7 @@ print(session.set_collateral_coin(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -2148,11 +2107,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2167,7 +2124,7 @@ You can turn on/off the Delta Neutral mode. To query the current status, use the
 
 ### HTTP Request
 
-POST`/v5/account/set-delta-mode`Copy
+`POST /v5/account/set-delta-mode`
 
 ### Request Parameters
 
@@ -2216,9 +2173,6 @@ print(session.set_delta_mode(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -2232,11 +2186,9 @@ print(session.set_delta_mode(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2248,7 +2200,7 @@ Default is regular margin mode
 
 ### HTTP Request
 
-POST`/v5/account/set-margin-mode`Copy
+`POST /v5/account/set-margin-mode`
 
 ### Request Parameters
 
@@ -2300,7 +2252,7 @@ print(session.set_margin_mode(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -2336,11 +2288,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2348,7 +2298,7 @@ GitHub
 
 # Set MMP
 
-info
+> Info
 
 ## What is MMP?
 
@@ -2383,7 +2333,7 @@ Effective for **options** only. When you place an `option` order, set `mmp`=true
 
 ### HTTP Request
 
-POST`/v5/account/mmp-modify`Copy
+`POST /v5/account/mmp-modify`
 
 ### Request Parameters
 
@@ -2439,7 +2389,7 @@ print(session.set_mmp(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -2473,11 +2423,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2519,7 +2467,7 @@ Corresponds to [Get Limit Price Behaviour](https://bybit-exchange.github.io/docs
 
 ### HTTP Request
 
-POST`/v5/account/set-limit-px-action`Copy
+`POST /v5/account/set-limit-px-action`
 
 ### Request Parameters
 
@@ -2567,9 +2515,6 @@ print(session.set_limit_price_action(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -2583,11 +2528,9 @@ print(session.set_limit_price_action(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2599,7 +2542,7 @@ You can turn on/off Spot hedging feature in Portfolio margin
 
 ### HTTP Request
 
-POST`/v5/account/set-hedging-mode`Copy
+`POST /v5/account/set-hedging-mode`
 
 ### Request Parameters
 
@@ -2651,7 +2594,7 @@ print(session.set_hedging_mode(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -2681,11 +2624,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2697,7 +2638,7 @@ Query the SMP group ID of self match prevention
 
 ### HTTP Request
 
-GET`/v5/account/smp-group`Copy
+`GET /v5/account/smp-group`
 
 ### Request Parameters
 
@@ -2734,7 +2675,7 @@ session = HTTP(
 print(session.get_smp_group())
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -2767,11 +2708,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2783,7 +2722,7 @@ Query aggregated **spot trade** analysis data for a symbol, including execution 
 
 ### HTTP Request
 
-GET`/v5/account/trade-info-for-analysis`Copy
+`GET /v5/account/trade-info-for-analysis`
 
 ### Request Parameters
 
@@ -2839,9 +2778,6 @@ X-BAPI-RECV-WINDOW: 5000
 
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -2873,11 +2809,9 @@ X-BAPI-RECV-WINDOW: 5000
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2887,13 +2821,13 @@ GitHub
 
 Query for transaction logs in your Unified account. It supports up to 2 years worth of data.
 
-info
+> Info
 
 - During periods of extreme market volatility, this interface may experience increased latency or temporary delays in data delivery
 
 ### HTTP Request
 
-GET`/v5/account/transaction-log`Copy
+`GET /v5/account/transaction-log`
 
 ### Request Parameters
 
@@ -2972,7 +2906,7 @@ print(session.get_transaction_log(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -3083,11 +3017,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -3097,7 +3029,7 @@ GitHub
 
 Query the available amount to transfer of a specific coin in the Unified wallet.
 
-info
+> Info
 
 Formula of Asset Available Balance for withdraw:
 
@@ -3113,7 +3045,7 @@ Formula of Asset Available Balance for withdraw:
 
 ### HTTP Request
 
-GET`/v5/account/withdrawal`Copy
+`GET /v5/account/withdrawal`
 
 ### Request Parameters
 
@@ -3156,9 +3088,6 @@ print(session.get_transferable_amount(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -3180,11 +3109,9 @@ print(session.get_transferable_amount(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -3201,7 +3128,7 @@ Check your current account status by calling this [Get Account Info](https://byb
 - When the user is a master account, the current user is allowed to upgrade to UTA PRO if they are a VIP or PRO level user.
 - When the user is a sub-account, only parent accounts with VIP or PRO level are allowed to upgrade to UTA PRO.
 
-info
+> Info
 
 please note belows:
 
@@ -3218,7 +3145,7 @@ asset data is in the processing state. It is recommended to query and use it aft
 
 ### HTTP Request
 
-POST`/v5/account/upgrade-to-uta`Copy
+`POST /v5/account/upgrade-to-uta`
 
 ### Request Parameters
 
@@ -3294,7 +3221,7 @@ BybitAccountService accountService = new(apiKey: "xxxxxx", apiSecret: "xxxxx");
 Console.WriteLine(await accountService.UpgradeAccount());
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -3335,11 +3262,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -3350,7 +3275,7 @@ GitHub
 Obtain wallet balance, query asset information of each currency. By default, currency
 information with assets or liabilities of 0 is not returned.
 
-info
+> Info
 
 - Under the new logic of UTA manual borrow, `spotBorrow` field corresponding to spot liabilities is detailed in the [announcement](https://announcements.bybit.com/en/article/bybit-uta-function-optimization-manual-coin-borrowing-will-be-launched-soon-blt5d858199bd12e849/).
 
@@ -3359,7 +3284,7 @@ info
 
 ### HTTP Request
 
-GET`/v5/account/wallet-balance`Copy
+`GET /v5/account/wallet-balance`
 
 ### Request Parameters
 
@@ -3442,7 +3367,7 @@ print(session.get_wallet_balance(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
     const client = new RestClientV5({
@@ -3519,13 +3444,10 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
 ---
-

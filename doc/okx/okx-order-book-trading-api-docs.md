@@ -4,6 +4,20 @@ Source: https://www.okx.com/docs-v5/en/
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: futures and spot order placement, order query, and algo-order behavior
+- Repo symbol formats:
+  - repo: `BTCUSDT`
+  - OKX spot: `BTC-USDT`
+  - OKX swap: `BTC-USDT-SWAP`
+- Most relevant behaviors for this repo:
+  - place / cancel / amend order
+  - order query and fills
+  - algo stop-loss order handling
+  - spot market-order parameters such as `tgtCcy`
+- Important repo note: the OKX client in this repo already unwraps the standard `{code,msg,data}` response envelope before most adapter code sees it
+
 # Order Book Trading
 
 ## Trade
@@ -33,7 +47,6 @@ Rate limit of this endpoint will also be affected by the rules [Sub-account rate
 > Request Example
 
 ```
-Copy to Clipboard
  place order for SPOT
  POST /api/v5/trade/order
  body
@@ -49,7 +62,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -114,7 +126,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -374,7 +385,6 @@ Unlike other endpoints, the rate limit of this endpoint is determined by the num
 > Request Example
 
 ```
-Copy to Clipboard
  batch place order for SPOT
  POST /api/v5/trade/batch-orders
  body
@@ -401,7 +411,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -463,7 +472,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -542,7 +550,6 @@ Cancel an incomplete order.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/trade/cancel-order
 body
 {
@@ -552,7 +559,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -580,7 +586,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -636,7 +641,6 @@ Unlike other endpoints, the rate limit of this endpoint is determined by the num
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/trade/cancel-batch-orders
 body
 [
@@ -652,7 +656,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -685,7 +688,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -748,7 +750,6 @@ Rate limit of this endpoint will also be affected by the rules [Sub-account rate
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/trade/amend-order
 body
 {
@@ -759,7 +760,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -812,7 +812,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -880,7 +879,6 @@ Unlike other endpoints, the rate limit of this endpoint is determined by the num
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/trade/amend-batch-orders
 body
 [
@@ -898,7 +896,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -952,7 +949,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -1021,7 +1017,6 @@ Close the position of an instrument via a market order.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/trade/close-position
 body
 {
@@ -1031,7 +1026,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -1066,7 +1060,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1111,12 +1104,10 @@ Retrieve order details.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/trade/order?ordId=1753197687182819328&instId=BTC-USDT
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -1147,7 +1138,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1303,12 +1293,10 @@ Retrieve all incomplete orders under the current account.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/trade/orders-pending?ordType=post_only,fok,ioc&instType=SPOT
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -1344,7 +1332,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1501,12 +1488,10 @@ The incomplete orders that have been canceled are only reserved for 2 hours.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/trade/orders-history?ordType=post_only,fok,ioc&instType=SPOT
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -1546,7 +1531,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1701,12 +1685,10 @@ Get completed orders which are placed in the last 3 months, including those plac
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/trade/orders-history-archive?ordType=post_only,fok,ioc&instType=SPOT
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -1745,7 +1727,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1904,12 +1885,10 @@ Retrieve recently-filled transaction details in the last 3 day.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/trade/fills
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -1944,7 +1923,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2041,12 +2019,10 @@ This endpoint can retrieve data from the last 3 months.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/trade/fills-history?instType=SPOT
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -2083,7 +2059,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2182,12 +2157,10 @@ Get list of small convertibles and mainstream currencies. Only applicable to the
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/trade/easy-convert-currency-list
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -2213,7 +2186,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2266,7 +2238,6 @@ Convert small currencies to mainstream currencies.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/trade/easy-convert
 body
 {
@@ -2276,7 +2247,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -2307,7 +2277,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2360,12 +2329,10 @@ Get the history and status of easy convert trades in the past 7 days.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/trade/easy-convert-history
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -2393,7 +2360,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2449,12 +2415,10 @@ Get list of debt currency data and repay currencies. Debt currencies include bot
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/trade/one-click-repay-currency-list
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -2480,7 +2444,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2539,7 +2502,6 @@ Only applicable to `Multi-currency margin`/`Portfolio margin`.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/trade/one-click-repay
 body
 {
@@ -2549,7 +2511,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -2579,7 +2540,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2632,12 +2592,10 @@ Get the history and status of one-click repay trades in the past 7 days. Only ap
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/trade/one-click-repay-history
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -2665,7 +2623,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2710,12 +2667,10 @@ Get list of debt currency data and repay currencies. Only applicable to `SPOT mo
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/trade/one-click-repay-currency-list-v2
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -2732,7 +2687,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2799,7 +2753,6 @@ Trade one-click repay to repay debts. Only applicable to `SPOT mode`/`Multi-curr
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/trade/one-click-repay-v2
 body
 {
@@ -2809,7 +2762,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -2833,7 +2785,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2875,12 +2826,10 @@ Get the history and status of one-click repay trades in the past 7 days. Only ap
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/trade/one-click-repay-history-v2
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -2905,7 +2854,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -3001,7 +2949,6 @@ Only applicable to Option in Portfolio Margin mode, and MMP privilege is require
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/trade/mass-cancel
 body
 {
@@ -3021,7 +2968,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -3056,7 +3002,6 @@ Cancel all pending orders after the countdown timeout. Applicable to all trading
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/trade/cancel-all-after
 {
    "timeOut":"60"
@@ -3064,7 +3009,6 @@ POST /api/v5/trade/cancel-all-after
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -3094,7 +3038,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -3141,7 +3084,6 @@ For details, please refer to [Fill ratio based sub-account rate limit](https://w
 > Request Example
 
 ```
-Copy to Clipboard
 # Get the account rate limit
 GET /api/v5/trade/account-rate-limit
 ```
@@ -3153,7 +3095,6 @@ None
 > Response Example
 
 ```
-Copy to Clipboard
 {
    "code":"0",
    "data":[
@@ -3198,7 +3139,6 @@ Only applicable to `Multi-currency margin mode`, and `Portfolio margin mode`.
 > Request Example
 
 ```
-Copy to Clipboard
 # place order for SPOT
 POST /api/v5/trade/order-precheck
  body
@@ -3240,7 +3180,6 @@ POST /api/v5/trade/order-precheck
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -3307,7 +3246,6 @@ Concurrent connection to this channel will be restricted by the following rules:
 > Request Example : single
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -3322,7 +3260,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
@@ -3360,7 +3297,6 @@ asyncio.run(main())
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -3375,7 +3311,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
@@ -3425,7 +3360,6 @@ asyncio.run(main())
 > Successful Response Example : single
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
     "event": "subscribe",
@@ -3441,7 +3375,6 @@ Copy to Clipboard
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -3457,7 +3390,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -3485,7 +3417,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
     "arg": {
         "channel": "orders",
@@ -3697,7 +3628,6 @@ The channel is exclusively available to users with trading fee tier VIP6 or abov
 > Request Example: single
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "op": "subscribe",
@@ -3711,7 +3641,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
@@ -3748,7 +3677,6 @@ asyncio.run(main())
 > Request Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "op": "subscribe",
@@ -3761,7 +3689,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
@@ -3807,7 +3734,6 @@ asyncio.run(main())
 > Successful Response Example: single
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -3822,7 +3748,6 @@ Copy to Clipboard
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -3849,7 +3774,6 @@ Copy to Clipboard
 > Push Data Example: single
 
 ```
-Copy to Clipboard
 {
     "arg": {
         "channel": "fills",
@@ -3928,7 +3852,6 @@ Rate limit is shared with the \`Place order\` REST API endpoints
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "order",
@@ -3975,7 +3898,6 @@ Copy to Clipboard
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "order",
@@ -3999,7 +3921,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "order",
@@ -4023,7 +3944,6 @@ Copy to Clipboard
 > Response Example When Format Error
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "order",
@@ -4241,7 +4161,6 @@ Rate limit is shared with the \`Place multiple orders\` REST API endpoints
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1513",
   "op": "batch-orders",
@@ -4295,7 +4214,6 @@ Copy to Clipboard
 > Response Example When All Succeed
 
 ```
-Copy to Clipboard
 {
   "id": "1513",
   "op": "batch-orders",
@@ -4329,7 +4247,6 @@ Copy to Clipboard
 > Response Example When Partially Successful
 
 ```
-Copy to Clipboard
 {
   "id": "1513",
   "op": "batch-orders",
@@ -4363,7 +4280,6 @@ Copy to Clipboard
 > Response Example When All Failed
 
 ```
-Copy to Clipboard
 {
   "id": "1513",
   "op": "batch-orders",
@@ -4398,7 +4314,6 @@ Copy to Clipboard
 > Response Example When Format Error
 
 ```
-Copy to Clipboard
 {
   "id": "1513",
   "op": "batch-orders",
@@ -4462,7 +4377,6 @@ Rate limit is shared with the \`Cancel order\` REST API endpoints
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1514",
   "op": "cancel-order",
@@ -4490,7 +4404,6 @@ Copy to Clipboard
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1514",
   "op": "cancel-order",
@@ -4513,7 +4426,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1514",
   "op": "cancel-order",
@@ -4536,7 +4448,6 @@ Copy to Clipboard
 > Response Example When Format Error
 
 ```
-Copy to Clipboard
 {
   "id": "1514",
   "op": "cancel-order",
@@ -4588,7 +4499,6 @@ Rate limit is shared with the \`Cancel multiple orders\` REST API endpoints
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1515",
   "op": "batch-cancel-orders",
@@ -4620,7 +4530,6 @@ Copy to Clipboard
 > Response Example When All Succeed
 
 ```
-Copy to Clipboard
 {
   "id": "1515",
   "op": "batch-cancel-orders",
@@ -4650,7 +4559,6 @@ Copy to Clipboard
 > Response Example When partially successfully
 
 ```
-Copy to Clipboard
 {
   "id": "1515",
   "op": "batch-cancel-orders",
@@ -4680,7 +4588,6 @@ Copy to Clipboard
 > Response Example When All Failed
 
 ```
-Copy to Clipboard
 {
   "id": "1515",
   "op": "batch-cancel-orders",
@@ -4710,7 +4617,6 @@ Copy to Clipboard
 > Response Example When Format Error
 
 ```
-Copy to Clipboard
 {
   "id": "1515",
   "op": "batch-cancel-orders",
@@ -4762,7 +4668,6 @@ Rate limit is shared with the \`Amend order\` REST API endpoints
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "amend-order",
@@ -4799,7 +4704,6 @@ Copy to Clipboard
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "amend-order",
@@ -4824,7 +4728,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "amend-order",
@@ -4849,7 +4752,6 @@ Copy to Clipboard
 > Response Example When Format Error
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "amend-order",
@@ -4911,7 +4813,6 @@ Rate limit is shared with the \`Amend multiple orders\` REST API endpoints
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1513",
   "op": "batch-amend-orders",
@@ -4953,7 +4854,6 @@ Copy to Clipboard
 > Response Example When All Succeed
 
 ```
-Copy to Clipboard
 {
   "id": "1513",
   "op": "batch-amend-orders",
@@ -4987,7 +4887,6 @@ Copy to Clipboard
 > Response Example When All Failed
 
 ```
-Copy to Clipboard
 {
   "id": "1513",
   "op": "batch-amend-orders",
@@ -5020,7 +4919,6 @@ Copy to Clipboard
 > Response Example When Partially Successful
 
 ```
-Copy to Clipboard
 {
   "id": "1513",
   "op": "batch-amend-orders",
@@ -5053,7 +4951,6 @@ Copy to Clipboard
 > Response Example When Format Error
 
 ```
-Copy to Clipboard
 {
   "id": "1513",
   "op": "batch-amend-orders",
@@ -5107,7 +5004,6 @@ Rate limit is shared with the \`Mass Cancel Order\` REST API endpoints
 > Request Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "op": "mass-cancel",
@@ -5132,7 +5028,6 @@ Copy to Clipboard
 > ##### Successful Response Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "op": "mass-cancel",
@@ -5149,7 +5044,6 @@ Copy to Clipboard
 > Response Example When Format Error
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "mass-cancel",
@@ -5193,7 +5087,6 @@ The algo order includes `trigger` order, `oco` order, `chase` order, `conditiona
 > Request Example
 
 ```
-Copy to Clipboard
 # Place Take Profit / Stop Loss Order
 POST /api/v5/trade/order-algo
 body
@@ -5261,7 +5154,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -5408,7 +5300,6 @@ learn more about [TWAP Order](https://www.okx.com/help/xiii-time-weighted-averag
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -5455,7 +5346,6 @@ Cancel unfilled algo orders. A maximum of 10 orders can be canceled per request.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/trade/cancel-algos
 body
 [
@@ -5471,7 +5361,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -5504,7 +5393,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -5549,7 +5437,6 @@ Amend unfilled algo orders (Support Stop order and Trigger order only, not inclu
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/trade/amend-algos
 body
 {
@@ -5601,7 +5488,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -5642,7 +5528,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/trade/order-algo?algoId=1753184812254216192
 ```
 
@@ -5656,7 +5541,6 @@ GET /api/v5/trade/order-algo?algoId=1753184812254216192
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -5812,12 +5696,10 @@ Retrieve a list of untriggered Algo orders under the current account.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/trade/orders-algo-pending?ordType=conditional
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -5851,7 +5733,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -6007,12 +5888,10 @@ Retrieve a list of all algo orders under the current account in the last 3 month
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/trade/orders-algo-history?ordType=conditional&state=effective
 ```
 
 ```
-Copy to Clipboard
 import okx.Trade as Trade
 
 # API initialization
@@ -6048,7 +5927,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -6200,7 +6078,6 @@ Retrieve algo orders (includes `trigger` order, `oco` order, `conditional` order
 > Request Example : single
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -6216,7 +6093,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
@@ -6255,7 +6131,6 @@ asyncio.run(main())
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -6270,7 +6145,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
@@ -6320,7 +6194,6 @@ asyncio.run(main())
 > Successful Response Example : single
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -6337,7 +6210,6 @@ Copy to Clipboard
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -6353,7 +6225,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -6381,7 +6252,6 @@ Copy to Clipboard
 > Push Data Example: single
 
 ```
-Copy to Clipboard
 {
     "arg": {
         "channel": "orders-algo",
@@ -6521,7 +6391,6 @@ Retrieve advance algo orders (including Iceberg order, TWAP order, Trailing orde
 > Request Example : single
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -6536,7 +6405,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
@@ -6574,7 +6442,6 @@ asyncio.run(main())
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -6588,7 +6455,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
@@ -6637,7 +6503,6 @@ asyncio.run(main())
 > Successful Response Example : single
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -6653,7 +6518,6 @@ Copy to Clipboard
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -6668,7 +6532,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -6696,7 +6559,6 @@ Copy to Clipboard
 > Push Data Example: single
 
 ```
-Copy to Clipboard
 {
     "arg":{
         "channel":"algo-advance",
@@ -6829,7 +6691,6 @@ The API endpoints of `Grid Trading` require authentication.
 > Request Example
 
 ```
-Copy to Clipboard
 # Place spot grid algo order
 POST /api/v5/tradingBot/grid/order-algo
 body
@@ -6930,7 +6791,6 @@ Contract Grid Order
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -6971,7 +6831,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/tradingBot/grid/amend-algo-basic-param
 body
     {
@@ -6996,7 +6855,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "55186",
     "msg": "Due to market fluctuations, your investment amount is too large to apply these modifications.",
@@ -7043,7 +6901,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/tradingBot/grid/amend-order-algo
 body
 {
@@ -7102,7 +6959,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -7145,7 +7001,6 @@ A maximum of 10 orders can be stopped per request.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/tradingBot/grid/stop-order-algo
 body
 [
@@ -7170,7 +7025,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -7213,7 +7067,6 @@ Close position when the contract grid stop type is 'keep position'.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/tradingBot/grid/close-position
 body
 {
@@ -7234,7 +7087,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -7273,7 +7125,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/tradingBot/grid/cancel-close-order
 body
 {
@@ -7292,7 +7143,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -7331,7 +7181,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/tradingBot/grid/order-instant-trigger
 body
 {
@@ -7349,7 +7198,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -7384,7 +7232,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/tradingBot/grid/orders-algo-pending?algoOrdType=grid
 ```
 
@@ -7403,7 +7250,6 @@ GET /api/v5/tradingBot/grid/orders-algo-pending?algoOrdType=grid
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -7557,7 +7403,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/tradingBot/grid/orders-algo-history?algoOrdType=grid
 ```
 
@@ -7576,7 +7421,6 @@ GET /api/v5/tradingBot/grid/orders-algo-history?algoOrdType=grid
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -7732,7 +7576,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/tradingBot/grid/orders-algo-details?algoId=448965992920907776&algoOrdType=grid
 ```
 
@@ -7746,7 +7589,6 @@ GET /api/v5/tradingBot/grid/orders-algo-details?algoId=448965992920907776&algoOr
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -7929,7 +7771,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/tradingBot/grid/sub-orders?algoId=123456&type=live&algoOrdType=grid
 ```
 
@@ -7948,7 +7789,6 @@ GET /api/v5/tradingBot/grid/sub-orders?algoId=123456&type=live&algoOrdType=grid
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -8033,7 +7873,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/tradingBot/grid/positions?algoId=448965992920907776&algoOrdType=contract_grid
 ```
 
@@ -8047,7 +7886,6 @@ GET /api/v5/tradingBot/grid/positions?algoId=448965992920907776&algoOrdType=cont
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -8122,7 +7960,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/tradingBot/grid/withdraw-income
 body
 {
@@ -8139,7 +7976,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -8176,7 +8012,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/tradingBot/grid/compute-margin-balance
 body {
    "algoId":"123456",
@@ -8196,7 +8031,6 @@ body {
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -8231,7 +8065,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/tradingBot/grid/margin-balance
 body {
    "algoId":"123456",
@@ -8252,7 +8085,6 @@ body {
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -8289,7 +8121,6 @@ It is used to add investment and only applicable to contract gird.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/tradingBot/grid/adjust-investment
 body
 {
@@ -8309,7 +8140,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -8344,7 +8174,6 @@ Authentication is not required for this public endpoint.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/tradingBot/grid/ai-param?instId=BTC-USDT&algoOrdType=grid
 ```
 
@@ -8360,7 +8189,6 @@ GET /api/v5/tradingBot/grid/ai-param?instId=BTC-USDT&algoOrdType=grid
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -8425,7 +8253,6 @@ Authentication is not required for this public endpoint.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/tradingBot/grid/min-investment
 body
 {
@@ -8471,7 +8298,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -8519,7 +8345,6 @@ Authentication is not required for this public endpoint.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/tradingBot/public/rsi-back-testing?instId=BTC-USDT&thold=30&timeframe=3m&timePeriod=14
 ```
 
@@ -8537,7 +8362,6 @@ GET /api/v5/tradingBot/public/rsi-back-testing?instId=BTC-USDT&thold=30&timefram
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -8574,7 +8398,6 @@ Maximum grid quantity can be retrieved from this endpoint. Minimum grid quantity
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/tradingBot/grid/grid-quantity?instId=BTC-USDT-SWAP&runType=1&algoOrdType=contract_grid&maxPx=70000&minPx=50000&lever=5
 ```
 
@@ -8592,7 +8415,6 @@ GET /api/v5/tradingBot/grid/grid-quantity?instId=BTC-USDT-SWAP&runType=1&algoOrd
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -8621,7 +8443,6 @@ Retrieve spot grid algo orders. Data will be pushed when triggered by events suc
 > Request Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "op": "subscribe",
@@ -8633,7 +8454,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
@@ -8680,7 +8500,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "event": "subscribe",
@@ -8695,7 +8514,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -8723,7 +8541,6 @@ Copy to Clipboard
 > Push Data Example:
 
 ```
-Copy to Clipboard
 {
     "arg": {
         "channel": "grid-orders-spot",
@@ -8874,7 +8691,6 @@ Retrieve contract grid algo orders. Data will be pushed when triggered by events
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
     "op": "subscribe",
@@ -8886,7 +8702,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
@@ -8933,7 +8748,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "event": "subscribe",
@@ -8948,7 +8762,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -8976,7 +8789,6 @@ Copy to Clipboard
 > Push Data Example:
 
 ```
-Copy to Clipboard
 {
     "arg": {
         "channel": "grid-orders-contract",
@@ -9139,7 +8951,6 @@ Please ignore the empty data.
 > Request Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "op": "subscribe",
@@ -9151,7 +8962,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
@@ -9196,7 +9006,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "event": "subscribe",
@@ -9211,7 +9020,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -9237,7 +9045,6 @@ Copy to Clipboard
 > Push Data Example:
 
 ```
-Copy to Clipboard
 {
     "arg": {
         "channel": "grid-positions",
@@ -9318,7 +9125,6 @@ Please ignore the empty data.
 > Request Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "op": "subscribe",
@@ -9330,7 +9136,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
@@ -9375,7 +9180,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "event": "subscribe",
@@ -9390,7 +9194,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -9416,7 +9219,6 @@ Copy to Clipboard
 > Push Data Example:
 
 ```
-Copy to Clipboard
 {
     "arg": {
         "channel": "grid-sub-orders",
@@ -9511,7 +9313,6 @@ Create and customize your own signals while gaining access to a diverse selectio
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/tradingBot/signal/create-signal
 body
 {
@@ -9530,7 +9331,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -9566,7 +9366,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/tradingBot/signal/signals?signalSourceType=1
 ```
 
@@ -9583,7 +9382,6 @@ GET /api/v5/tradingBot/signal/signals?signalSourceType=1
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -9624,7 +9422,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 # Create signal bot
 POST /api/v5/tradingBot/signal/order-algo
 body
@@ -9676,7 +9473,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -9717,7 +9513,6 @@ A maximum of 10 orders can be stopped per request.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/tradingBot/signal/stop-order-algo
 body
 [
@@ -9736,7 +9531,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -9775,7 +9569,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/tradingBot/signal/margin-balance
 body
 {
@@ -9797,7 +9590,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -9830,7 +9622,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/tradingBot/signal/amendTPSL
 body
 {
@@ -9856,7 +9647,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -9889,7 +9679,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/tradingBot/signal/set-instruments
 body
 {
@@ -9912,7 +9701,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -9945,7 +9733,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/tradingBot/signal/orders-algo-details?algoId=623833708424069120&algoOrdType=contract
 ```
 
@@ -9959,7 +9746,6 @@ GET /api/v5/tradingBot/signal/orders-algo-details?algoId=623833708424069120&algo
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -10059,7 +9845,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/tradingBot/signal/orders-algo-pending?algoOrdType=contract
 ```
 
@@ -10076,7 +9861,6 @@ GET /api/v5/tradingBot/signal/orders-algo-pending?algoOrdType=contract
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -10176,7 +9960,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/tradingBot/signal/orders-algo-history?algoId=623833708424069120&algoOrdType=contract
 ```
 
@@ -10193,7 +9976,6 @@ GET /api/v5/tradingBot/signal/orders-algo-history?algoId=623833708424069120&algo
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -10293,7 +10075,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/tradingBot/signal/positions?algoId=623833708424069120&algoOrdType=contract
 ```
 
@@ -10307,7 +10088,6 @@ GET /api/v5/tradingBot/signal/positions?algoId=623833708424069120&algoOrdType=co
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -10384,7 +10164,6 @@ Retrieve the updated position data for the last 3 months. Return in reverse chro
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/tradingBot/signal/positions-history?algoId=1234
 ```
 
@@ -10401,7 +10180,6 @@ GET /api/v5/tradingBot/signal/positions-history?algoId=1234
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "data": [
@@ -10456,7 +10234,6 @@ Close the position of an instrument via a market order.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/tradingBot/signal/close-position
 body
 {
@@ -10475,7 +10252,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -10510,7 +10286,6 @@ You can place an order only if you have sufficient funds.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/tradingBot/signal/sub-order
 body
 {
@@ -10538,7 +10313,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -10588,7 +10362,6 @@ Cancel an incomplete order.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/tradingBot/signal/cancel-sub-order
 body
 {
@@ -10609,7 +10382,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -10651,7 +10423,6 @@ Cancel order returns with sCode equal to 0. It is not strictly considered that t
 > Request Example
 
 ```
-Copy to Clipboard
 # Get historical filled sub orders
 GET /api/v5/tradingBot/signal/sub-orders?algoId=623833708424069120&algoOrdType=contract&state=filled
 
@@ -10678,7 +10449,6 @@ GET /api/v5/tradingBot/signal/sub-orders?algoId=623833708424069120&algoOrdType=c
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -10759,7 +10529,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/tradingBot/signal/event-history?algoId=623833708424069120
 ```
 
@@ -10775,7 +10544,6 @@ GET /api/v5/tradingBot/signal/event-history?algoId=623833708424069120
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -10837,7 +10605,6 @@ The API endpoints of `Recurring buy` require authentication.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/tradingBot/recurring/order-algo
 body
 {
@@ -10885,7 +10652,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -10926,7 +10692,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/tradingBot/recurring/amend-order-algo
 body
 {
@@ -10945,7 +10710,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -10986,7 +10750,6 @@ A maximum of 10 orders can be stopped per request.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/tradingBot/recurring/stop-order-algo
 body
 [
@@ -11005,7 +10768,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -11046,7 +10808,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/tradingBot/recurring/orders-algo-pending
 ```
 
@@ -11062,7 +10823,6 @@ GET /api/v5/tradingBot/recurring/orders-algo-pending
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -11152,7 +10912,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/tradingBot/recurring/orders-algo-history
 ```
 
@@ -11168,7 +10927,6 @@ GET /api/v5/tradingBot/recurring/orders-algo-history
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -11258,7 +11016,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/tradingBot/recurring/orders-algo-details?algoId=644497312047435776
 ```
 
@@ -11271,7 +11028,6 @@ GET /api/v5/tradingBot/recurring/orders-algo-details?algoId=644497312047435776
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -11375,7 +11131,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/tradingBot/recurring/sub-orders?algoId=560516615079727104
 ```
 
@@ -11392,7 +11147,6 @@ GET /api/v5/tradingBot/recurring/sub-orders?algoId=560516615079727104
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -11478,7 +11232,6 @@ Retrieve recurring buy orders. Data will be pushed when triggered by events. It 
 > Request Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "op": "subscribe",
@@ -11490,7 +11243,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
@@ -11536,7 +11288,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "event": "subscribe",
@@ -11551,7 +11302,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -11578,7 +11328,6 @@ Copy to Clipboard
 > Push Data Example:
 
 ```
-Copy to Clipboard
 {
     "arg": {
         "channel": "algo-recurring-buy",
@@ -11731,7 +11480,6 @@ Returns reverse chronological order with `openTime`
 > Request example
 
 ```
-Copy to Clipboard
 GET /api/v5/copytrading/current-subpositions?instId=BTC-USDT-SWAP
 ```
 
@@ -11748,7 +11496,6 @@ GET /api/v5/copytrading/current-subpositions?instId=BTC-USDT-SWAP
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -11851,7 +11598,6 @@ Returns reverse chronological order with `subPosId`.
 > Request example
 
 ```
-Copy to Clipboard
 GET /api/v5/copytrading/subpositions-history?instId=BTC-USDT-SWAP
 ```
 
@@ -11868,7 +11614,6 @@ GET /api/v5/copytrading/subpositions-history?instId=BTC-USDT-SWAP
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -11966,7 +11711,6 @@ Set TP/SL for the current lead position that are not closed.
 > Request example
 
 ```
-Copy to Clipboard
 POST /api/v5/copytrading/algo-order
 body
 {
@@ -11992,7 +11736,6 @@ body
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -12031,7 +11774,6 @@ It is required to pass subPosId which can get from [Get existing leading positio
 > Request example
 
 ```
-Copy to Clipboard
 POST /api/v5/copytrading/close-subposition
 body
 {
@@ -12052,7 +11794,6 @@ body
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -12090,7 +11831,6 @@ Retrieve instruments that the lead trader has set.
 > Request example
 
 ```
-Copy to Clipboard
 GET /api/v5/copytrading/instruments
 ```
 
@@ -12103,7 +11843,6 @@ GET /api/v5/copytrading/instruments
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -12150,7 +11889,6 @@ All non-leading instruments can't have position or pending orders for the curren
 > Request example
 
 ```
-Copy to Clipboard
 POST /api/v5/copytrading/set-instruments
 body
 {
@@ -12170,7 +11908,6 @@ The value of \`instId\` must include all instruments that you are going to have 
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -12211,7 +11948,6 @@ The leading trader gets profits shared details for the last 3 months.
 > Request example
 
 ```
-Copy to Clipboard
 GET /api/v5/copytrading/profit-sharing-details?limit=2
 ```
 
@@ -12227,7 +11963,6 @@ GET /api/v5/copytrading/profit-sharing-details?limit=2
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -12283,7 +12018,6 @@ The leading trader gets the total amount of profit shared since joining the plat
 > Request example
 
 ```
-Copy to Clipboard
 GET /api/v5/copytrading/total-profit-sharing
 ```
 
@@ -12296,7 +12030,6 @@ GET /api/v5/copytrading/total-profit-sharing
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -12337,7 +12070,6 @@ The unrealized profit sharing details will update once there copy position is cl
 > Request example
 
 ```
-Copy to Clipboard
 GET /api/v5/copytrading/unrealized-profit-sharing-details
 ```
 
@@ -12350,7 +12082,6 @@ GET /api/v5/copytrading/unrealized-profit-sharing-details
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -12403,7 +12134,6 @@ The leading trader gets the total unrealized amount of profit shared.
 > Request example
 
 ```
-Copy to Clipboard
 GET /api/v5/copytrading/total-unrealized-profit-sharing
 ```
 
@@ -12416,7 +12146,6 @@ GET /api/v5/copytrading/total-unrealized-profit-sharing
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -12453,7 +12182,6 @@ It is used to amend profit sharing ratio.
 > Request example
 
 ```
-Copy to Clipboard
 POST /api/v5/copytrading/amend-profit-sharing-ratio
 body
 {
@@ -12472,7 +12200,6 @@ body
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -12507,7 +12234,6 @@ Retrieve current account configuration related to copy/lead trading.
 > Request example
 
 ```
-Copy to Clipboard
 GET /api/v5/copytrading/config
 ```
 
@@ -12518,7 +12244,6 @@ None
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -12579,7 +12304,6 @@ The first copy settings for the certain lead trader. You need to first copy sett
 > Request example
 
 ```
-Copy to Clipboard
 POST /api/v5/copytrading/first-copy-settings
 body
 {
@@ -12616,7 +12340,6 @@ body
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -12651,7 +12374,6 @@ You need to use this endpoint to amend copy settings
 > Request example
 
 ```
-Copy to Clipboard
 POST /api/v5/copytrading/amend-copy-settings
 body
 {
@@ -12688,7 +12410,6 @@ body
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -12723,7 +12444,6 @@ You need to use this endpoint to stop copy trading
 > Request example
 
 ```
-Copy to Clipboard
 POST /api/v5/copytrading/stop-copy-trading
 body
 {
@@ -12744,7 +12464,6 @@ body
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -12779,7 +12498,6 @@ Retrieve the copy settings about certain lead trader.
 > Request example
 
 ```
-Copy to Clipboard
 GET /api/v5/copytrading/copy-settings?instType=SWAP&uniqueCode=25CD5A80241D6FE6
 ```
 
@@ -12793,7 +12511,6 @@ GET /api/v5/copytrading/copy-settings?instType=SWAP&uniqueCode=25CD5A80241D6FE6
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -12865,7 +12582,6 @@ Retrieve my lead traders.
 > Request example
 
 ```
-Copy to Clipboard
 GET /api/v5/copytrading/current-lead-traders?instType=SWAP
 ```
 
@@ -12878,7 +12594,6 @@ GET /api/v5/copytrading/current-lead-traders?instType=SWAP
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -12935,7 +12650,6 @@ Public endpoint. Retrieve copy trading parameter configuration information of co
 > Request example
 
 ```
-Copy to Clipboard
 GET /api/v5/copytrading/public-config?instType=SWAP
 ```
 
@@ -12948,7 +12662,6 @@ GET /api/v5/copytrading/public-config?instType=SWAP
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -12995,7 +12708,6 @@ Public endpoint. Retrieve lead trader ranks.
 > Request example
 
 ```
-Copy to Clipboard
 GET /api/v5/copytrading/public-lead-traders?instType=SWAP
 ```
 
@@ -13018,7 +12730,6 @@ GET /api/v5/copytrading/public-lead-traders?instType=SWAP
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -13105,7 +12816,6 @@ Public endpoint. Retrieve lead trader weekly pnl. Results are returned in counte
 > Request example
 
 ```
-Copy to Clipboard
 GET /api/v5/copytrading/public-weekly-pnl?instType=SWAP&uniqueCode=D9ADEAB33AE9EABD
 ```
 
@@ -13119,7 +12829,6 @@ GET /api/v5/copytrading/public-weekly-pnl?instType=SWAP&uniqueCode=D9ADEAB33AE9E
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -13163,7 +12872,6 @@ Public endpoint. Retrieve lead trader daily pnl. Results are returned in counter
 > Request example
 
 ```
-Copy to Clipboard
 GET /api/v5/copytrading/public-pnl?instType=SWAP&uniqueCode=D9ADEAB33AE9EABD&lastDays=1
 ```
 
@@ -13178,7 +12886,6 @@ GET /api/v5/copytrading/public-pnl?instType=SWAP&uniqueCode=D9ADEAB33AE9EABD&las
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -13222,7 +12929,6 @@ Public endpoint. Key data related to lead trader performance.
 > Request example
 
 ```
-Copy to Clipboard
 GET /api/v5/copytrading/public-stats?instType=SWAP&uniqueCode=D9ADEAB33AE9EABD&lastDays=1
 ```
 
@@ -13237,7 +12943,6 @@ GET /api/v5/copytrading/public-stats?instType=SWAP&uniqueCode=D9ADEAB33AE9EABD&l
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -13284,7 +12989,6 @@ Public endpoint. The most frequently traded crypto of this lead trader. Results 
 > Request example
 
 ```
-Copy to Clipboard
 GET /api/v5/copytrading/public-preference-currency?instType=SWAP&uniqueCode=CB4594A3BB5D3538
 ```
 
@@ -13298,7 +13002,6 @@ GET /api/v5/copytrading/public-preference-currency?instType=SWAP&uniqueCode=CB45
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -13343,7 +13046,6 @@ Public endpoint. Get current leading positions of lead trader
 > Request example
 
 ```
-Copy to Clipboard
 GET /api/v5/copytrading/public-current-subpositions?instType=SWAP&uniqueCode=D9ADEAB33AE9EABD
 ```
 
@@ -13360,7 +13062,6 @@ GET /api/v5/copytrading/public-current-subpositions?instType=SWAP&uniqueCode=D9A
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -13425,7 +13126,6 @@ Returns reverse chronological order with `subPosId`.
 > Request example
 
 ```
-Copy to Clipboard
 GET /api/v5/copytrading/public-subpositions-history?instType=SWAP&uniqueCode=9A8534AB09862774
 ```
 
@@ -13442,7 +13142,6 @@ GET /api/v5/copytrading/public-subpositions-history?instType=SWAP&uniqueCode=9A8
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -13507,7 +13206,6 @@ Public endpoint. Retrieve copy trader coming from certain lead trader. Return ac
 > Request example
 
 ```
-Copy to Clipboard
 GET /api/v5/copytrading/public-copy-traders?instType=SWAP&uniqueCode=D9ADEAB33AE9EABD
 ```
 
@@ -13522,7 +13220,6 @@ GET /api/v5/copytrading/public-copy-traders?instType=SWAP&uniqueCode=D9ADEAB33AE
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -13576,7 +13273,6 @@ The notification when failing to lead trade.
 > Request Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "op": "subscribe",
@@ -13588,7 +13284,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
@@ -13634,7 +13329,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "event": "subscribe",
@@ -13649,7 +13343,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -13676,7 +13369,6 @@ Copy to Clipboard
 > Push Data Example:
 
 ```
-Copy to Clipboard
 {
     "arg": {
         "channel": "copytrading-lead-notification",
@@ -13739,12 +13431,10 @@ Retrieve the latest price snapshot, best bid/ask price, and trading volume in th
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/market/tickers?instType=SWAP
 ```
 
 ```
-Copy to Clipboard
 import okx.MarketData as MarketData
 
 flag = "0"  # Production trading:0 , demo trading:1
@@ -13768,7 +13458,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -13849,12 +13538,10 @@ Retrieve the latest price snapshot, best bid/ask price, and trading volume in th
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/market/ticker?instId=BTC-USD-SWAP
 ```
 
 ```
-Copy to Clipboard
 import okx.MarketData as MarketData
 
 flag = "0"  # Production trading:0 , demo trading:1
@@ -13877,7 +13564,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -13942,12 +13628,10 @@ This endpoint does not return data immediately. Instead, it returns the latest d
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/market/books?instId=BTC-USDT
 ```
 
 ```
-Copy to Clipboard
 import okx.MarketData as MarketData
 
 flag = "0"  # Production trading:0 , demo trading:1
@@ -13971,7 +13655,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -14038,7 +13721,6 @@ This endpoint does not return data immediately. Instead, it returns the latest d
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/market/books-full?instId=BTC-USDT&sz=1
 ```
 
@@ -14052,7 +13734,6 @@ GET /api/v5/market/books-full?instId=BTC-USDT&sz=1
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -14111,12 +13792,10 @@ Retrieve the candlestick charts. This endpoint can retrieve the latest 1,440 dat
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/market/candles?instId=BTC-USDT
 ```
 
 ```
-Copy to Clipboard
 import okx.MarketData as MarketData
 
 flag = "0"  # Production trading:0 , demo trading:1
@@ -14143,7 +13822,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -14209,12 +13887,10 @@ Retrieve history candlestick charts from recent years(It is last 3 months suppor
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/market/history-candles?instId=BTC-USDT
 ```
 
 ```
-Copy to Clipboard
 import okx.MarketData as MarketData
 
 flag = "0"  # Production trading:0 , demo trading:1
@@ -14241,7 +13917,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -14305,12 +13980,10 @@ Retrieve the recent transactions of an instrument.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/market/trades?instId=BTC-USDT
 ```
 
 ```
-Copy to Clipboard
 import okx.MarketData as MarketData
 
 flag = "0"  # Production trading:0 , demo trading:1
@@ -14334,7 +14007,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -14390,12 +14062,10 @@ Retrieve the recent transactions of an instrument from the last 3 months with pa
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/market/history-trades?instId=BTC-USDT
 ```
 
 ```
-Copy to Clipboard
 import okx.MarketData as MarketData
 
 flag = "0"  # Production trading:0 , demo trading:1
@@ -14422,7 +14092,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -14476,7 +14145,6 @@ Retrieve the recent transactions of an instrument under same instFamily. The max
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/market/option/instrument-family-trades?instFamily=BTC-USD
 ```
 
@@ -14489,7 +14157,6 @@ GET /api/v5/market/option/instrument-family-trades?instFamily=BTC-USD
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -14571,7 +14238,6 @@ The maximum is 100.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/option-trades?instFamily=BTC-USD
 ```
 
@@ -14586,7 +14252,6 @@ GET /api/v5/public/option-trades?instFamily=BTC-USD
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -14641,12 +14306,10 @@ The 24-hour trading volume is calculated on a rolling basis.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/market/platform-24-volume
 ```
 
 ```
-Copy to Clipboard
 import okx.MarketData as MarketData
 
 flag = "0"  # Production trading:0 , demo trading:1
@@ -14661,7 +14324,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -14698,7 +14360,6 @@ Retrieve call auction details.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/market/call-auction-details?instId=ONDO-USDC
 ```
 
@@ -14711,7 +14372,6 @@ GET /api/v5/market/call-auction-details?instId=ONDO-USDC
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -14758,7 +14418,6 @@ The fastest rate is 1 update/100ms. There will be no update if the event is not 
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -14772,7 +14431,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 
 from okx.websocket.WsPublicAsync import WsPublicAsync
@@ -14810,7 +14468,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -14825,7 +14482,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -14851,7 +14507,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
   "arg": {
     "channel": "tickers",
@@ -14916,7 +14571,6 @@ Retrieve the candlesticks data of an instrument. the push frequency is the faste
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -14930,7 +14584,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 
 import asyncio
 
@@ -14971,7 +14624,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -14986,7 +14638,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -15012,7 +14663,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
   "arg": {
     "channel": "candle1D",
@@ -15065,7 +14715,6 @@ The message is sent only once per taker order, filled price, source. The count f
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -15079,7 +14728,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 
 import asyncio
 
@@ -15120,7 +14768,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -15135,7 +14782,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -15161,7 +14807,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
   "arg": {
     "channel": "trades",
@@ -15228,7 +14873,6 @@ Retrieve the recent trades data. Data will be pushed whenever there is a trade. 
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -15242,7 +14886,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 
 import asyncio
 
@@ -15283,7 +14926,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -15298,7 +14940,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -15324,7 +14965,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
   "arg": {
     "channel": "trades-all",
@@ -15395,7 +15035,6 @@ Identity verification refers to [Login](https://www.okx.com/docs-v5/en/#overview
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -15409,7 +15048,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 
 import asyncio
 
@@ -15450,7 +15088,6 @@ asyncio.run(main())
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -15465,7 +15102,6 @@ Copy to Clipboard
 > Failure example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -15491,7 +15127,6 @@ Copy to Clipboard
 > Push Data Example: Full Snapshot
 
 ```
-Copy to Clipboard
 {
   "arg": {
     "channel": "books",
@@ -15532,7 +15167,6 @@ Copy to Clipboard
 > Push Data Example: Incremental Data
 
 ```
-Copy to Clipboard
 {
   "arg": {
     "channel": "books",
@@ -15639,13 +15273,11 @@ Use the first 25 bids and asks in the full load to form a string (where a colon 
 > Calculate Checksum
 
 ```
-Copy to Clipboard
 1. More than 25 levels of bid and ask
 A full load of market depth (only 2 levels of data are shown here, while 25 levels of data should actually be intercepted):
 ```
 
 ```
-Copy to Clipboard
 {
     "bids": [
         ["3366.1", "7", "0", "3"],
@@ -15659,7 +15291,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 Check string:
 "3366.1:7:3366.8:9:3366:6:3368:8"
 
@@ -15668,7 +15299,6 @@ A full load of market depth:
 ```
 
 ```
-Copy to Clipboard
 {
     "bids": [
         ["3366.1", "7", "0", "3"]
@@ -15682,7 +15312,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 Check string:
 "3366.1:7:3366.8:9:3368:8:3372:8"
 ```
@@ -15697,7 +15326,6 @@ Such as: `bid[price:size]`:`ask[price:size]`:`asks[price:size]`:`asks[price:size
 > Push Data Example of bbo-tbt channel
 
 ```
-Copy to Clipboard
 {
   "arg": {
     "channel": "bbo-tbt",
@@ -15725,7 +15353,6 @@ Copy to Clipboard
 > Push Data Example of books5 channel
 
 ```
-Copy to Clipboard
 {
   "arg": {
     "channel": "books5",
@@ -15764,7 +15391,6 @@ Retrieve the recent trades data. Data will be pushed whenever there is a trade. 
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
     "op": "subscribe",
@@ -15777,7 +15403,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 
 import asyncio
 
@@ -15819,7 +15444,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
     "event": "subscribe",
@@ -15835,7 +15459,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -15860,7 +15483,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
     "arg": {
         "channel": "option-trades",
@@ -15919,7 +15541,6 @@ Retrieve call auction details.
 > Request Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "op": "subscribe",
@@ -15931,7 +15552,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 
 import asyncio
 
@@ -15970,7 +15590,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -15985,7 +15604,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -16011,7 +15629,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
   "arg": {
     "channel": "call-auction-details",
@@ -16116,7 +15733,6 @@ Demo trading: `wss://wspap.okx.com:8443/ws/v5/public-sbe`
   - The response HTTP code `401`, along with an error message in the response body, indicates a failed login. The error message will be in JSON fromat.
 
 ```
-Copy to Clipboard
 Login error message example
 {
     "msg": "Invalid apiKey",
@@ -16132,7 +15748,6 @@ Login error message example
   - The difference is that `instIdCode` should be used instead of instId.
 
 ```
-Copy to Clipboard
 Subscription request example
 {
     "op": "subscribe",
@@ -16158,7 +15773,6 @@ Subscription response example
 - The notice event is supported in JSON format:
 
 ```
-Copy to Clipboard
 Notice event example
 {
     "event": "notice",
@@ -16254,7 +15868,6 @@ For the HTTP request header, it doesn't need to be set to `application/sbe`; how
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/market/books-sbe?instIdCode=12345&source=0
 ```
 
@@ -16268,7 +15881,6 @@ GET /api/v5/market/books-sbe?instIdCode=12345&source=0
 > Response Example
 
 ```
-Copy to Clipboard
 Error message example
 
 Response header:

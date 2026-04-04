@@ -4,6 +4,19 @@ Source: https://www.okx.com/docs-v5/en/
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: instrument metadata, funding data, and public market metadata
+- Repo symbol formats:
+  - repo: `BTCUSDT`
+  - OKX spot: `BTC-USDT`
+  - OKX swap: `BTC-USDT-SWAP`
+- Most relevant endpoints for this repo:
+  - instruments
+  - funding rate / funding rate history
+  - mark price and open interest
+- Important repo note: missing or mismatched instrument IDs often show up as `51001`; for spot-futures discovery that should usually be treated as “market does not exist”, not a transient API outage
+
 # Public Data
 
 The API endpoints of `Public Data` do not require authentication.
@@ -25,12 +38,10 @@ Retrieve a list of instruments with open contracts for OKX. Retrieve available i
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/instruments?instType=SPOT
 ```
 
 ```
-Copy to Clipboard
 import okx.PublicData as PublicData
 
 flag = "0"  # Production trading: 0, Demo trading: 1
@@ -55,7 +66,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -202,12 +212,10 @@ Retrieve the estimated delivery price which will only have a return value one ho
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/estimated-price?instId=BTC-USD-200214
 ```
 
 ```
-Copy to Clipboard
 import okx.PublicData as PublicData
 
 flag = "0"  # Production trading: 0, Demo trading: 1
@@ -230,7 +238,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -269,12 +276,10 @@ Retrieve delivery records of Futures and exercise records of Options in the last
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/delivery-exercise-history?instType=OPTION&instFamily=BTC-USD
 ```
 
 ```
-Copy to Clipboard
 import okx.PublicData as PublicData
 
 flag = "0"  # Production trading: 0, Demo trading: 1
@@ -302,7 +307,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -361,7 +365,6 @@ Retrieve the estimated settlement price which will only have a return value one 
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/estimated-settlement-info?instId=XRP-USDT-250307
 ```
 
@@ -374,7 +377,6 @@ GET /api/v5/public/estimated-settlement-info?instId=XRP-USDT-250307
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -413,7 +415,6 @@ Retrieve settlement records of futures in the last 3 months.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/settlement-history?instFamily=XRP-USD
 ```
 
@@ -429,7 +430,6 @@ GET /api/v5/public/settlement-history?instFamily=XRP-USD
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -480,12 +480,10 @@ Retrieve funding rate.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/funding-rate?instId=BTC-USD-SWAP
 ```
 
 ```
-Copy to Clipboard
 import okx.PublicData as PublicData
 
 flag = "0"  # Production trading: 0, Demo trading: 1
@@ -508,7 +506,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -573,12 +570,10 @@ Retrieve funding rate history. This endpoint can return data up to three months.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/funding-rate-history?instId=BTC-USD-SWAP
 ```
 
 ```
-Copy to Clipboard
 import okx.PublicData as PublicData
 
 flag = "0"  # Production trading: 0, Demo trading: 1
@@ -604,7 +599,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -660,12 +654,10 @@ Retrieve the total open interest for contracts on OKX.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/open-interest?instType=SWAP
 ```
 
 ```
-Copy to Clipboard
 import okx.PublicData as PublicData
 
 flag = "0"  # Production trading: 0, Demo trading: 1
@@ -690,7 +682,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -733,12 +724,10 @@ Retrieve the highest buy limit and lowest sell limit of the instrument.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/price-limit?instId=BTC-USDT-SWAP
 ```
 
 ```
-Copy to Clipboard
 import okx.PublicData as PublicData
 
 flag = "0"  # Production trading: 0, Demo trading: 1
@@ -761,7 +750,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -804,12 +792,10 @@ Retrieve option market data.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/opt-summary?uly=BTC-USD
 ```
 
 ```
-Copy to Clipboard
 import okx.PublicData as PublicData
 
 flag = "0"  # Production trading: 0, Demo trading: 1
@@ -833,7 +819,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -923,12 +908,10 @@ Retrieve discount rate level and interest-free quota.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/discount-rate-interest-free-quota?ccy=BTC
 ```
 
 ```
-Copy to Clipboard
 import okx.PublicData as PublicData
 
 flag = "0"  # Production trading: 0, Demo trading: 1
@@ -950,7 +933,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1017,12 +999,10 @@ Retrieve API server time.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/time
 ```
 
 ```
-Copy to Clipboard
 import okx.PublicData as PublicData
 
 flag = "0"  # Production trading: 0, Demo trading: 1
@@ -1037,7 +1017,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -1072,12 +1051,10 @@ We set the mark price based on the SPOT index and at a reasonable basis to preve
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/mark-price?instType=SWAP
 ```
 
 ```
-Copy to Clipboard
 import okx.PublicData as PublicData
 
 flag = "0"  # Production trading: 0, Demo trading: 1
@@ -1102,7 +1079,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -1141,12 +1117,10 @@ Retrieve position tiers information, maximum leverage depends on your borrowings
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/position-tiers?tdMode=cross&instType=SWAP&instFamily=BTC-USDT
 ```
 
 ```
-Copy to Clipboard
 import okx.PublicData as PublicData
 
 flag = "0"  # Production trading: 0, Demo trading: 1
@@ -1176,7 +1150,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -1231,12 +1204,10 @@ Retrieve interest rate
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/interest-rate-loan-quota
 ```
 
 ```
-Copy to Clipboard
 import okx.PublicData as PublicData
 
 flag = "0"  # Production trading: 0, Demo trading: 1
@@ -1251,7 +1222,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1358,12 +1328,10 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/underlying?instType=FUTURES
 ```
 
 ```
-Copy to Clipboard
 import okx.PublicData as PublicData
 
 flag = "0"  # Production trading: 0, Demo trading: 1
@@ -1386,7 +1354,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -1421,12 +1388,10 @@ Get security fund balance information
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/insurance-fund?instType=SWAP&uly=BTC-USD
 ```
 
 ```
-Copy to Clipboard
 import okx.PublicData as PublicData
 
 flag = "0"  # Production trading: 0, Demo trading: 1
@@ -1456,7 +1421,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1517,12 +1481,10 @@ Convert the crypto value to the number of contracts, or vice versa
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/convert-contract-coin?instId=BTC-USD-SWAP&px=35000&sz=0.888
 ```
 
 ```
-Copy to Clipboard
 import okx.PublicData as PublicData
 
 flag = "0"  # Production trading: 0, Demo trading: 1
@@ -1552,7 +1514,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1593,7 +1554,6 @@ Get option tick bands information
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/instrument-tick-bands?instType=OPTION
 ```
 
@@ -1607,7 +1567,6 @@ GET /api/v5/public/instrument-tick-bands?instType=OPTION
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -1674,12 +1633,10 @@ It will return premium data in the past 6 months.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/premium-history?instId=BTC-USDT-SWAP
 ```
 
 ```
-Copy to Clipboard
 ```
 
 #### Request Parameters
@@ -1694,7 +1651,6 @@ Copy to Clipboard
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1731,12 +1687,10 @@ Retrieve index tickers.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/market/index-tickers?instId=BTC-USDT
 ```
 
 ```
-Copy to Clipboard
 import okx.MarketData as MarketData
 
 flag = "0"  # Production trading:0 , demo trading:1
@@ -1760,7 +1714,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -1807,12 +1760,10 @@ Retrieve the candlestick charts of the index. This endpoint can retrieve the lat
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/market/index-candles?instId=BTC-USD
 ```
 
 ```
-Copy to Clipboard
 import okx.MarketData as MarketData
 
 flag = "0"  # Production trading:0 , demo trading:1
@@ -1839,7 +1790,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -1894,7 +1844,6 @@ Retrieve the candlestick charts of the index from recent years.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/market/history-index-candles?instId=BTC-USD
 ```
 
@@ -1911,7 +1860,6 @@ GET /api/v5/market/history-index-candles?instId=BTC-USD
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -1964,12 +1912,10 @@ Retrieve the candlestick charts of mark price. This endpoint can retrieve the la
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/market/mark-price-candles?instId=BTC-USD-SWAP
 ```
 
 ```
-Copy to Clipboard
 import okx.MarketData as MarketData
 
 flag = "0"  # Production trading:0 , demo trading:1
@@ -1996,7 +1942,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -2051,7 +1996,6 @@ Retrieve the candlestick charts of mark price from recent years.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/market/history-mark-price-candles?instId=BTC-USD-SWAP
 ```
 
@@ -2068,7 +2012,6 @@ GET /api/v5/market/history-mark-price-candles?instId=BTC-USD-SWAP
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -2121,12 +2064,10 @@ This interface provides the average exchange rate data for 2 weeks
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/market/exchange-rate
 ```
 
 ```
-Copy to Clipboard
 import okx.MarketData as MarketData
 
 flag = "0"  # Production trading:0 , demo trading:1
@@ -2141,7 +2082,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -2174,12 +2114,10 @@ Get the index component information data on the market
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/market/index-components?index=BTC-USD
 ```
 
 ```
-Copy to Clipboard
 import okx.MarketData as MarketData
 
 flag = "0"  # Production trading:0 , demo trading:1
@@ -2202,7 +2140,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -2275,7 +2212,6 @@ Get the macro-economic calendar data within 3 months. Historical data from 3 mon
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/economic-calendar
 ```
 
@@ -2292,7 +2228,6 @@ GET /api/v5/public/economic-calendar
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2363,7 +2298,6 @@ Retrieve historical market data for OKX.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/public/market-data-history?module=1&instType=SWAP&instFamilyList=BTC-USDT&dateAggrType=daily&begin=1756604295000&end=1756777095000
 ```
 
@@ -2382,7 +2316,6 @@ GET /api/v5/public/market-data-history?module=1&instType=SWAP&instFamilyList=BTC
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "data": [{
@@ -2417,7 +2350,6 @@ Copy to Clipboard
 > Response Example when no data files are available
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2489,7 +2421,6 @@ The triggering scenarios for incremental data are:
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -2503,7 +2434,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 from okx.websocket.WsPublicAsync import WsPublicAsync
 
@@ -2542,7 +2472,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -2557,7 +2486,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -2583,7 +2511,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
   "arg": {
     "channel": "instruments",
@@ -2717,7 +2644,6 @@ Retrieve the open interest. Data will be pushed every 3 seconds when there are u
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -2731,7 +2657,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 from okx.websocket.WsPublicAsync import WsPublicAsync
 
@@ -2770,7 +2695,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -2785,7 +2709,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -2811,7 +2734,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
     "arg": {
         "channel": "open-interest",
@@ -2856,7 +2778,6 @@ Retrieve funding rate. Data will be pushed in 30s to 90s.
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -2870,7 +2791,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 from okx.websocket.WsPublicAsync import WsPublicAsync
 
@@ -2909,7 +2829,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -2924,7 +2843,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -2950,7 +2868,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
    "arg":{
       "channel":"funding-rate",
@@ -3017,7 +2934,6 @@ Retrieve the maximum buy price and minimum sell price of instruments. Data will 
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -3031,7 +2947,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 from okx.websocket.WsPublicAsync import WsPublicAsync
 
@@ -3070,7 +2985,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -3085,7 +2999,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -3111,7 +3024,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
     "arg": {
         "channel": "price-limit",
@@ -3153,7 +3065,6 @@ Retrieve detailed pricing information of all OPTION contracts. Data will be push
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -3167,7 +3078,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 from okx.websocket.WsPublicAsync import WsPublicAsync
 
@@ -3206,7 +3116,6 @@ asyncio.run(main())
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -3221,7 +3130,6 @@ Copy to Clipboard
 > Failure example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -3247,7 +3155,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
     "arg": {
         "channel": "opt-summary",
@@ -3320,7 +3227,6 @@ The estimated price, calculated based on index price during the one-hour period 
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -3335,7 +3241,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 from okx.websocket.WsPublicAsync import WsPublicAsync
 
@@ -3377,7 +3282,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -3393,7 +3297,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -3421,7 +3324,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
     "arg": {
         "channel": "estimated-price",
@@ -3465,7 +3367,6 @@ Retrieve the mark price. Data will be pushed every 200 ms when the mark price ch
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -3479,7 +3380,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 from okx.websocket.WsPublicAsync import WsPublicAsync
 
@@ -3516,7 +3416,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -3531,7 +3430,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -3557,7 +3455,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
   "arg": {
     "channel": "mark-price",
@@ -3598,7 +3495,6 @@ Retrieve index tickers data. Push data every 100ms if there are any changes, oth
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -3612,7 +3508,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 from okx.websocket.WsPublicAsync import WsPublicAsync
 
@@ -3651,7 +3546,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -3666,7 +3560,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -3692,7 +3585,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
   "arg": {
     "channel": "index-tickers",
@@ -3741,7 +3633,6 @@ Retrieve the candlesticks data of the mark price. The push frequency is the fast
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -3755,7 +3646,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 from okx.websocket.WsPublicAsync import WsPublicAsync
 
@@ -3794,7 +3684,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -3809,7 +3698,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -3835,7 +3723,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
   "arg": {
     "channel": "mark-price-candle1D",
@@ -3874,7 +3761,6 @@ Retrieve the candlesticks data of the index. The push frequency is the fastest i
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -3888,7 +3774,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 from okx.websocket.WsPublicAsync import WsPublicAsync
 
@@ -3927,7 +3812,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -3942,7 +3826,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -3968,7 +3851,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
   "arg": {
     "channel": "index-candle30m",
@@ -4006,7 +3888,6 @@ Retrieve the recent liquidation orders. For futures and swaps, each contract wil
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -4020,7 +3901,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 from okx.websocket.WsPublicAsync import WsPublicAsync
 
@@ -4059,7 +3939,6 @@ asyncio.run(main())
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "arg": {
@@ -4128,7 +4007,6 @@ For more ADL details, please refer to [Introduction to Auto-deleveraging](https:
 > Request Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "op": "subscribe",
@@ -4141,7 +4019,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 from okx.websocket.WsPublicAsync import WsPublicAsync
 
@@ -4180,7 +4057,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
    "id": "1512",
    "event":"subscribe",
@@ -4196,7 +4072,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
    "id": "1512",
    "event":"error",
@@ -4223,7 +4098,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
    "arg":{
       "channel":"adl-warning",
@@ -4285,7 +4159,6 @@ Retrieve the most up-to-date economic calendar data. This endpoint is only appli
 > Request Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "op": "subscribe",
@@ -4298,7 +4171,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
 
@@ -4341,7 +4213,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "event": "subscribe",
@@ -4355,7 +4226,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -4380,7 +4250,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
     "arg": {
         "channel": "economic-calendar"

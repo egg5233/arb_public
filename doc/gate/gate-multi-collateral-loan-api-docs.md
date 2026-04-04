@@ -4,6 +4,18 @@ Source: https://www.gate.com/docs/developers/apiv4/en/#multi-collateral-loan
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: supplemental reference for collateralized borrowing and unified-account style lending behavior
+- Repo asset context:
+  - trading symbols in this repo look like `BTCUSDT`
+  - this API mostly works with currencies and loan orders such as `BTC`, `USDT`, and collateral baskets
+- Most relevant sections for this repo:
+  - create loan order
+  - collateral adjustment
+  - repayment and order-detail queries
+- Important repo note: this is not a direct substitute for classic spot-margin borrow endpoints. Use it only when the adapter is intentionally working through Gate's multi-collateral or unified-account borrowing model
+
 # Multi-collateral-loan
 
 Multi-currency collateral

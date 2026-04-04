@@ -4,6 +4,20 @@ Source: https://www.okx.com/docs-v5/en/
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: balances, positions, leverage, account config, and risk/account state
+- Repo symbol formats:
+  - repo: `BTCUSDT`
+  - OKX spot: `BTC-USDT`
+  - OKX swap: `BTC-USDT-SWAP`
+- Most relevant endpoints for this repo:
+  - balance
+  - positions / positions history
+  - account config and leverage
+  - risk/account state
+- Important repo note: the repo client unwraps the OKX top-level response envelope already; adapter code should not double-unwrap `data`
+
 # Trading Account
 
 The API endpoints of `Account` require authentication.
@@ -27,12 +41,10 @@ Retrieve available instruments info of current account.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/account/instruments?instType=SPOT
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -59,7 +71,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -203,7 +214,6 @@ Interest-free quota and discount rates are public data and not displayed on the 
 > Request Example
 
 ```
-Copy to Clipboard
 # Get the balance of all assets in the account
 GET /api/v5/account/balance
 
@@ -212,7 +222,6 @@ GET /api/v5/account/balance?ccy=BTC,ETH
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -238,7 +247,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -484,13 +492,11 @@ Retrieve information on your positions. When the account is in `net` mode, `net`
 > Request Example
 
 ```
-Copy to Clipboard
 # Query BTC-USDT position information
 GET /api/v5/account/positions?instId=BTC-USDT
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -524,7 +530,6 @@ In the isolated margin trading settings, if it is set to the manual transfers mo
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -693,12 +698,10 @@ Retrieve the updated position data for the last 3 months. Return in reverse chro
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/account/positions-history
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -731,7 +734,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -816,12 +818,10 @@ Obtain basic information about accounts and positions on the same time snapshot
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/account/account-position-risk
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -847,7 +847,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "data":[
@@ -929,14 +928,12 @@ Retrieve the bills of the account. The bill refers to all transaction records th
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/account/bills
 
 GET /api/v5/account/bills?instType=MARGIN
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -973,7 +970,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -1076,14 +1072,12 @@ Retrieve the account’s bills. The bill refers to all transaction records that 
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/account/bills-archive
 
 GET /api/v5/account/bills-archive?instType=MARGIN
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -1120,7 +1114,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -1223,7 +1216,6 @@ Apply for bill data since 1 February, 2021 except for the current quarter.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/account/bills-history-archive
 body
 {
@@ -1243,7 +1235,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1292,7 +1283,6 @@ Apply for bill data since 1 February, 2021 except for the current quarter.
 > Response Example
 
 ```
-Copy to Clipboard
 GET /api/v5/account/bills-history-archive?year=2023&quarter=Q4
 ```
 
@@ -1307,7 +1297,6 @@ GET /api/v5/account/bills-history-archive?year=2023&quarter=Q4
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1381,7 +1370,6 @@ Get all bill types, and the mapping of bill type and subType.
 > Request example
 
 ```
-Copy to Clipboard
 GET /api/v5/account/subtypes
 ```
 
@@ -1394,7 +1382,6 @@ GET /api/v5/account/subtypes
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1444,12 +1431,10 @@ Retrieve current account configuration.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/account/config
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -1473,7 +1458,6 @@ none
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1566,7 +1550,6 @@ Portfolio margin mode: `FUTURES` and `SWAP` only support `net` mode
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/account/set-position-mode
 body
 {
@@ -1575,7 +1558,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -1603,7 +1585,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -1664,7 +1645,6 @@ Please refer to the request examples on the right for each case.
 > Request Example
 
 ```
-Copy to Clipboard
 # 1. Set leverage for `MARGIN` instruments under `isolated-margin` trade mode at pairs level.
 POST /api/v5/account/set-leverage
 body
@@ -1768,7 +1748,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -1802,7 +1781,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -1849,12 +1827,10 @@ Under the Portfolio Margin account, the calculation of the maximum buy/sell amou
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/account/max-size?instId=BTC-USDT&tdMode=isolated
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -1888,7 +1864,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -1927,7 +1902,6 @@ Available balance for isolated margin positions and SPOT, available equity for c
 > Request Example
 
 ```
-Copy to Clipboard
 # Query maximum available transaction amount when cross MARGIN BTC-USDT use BTC as margin
 GET /api/v5/account/max-avail-size?instId=BTC-USDT&tdMode=cross&ccy=BTC
 
@@ -1936,7 +1910,6 @@ GET /api/v5/account/max-avail-size?instId=BTC-USDT&tdMode=cash
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -1970,7 +1943,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -2013,7 +1985,6 @@ Increase or decrease the margin of the isolated position. Margin reduction may r
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/account/position/margin-balance
 body
 {
@@ -2025,7 +1996,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -2060,7 +2030,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -2105,12 +2074,10 @@ The value of the margin initially assigned to the isolated position must be grea
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/account/leverage-info?instId=BTC-USDT-SWAP&mgnMode=cross
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -2141,7 +2108,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -2188,7 +2154,6 @@ Leverage cannot be enquired for the cross positions of Expiry Futures and Perpet
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/account/adjust-leverage-info?instType=MARGIN&mgnMode=isolated&lever=3&instId=BTC-USDT
 ```
 
@@ -2206,7 +2171,6 @@ GET /api/v5/account/adjust-leverage-info?instType=MARGIN&mgnMode=isolated&lever=
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2257,7 +2221,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 # Max loan of cross `MARGIN` for currencies of trading pair in `Spot mode` (enabled borrowing)
 GET  /api/v5/account/max-loan?instId=BTC-USDT&mgnMode=cross
 
@@ -2275,7 +2238,6 @@ GET  /api/v5/account/max-loan?instId=BTC-USDT&mgnMode=cross
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -2309,7 +2271,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -2360,13 +2321,11 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 # Query trade fee rate of SPOT BTC-USDT
 GET /api/v5/account/trade-fee?instType=SPOT&instId=BTC-USDT
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -2398,7 +2357,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2483,12 +2441,10 @@ Get the interest accrued data for the past year
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/account/interest-accrued
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -2520,7 +2476,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2583,12 +2538,10 @@ Get the user's current leveraged currency borrowing market interest rate
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/account/interest-rate
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -2612,7 +2565,6 @@ print(result)
 | ccy | String | No | Currency, e.g. `BTC` |
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -2655,7 +2607,6 @@ fee type selection is only effective for Spot.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/account/set-fee-type
 body
 {
@@ -2672,7 +2623,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -2707,7 +2657,6 @@ Set the display type of Greeks.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/account/set-greeks
 body
 {
@@ -2716,7 +2665,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -2742,7 +2690,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -2775,7 +2722,6 @@ You can set the currency margin and futures/perpetual Isolated margin trading mo
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/account/set-isolated-mode
 body
 {
@@ -2785,7 +2731,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -2817,7 +2762,6 @@ When there are positions and pending orders in the current account, the margin t
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2860,12 +2804,10 @@ Retrieve the maximum transferable amount from trading account to funding account
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/account/max-withdrawal
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -2891,7 +2833,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -2940,12 +2881,10 @@ Only applicable to Portfolio margin account
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/account/risk-state
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -2965,7 +2904,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -3004,12 +2942,10 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/account/interest-limits?ccy=BTC
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -3038,7 +2974,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -3115,7 +3050,6 @@ Only applicable to `Spot mode` (enabled borrowing)
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/account/spot-manual-borrow-repay
 body
 {
@@ -3126,7 +3060,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -3152,7 +3085,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -3191,7 +3123,6 @@ Only applicable to `Spot mode` (enabled borrowing)
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/account/set-auto-repay
 body
 {
@@ -3200,7 +3131,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -3224,7 +3154,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -3259,12 +3188,10 @@ Retrieve the borrow/repay history under `Spot mode`
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/account/spot-borrow-repay-history
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -3292,7 +3219,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -3337,7 +3263,6 @@ You can add up to 200 virtual positions and 200 virtual assets in one request.
 > Request Example
 
 ```
-Copy to Clipboard
 # Both real and virtual positions and assets are calculated
 POST /api/v5/account/position-builder
 body
@@ -3414,7 +3339,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -3463,7 +3387,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -3766,7 +3689,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 {
    "inclRealPosAndEq":false,
    "simPos":[
@@ -3817,7 +3739,6 @@ Copy to Clipboard
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -3870,7 +3791,6 @@ Set risk offset amount. This does not represent the actual spot risk offset amou
 > Request Example
 
 ```
-Copy to Clipboard
 # Set spot risk offset amount
 POST /api/v5/account/set-riskOffset-amt
 body
@@ -3890,7 +3810,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
    "code": "0",
    "msg": "",
@@ -3927,7 +3846,6 @@ Retrieve a greeks list of all assets in the account.
 > Request Example
 
 ```
-Copy to Clipboard
 # Get the greeks of all assets in the account
 GET /api/v5/account/greeks
 
@@ -3936,7 +3854,6 @@ GET /api/v5/account/greeks?ccy=BTC
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -3962,7 +3879,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "data":[
@@ -4015,13 +3931,11 @@ Retrieve cross position limitation of SWAP/FUTURES/OPTION under Portfolio margin
 > Request Example
 
 ```
-Copy to Clipboard
 # Query limitation of BTC-USDT
 GET /api/v5/account/position-tiers?instType=SWAP&uly=BTC-USDT
 ```
 
 ```
-Copy to Clipboard
 import okx.Account as Account
 
 # API initialization
@@ -4051,7 +3965,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "data": [
@@ -4090,7 +4003,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/account/activate-option
 ```
 
@@ -4101,7 +4013,6 @@ None
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -4134,7 +4045,6 @@ Only applicable to `Multi-currency margin` and `Portfolio margin`
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/account/set-auto-loan
 body
 {
@@ -4151,7 +4061,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -4186,7 +4095,6 @@ If the user does not follow the required settings, they will receive an error me
 > Request example
 
 ```
-Copy to Clipboard
 # 1. Futures mode -> Multi-currency margin mode
 POST /api/v5/account/account-level-switch-preset
 {
@@ -4224,7 +4132,6 @@ POST /api/v5/account/account-level-switch-preset
 > Response example 1. Futures mode -> Multi-currency margin mode
 
 ```
-Copy to Clipboard
 {
     "acctLv": "3",
     "curAcctLv": "2",
@@ -4236,7 +4143,6 @@ Copy to Clipboard
 > Response example 2. Multi-currency margin mode -> Futures mode
 
 ```
-Copy to Clipboard
 {
     "acctLv": "2",
     "curAcctLv": "3",
@@ -4248,7 +4154,6 @@ Copy to Clipboard
 > Response example 3. Portfolio margin mode -> Futures mode/Multi-currency margin mode
 
 ```
-Copy to Clipboard
 {
     "acctLv": "2",
     "curAcctLv": "4",
@@ -4260,7 +4165,6 @@ Copy to Clipboard
 > Response example 4. Portfolio margin mode -> Futures mode/Multi-currency margin mode
 
 ```
-Copy to Clipboard
 {
     "acctLv": "3",
     "curAcctLv": "4",
@@ -4297,7 +4201,6 @@ Retrieve precheck information for account mode switching.
 > Request example
 
 ```
-Copy to Clipboard
 GET /api/v5/account/set-account-switch-precheck?acctLv=3
 ```
 
@@ -4310,7 +4213,6 @@ GET /api/v5/account/set-account-switch-precheck?acctLv=3
 > Response example. Futures mode->Portfolio margin mode, need to finish the Q&A on web or mobile first
 
 ```
-Copy to Clipboard
 {
     "code": "51070",
     "data": [],
@@ -4321,7 +4223,6 @@ Copy to Clipboard
 > Response example. Futures mode->Portfolio margin mode, unmatched information. sCode 1
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -4350,7 +4251,6 @@ Copy to Clipboard
 > Response example. Portfolio margin mode->Multi-currency margin code, the user has cross-margin positions but doesn't preset leverage. sCode 3
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -4390,7 +4290,6 @@ Copy to Clipboard
 > Response example. Portfolio margin mode->Multi-currency margin code, the user finishes the leverage setting to 10, and passes the position tier an margin check. sCode 0.
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -4488,7 +4387,6 @@ You need to set on the Web/App for the first set of every account mode. If users
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/account/set-account-level
 body
 {
@@ -4505,7 +4403,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -4538,7 +4435,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 # Set all assets to be collateral
 POST /api/v5/account/set-collateral-assets
 body
@@ -4568,7 +4464,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -4605,7 +4500,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/account/collateral-assets
 ```
 
@@ -4619,7 +4513,6 @@ GET /api/v5/account/collateral-assets
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -4662,7 +4555,6 @@ Only applicable to Option in Portfolio Margin mode, and MMP privilege is require
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/account/mmp-reset
 body
 {
@@ -4681,7 +4573,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -4726,7 +4617,6 @@ Please send an email to institutional@okx.com or contact your business developme
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/account/mmp-config
 body
 {
@@ -4749,7 +4639,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -4792,7 +4681,6 @@ Only applicable to Option in Portfolio Margin mode, and MMP privilege is require
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/account/mmp-config?instFamily=BTC-USD
 ```
 
@@ -4805,7 +4693,6 @@ GET /api/v5/account/mmp-config?instFamily=BTC-USD
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "data": [
@@ -4850,7 +4737,6 @@ To move positions between different accounts under the same master account. Each
 > Request example
 
 ```
-Copy to Clipboard
 {
    "fromAcct":"0",
    "toAcct":"test",
@@ -4902,7 +4788,6 @@ Copy to Clipboard
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -4968,7 +4853,6 @@ Copy to Clipboard
 > Response example:failure
 
 ```
-Copy to Clipboard
 // The destination account position mode (net/longShort) is not matched with the posSide field
 {
     "code": "51000",
@@ -5059,7 +4943,6 @@ Retrieve move position details in the last 3 days.
 > Request example
 
 ```
-Copy to Clipboard
 Get /api/v5/account/move-positions-history
 ```
 
@@ -5077,7 +4960,6 @@ Get /api/v5/account/move-positions-history
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -5173,7 +5055,6 @@ Turn on/off auto earn.
 > Request example
 
 ```
-Copy to Clipboard
 // turn on auto lend
 {
    "earnType": "0",
@@ -5194,7 +5075,6 @@ Copy to Clipboard
 > Response example
 
 ```
-Copy to Clipboard
 {
    "code":"0",
    "msg":"",
@@ -5235,7 +5115,6 @@ Only applicable to USD-margined contract.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/account/set-settle-currency
 body
 {
@@ -5252,7 +5131,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -5285,7 +5163,6 @@ Copy to Clipboard
 > Request example
 
 ```
-Copy to Clipboard
 POST /api/v5/account/set-trading-config
 body
 {
@@ -5304,7 +5181,6 @@ body
 > Response example
 
 ```
-Copy to Clipboard
 {
    "code":"0",
    "msg":"",
@@ -5337,7 +5213,6 @@ Copy to Clipboard
 > Request example
 
 ```
-Copy to Clipboard
 GET /api/v5/account/precheck-set-delta-neutral?stgyType=1
 ```
 
@@ -5350,7 +5225,6 @@ GET /api/v5/account/precheck-set-delta-neutral?stgyType=1
 > Response example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -5401,7 +5275,6 @@ Concurrent connection to this channel will be restricted by the following rules:
 > Request Example : single
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -5415,7 +5288,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
@@ -5452,7 +5324,6 @@ asyncio.run(main())
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -5470,7 +5341,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
@@ -5519,7 +5389,6 @@ asyncio.run(main())
 > Successful Response Example : single
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -5534,7 +5403,6 @@ Copy to Clipboard
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -5548,7 +5416,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -5574,7 +5441,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
     "arg": {
         "channel": "account",
@@ -5762,7 +5628,6 @@ Concurrent connection to this channel will be restricted by the following rules:
 > Request Example : single
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -5777,7 +5642,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
@@ -5815,7 +5679,6 @@ asyncio.run(main())
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -5834,7 +5697,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
@@ -5886,7 +5748,6 @@ asyncio.run(main())
 > Successful Response Example : single
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -5902,7 +5763,6 @@ Copy to Clipboard
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -5917,7 +5777,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -5945,7 +5804,6 @@ Copy to Clipboard
 > Push Data Example: single
 
 ```
-Copy to Clipboard
 {
   "arg":{
       "channel":"positions",
@@ -6043,7 +5901,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
   "arg":{
       "channel":"positions",
@@ -6340,7 +6197,6 @@ Concurrent connection to this channel will be restricted by the following rules:
 > Request Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "op": "subscribe",
@@ -6351,7 +6207,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
@@ -6394,7 +6249,6 @@ asyncio.run(main())
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "event": "subscribe",
@@ -6408,7 +6262,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "event": "error",
@@ -6433,7 +6286,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
     "arg": {
         "channel": "balance_and_position",
@@ -6527,7 +6379,6 @@ Concurrent connection to this channel will be restricted by the following rules:
 > Request Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "op": "subscribe",
@@ -6541,7 +6392,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
@@ -6590,7 +6440,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "subscribe",
@@ -6605,7 +6454,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
   "id": "1512",
   "event": "error",
@@ -6633,7 +6481,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
     "arg":{
         "channel":"liquidation-warning",
@@ -6703,7 +6550,6 @@ Concurrent connection to this channel will be restricted by the following rules:
 > Request Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "op": "subscribe",
@@ -6714,7 +6560,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
@@ -6758,7 +6603,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "event": "subscribe",
@@ -6772,7 +6616,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "event": "error",
@@ -6798,7 +6641,6 @@ Copy to Clipboard
 > Push Data Example: single
 
 ```
-Copy to Clipboard
 {
     "arg": {
         "channel": "account-greeks",
@@ -6825,7 +6667,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
     "arg": {
         "channel": "account-greeks",

@@ -4,6 +4,14 @@ Source: https://github.com/BingX-API/api-ai-skills
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: spot market-data reference only
+- Repo symbol format: `BTCUSDT`
+- Vendor/API symbol format usually includes a hyphen: `BTC-USDT`
+- Most relevant endpoint for this repo: spot best bid/ask (`book ticker`)
+- Important repo note: BingX spot is not used for spot-margin trading in this project
+
 # BingX Spot Market Data — API Reference
 
 **Base URLs:** see [`references/base-urls.md`](../references/base-urls.md) | **Auth:** None (public endpoints) | **Response:** `{ "code": 0, "msg": "", "data": ... }`
@@ -1736,4 +1744,3 @@ Pushed when account balance changes.
 
 
 ---
-

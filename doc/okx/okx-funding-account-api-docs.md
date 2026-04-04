@@ -4,6 +4,18 @@ Source: https://www.okx.com/docs-v5/en/
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: funding-account balances and transfers
+- Repo symbol context:
+  - repo uses `BTCUSDT`
+  - funding-account APIs operate mostly on currencies like `BTC`, `USDT`
+- Most relevant endpoints for this repo:
+  - currencies
+  - balances
+  - funds transfer
+- Important repo note: the repo uses explicit funding-account to trading-account transfers on OKX; those flows are operationally important for rebalancing and spot-futures support
+
 # Funding Account
 
 The API endpoints of `Funding Account` require authentication.
@@ -27,12 +39,10 @@ Retrieve a list of all currencies available which are related to the current acc
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/asset/currencies
 ```
 
 ```
-Copy to Clipboard
 import okx.Funding as Funding
 
 # API initialization
@@ -58,7 +68,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -153,12 +162,10 @@ Only asset information of a currency with a balance greater than 0 will be retur
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/asset/balances
 ```
 
 ```
-Copy to Clipboard
 import okx.Funding as Funding
 
 # API initialization
@@ -184,7 +191,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -225,12 +231,10 @@ Retrieve the funding account balances of all the assets and the amount that is a
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/asset/non-tradable-assets
 ```
 
 ```
-Copy to Clipboard
 import okx.Funding as Funding
 
 # API initialization
@@ -255,7 +259,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -332,12 +335,10 @@ View account asset valuation
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/asset/asset-valuation
 ```
 
 ```
-Copy to Clipboard
 import okx.Funding as Funding
 
 # API initialization
@@ -363,7 +364,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -417,7 +417,6 @@ The success or failure of the request does not necessarily reflect the actual tr
 > Request Example
 
 ```
-Copy to Clipboard
 # Transfer 1.5 USDT from funding account to Trading account when current account is master-account
 POST /api/v5/asset/transfer
 body
@@ -454,7 +453,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Funding as Funding
 
 # API initialization
@@ -493,7 +491,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -540,12 +537,10 @@ Retrieve the transfer state data of the last 2 weeks.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/asset/transfer-state?transId=1&type=1
 ```
 
 ```
-Copy to Clipboard
 import okx.Funding as Funding
 
 # API initialization
@@ -576,7 +571,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -631,12 +625,10 @@ Query the billing record in the past month.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/asset/bills
 ```
 
 ```
-Copy to Clipboard
 import okx.Funding as Funding
 
 # API initialization
@@ -667,7 +659,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -716,12 +707,10 @@ Query the billing records of all time since 1 February, 2021.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/asset/bills-history
 ```
 
 ```
-Copy to Clipboard
 import okx.Funding as Funding
 
 # API initialization
@@ -753,7 +742,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -800,12 +788,10 @@ Retrieve the deposit addresses of currencies, including previously-used addresse
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/asset/deposit-address?ccy=BTC
 ```
 
 ```
-Copy to Clipboard
 import okx.Funding as Funding
 
 # API initialization
@@ -833,7 +819,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -904,7 +889,6 @@ Websocket API is also available, refer to [Deposit info channel](https://www.okx
 > Request Example
 
 ```
-Copy to Clipboard
 
 GET /api/v5/asset/deposit-history
 
@@ -913,7 +897,6 @@ GET /api/v5/asset/deposit-history?ccy=BTC&after=1654041600000&before=16566336000
 ```
 
 ```
-Copy to Clipboard
 import okx.Funding as Funding
 
 # API initialization
@@ -947,7 +930,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -1030,7 +1012,6 @@ Bahamas entity users refer to https://www.okx.com/docs-v5/log\_en/#2024-08-08-wi
 > Request Example
 
 ```
-Copy to Clipboard
 # on-chain withdrawal
 POST /api/v5/asset/withdrawal
 body
@@ -1072,7 +1053,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Funding as Funding
 
 # API initialization
@@ -1120,7 +1100,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -1407,7 +1386,6 @@ You can cancel normal withdrawal requests, but you cannot cancel withdrawal requ
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/asset/cancel-withdrawal
 body {
    "wdId":"1123456"
@@ -1415,7 +1393,6 @@ body {
 ```
 
 ```
-Copy to Clipboard
 import okx.Funding as Funding
 
 # API initialization
@@ -1443,7 +1420,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -1482,7 +1458,6 @@ Websocket API is also available, refer to [Withdrawal info channel](https://www.
 > Request Example
 
 ```
-Copy to Clipboard
 
 GET /api/v5/asset/withdrawal-history
 
@@ -1507,7 +1482,6 @@ GET /api/v5/asset/withdrawal-history?ccy=BTC&after=1654041600000&before=16566336
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -1578,7 +1552,6 @@ Retrieve deposit's and withdrawal's detailed status and estimated complete time.
 > Request Example
 
 ```
-Copy to Clipboard
 # For deposit
 GET /api/v5/asset/deposit-withdraw-status?txId=xxxxxx&to=1672734730284&ccy=USDT&chain=USDT-ERC20
 
@@ -1599,7 +1572,6 @@ GET /api/v5/asset/deposit-withdraw-status?wdId=200045249
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "data":[
@@ -1658,12 +1630,10 @@ Authentication is not required for this public endpoint.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/asset/exchange-list
 ```
 
 ```
-Copy to Clipboard
 ```
 
 #### Request Parameters
@@ -1673,7 +1643,6 @@ None
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -1710,7 +1679,6 @@ Apply for monthly statement in the past year.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/asset/monthly-statement
 body
 {
@@ -1727,7 +1695,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1762,7 +1729,6 @@ Retrieve monthly statement in the past year.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/asset/monthly-statement?month=Jan
 ```
 
@@ -1775,7 +1741,6 @@ GET /api/v5/asset/monthly-statement?month=Jan
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1812,7 +1777,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/asset/convert/currencies
 ```
 
@@ -1823,7 +1787,6 @@ none
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1865,7 +1828,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/asset/convert/currency-pair?fromCcy=USDT&toCcy=BTC
 ```
 
@@ -1880,7 +1842,6 @@ GET /api/v5/asset/convert/currency-pair?fromCcy=USDT&toCcy=BTC
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1929,7 +1890,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/asset/convert/estimate-quote
 body
 {
@@ -1957,7 +1917,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2020,7 +1979,6 @@ For the same side (buy/sell), there's a trading limit of 1 request per 5 seconds
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/asset/convert/trade
 body
 {
@@ -2050,7 +2008,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2103,7 +2060,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/asset/convert/history
 ```
 
@@ -2120,7 +2076,6 @@ GET /api/v5/asset/convert/history
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2175,7 +2130,6 @@ To display all the available fiat deposit payment methods
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/fiat/deposit-payment-methods?ccy=TRY
 body
 {
@@ -2184,7 +2138,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 ```
 
 #### Request Parameters
@@ -2196,7 +2149,6 @@ Copy to Clipboard
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -2283,12 +2235,10 @@ To display all the available fiat withdrawal payment methods
 > Request Example
 
 ```
-Copy to Clipboard
  GET /api/v5/fiat/withdrawal-payment-methods?ccy=TRY
 ```
 
 ```
-Copy to Clipboard
 ```
 
 #### Request Parameters
@@ -2300,7 +2250,6 @@ Copy to Clipboard
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -2389,7 +2338,6 @@ Only supported withdrawal of assets from funding account.
 > Request Example
 
 ```
-Copy to Clipboard
  POST /api/v5/fiat/create-withdrawal
  body
  {
@@ -2402,7 +2350,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 ```
 
 #### Request Parameters
@@ -2418,7 +2365,6 @@ Copy to Clipboard
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -2471,7 +2417,6 @@ Cancel a pending fiat withdrawal order, currently only applicable to TRY
 > Request Example
 
 ```
-Copy to Clipboard
  POST /api/v5/fiat/cancel-withdrawal
  body
  {
@@ -2480,7 +2425,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 ```
 
 #### Request Parameters
@@ -2492,7 +2436,6 @@ Copy to Clipboard
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -2529,12 +2472,10 @@ Get fiat withdrawal order history
 > Request Example
 
 ```
-Copy to Clipboard
  GET /api/v5/fiat/withdrawal-order-history
 ```
 
 ```
-Copy to Clipboard
 ```
 
 #### Request Parameters
@@ -2551,7 +2492,6 @@ Copy to Clipboard
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -2616,7 +2556,6 @@ Get fiat withdraw order detail
 > Request Example
 
 ```
-Copy to Clipboard
  GET /api/v5/fiat/withdrawal?ordId=024041201450544699
  body
  {
@@ -2625,7 +2564,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 ```
 
 #### Request Parameters
@@ -2637,7 +2575,6 @@ Copy to Clipboard
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -2690,12 +2627,10 @@ Get fiat deposit order history
 > Request Example
 
 ```
-Copy to Clipboard
  GET /api/v5/fiat/deposit-order-history
 ```
 
 ```
-Copy to Clipboard
 ```
 
 #### Request Parameters
@@ -2712,7 +2647,6 @@ Copy to Clipboard
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -2777,7 +2711,6 @@ Get fiat deposit order detail
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/fiat/deposit?ordId=024041201450544699
 body
 {
@@ -2786,7 +2719,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 ```
 
 #### Request Parameters
@@ -2798,7 +2730,6 @@ Copy to Clipboard
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -2849,14 +2780,12 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/fiat/buy-sell/currencies
 ```
 
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2908,7 +2837,6 @@ This feature is only available to Bahamas institutional users at the moment.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/fiat/buy-sell/currency-pair?fromCcy=USD&toCcy=BTC
 ```
 
@@ -2922,7 +2850,6 @@ GET /api/v5/fiat/buy-sell/currency-pair?fromCcy=USD&toCcy=BTC
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2992,7 +2919,6 @@ This feature is only available to Bahamas institutional users at the moment.
 > Request Example
 
 ```
-Copy to Clipboard
 # Sell USD to buy 0.1 BTC
 POST /api/v5/fiat/buy-sell/quote
 body
@@ -3051,7 +2977,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -3107,7 +3032,6 @@ This feature is only available to Bahamas institutional users at the moment.
 > Request Example
 
 ```
-Copy to Clipboard
 # Sell 30 USD to buy BTC
 POST /api/v5/fiat/buy-sell/trade
 body
@@ -3139,7 +3063,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -3199,7 +3122,6 @@ This feature is only available to Bahamas institutional users at the moment.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/fiat/buy-sell/history
 ```
 
@@ -3217,7 +3139,6 @@ GET /api/v5/fiat/buy-sell/history
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -3282,7 +3203,6 @@ Supports subscriptions for accounts
 > Request Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "op": "subscribe",
@@ -3295,7 +3215,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
 
@@ -3338,7 +3257,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "event": "subscribe",
@@ -3352,7 +3270,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "event": "error",
@@ -3378,7 +3295,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
     "arg": {
         "channel": "deposit-info",
@@ -3445,7 +3361,6 @@ Supports subscriptions for accounts
 > Request Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "op": "subscribe",
@@ -3458,7 +3373,6 @@ Copy to Clipboard
 ```
 
 ```
-Copy to Clipboard
 import asyncio
 from okx.websocket.WsPrivateAsync import WsPrivateAsync
 
@@ -3502,7 +3416,6 @@ asyncio.run(main())
 > Successful Response Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "event": "subscribe",
@@ -3516,7 +3429,6 @@ Copy to Clipboard
 > Failure Response Example
 
 ```
-Copy to Clipboard
 {
     "id": "1512",
     "event": "error",
@@ -3542,7 +3454,6 @@ Copy to Clipboard
 > Push Data Example
 
 ```
-Copy to Clipboard
 {
     "arg": {
         "channel": "withdrawal-info",

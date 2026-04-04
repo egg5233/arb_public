@@ -4,17 +4,28 @@ Source: https://bybit-exchange.github.io/docs/v5/market/
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: market data for futures pricing, funding, and contract metadata
+- Repo symbol format: `BTCUSDT`
+- Most relevant endpoints for this repo:
+  - instruments info
+  - tickers / orderbook
+  - funding history
+  - open interest and mark price data
+- Important repo note: Bybit market docs cover many product families; most repo paths are for linear USDT perpetuals and should be reviewed with that scope in mind
+
 # Get ADL Alert
 
 Query for [ADL](https://www.bybit.com/en/help-center/article/Auto-Deleveraging-ADL) (auto-deleveraging mechanism) alerts and insurance pool information.
 
 > **Covers: USDT Perpetual / USDT Delivery / USDC Perpetual / USDC Delivery / Inverse Contracts**
 
-tip
+> Tip
 
 Data update frequency: every 1 minute.
 
-info
+> Info
 
 - **ADL trigger and stop conditions are based on the following three cases:**
 
@@ -112,7 +123,7 @@ Subscribe to the [ADL WebSocket topic](https://bybit-exchange.github.io/docs/v5/
 
 ### HTTP Request
 
-GET`/v5/market/adlAlert`Copy
+`GET /v5/market/adlAlert`
 
 ### Request Parameters
 
@@ -170,9 +181,6 @@ print(session.get_adl_alert(
 
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -200,11 +208,9 @@ print(session.get_adl_alert(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -216,14 +222,14 @@ Get the delivery price.
 
 > **Covers: USDT futures / USDC futures / Inverse futures / Option**
 
-info
+> Info
 
 - Option: only returns those symbols which are `DELIVERING` (UTC 8 - UTC 12) when `symbol` is not specified.
 - During periods of extreme market volatility, this interface may experience increased latency or temporary delays in data delivery
 
 ### HTTP Request
 
-GET`/v5/market/delivery-price`Copy
+`GET /v5/market/delivery-price`
 
 ### Request Parameters
 
@@ -293,7 +299,7 @@ var deliveryPriceRequest = MarketDataRequest.builder().category(CategoryType.OPT
 client.getDeliveryPrice(deliveryPriceRequest, System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -332,11 +338,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -354,7 +358,7 @@ For more details please refer to the [fee structure update announcement](https:/
 
 > **Covers: USDT Perpetual / USDT Delivery / USDC Perpetual / USDC Delivery / Inverse Contracts**
 
-info
+> Info
 
 - **Weighted maker volume** = Σ(Maker volume on pair × Group weighting factor (`weightingFactor`))
 - **Weighted maker share** = (Your total weighted maker volume ÷ Bybit's total weighted maker volume)
@@ -362,7 +366,7 @@ info
 
 ### HTTP Request
 
-GET`/v5/market/fee-group-info`Copy
+`GET /v5/market/fee-group-info`
 
 ### Request Parameters
 
@@ -429,9 +433,6 @@ print(session.get_fee_group_info(
 
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -520,11 +521,9 @@ print(session.get_fee_group_info(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -538,7 +537,7 @@ To query the funding rate interval, please refer to the [instruments-info](https
 
 > **Covers: USDT and USDC perpetual / Inverse perpetual**
 
-info
+> Info
 
 - Passing only `startTime` returns an error.
 - Passing only `endTime` returns 200 records up till `endTime`.
@@ -546,7 +545,7 @@ info
 
 ### HTTP Request
 
-GET`/v5/market/funding/history`Copy
+`GET /v5/market/funding/history`
 
 ### Request Parameters
 
@@ -616,7 +615,7 @@ var fundingHistoryRequest = MarketDataRequest.builder().category(CategoryType.LI
 client.getFundingHistory(fundingHistoryRequest, System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -658,11 +657,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -672,7 +669,7 @@ GitHub
 
 ### HTTP Request
 
-GET`/v5/market/index-price-components`Copy
+`GET /v5/market/index-price-components`
 
 ### Request Parameters
 
@@ -728,9 +725,6 @@ print(session.get_index_price_components(
 
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -798,11 +792,9 @@ print(session.get_index_price_components(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -816,7 +808,7 @@ Query for historical [index price](https://www.bybit.com/en-US/help-center/s/art
 
 ### HTTP Request
 
-GET`/v5/market/index-price-kline`Copy
+`GET /v5/market/index-price-kline`
 
 ### Request Parameters
 
@@ -893,7 +885,7 @@ var marketKLineRequest = MarketDataRequest.builder().category(CategoryType.LINEA
 client.getIndexPriceLinesData(marketKLineRequest, System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -948,11 +940,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -964,7 +954,7 @@ Query for the instrument specification of online trading pairs.
 
 > **Covers: Spot / USDT contract / USDC contract / Inverse contract / Option**
 
-info
+> Info
 
 - Spot does not support pagination, so `limit`, `cursor` are invalid.
 - When querying by `baseCoin`, regardless of if category=`linear` or `inverse`, the result will contain USDT contract, USDC contract and Inverse contract symbols.
@@ -977,7 +967,7 @@ caution
 
 ### HTTP Request
 
-GET`/v5/market/instruments-info`Copy
+`GET /v5/market/instruments-info`
 
 ### Request Parameters
 
@@ -1156,7 +1146,7 @@ var instrumentInfoRequest = MarketDataRequest.builder().category(CategoryType.LI
 client.getInstrumentsInfo(instrumentInfoRequest,System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -1217,7 +1207,7 @@ var instrumentInfoRequest = MarketDataRequest.builder().category(CategoryType.OP
 client.getInstrumentsInfo(instrumentInfoRequest,System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -1278,7 +1268,7 @@ var instrumentInfoRequest = MarketDataRequest.builder().category(CategoryType.SP
 client.getInstrumentsInfo(instrumentInfoRequest,System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -1527,11 +1517,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1541,7 +1529,7 @@ GitHub
 
 Query for Bybit [insurance pool](https://www.bybit.com/en/announcement-info/insurance-fund/) data (BTC/USDT/USDC etc)
 
-info
+> Info
 
 - The isolated insurance pool balance is updated every 1 minute, and shared insurance pool balance is updated every 24 hours
 - Please note that you may receive data from the previous minute. This is due to multiple backend containers starting
@@ -1550,7 +1538,7 @@ at different times, which may cause a slight delay. You can always rely on the l
 
 ### HTTP Request
 
-GET`/v5/market/insurance`Copy
+`GET /v5/market/insurance`
 
 ### Request Parameters
 
@@ -1613,7 +1601,7 @@ var insuranceRequest = MarketDataRequest.builder().coin("BTC").build();
 var insuranceData = client.getInsurance(insuranceRequest);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -1672,11 +1660,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1688,7 +1674,7 @@ Query option historical volatility
 
 > **Covers: Option**
 
-info
+> Info
 
 - The data is hourly.
 - If both `startTime` and `endTime` are not specified, it will return the most recent 1 hours worth of data.
@@ -1697,7 +1683,7 @@ info
 
 ### HTTP Request
 
-GET`/v5/market/historical-volatility`Copy
+`GET /v5/market/historical-volatility`
 
 ### Request Parameters
 
@@ -1756,7 +1742,7 @@ var historicalVolatilityRequest = MarketDataRequest.builder().category(CategoryT
 client.getHistoricalVolatility(historicalVolatilityRequest, System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -1794,11 +1780,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1812,7 +1796,7 @@ Query for historical klines (also known as candles/candlesticks). Charts are ret
 
 ### HTTP Request
 
-GET`/v5/market/kline`Copy
+`GET /v5/market/kline`
 
 ### Request Parameters
 
@@ -1890,7 +1874,7 @@ var marketKLineRequest = MarketDataRequest.builder().category(CategoryType.LINEA
 client.getMarketLinesData(marketKLineRequest, System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -1957,11 +1941,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1977,14 +1959,14 @@ Short account ratio = Number of holders with short positions / Total number of h
 
 Long-short account ratio = Long account ratio / Short account ratio
 
-info
+> Info
 
 - The earliest query start time is July 20, 2020
 - During periods of extreme market volatility, this interface may experience increased latency or temporary delays in data delivery
 
 ### HTTP Request
 
-GET`/v5/market/account-ratio`Copy
+`GET /v5/market/account-ratio`
 
 ### Request Parameters
 
@@ -2064,7 +2046,7 @@ var marketAccountRatioRequest = MarketDataRequest.builder().category(CategoryTyp
 client.getMarketAccountRatio(marketAccountRatioRequest, System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -2114,11 +2096,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2132,7 +2112,7 @@ Query for historical [mark price](https://www.bybit.com/en-US/help-center/s/arti
 
 ### HTTP Request
 
-GET`/v5/market/mark-price-kline`Copy
+`GET /v5/market/mark-price-kline`
 
 ### Request Parameters
 
@@ -2209,7 +2189,7 @@ var marketKLineRequest = MarketDataRequest.builder().category(CategoryType.LINEA
 client.getMarketPriceLinesData(marketKLineRequest, System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -2257,11 +2237,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2273,14 +2251,14 @@ Get historical option delivery prices.
 
 > **Covers: Option**
 
-info
+> Info
 
 - It is recommended to query this endpoint 1 minute after settlement is completed, because the data returned by this endpoint may be delayed by 1 minute.
 - By default, the most recent 50 records are returned in reverse order of "deliveryTime".
 
 ### HTTP Request
 
-GET`/v5/market/new-delivery-price`Copy
+`GET /v5/market/new-delivery-price`
 
 ### Request Parameters
 
@@ -2335,9 +2313,6 @@ print(session.get_new_delivery_price(
 
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -2555,11 +2530,9 @@ print(session.get_new_delivery_price(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2571,14 +2544,14 @@ Get the [open interest](https://www.bybit.com/en-US/help-center/s/article/Glossa
 
 > **Covers: USDT contract / USDC contract / Inverse contract**
 
-info
+> Info
 
 - The upper limit time you can query is the launch time of the symbol.
 - During periods of extreme market volatility, this interface may experience increased latency or temporary delays in data delivery
 
 ### HTTP Request
 
-GET`/v5/market/open-interest`Copy
+`GET /v5/market/open-interest`
 
 ### Request Parameters
 
@@ -2653,7 +2626,7 @@ var openInterest = MarketDataRequest.builder().category(CategoryType.LINEAR).sym
 client.getOpenInterest(openInterest, System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -2702,11 +2675,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2720,7 +2691,7 @@ For spot trading order price limit, refer to [announcement](https://announcement
 
 ### HTTP Request
 
-GET`/v5/market/price-limit`Copy
+`GET /v5/market/price-limit`
 
 ### Request Parameters
 
@@ -2770,9 +2741,6 @@ print(session.get_price_limit(
 
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -2791,11 +2759,9 @@ print(session.get_price_limit(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2811,14 +2777,14 @@ Query for orderbook depth data.
 - Spot: 1000-level of orderbook data
 - Option: 25-level of orderbook data
 
-info
+> Info
 
 - The response is in the snapshot format.
 - [Retail Price Improvement (RPI)](https://www.bybit.com/en/help-center/article/Retail-Price-Improvement-RPI-Order) orders will not be included in the response message and will not be visible over API.
 
 ### HTTP Request
 
-GET`/v5/market/orderbook`Copy
+`GET /v5/market/orderbook`
 
 ### Request Parameters
 
@@ -2891,7 +2857,7 @@ var orderbookRequest = MarketDataRequest.builder().category(CategoryType.SPOT).s
 client.getMarketOrderBook(orderbookRequest,System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -2941,11 +2907,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2959,7 +2923,7 @@ Query for historical [premium index](https://www.bybit.com/data/basic/linear/ind
 
 ### HTTP Request
 
-GET`/v5/market/premium-index-price-kline`Copy
+`GET /v5/market/premium-index-price-kline`
 
 ### Request Parameters
 
@@ -3035,7 +2999,7 @@ var marketKLineRequest = MarketDataRequest.builder().category(CategoryType.LINEA
 client.getPremiumIndexPriceLinesData(marketKLineRequest, System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -3089,11 +3053,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -3109,7 +3071,7 @@ You can download archived historical trades from the [website](https://www.bybit
 
 ### HTTP Request
 
-GET`/v5/market/recent-trade`Copy
+`GET /v5/market/recent-trade`
 
 ### Request Parameters
 
@@ -3189,7 +3151,7 @@ var recentTrade = MarketDataRequest.builder().category(CategoryType.OPTION).symb
 client.getRecentTradeData(recentTrade, System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -3237,11 +3199,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -3253,7 +3213,7 @@ Query for the [risk limit](https://www.bybit.com/en/help-center/article/Risk-Lim
 
 > **Covers: USDT contract / USDC contract / Inverse contract**
 
-info
+> Info
 
 - category=`linear` returns a data set of 15 symbols in each response. Please use the `cursor` param to get the next data set.
 - `symbol` support `Trading` status and `PreLaunch` [Pre-Market contracts](https://www.bybit.com/en/help-center/article/Introduction-to-Pre-Market-Perpetual) status trading pairs.
@@ -3261,7 +3221,7 @@ info
 
 ### HTTP Request
 
-GET`/v5/market/risk-limit`Copy
+`GET /v5/market/risk-limit`
 
 ### Request Parameters
 
@@ -3333,7 +3293,7 @@ var riskMimitRequest = MarketDataRequest.builder().category(CategoryType.INVERSE
 client.getRiskLimit(riskMimitRequest, System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -3380,11 +3340,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -3399,13 +3357,13 @@ Query for orderbook depth data.
 - Contract: 50-level of RPI orderbook data
 - Spot: 50-level of RPI orderbook data
 
-info
+> Info
 
 - The response is in the snapshot format.
 
 ### HTTP Request
 
-GET`/v5/market/rpi_orderbook`Copy
+`GET /v5/market/rpi_orderbook`
 
 ### Request Parameters
 
@@ -3470,9 +3428,6 @@ print(session.get_rpi_orderbook(
 
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -3506,11 +3461,9 @@ print(session.get_rpi_orderbook(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -3522,13 +3475,13 @@ Query for the latest price snapshot, best bid/ask price, and trading volume in t
 
 > **Covers: Spot / USDT contract / USDC contract / Inverse contract / Option**
 
-info
+> Info
 
 If category= _option_, `symbol` or `baseCoin` must be passed.
 
 ### HTTP Request
 
-GET`/v5/market/tickers`Copy
+`GET /v5/market/tickers`
 
 ### Request Parameters
 
@@ -3679,7 +3632,7 @@ var tickerReueqt = MarketDataRequest.builder().category(CategoryType.INVERSE).sy
 client.getMarketTickers(tickerReueqt, System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -3740,7 +3693,7 @@ var tickerReueqt = MarketDataRequest.builder().category(CategoryType.OPTION).sym
 client.getMarketTickers(tickerReueqt, System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -3801,7 +3754,7 @@ var tickerReueqt = MarketDataRequest.builder().category(CategoryType.SPOT).symbo
 client.getMarketTickers(tickerReueqt, System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -3943,11 +3896,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -3955,13 +3906,13 @@ GitHub
 
 # Get Bybit Server Time
 
-info
+> Info
 
 - During periods of extreme market volatility, this interface may experience increased latency or temporary delays in data delivery
 
 ### HTTP Request
 
-GET`/v5/market/time`Copy
+`GET /v5/market/time`
 
 ### Request Parameters
 
@@ -4013,7 +3964,7 @@ client := bybit.NewBybitHttpClient("", "", bybit.WithBaseURL(bybit.TESTNET))
 client.NewUtaBybitServiceNoParams().GetServerTime(context.Background())
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -4045,13 +3996,10 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
 ---
-

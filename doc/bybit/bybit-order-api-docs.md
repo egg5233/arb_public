@@ -4,15 +4,26 @@ Source: https://bybit-exchange.github.io/docs/v5/order/
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: order placement, cancel, query, and execution history
+- Repo symbol format: `BTCUSDT`
+- Most relevant endpoints for this repo:
+  - create / amend / cancel order
+  - cancel all
+  - realtime and history order queries
+  - execution list
+- Important repo note: this repo uses Bybit one-way mode; review order fields with that assumption before changing adapter behavior
+
 # Amend Order
 
-info
+> Info
 
 You can only modify **unfilled** or **partially filled** orders.
 
 ### HTTP Request
 
-POST`/v5/order/amend`Copy
+`POST /v5/order/amend`
 
 ### Request Parameters
 
@@ -35,7 +46,7 @@ POST`/v5/order/amend`Copy
 | tpLimitPrice | false | string | Limit order price when take profit is triggered. Only working when original order sets partial limit tp/sl. _Option not supported_ |
 | slLimitPrice | false | string | Limit order price when stop loss is triggered. Only working when original order sets partial limit tp/sl. _Option not supported\`_ |
 
-info
+> Info
 
 The acknowledgement of an amend order request indicates that the request was sucessfully accepted. This request is asynchronous so please use the websocket to confirm the order status.
 
@@ -121,7 +132,7 @@ var orderInfoString = await TradeService.AmendOrder(orderId: "152334754349554124
 Console.WriteLine(orderInfoString);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -164,11 +175,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -176,7 +185,7 @@ GitHub
 
 # Batch Amend Order
 
-tip
+> Tip
 
 This endpoint allows you to amend more than one open order in a single request.
 
@@ -185,7 +194,7 @@ This endpoint allows you to amend more than one open order in a single request.
 
 ### HTTP Request
 
-POST`/v5/order/amend-batch`Copy
+`POST /v5/order/amend-batch`
 
 ### Request Parameters
 
@@ -224,7 +233,7 @@ POST`/v5/order/amend-batch`Copy
 | >\> code | number | Success/error code |
 | >\> msg | string | Success/error message |
 
-info
+> Info
 
 The acknowledgement of an amend order request indicates that the request was sucessfully accepted. This request is asynchronous so please use the websocket to confirm the order status.
 
@@ -320,7 +329,7 @@ var orderInfoString = await TradeService.AmendBatchOrder(category:Category.LINEA
 Console.WriteLine(orderInfoString);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -388,11 +397,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -411,7 +418,7 @@ important
 
 ### HTTP Request
 
-POST`/v5/order/cancel-batch`Copy
+`POST /v5/order/cancel-batch`
 
 ### Request Parameters
 
@@ -438,7 +445,7 @@ POST`/v5/order/cancel-batch`Copy
 | >\> code | number | Success/error code |
 | >\> msg | string | Success/error message |
 
-info
+> Info
 
 The acknowledgement of an cancel order request indicates that the request was sucessfully accepted. This request is asynchronous so please use the websocket to confirm the order status.
 
@@ -522,7 +529,7 @@ var orderInfoString = await TradeService.CancelBatchOrder(category: Category.LIN
 Console.WriteLine(orderInfoString);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -588,11 +595,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -600,7 +605,7 @@ GitHub
 
 # Batch Place Order
 
-tip
+> Tip
 
 This endpoint allows you to place more than one order in a single request.
 
@@ -610,7 +615,7 @@ of the order.
 - A maximum of 20 orders (option), 20 orders (inverse), 20 orders (linear), 10 orders (spot) can be placed per request. The returned data list is divided into two lists.
 The first list indicates whether or not the order creation was successful and the second list details the created order information. The structure of the two lists are completely consistent.
 
-info
+> Info
 
 - **Option rate limt** instruction: its rate limit is count based on the actual number of request sent, e.g., by default, option trading rate limit is 10 reqs per sec, so you can send up to 20 \* 10 = 200 orders in one second.
 - **Perpetual, Futures, Spot rate limit instruction**, please check [here](https://bybit-exchange.github.io/docs/v5/rate-limit#instructions-for-batch-endpoints)
@@ -621,7 +626,7 @@ Customers who use API default to acceptance of these terms and have the obligati
 
 ### HTTP Request
 
-POST`/v5/order/create-batch`Copy
+`POST /v5/order/create-batch`
 
 ### Request Parameters
 
@@ -674,7 +679,7 @@ POST`/v5/order/create-batch`Copy
 | >\> code | number | Success/error code |
 | >\> msg | string | Success/error message |
 
-info
+> Info
 
 The acknowledgement of an place order request indicates that the request was sucessfully accepted. This request is asynchronous so please use the websocket to confirm the order status.
 
@@ -827,7 +832,7 @@ var orderInfoString = await TradeService.PlaceBatchOrder(category: Category.LINE
 Console.WriteLine(orderInfoString);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -907,11 +912,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -921,13 +924,13 @@ GitHub
 
 Cancel all open orders
 
-info
+> Info
 
 - Support cancel orders by `symbol`/`baseCoin`/`settleCoin`. If you pass multiple of these params, the system will process one of param, which priority is `symbol` \> `baseCoin` \> `settleCoin`.
 - **NOTE**: category= _option_, you can cancel all option open orders without passing any of those three params. However, for "linear" and "inverse", you must specify one of those three params.
 - **NOTE**: category= _spot_, you can cancel all spot open orders (normal order by default) without passing other params.
 
-info
+> Info
 
 **Spot**: no limit
 
@@ -937,7 +940,7 @@ info
 
 ### HTTP Request
 
-POST`/v5/order/cancel-all`Copy
+`POST /v5/order/cancel-all`
 
 ### Request Parameters
 
@@ -950,7 +953,7 @@ POST`/v5/order/cancel-all`Copy
 | orderFilter | false | string | - category=`spot`, you can pass `Order`, `tpslOrder`, `StopOrder`, `OcoOrder`, `BidirectionalTpslOrder`<br>  <br>  If not passed, `Order` by default<br>- category=`linear` or `inverse`, you can pass `Order`, `StopOrder`,`OpenOrder`<br>  <br>  If not passed, all kinds of orders will be cancelled, like active order, conditional order, TP/SL order and trailing stop order<br>- category=`option`, you can pass `Order`,`StopOrder`<br>  <br>   If not passed, all kinds of orders will be cancelled, like active order, conditional order, TP/SL order and trailing stop order |
 | [stopOrderType](https://bybit-exchange.github.io/docs/v5/enum#stopordertype) | false | string | Stop order type `Stop`<br>- Only used for category=`linear` or `inverse` and orderFilter=`StopOrder`,you can cancel conditional orders except TP/SL order and Trailing stop orders with this param |
 
-info
+> Info
 
 The acknowledgement of create/amend/cancel order requests indicates that the request was sucessfully accepted. The request is asynchronous so please use the websocket to confirm the order status.
 
@@ -1023,7 +1026,7 @@ var orderInfoString = await TradeService.CancelAllOrder(category: Category.LINEA
 Console.WriteLine(orderInfoString);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -1069,11 +1072,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1089,7 +1090,7 @@ important
 
 ### HTTP Request
 
-POST`/v5/order/cancel`Copy
+`POST /v5/order/cancel`
 
 ### Request Parameters
 
@@ -1108,7 +1109,7 @@ POST`/v5/order/cancel`Copy
 | orderId | string | Order ID |
 | orderLinkId | string | User customised order ID |
 
-info
+> Info
 
 The acknowledgement of an cancel order request indicates that the request was sucessfully accepted. This request is asynchronous so please use the websocket to confirm the order status.
 
@@ -1175,7 +1176,7 @@ var orderInfoString = await TradeService.CancelOrder(orderId: "15233475434955412
 Console.WriteLine(orderInfoString);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -1213,11 +1214,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1227,7 +1226,7 @@ GitHub
 
 This endpoint supports to create the order for Spot, Margin trading, USDT perpetual, USDT futures, USDC perpetual, USDC futures, Inverse Futures and Options.
 
-info
+> Info
 
 - **Supported order type (`orderType`):**
 
@@ -1288,7 +1287,7 @@ If reduceOnly=true and order qty > max order qty, the order will automatically b
 
 ### HTTP Request
 
-POST`/v5/order/create`Copy
+`POST /v5/order/create`
 
 ### Request Parameters
 
@@ -1335,7 +1334,7 @@ POST`/v5/order/create`Copy
 | orderId | string | Order ID |
 | orderLinkId | string | User customised order ID |
 
-info
+> Info
 
 The acknowledgement of an place order request indicates that the request was sucessfully accepted. This request is asynchronous so please use the websocket to confirm the order status.
 
@@ -1459,7 +1458,7 @@ var orderInfo = await tradeService.PlaceOrder(category: Category.LINEAR, symbol:
 Console.WriteLine(orderInfo);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -1517,11 +1516,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1529,7 +1526,7 @@ GitHub
 
 # Set Disconnect Cancel All
 
-info
+> Info
 
 ## What is Disconnection Protect (DCP)?
 
@@ -1548,7 +1545,7 @@ and resumes the heartbeat "ping", the timing will be reset and restarted at the 
 
 Effective for **Inverse Perp / Inverse Futures / USDT Perp / USDT Futures / USDC Perp / USDC Futures / Spot / options**
 
-tip
+> Tip
 
 After the request is successfully sent, the system needs a certain time to take effect. It is recommended to query or set again after 10 seconds
 
@@ -1557,7 +1554,7 @@ After the request is successfully sent, the system needs a certain time to take 
 
 ### HTTP Request
 
-POST`/v5/order/disconnected-cancel-all`Copy
+`POST /v5/order/disconnected-cancel-all`
 
 ### Request Parameters
 
@@ -1614,7 +1611,7 @@ var setDcpOptionsRequest = TradeOrderRequest.builder().timeWindow(40).build();
 System.out.println(client.setDisconnectCancelAllTime(setDcpOptionsRequest));
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -1642,11 +1639,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1656,7 +1651,7 @@ GitHub
 
 Query users' execution records, sorted by `execTime` in descending order.
 
-tip
+> Tip
 
 - Response items will have sorting issues when 'execTime' is the same, it is recommended to sort according to `execId+OrderId+leavesQty`.
 If you want to receive real-time execution information, Use the [websocket stream](https://bybit-exchange.github.io/docs/v5/websocket/private/execution) (recommended).
@@ -1665,7 +1660,7 @@ If you want to receive real-time execution information, Use the [websocket strea
 
 ### HTTP Request
 
-GET`/v5/execution/list`Copy
+`GET /v5/execution/list`
 
 ### Request Parameters
 
@@ -1765,7 +1760,7 @@ var tradeHistoryRequest = TradeOrderRequest.builder().category(CategoryType.LINE
 System.out.println(client.getTradeHistory(tradeHistoryRequest));
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -1835,11 +1830,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1851,20 +1844,20 @@ Primarily query unfilled or partially filled orders in **real-time**, but also s
 
 And to query older order records, please use the [order history](https://bybit-exchange.github.io/docs/v5/order/order-list) interface.
 
-tip
+> Tip
 
 - You can query filled, cancelled, and rejected orders to the most recent 500 orders for spot, linear, inverse and option categories
 - You can query by symbol, baseCoin, orderId and orderLinkId, and if you pass multiple params, the system will process them according to this priority: orderId > orderLinkId > symbol > baseCoin.
 - The records are sorted by the `createdTime` from newest to oldest.
 
-info
+> Info
 
 - After a server release or restart, filled, cancelled, and rejected orders of Unified account should only be queried through [order history](https://bybit-exchange.github.io/docs/v5/order/order-list).
 - During periods of extreme market volatility, this interface may experience increased latency or temporary delays in data delivery
 
 ### HTTP Request
 
-GET`/v5/order/realtime`Copy
+`GET /v5/order/realtime`
 
 ### Request Parameters
 
@@ -1983,7 +1976,7 @@ var openLinearOrdersResult = client.getOpenOrders(openOrderRequest.category(Cate
 System.out.println(openLinearOrdersResult);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -2070,11 +2063,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2099,7 +2090,7 @@ supports querying orders which have fills only, i.e., fully filled, partial fill
 
 ### HTTP Request
 
-GET`/v5/order/history`Copy
+`GET /v5/order/history`
 
 ### Request Parameters
 
@@ -2220,7 +2211,7 @@ var orderHistory = TradeOrderRequest.builder().category(CategoryType.LINEAR).lim
 System.out.println(client.getOrderHistory(orderHistory));
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -2308,11 +2299,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2322,7 +2311,7 @@ GitHub
 
 This endpoint is used to calculate the changes in IMR and MMR of UTA account before and after placing an order.
 
-info
+> Info
 
 1. This endpoint supports orders with category = `inverse`,`linear`,`option`.
 
@@ -2337,7 +2326,7 @@ info
 
 ### HTTP Request
 
-POST`/v5/order/pre-check`Copy
+`POST /v5/order/pre-check`
 
 ### Request Parameters
 
@@ -2418,9 +2407,6 @@ print(session.pre_check_order(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -2441,11 +2427,9 @@ print(session.pre_check_order(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2455,13 +2439,13 @@ GitHub
 
 Query the available balance for Spot trading and Margin trading
 
-info
+> Info
 
 - During periods of extreme market volatility, this interface may experience increased latency or temporary delays in data delivery
 
 ### HTTP Request
 
-GET`/v5/order/spot-borrow-check`Copy
+`GET /v5/order/spot-borrow-check`
 
 ### Request Parameters
 
@@ -2528,7 +2512,7 @@ var getBorrowQuotaRequest = TradeOrderRequest.builder().category(CategoryType.SP
 System.out.println(client.getBorrowQuota(getBorrowQuotaRequest));
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -2567,13 +2551,10 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
 ---
-

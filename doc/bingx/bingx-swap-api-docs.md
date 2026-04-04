@@ -4,6 +4,20 @@ Source: https://github.com/BingX-API/api-ai-skills
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: perpetual futures trading and market data
+- Repo symbol format: `BTCUSDT`
+- Vendor/API symbol format usually includes a hyphen: `BTC-USDT`
+- Most relevant endpoints for this repo:
+  - contract info
+  - depth / best bid-ask
+  - funding rate
+  - order placement / cancel / positions
+- Important repo notes:
+  - BingX runs in one-way mode in this project
+  - BingX is not used as a spot-margin exchange in the spot-futures engine
+
 # BingX Swap Market Data — API Reference
 
 **Base URLs:** see [`references/base-urls.md`](../references/base-urls.md) | **Auth:** HMAC-SHA256 — see [`references/authentication.md`](../references/authentication.md) | **Response:** `{ "code": 0, "msg": "", "data": ... }`
@@ -2281,4 +2295,3 @@ N/A — Auto-pushed after connecting with listenKey. No explicit subscription ne
 
 
 ---
-

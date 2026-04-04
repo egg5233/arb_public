@@ -4,6 +4,19 @@ Source: https://developers.binance.com/docs/
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: usually reference-only; not part of the normal funding-arb execution path unless adapter code explicitly adds it
+- Base URL context: signed Binance SAPI surface
+- Repo asset context:
+  - trading symbols look like `BTCUSDT`
+  - crypto-loan APIs operate mainly on currencies and loan products, not exchange-traded symbols
+- Most relevant sections if this repo ever uses them:
+  - borrow / repay
+  - loanable and collateral asset metadata
+  - LTV adjustment and order history
+- Important repo note: do not confuse crypto-loan borrowing with the cross-margin borrow path used by the spot-futures engine; they are separate operational products
+
 Crypto Loan
 
 # Change Log
@@ -1256,4 +1269,3 @@ GET `/sapi/v1/loan/repay/history`
 Copyright © 2026 Binance.
 
 ---
-

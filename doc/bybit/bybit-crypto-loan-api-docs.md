@@ -4,6 +4,14 @@ Source: https://bybit-exchange.github.io/docs/v5/crypto-loan/ + https://bybit-ex
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: supplemental loan and borrow semantics when UTA margin docs are incomplete
+- Repo symbol context:
+  - most endpoints here operate on currencies like `BTC`, `USDT`
+  - repo trading symbols still use `BTCUSDT`
+- Important repo note: treat this file as secondary reference; for current spot-futures adapter behavior, `bybit-spot-margin-api-docs.md` and `bybit-account-api-docs.md` are usually the primary sources
+
 # Get Account Borrowable/Collateralizable Limit
 
 Query for the minimum and maximum amounts your account can borrow and how much collateral you can put up.
@@ -12,7 +20,7 @@ Query for the minimum and maximum amounts your account can borrow and how much c
 
 ### HTTP Request
 
-GET`/v5/crypto-loan/borrowable-collateralisable-number`Copy
+`GET /v5/crypto-loan/borrowable-collateralisable-number`
 
 ### Request Parameters
 
@@ -60,7 +68,7 @@ print(session.get_account_borrowable_or_collateralizable_limit(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -101,11 +109,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -117,13 +123,13 @@ You can increase or reduce your collateral amount. When you reduce, please obey 
 
 > Permission: "Spot trade"
 
-info
+> Info
 
 - The adjusted collateral amount will be returned to or deducted from the Funding wallet.
 
 ### HTTP Request
 
-POST`/v5/crypto-loan/adjust-ltv`Copy
+`POST /v5/crypto-loan/adjust-ltv`
 
 ### Request Parameters
 
@@ -176,7 +182,7 @@ print(session.adjust_collateral_amount(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -213,11 +219,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -225,13 +229,13 @@ GitHub
 
 # Get Collateral Coins
 
-info
+> Info
 
 Does not need authentication.
 
 ### HTTP Request
 
-GET`/v5/crypto-loan/collateral-data`Copy
+`GET /v5/crypto-loan/collateral-data`
 
 ### Request Parameters
 
@@ -275,7 +279,7 @@ print(session.get_collateral_coins(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -325,11 +329,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -343,7 +345,7 @@ Query for the last 6 months worth of your completed (fully paid off) loans.
 
 ### HTTP Request
 
-GET`/v5/crypto-loan/borrow-history`Copy
+`GET /v5/crypto-loan/borrow-history`
 
 ### Request Parameters
 
@@ -401,7 +403,7 @@ print(session.get_completed_loan_history(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -450,11 +452,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -462,7 +462,7 @@ GitHub
 
 # Get Borrowable Coins
 
-info
+> Info
 
 Does not need authentication.
 
@@ -472,7 +472,7 @@ Borrowed coins can be returned at any time before the due date. You'll be charge
 
 ### HTTP Request
 
-GET`/v5/crypto-loan/loanable-data`Copy
+`GET /v5/crypto-loan/loanable-data`
 
 ### Request Parameters
 
@@ -521,7 +521,7 @@ print(session.get_borrowable_coins(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -575,11 +575,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -591,14 +589,14 @@ Query for your LTV adjustment history.
 
 > Permission: "Spot trade"
 
-info
+> Info
 
 - Support querying last 6 months adjustment transactions
 - Only the ltv adjustment transactions launched by the user can be queried
 
 ### HTTP Request
 
-GET`/v5/crypto-loan/adjustment-history`Copy
+`GET /v5/crypto-loan/adjustment-history`
 
 ### Request Parameters
 
@@ -651,7 +649,7 @@ print(session.get_crypto_loan_ltv_adjustment_history(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -696,11 +694,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -714,7 +710,7 @@ Query for the maximum amount by which collateral may be reduced by.
 
 ### HTTP Request
 
-GET`/v5/crypto-loan/max-collateral-amount`Copy
+`GET /v5/crypto-loan/max-collateral-amount`
 
 ### Request Parameters
 
@@ -755,7 +751,7 @@ print(session.get_max_allowed_collateral_reduction_amount(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -788,11 +784,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -804,14 +798,14 @@ Fully or partially repay a loan. If interest is due, that is paid off first, wit
 
 > Permission: "Spot trade"
 
-info
+> Info
 
 - The repaid amount will be deducted from the Funding wallet.
 - The collateral amount will not be auto returned when you don't fully repay the debt, but you can also adjust collateral amount
 
 ### HTTP Request
 
-POST`/v5/crypto-loan/repay`Copy
+`POST /v5/crypto-loan/repay`
 
 ### Request Parameters
 
@@ -861,7 +855,7 @@ print(session.repay_crypto_loan(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -897,11 +891,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -913,14 +905,14 @@ Query for loan repayment transactions. A loan may be repaid in multiple repaymen
 
 > Permission: "Spot trade"
 
-info
+> Info
 
 - Supports querying for the last 6 months worth of completed loan orders.
 - Only successful repayments can be queried for.
 
 ### HTTP Request
 
-GET`/v5/crypto-loan/repayment-history`Copy
+`GET /v5/crypto-loan/repayment-history`
 
 ### Request Parameters
 
@@ -976,7 +968,7 @@ print(session.get_loan_repayment_history(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -1023,11 +1015,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1041,7 +1031,7 @@ Query for your ongoing loans.
 
 ### HTTP Request
 
-GET`/v5/crypto-loan/ongoing-orders`Copy
+`GET /v5/crypto-loan/ongoing-orders`
 
 ### Request Parameters
 
@@ -1101,7 +1091,7 @@ print(session.repay_crypto_loan(
 ))
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -1149,11 +1139,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1167,13 +1155,13 @@ You can increase or reduce your collateral amount. When you reduce, please obey 
 >
 > UID rate limit: 1 req / second
 
-info
+> Info
 
 - The adjusted collateral amount will be returned to or deducted from the Funding wallet.
 
 ### HTTP Request
 
-POST`/v5/crypto-loan-common/adjust-ltv`Copy
+`POST /v5/crypto-loan-common/adjust-ltv`
 
 ### Request Parameters
 
@@ -1226,9 +1214,6 @@ print(session.adjust_collateral_amount_new_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -1244,11 +1229,9 @@ print(session.adjust_collateral_amount_new_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1256,13 +1239,13 @@ GitHub
 
 # Get Collateral Coins
 
-info
+> Info
 
 Does not need authentication.
 
 ### HTTP Request
 
-GET`/v5/crypto-loan-common/collateral-data`Copy
+`GET /v5/crypto-loan-common/collateral-data`
 
 ### Request Parameters
 
@@ -1307,9 +1290,6 @@ print(session.get_collateral_coins_new_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -1357,11 +1337,9 @@ print(session.get_collateral_coins_new_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1375,7 +1353,7 @@ GitHub
 
 ### HTTP Request
 
-GET`/v5/crypto-loan-common/position`Copy
+`GET /v5/crypto-loan-common/position`
 
 ### Request Parameters
 
@@ -1430,9 +1408,6 @@ session = HTTP(
 print(session.get_position_new_crypto_loan())
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -1498,11 +1473,9 @@ print(session.get_position_new_crypto_loan())
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1514,14 +1487,14 @@ GitHub
 >
 > UID rate limit: 1 req / second
 
-info
+> Info
 
 - The loan funds are released to the Funding wallet.
 - The collateral funds are deducted from the Funding wallet, so make sure you have enough collateral amount in the Funding wallet.
 
 ### HTTP Request
 
-POST`/v5/crypto-loan-fixed/borrow`Copy
+`POST /v5/crypto-loan-fixed/borrow`
 
 ### Request Parameters
 
@@ -1592,9 +1565,6 @@ print(session.borrow_fixed_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -1610,11 +1580,9 @@ print(session.borrow_fixed_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1628,7 +1596,7 @@ GitHub
 
 ### HTTP Request
 
-GET`/v5/crypto-loan-fixed/borrow-contract-info`Copy
+`GET /v5/crypto-loan-fixed/borrow-contract-info`
 
 ### Request Parameters
 
@@ -1688,9 +1656,6 @@ print(session.get_borrowing_contract_info_fixed_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -1738,11 +1703,9 @@ print(session.get_borrowing_contract_info_fixed_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1750,7 +1713,7 @@ GitHub
 
 # Get Borrowing Market
 
-info
+> Info
 
 Does not need authentication.
 
@@ -1758,7 +1721,7 @@ If you want to borrow, you can use this endpoint to check whether there are any 
 
 ### HTTP Request
 
-GET`/v5/crypto-loan-fixed/borrow-order-quote`Copy
+`GET /v5/crypto-loan-fixed/borrow-order-quote`
 
 ### Request Parameters
 
@@ -1804,9 +1767,6 @@ print(session.get_borrowing_market_fixed_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -1829,11 +1789,9 @@ print(session.get_borrowing_market_fixed_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1847,7 +1805,7 @@ GitHub
 
 ### HTTP Request
 
-GET`/v5/crypto-loan-fixed/borrow-order-info`Copy
+`GET /v5/crypto-loan-fixed/borrow-order-info`
 
 ### Request Parameters
 
@@ -1903,9 +1861,6 @@ print(session.get_borrowing_orders_fixed_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -1934,11 +1889,9 @@ print(session.get_borrowing_orders_fixed_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1952,7 +1905,7 @@ GitHub
 
 ### HTTP Request
 
-POST`/v5/crypto-loan-fixed/borrow-order-cancel`Copy
+`POST /v5/crypto-loan-fixed/borrow-order-cancel`
 
 ### Request Parameters
 
@@ -1997,9 +1950,6 @@ print(session.create_lending_order_fixed_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -2013,11 +1963,9 @@ print(session.create_lending_order_fixed_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2031,7 +1979,7 @@ GitHub
 
 ### HTTP Request
 
-POST`/v5/crypto-loan-fixed/supply-order-cancel`Copy
+`POST /v5/crypto-loan-fixed/supply-order-cancel`
 
 ### Request Parameters
 
@@ -2076,9 +2024,6 @@ print(session.cancel_lending_order_fixed_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -2092,11 +2037,9 @@ print(session.cancel_lending_order_fixed_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2108,7 +2051,7 @@ GitHub
 >
 > UID rate limit: 1 req / second
 
-info
+> Info
 
 - The loan funds are released to the Funding wallet.
 - The collateral funds are deducted from the Funding wallet, so make sure you have enough collateral amount in the Funding wallet.
@@ -2116,7 +2059,7 @@ info
 
 ### HTTP Request
 
-POST`/v5/crypto-loan-fixed/renew`Copy
+`POST /v5/crypto-loan-fixed/renew`
 
 ### Request Parameters
 
@@ -2171,9 +2114,6 @@ print(session.renew_fixed_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -2189,11 +2129,9 @@ print(session.renew_fixed_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2207,7 +2145,7 @@ GitHub
 
 ### HTTP Request
 
-GET`/v5/crypto-loan-fixed/renew-info`Copy
+`GET /v5/crypto-loan-fixed/renew-info`
 
 ### Request Parameters
 
@@ -2259,9 +2197,6 @@ session = HTTP(
 print(session.get_renewal_orders_fixed_crypto_loan())
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -2290,11 +2225,9 @@ print(session.get_renewal_orders_fixed_crypto_loan())
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2308,7 +2241,7 @@ GitHub
 
 ### HTTP Request
 
-POST`/v5/crypto-loan-fixed/fully-repay`Copy
+`POST /v5/crypto-loan-fixed/fully-repay`
 
 ### Request Parameters
 
@@ -2358,9 +2291,6 @@ print(session.repay_fixed_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -2376,11 +2306,9 @@ print(session.repay_fixed_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2398,7 +2326,7 @@ Please read this [announcement](https://announcements.bybit.com/article/crypto-l
 When repaying with collateral, Bybit will charge a repayment fee. The applicable fee rate is the higher of the repayment fee rates for the collateral asset and the debt asset.
 You can call this endpoint: [View fee rates by asset](https://www.bybit.com/x-api/spot/api/fixed-loan/v1/coin-config) to get "reapyFee" where "pledgeEnable" = 1 for coins' repayment fee rates.
 
-info
+> Info
 
 **fixed currency offset logic**
 
@@ -2411,7 +2339,7 @@ info
 
 ### HTTP Request
 
-POST`/v5/crypto-loan-fixed/repay-collateral`Copy
+`POST /v5/crypto-loan-fixed/repay-collateral`
 
 ### Request Parameters
 
@@ -2465,9 +2393,6 @@ print(session.collateral_repayment_fixed_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -2481,11 +2406,9 @@ print(session.collateral_repayment_fixed_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2499,7 +2422,7 @@ GitHub
 
 ### HTTP Request
 
-GET`/v5/crypto-loan-fixed/repayment-history`Copy
+`GET /v5/crypto-loan-fixed/repayment-history`
 
 ### Request Parameters
 
@@ -2555,9 +2478,6 @@ print(session.get_repayment_history_fixed_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -2595,11 +2515,9 @@ print(session.get_repayment_history_fixed_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2613,7 +2531,7 @@ GitHub
 
 ### HTTP Request
 
-POST`/v5/crypto-loan-fixed/supply`Copy
+`POST /v5/crypto-loan-fixed/supply`
 
 ### Request Parameters
 
@@ -2669,9 +2587,6 @@ print(session.create_lending_order_fixed_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -2687,11 +2602,9 @@ print(session.create_lending_order_fixed_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2699,7 +2612,7 @@ GitHub
 
 # Get Lending Market
 
-info
+> Info
 
 Does not need authentication.
 
@@ -2707,7 +2620,7 @@ If you want to supply, you can use this endpoint to check whether there are any 
 
 ### HTTP Request
 
-GET`/v5/crypto-loan-fixed/supply-order-quote`Copy
+`GET /v5/crypto-loan-fixed/supply-order-quote`
 
 ### Request Parameters
 
@@ -2753,9 +2666,6 @@ print(session.get_lending_market_fixed_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -2784,11 +2694,9 @@ print(session.get_lending_market_fixed_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2802,7 +2710,7 @@ GitHub
 
 ### HTTP Request
 
-GET`/v5/crypto-loan-fixed/supply-order-info`Copy
+`GET /v5/crypto-loan-fixed/supply-order-info`
 
 ### Request Parameters
 
@@ -2857,9 +2765,6 @@ print(session.get_lending_orders_fixed_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -2887,11 +2792,9 @@ print(session.get_lending_orders_fixed_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2903,14 +2806,14 @@ GitHub
 >
 > UID rate limit: 1 req / second
 
-info
+> Info
 
 - The loan funds are released to the Funding wallet.
 - The collateral funds are deducted from the Funding wallet, so make sure you have enough collateral amount in the Funding wallet.
 
 ### HTTP Request
 
-POST`/v5/crypto-loan-flexible/borrow`Copy
+`POST /v5/crypto-loan-flexible/borrow`
 
 ### Request Parameters
 
@@ -2983,9 +2886,6 @@ print(session.borrow_flexible_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -3001,11 +2901,9 @@ print(session.borrow_flexible_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -3019,7 +2917,7 @@ GitHub
 
 ### HTTP Request
 
-GET`/v5/crypto-loan-flexible/borrow-history`Copy
+`GET /v5/crypto-loan-flexible/borrow-history`
 
 ### Request Parameters
 
@@ -3069,9 +2967,6 @@ print(session.get_borrowing_history_flexible_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -3103,11 +2998,9 @@ print(session.get_borrowing_history_flexible_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -3121,14 +3014,14 @@ Fully or partially repay a loan. If interest is due, that is paid off first, wit
 >
 > UID rate limit: 1 req / second
 
-info
+> Info
 
 - The repaid amount will be deducted from the Funding wallet.
 - The collateral amount will not be auto returned when you don't fully repay the debt, but you can also adjust collateral amount
 
 ### HTTP Request
 
-POST`/v5/crypto-loan-flexible/repay`Copy
+`POST /v5/crypto-loan-flexible/repay`
 
 ### Request Parameters
 
@@ -3178,9 +3071,6 @@ print(session.repay_flexible_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -3196,11 +3086,9 @@ print(session.repay_flexible_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -3212,7 +3100,7 @@ GitHub
 >
 > UID rate limit: 1 req / second
 
-info
+> Info
 
 - Pay interest first, then repay the principal.
 - There are limits on the repayment amount in a single transaction. Please read this [announcement](https://announcements.bybit.com/article/crypto-loan-manual-repayment-update-bltde33509ddde5e8fd/) before repaying with collateral
@@ -3221,7 +3109,7 @@ You can call this endpoint: [View fee rates by asset](https://www.bybit.com/x-ap
 
 ### HTTP Request
 
-POST`/v5/crypto-loan-flexible/repay-collateral`Copy
+`POST /v5/crypto-loan-flexible/repay-collateral`
 
 ### Request Parameters
 
@@ -3272,9 +3160,6 @@ print(session.collateral_repayment_flexible_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -3288,11 +3173,9 @@ print(session.collateral_repayment_flexible_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -3306,7 +3189,7 @@ GitHub
 
 ### HTTP Request
 
-GET`/v5/crypto-loan-flexible/repayment-history`Copy
+`GET /v5/crypto-loan-flexible/repayment-history`
 
 ### Request Parameters
 
@@ -3357,9 +3240,6 @@ print(session.get_repayment_history_flexible_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -3401,11 +3281,9 @@ print(session.get_repayment_history_flexible_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -3421,7 +3299,7 @@ Query for your ongoing loans
 
 ### HTTP Request
 
-GET`/v5/crypto-loan-flexible/ongoing-coin`Copy
+`GET /v5/crypto-loan-flexible/ongoing-coin`
 
 ### Request Parameters
 
@@ -3467,9 +3345,6 @@ print(session.get_flexible_loans_flexible_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -3493,11 +3368,9 @@ print(session.get_flexible_loans_flexible_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -3505,13 +3378,13 @@ GitHub
 
 # Get Borrowable Coins
 
-info
+> Info
 
 Does not need authentication.
 
 ### HTTP Request
 
-GET`/v5/crypto-loan-common/loanable-data`Copy
+`GET /v5/crypto-loan-common/loanable-data`
 
 ### Request Parameters
 
@@ -3561,9 +3434,6 @@ session = HTTP(
 print(session.get_borrowable_coins_new_crypto_loan())
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -3598,11 +3468,9 @@ print(session.get_borrowable_coins_new_crypto_loan())
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -3618,7 +3486,7 @@ Query for your LTV adjustment history.
 
 ### HTTP Request
 
-GET`/v5/crypto-loan-common/adjustment-history`Copy
+`GET /v5/crypto-loan-common/adjustment-history`
 
 ### Request Parameters
 
@@ -3672,9 +3540,6 @@ print(session.get_ltv_adjustment_history_new_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -3712,11 +3577,9 @@ print(session.get_ltv_adjustment_history_new_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -3730,7 +3593,7 @@ GitHub
 
 ### HTTP Request
 
-POST`/v5/crypto-loan-common/max-loan`Copy
+`POST /v5/crypto-loan-common/max-loan`
 
 ### Request Parameters
 
@@ -3803,9 +3666,6 @@ print(session.get_max_loan_amount_new_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -3824,11 +3684,9 @@ print(session.get_max_loan_amount_new_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -3844,7 +3702,7 @@ Retrieve the maximum redeemable amount of your collateral asset based on LTV.
 
 ### HTTP Request
 
-GET`/v5/crypto-loan-common/max-collateral-amount`Copy
+`GET /v5/crypto-loan-common/max-collateral-amount`
 
 ### Request Parameters
 
@@ -3885,9 +3743,6 @@ print(session.get_max_allowed_collateral_reduction_amount_new_crypto_loan(
 ))
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -3903,13 +3758,10 @@ print(session.get_max_allowed_collateral_reduction_amount_new_crypto_loan(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
 ---
-

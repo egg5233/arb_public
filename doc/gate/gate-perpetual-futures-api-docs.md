@@ -4,6 +4,17 @@ Source: https://www.gate.com/docs/developers/apiv4/en/#futures
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: perpetual futures trading and market data
+- Repo symbol format: `BTCUSDT`
+- Vendor/API futures symbol format usually uses underscore form: `BTC_USDT`
+- Most relevant behaviors for this repo:
+  - contract metadata including `quanto_multiplier`
+  - order placement / cancel / positions
+  - funding rate and depth data
+- Important repo note: quantity and step-size interpretation must account for contract sizing, not just displayed base quantity
+
 # Futures
 
 Perpetual futures

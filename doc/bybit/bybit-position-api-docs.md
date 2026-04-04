@@ -4,13 +4,24 @@ Source: https://bybit-exchange.github.io/docs/v5/position/
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: positions, leverage, margin mode, and closed-PnL support
+- Repo symbol format: `BTCUSDT`
+- Most relevant endpoints for this repo:
+  - set leverage
+  - switch position mode
+  - trading stop
+  - closed PnL / closed positions
+- Important repo note: the repo expects one-way mode; hedge-mode-only fields in vendor docs are usually not relevant unless explicitly handled in adapter code
+
 # Set Auto Add Margin
 
 Turn on/off auto-add-margin for **isolated** margin position
 
 ### HTTP Request
 
-POST`/v5/position/set-auto-add-margin`Copy
+`POST /v5/position/set-auto-add-margin`
 
 ### Request Parameters
 
@@ -78,7 +89,7 @@ var setAutoAddMarginRequest = PositionDataRequest.builder().category(CategoryTyp
 client.setAutoAddMargin(setAutoAddMarginRequest, System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -113,11 +124,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -129,7 +138,7 @@ Query user's closed profit and loss records
 
 ### HTTP Request
 
-GET`/v5/position/closed-pnl`Copy
+`GET /v5/position/closed-pnl`
 
 ### Request Parameters
 
@@ -212,7 +221,7 @@ var closPnlRequest = PositionDataRequest.builder().category(CategoryType.LINEAR)
 client.getClosePnlList(closPnlRequest, System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -270,11 +279,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -284,14 +291,14 @@ GitHub
 
 Query user's closed options positions, sorted by `closeTime` in descending order.
 
-info
+> Info
 
 - Only supports users to query closed options positions in the last 6 months.
 - Fee and price are displayed with trailing zeroes up to 8 decimal places.
 
 ### HTTP Request
 
-GET`/v5/position/get-closed-positions`Copy
+`GET /v5/position/get-closed-positions`
 
 ### Request Parameters
 
@@ -398,11 +405,9 @@ print(session.get_closed_options_positions(
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -417,7 +422,7 @@ You are recommended to call [Get Position Info](https://bybit-exchange.github.io
 
 ### HTTP Request
 
-POST`/v5/position/confirm-pending-mmr`Copy
+`POST /v5/position/confirm-pending-mmr`
 
 ### Request Parameters
 
@@ -476,9 +481,6 @@ var confirmNewRiskRequest = PositionDataRequest.builder().category(CategoryType.
 client.confirmPositionRiskLimit(confirmNewRiskRequest, System.out::println);
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -492,11 +494,9 @@ client.confirmPositionRiskLimit(confirmNewRiskRequest, System.out::println);
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -504,7 +504,7 @@ GitHub
 
 # Set Leverage
 
-info
+> Info
 
 According to the risk limit, leverage affects the maximum position value that can be opened,
 that is, the greater the leverage, the smaller the maximum position value that can be opened,
@@ -512,7 +512,7 @@ and vice versa. [Learn more](https://www.bybit.com/en/help-center/article/Risk-L
 
 ### HTTP Request
 
-POST`/v5/position/set-leverage`Copy
+`POST /v5/position/set-leverage`
 
 ### Request Parameters
 
@@ -581,7 +581,7 @@ var setLeverageRequest = PositionDataRequest.builder().category(CategoryType.LIN
 client.setPositionLeverage(setLeverageRequest, System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -617,11 +617,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -633,7 +631,7 @@ Manually add or reduce margin for **isolated** margin position
 
 ### HTTP Request
 
-POST`/v5/position/add-margin`Copy
+`POST /v5/position/add-margin`
 
 ### Request Parameters
 
@@ -725,7 +723,7 @@ var updateMarginRequest = PositionDataRequest.builder().category(CategoryType.IN
 client.modifyPositionMargin(updateMarginRequest, System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -784,11 +782,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -798,7 +794,7 @@ GitHub
 
 You can move positions between sub-master, master-sub, or sub-sub UIDs when necessary
 
-info
+> Info
 
 - The endpoint can only be called by master UID api key
 - UIDs must be the same master-sub account relationship
@@ -809,7 +805,7 @@ info
 
 ### HTTP Request
 
-POST`/v5/position/move-positions`Copy
+`POST /v5/position/move-positions`
 
 ### Request Parameters
 
@@ -900,9 +896,6 @@ var batchMovePositionsRequest = BatchMovePositionRequest.builder().fromUid("1234
 System.out.println(client.batchMovePositions(batchMovePositionsRequest));
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -918,11 +911,9 @@ System.out.println(client.batchMovePositions(batchMovePositionsRequest));
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -934,7 +925,7 @@ You can query moved position data by master UID api key
 
 ### HTTP Request
 
-GET`/v5/position/move-history`Copy
+`GET /v5/position/move-history`
 
 ### Request Parameters
 
@@ -1011,9 +1002,6 @@ var movePositionsHistoryRequest = PositionDataRequest.builder().category(Categor
 System.out.println(client.getMovePositionHistory(movePositionsHistoryRequest));
 ```
 
-```n4js
-
-```
 
 ### Response Example
 
@@ -1049,11 +1037,9 @@ System.out.println(client.getMovePositionHistory(movePositionsHistoryRequest));
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1063,7 +1049,7 @@ GitHub
 
 It supports to switch the position mode for **USDT perpetual** and **Inverse futures**. If you are in one-way Mode, you can only open one position on Buy or Sell side. If you are in hedge mode, you can open both Buy and Sell side positions simultaneously.
 
-tip
+> Tip
 
 - Priority for configuration to take effect: symbol > coin > system default
 - System default: one-way mode
@@ -1097,7 +1083,7 @@ tip
 
 ### HTTP Request
 
-POST`/v5/position/switch-mode`Copy
+`POST /v5/position/switch-mode`
 
 ### Request Parameters
 
@@ -1165,7 +1151,7 @@ var switchPositionMode = PositionDataRequest.builder().category(CategoryType.LIN
 System.out.println(client.switchPositionMode(switchPositionMode));
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -1200,11 +1186,9 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1214,11 +1198,11 @@ GitHub
 
 Set the take profit, stop loss or trailing stop for the position.
 
-tip
+> Tip
 
 Passing these parameters will create conditional orders by the system internally. The system will cancel these orders if the position is closed, and adjust the qty according to the size of the open position.
 
-info
+> Info
 
 New version of TP/SL function supports both holding entire position TP/SL orders and holding partial position TP/SL orders.
 
@@ -1234,7 +1218,7 @@ take profit or stop loss order ID.
 
 ### HTTP Request
 
-POST`/v5/position/trading-stop`Copy
+`POST /v5/position/trading-stop`
 
 ### Request Parameters
 
@@ -1335,7 +1319,7 @@ var setTradingStopRequest = PositionDataRequest.builder().category(CategoryType.
 client.setTradingStop(setTradingStopRequest, System.out::println);
 ```
 
-```n4js
+```javascript
 const { RestClientV5 } = require('bybit-api');
 
 const client = new RestClientV5({
@@ -1381,13 +1365,10 @@ client
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
 ---
-

@@ -4,14 +4,25 @@ Crawled from https://www.bitget.com/api-doc/margin/
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: cross-margin support for the spot-futures engine
+- Repo symbol format: `BTCUSDT`
+- Most relevant behaviors for this repo:
+  - crossed-account borrow / repay
+  - max borrowable
+  - spot-margin order placement and status
+  - transfers between spot, margin, and futures contexts
+- Important repo notes:
+  - this repo uses separate-account transfer handling for Bitget
+  - market-buy semantics differ across Bitget endpoints; verify quote-size vs base-size behavior before changing adapters
+
 # Common
 
 - [Margin Trading API](https://www.bitget.com/api-doc/margin/intro)
 # Get Support Currencies
 
 Frequency limit:10 times/1s (IP)
-
-### Description
 
 ### HTTP Request
 
@@ -99,8 +110,6 @@ Response Example
 
 Frequency limit: 10 times/1s (UID)
 
-### Description
-
 ### HTTP Request
 
 - POST /api/v2/margin/crossed/account/borrow
@@ -122,7 +131,7 @@ curl -X POST "https://api.bitget.com/api/v2/margin/crossed/account/borrow"  -H "
 | :-- | :-- | :-- | :-- |
 | coin | String | Yes | Borrowing coin |
 | borrowAmount | String | Yes | Borrowing amount (up to 8 decimal places) |
-| clientid | String | No | 客户自定义订单ID |
+| clientid | String | No | Client-defined order ID |
 
 Response Example
 
@@ -153,8 +162,6 @@ Response Example
 # Cross Flash Repay
 
 Frequency limit: 10 times/1s (UID)
-
-### Description
 
 ### HTTP Request
 
@@ -639,8 +646,6 @@ Response Example
 
 Frequency limit: 10 times/1s (UID)
 
-### Description
-
 ### HTTP Request
 
 - POST /api/v2/margin/crossed/account/query-flash-repay-status
@@ -693,8 +698,6 @@ Response Example
 # Cross Batch Cancel Orders
 
 Frequency limit:10 times/1s (UID)
-
-### Description
 
 ### HTTP Request
 
@@ -763,8 +766,6 @@ Response Example
 # Cross Batch Orders
 
 Frequency limit:10 times/1s (UID)
-
-### Description
 
 ### HTTP Request
 
@@ -839,8 +840,6 @@ Response Example
 
 Frequency limit:10 times/1s (UID)
 
-### Description
-
 ### HTTP Request
 
 - POST /api/v2/margin/crossed/cancel-order
@@ -891,8 +890,6 @@ Response Example
 # Cross Place Order
 
 Rate Limit: 10 req/sec/UID
-
-### Description
 
 ### HTTP Request
 
@@ -951,8 +948,6 @@ Response Example
 # Get Cross Current Orders
 
 Frequency limit:10 times/1s (UID)
-
-### Description
 
 ### HTTP Request
 
@@ -1046,8 +1041,6 @@ Response Example
 
 Frequency limit:10 times/1s (UID)
 
-### Description
-
 ### HTTP Request
 
 - GET /api/v2/margin/crossed/fills
@@ -1136,8 +1129,6 @@ Response Example
 # Get Cross History Orders
 
 Rate limit:10 req/sec/UID
-
-### Description
 
 ### HTTP Request
 
@@ -1234,8 +1225,6 @@ Response Example
 
 Frequency limit:10 times/1s (UID)
 
-### Description
-
 ### HTTP Request
 
 - GET /api/v2/margin/crossed/financial-records
@@ -1309,8 +1298,6 @@ Response Example
 
 Frequency limit:10 times/1s (UID)
 
-### Description
-
 ### HTTP Request
 
 - GET /api/v2/margin/crossed/interest-history
@@ -1382,8 +1369,6 @@ Response Example
 # Get Cross Liquidation History
 
 Frequency limit:10 times/1s (UID)
-
-### Description
 
 ### HTTP Request
 
@@ -1458,8 +1443,6 @@ Response Example
 
 Frequency limit:10 times/1s (UID)
 
-### Description
-
 ### HTTP Request
 
 - GET /api/v2/margin/crossed/borrow-history
@@ -1528,8 +1511,6 @@ Response Example
 # Get Cross Repay History
 
 Frequency limit:10 times/1s (IP)
-
-### Description
 
 ### HTTP Request
 
@@ -2089,8 +2070,6 @@ Response Example
 
 Frequency limit: 10 times/1s (UID)
 
-### Description
-
 ### HTTP Request
 
 - POST /api/v2/margin/isolated/account/borrow
@@ -2146,8 +2125,6 @@ Response Example
 # Isolated Flash Repay
 
 Frequency limit: 10 times/1s (UID)
-
-### Description
 
 ### HTTP Request
 
@@ -2313,8 +2290,6 @@ Response Example
 
 Frequency limit: 10 times/1s (UID)
 
-### Description
-
 ### HTTP Request
 
 - GET /api/v2/margin/isolated/account/max-borrowable-amount
@@ -2370,8 +2345,6 @@ Response Example
 # Isolated Repay
 
 Frequency limit: 10 times/1s (UID)
-
-### Description
 
 ### HTTP Request
 
@@ -2431,8 +2404,6 @@ Response Example
 # Get Isolated Risk Rate
 
 Frequency limit: 10 times/1s (UID)
-
-### Description
 
 ### HTTP Request
 
@@ -2557,8 +2528,6 @@ Response Example
 
 Frequency limit: 10 times/1s (UID)
 
-### Description
-
 ### HTTP Request
 
 - POST /api/v2/margin/isolated/account/query-flash-repay-status
@@ -2613,8 +2582,6 @@ Response Example
 # Get Isolated Orders History
 
 Frequency limit: 10 times/1s (UID)
-
-### Description
 
 ### HTTP Request
 
@@ -2711,8 +2678,6 @@ Response Example
 
 Frequency limit: 10 times/1s (UID)
 
-### Description
-
 ### HTTP Request
 
 - GET /api/v2/margin/isolated/fills
@@ -2803,8 +2768,6 @@ Response Example
 
 Rate limit: 10 req/sec/UID
 
-### Description
-
 ### HTTP Request
 
 - POST /api/v2/margin/isolated/batch-cancel-order
@@ -2868,8 +2831,6 @@ Response Example
 # Isolated Batch Orders
 
 Frequency limit: 10 times/1s (UID)
-
-### Description
 
 ### HTTP Request
 
@@ -2942,8 +2903,6 @@ Response Example
 
 Frequency limit: 10 times/1s (UID)
 
-### Description
-
 ### HTTP Request
 
 - POST /api/v2/margin/isolated/cancel-order
@@ -2996,8 +2955,6 @@ Response Example
 # Get Isolated Current Orders
 
 Rate limit: 10 req/sec/UID
-
-### Description
 
 ### HTTP Request
 
@@ -3092,8 +3049,6 @@ Response Example
 
 Rate Limit: 10 req/sec/UID
 
-### Description
-
 ### HTTP Request
 
 - POST /api/v2/margin/isolated/place-order
@@ -3155,8 +3110,6 @@ Response Example
 # Get Isolated Financial History
 
 Frequency limit: 10 times/1s (UID)
-
-### Description
 
 ### HTTP Request
 
@@ -3236,8 +3189,6 @@ Response Example
 
 Frequency limit: 10 times/1s (UID)
 
-### Description
-
 ### HTTP Request
 
 - GET /api/v2/margin/isolated/interest-history
@@ -3314,8 +3265,6 @@ Response Example
 # Get Isolated Liquidation History
 
 Frequency limit: 10 times/1s (UID)
-
-### Description
 
 ### HTTP Request
 
@@ -3395,8 +3344,6 @@ Response Example
 
 Frequency limit: 10 times/1s (UID)
 
-### Description
-
 ### HTTP Request
 
 - GET /api/v2/margin/isolated/borrow-history
@@ -3470,8 +3417,6 @@ Response Example
 # Get Isolated Repayment History
 
 Frequency limit: 10 times/1s (UID)
-
-### Description
 
 ### HTTP Request
 
@@ -4823,4 +4768,3 @@ Push Data
 | 95014 | The sub-account has contract orders and cannot be added |
 
 ---
-

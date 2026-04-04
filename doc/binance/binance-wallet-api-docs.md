@@ -4,6 +4,19 @@ Source: https://developers.binance.com/docs/
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: asset transfers, deposit/withdrawal metadata, and wallet-side operational support around moving funds between Binance product families
+- Base URL in this repo: wallet/SAPI calls use Binance's signed wallet surface rather than `fapi`
+- Repo asset context:
+  - trading symbols look like `BTCUSDT`
+  - wallet APIs often operate on currencies such as `BTC`, `ETH`, `USDT` and transfer/account types
+- Most relevant behaviors for this repo:
+  - universal transfers
+  - asset configuration / network metadata
+  - deposit and withdrawal history when reconciling operations
+- Important repo note: wallet endpoints are operational support, not market-data endpoints; do not mix them with public spot requests or futures routing when changing client code
+
 Wallet
 
 # Change Log
@@ -4526,4 +4539,3 @@ For all the EU countries, please following the same questionnaire.
 Copyright © 2026 Binance.
 
 ---
-

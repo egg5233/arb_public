@@ -4,6 +4,15 @@ Source: https://bybit-exchange.github.io/docs/v5/websocket/
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: public market streams and private order/execution updates
+- Repo symbol format: `BTCUSDT`
+- Most relevant topics for this repo:
+  - private order / execution / position events
+  - public ticker and orderbook topics
+- Important repo note: private stream parsing in this repo is sensitive to order status normalization and one-way-mode semantics; compare doc changes against `pkg/exchange/bybit/ws_private.go`
+
 # Dcp
 
 Subscribe to the dcp stream to trigger DCP function.
@@ -29,11 +38,9 @@ To sum up, for those private connections subscribing "dcp" topic are all dead, t
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -43,7 +50,7 @@ GitHub
 
 Subscribe to the execution stream to see your executions in **real-time**.
 
-tip
+> Tip
 
 You may have multiple executions for one order in a single message.
 
@@ -51,7 +58,7 @@ You may have multiple executions for one order in a single message.
 
 **Categorised Topic:**`execution.spot`, `execution.linear`, `execution.inverse`, `execution.option`
 
-info
+> Info
 
 - All-In-One topic and Categorised topic **cannot** be in the same subscription request
 - All-In-One topic: Allow you to listen to all categories (spot, linear, inverse, option) websocket updates
@@ -172,11 +179,9 @@ while True:
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -191,7 +196,7 @@ execution type of trades, and fewer data fields.
 
 **Categorised Topic:**`execution.fast.linear`, `execution.fast.inverse`, `execution.fast.spot`, `execution.fast.option`
 
-info
+> Info
 
 - Supports all Perps, Futures, Spot and Options exceution
 - You can only receive [execType](https://bybit-exchange.github.io/docs/v5/enum#exectype) =Trade update
@@ -250,11 +255,9 @@ info
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -326,11 +329,9 @@ while True:
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -344,13 +345,13 @@ Subscribe to the order stream to see changes to your orders in **real-time**.
 
 **Categorised Topic:**`order.spot`, `order.linear`, `order.inverse`, `order.option`
 
-info
+> Info
 
 - All-In-One topic and Categorised topic **cannot** be in the same subscription request
 - All-In-One topic: Allow you to listen to all categories (spot, linear, inverse, option) websocket updates
 - Categorised Topic: Allow you to listen only to specific category websocket updates
 
-tip
+> Tip
 
 You may receive two orderStatus=`Filled` messages when the cancel request is accepted but the order is executed at the same time. Generally, one
 message contains "orderStatus=Filled, rejectReason=EC\_NoError", and another message contains "orderStatus=Filled, cancelType=CancelByUser, rejectReason=EC\_OrigClOrdIDDoesNotExist".
@@ -504,11 +505,9 @@ while True:
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -522,13 +521,13 @@ Subscribe to the position stream to see changes to your position data in **real-
 
 **Categorised Topic:**`position.linear`, `position.inverse`, `position.option`
 
-info
+> Info
 
 - All-In-One topic and Categorised topic **cannot** be in the same subscription request
 - All-In-One topic: Allow you to listen to all categories (linear, inverse, option) websocket updates
 - Categorised Topic: Allow you to listen only to specific category websocket updates
 
-tip
+> Tip
 
 Every time when you create/amend/cancel an order, the position topic will generate a new message (regardless if there's any actual change)
 
@@ -660,11 +659,9 @@ while True:
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -674,7 +671,7 @@ GitHub
 
 Subscribe to the wallet stream to see changes to your wallet in **real-time**.
 
-info
+> Info
 
 - There is no snapshot event given at the time when the subscription is successful
 - The unrealised PnL change does not trigger an event
@@ -808,11 +805,9 @@ while True:
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -901,11 +896,9 @@ For more information on how ADL is triggered, see the [ADL endpoint](https://byb
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -972,11 +965,9 @@ while True:
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -996,7 +987,7 @@ USDC contracts: `insurance.USDC` ( **note**: all USDC Perpetuals, USDC Futures h
 
 Inverse contracts: `insurance.inverse`
 
-info
+> Info
 
 - Shared insurance pool data is **not** pushed, please refer to Rest API [Get Insurance](https://bybit-exchange.github.io/docs/v5/market/insurance) to understand which symbols belong to isolated or shared insurance pools.
 - No event will be published if the balances of all insurance pools remain unchanged.
@@ -1082,11 +1073,9 @@ while True:
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1096,7 +1085,7 @@ GitHub
 
 Subscribe to the klines stream.
 
-tip
+> Tip
 
 If `confirm`=true, this means that the candle has closed. Otherwise, the candle is still open and updating.
 
@@ -1179,11 +1168,9 @@ while True:
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1259,11 +1246,9 @@ while True:
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1273,7 +1258,7 @@ GitHub
 
 Subscribe to the orderbook stream. Supports different depths.
 
-info
+> Info
 
 [Retail Price Improvement (RPI)](https://www.bybit.com/en/help-center/article/Retail-Price-Improvement-RPI-Order) orders will not be included in the messages.
 
@@ -1323,7 +1308,7 @@ To apply `delta` updates:
 
 See working code examples of this logic in the [FAQ](https://bybit-exchange.github.io/docs/faq#how-can-i-process-websocket-snapshot-and-delta-messages).
 
-info
+> Info
 
 - Linear, inverse, spot level 1 data: if 3 seconds have elapsed without a change in the orderbook, a `snapshot` message will be pushed again, and the field `u` will be the
 same as that in the previous message.
@@ -1481,11 +1466,9 @@ while True:
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1618,11 +1601,9 @@ while True:
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -1928,11 +1909,9 @@ LinearFutures
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2023,11 +2002,9 @@ while True:
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2037,7 +2014,7 @@ GitHub
 
 Listen to the system status when there is a platform maintenance or service incident.
 
-info
+> Info
 
 Please note currently system maintenance that may result in short interruption (lasting less than 10 seconds) or websocket disconnection (users can immediately reconnect) will not be announced.
 
@@ -2047,7 +2024,7 @@ Please note currently system maintenance that may result in short interruption (
 
 `wss://stream.bybit.com/v5/public/misc/status`
 
-info
+> Info
 
 - EU users registered from " [www.bybit.eu"](http://www.bybit.eu"/), please use `wss://stream.bybit.eu/v5/public/misc/status`
 
@@ -2136,11 +2113,9 @@ while True:
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
@@ -2154,7 +2129,7 @@ GitHub
 
 `wss://stream.bybit.com/v5/trade`
 
-info
+> Info
 
 - Turkey users registered from " [www.bybit-tr.com"](http://www.bybit-tr.com"/), please use `wss://stream.bybit-tr.com/v5/trade`
 - Kazakhstan users registered from " [www.bybit.kz"](http://www.bybit.kz"/), please use `wss://stream.bybit.kz/v5/trade`
@@ -2244,7 +2219,7 @@ info
 | \> X-Bapi-Limit-Reset-Timestamp | string | The timestamp indicates when your request limit resets if you have exceeded your rate limit. Otherwise, this is just the current timestamp (it may not exactly match `timeNow`) |
 | connId | string | Connection id, the unique id for the connection |
 
-info
+> Info
 
 The ack of create/amend/cancel order request indicates that the request is successfully accepted. Please use websocket order stream to confirm the order status
 
@@ -2299,7 +2274,7 @@ The ack of create/amend/cancel order request indicates that the request is succe
 
 ## Batch Create/Amend/Cancel Order
 
-info
+> Info
 
 - A maximum of 20 orders (option), 20 orders (inverse), 20 orders (linear), 10 orders (spot) can be placed per request. The returned data list is divided into two lists. The first list indicates whether or not the order creation was successful and the second list details the created order information. The structure of the two lists are completely consistent.
 
@@ -2488,13 +2463,10 @@ info
 }
 ```
 
- 
 
-Community
 
-GitHub
+
 
 - [Official .Net SDK – bybit.net.api](https://github.com/bybit-exchange/bybit.net.api)
 
 ---
-

@@ -4,6 +4,18 @@ Source: https://www.okx.com/docs-v5/en/
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: usually not on the hot trading path; useful for operational reference around OKX earn/lending surfaces
+- Repo symbol context:
+  - repo trading symbols look like `BTCUSDT`
+  - financial-product APIs work mostly with currencies and product IDs such as `BTC`, `USDT`, `productId`
+- Most relevant sections if this repo ever touches them:
+  - available offers
+  - purchase / redeem flows
+  - position or holdings queries
+- Important repo note: this file is mainly reference material; spot-futures and funding-arb logic should not assume these earn/lending APIs are part of the normal execution path unless the adapter code explicitly adds them
+
 # Financial Product
 
 ## On-chain earn
@@ -25,12 +37,10 @@ Only the assets in the funding account can be used for purchase. [More details](
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/staking-defi/offers
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.StakingDefi as StakingDefi
 
 # API initialization
@@ -57,7 +67,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -133,7 +142,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 # Invest 100ZIL 30-day staking protocol
 POST /api/v5/finance/staking-defi/purchase
 body
@@ -150,7 +158,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.StakingDefi as StakingDefi
 
 # API initialization
@@ -186,7 +193,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -221,7 +227,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 # Early redemption of investment
 POST /api/v5/finance/staking-defi/redeem
 body
@@ -233,7 +238,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.StakingDefi as StakingDefi
 
 # API initialization
@@ -263,7 +267,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -300,7 +303,6 @@ After cancelling, returning funds will go to the funding account.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/finance/staking-defi/cancel
 body
 {
@@ -310,7 +312,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.StakingDefi as StakingDefi
 
 # API initialization
@@ -339,7 +340,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -374,12 +374,10 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/staking-defi/orders-active
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.StakingDefi as StakingDefi
 
 # API initialization
@@ -407,7 +405,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -552,12 +549,10 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/staking-defi/orders-history
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.StakingDefi as StakingDefi
 
 # API initialization
@@ -587,7 +582,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -668,12 +662,10 @@ Stake to receive BETH for liquidity at 1:1 ratio and earn daily BETH rewards
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/staking-defi/eth/product-info
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.EthStaking as EthStaking
 
 # API initialization
@@ -692,7 +684,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -729,7 +720,6 @@ Only the assets in the funding account can be used.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/finance/staking-defi/eth/purchase
 body
 {
@@ -738,7 +728,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.EthStaking as EthStaking
 
 # API initialization
@@ -763,7 +752,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -793,7 +781,6 @@ Only the assets in the funding account can be used. If your BETH is in your trad
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/finance/staking-defi/eth/redeem
 body
 {
@@ -802,7 +789,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.EthStaking as EthStaking
 
 # API initialization
@@ -827,7 +813,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -855,7 +840,6 @@ code = `0` means your request has been successfully handled.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/finance/staking-defi/eth/cancel-redeem
 body
 {
@@ -872,7 +856,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -907,12 +890,10 @@ The balance represents the real-time total BETH holdings across the entire accou
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/staking-defi/eth/balance
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.EthStaking as EthStaking
 
 # API initialization
@@ -935,7 +916,6 @@ None
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -976,12 +956,10 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/staking-defi/eth/purchase-redeem-history
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.EthStaking as EthStaking
 
 # API initialization
@@ -1010,7 +988,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1056,12 +1033,10 @@ Public endpoints don't need authorization.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/staking-defi/eth/apy-history?days=2
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.EthStaking as EthStaking
 
 flag = "0"  # Production trading:0 , demo trading:1
@@ -1081,7 +1056,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1128,18 +1102,15 @@ Stake SOL on Solana to receive OKSOL at a 1:1 ratio for liquidity
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/staking-defi/sol/product-info
 ```
 
 ```
-Copy to Clipboard
 ```
 
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": {
@@ -1176,7 +1147,6 @@ Only the assets in the funding account can be used.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/finance/staking-defi/sol/purchase
 body
 {
@@ -1185,7 +1155,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.SolStaking as SolStaking
 
 # API initialization
@@ -1210,7 +1179,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -1240,7 +1208,6 @@ Only the assets in the funding account can be used. If your OKSOL is in your tra
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/finance/staking-defi/sol/redeem
 body
 {
@@ -1249,7 +1216,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.SolStaking as SolStaking
 
 # API initialization
@@ -1274,7 +1240,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
   "code": "0",
   "msg": "",
@@ -1304,12 +1269,10 @@ The balance represents the real-time total OKSOL holdings across the entire acco
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/staking-defi/sol/balance
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.SolStaking as SolStaking
 
 # API initialization
@@ -1332,7 +1295,6 @@ None
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1371,12 +1333,10 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/staking-defi/sol/purchase-redeem-history
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.SolStaking as SolStaking
 
 # API initialization
@@ -1405,7 +1365,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1450,12 +1409,10 @@ Public endpoints don't need authorization.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/staking-defi/sol/apy-history?days=2
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.SolStaking as SolStaking
 
 flag = "0"  # Production trading:0 , demo trading:1
@@ -1475,7 +1432,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -1518,12 +1474,10 @@ Simple earn flexible (saving) is earned by lending to leveraged trading users in
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/savings/balance?ccy=USDT
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.Savings as Savings
 
 # API initialization
@@ -1548,7 +1502,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg":"",
@@ -1595,7 +1548,6 @@ Only the assets in the funding account can be used for saving.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/finance/savings/purchase-redempt
 body
 {
@@ -1607,7 +1559,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.Savings as Savings
 
 # API initialization
@@ -1635,7 +1586,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code":"0",
     "msg":"",
@@ -1674,7 +1624,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/finance/savings/set-lending-rate
 body
 {
@@ -1684,7 +1633,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.Savings as Savings
 
 # API initialization
@@ -1710,7 +1658,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -1745,12 +1692,10 @@ Return data in the past month.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/savings/lending-history
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.Savings as Savings
 
 # API initialization
@@ -1778,7 +1723,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -1825,12 +1769,10 @@ Authentication is not required for this public endpoint.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/savings/lending-rate-summary
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.Savings as Savings
 
 flag = "0"  # Production trading:0 , demo trading:1
@@ -1850,7 +1792,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -1893,12 +1834,10 @@ Only returned records after December 14, 2021.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/savings/lending-rate-history
 ```
 
 ```
-Copy to Clipboard
 import okx.Finance.Savings as Savings
 
 flag = "0"  # Production trading:0 , demo trading:1
@@ -1921,7 +1860,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -1966,12 +1904,10 @@ Get borrowable currencies
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/flexible-loan/borrow-currencies
 ```
 
 ```
-Copy to Clipboard
 from okx.Finance import FlexibleLoan
 
 # API initialization
@@ -1989,7 +1925,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2027,12 +1962,10 @@ Get collateral assets in funding account.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/flexible-loan/collateral-assets
 ```
 
 ```
-Copy to Clipboard
 from okx.Finance import FlexibleLoan
 
 # API initialization
@@ -2056,7 +1989,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2108,7 +2040,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/finance/flexible-loan/max-loan
 body
 {
@@ -2117,7 +2048,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 from okx.Finance import FlexibleLoan
 
 # API initialization
@@ -2144,7 +2074,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2183,12 +2112,10 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/flexible-loan/max-collateral-redeem-amount?ccy=USDT
 ```
 
 ```
-Copy to Clipboard
 from okx.Finance import FlexibleLoan
 
 # API initialization
@@ -2212,7 +2139,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2247,7 +2173,6 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/finance/flexible-loan/adjust-collateral
 body
 {
@@ -2258,7 +2183,6 @@ body
 ```
 
 ```
-Copy to Clipboard
 from okx.Finance import FlexibleLoan
 
 # API initialization
@@ -2284,7 +2208,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2312,12 +2235,10 @@ code = `0` means your request has been accepted (It doesn't mean the request has
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/flexible-loan/loan-info
 ```
 
 ```
-Copy to Clipboard
 from okx.Finance import FlexibleLoan
 
 # API initialization
@@ -2335,7 +2256,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2413,12 +2333,10 @@ Copy to Clipboard
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/flexible-loan/loan-history
 ```
 
 ```
-Copy to Clipboard
 from okx.Finance import FlexibleLoan
 
 # API initialization
@@ -2445,7 +2363,6 @@ print(result)
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2488,12 +2405,10 @@ Retrieves the interest accrual history for flexible loans over the past 30 days.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/flexible-loan/interest-accrued
 ```
 
 ```
-Copy to Clipboard
 from okx.Finance import FlexibleLoan
 
 # API initialization
@@ -2520,7 +2435,6 @@ print(result)
 > 返回结果
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "data": [
@@ -2567,7 +2481,6 @@ Returns available dual investment currency pairs.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/sfp/dcd/currency-pair
 ```
 
@@ -2578,7 +2491,6 @@ None
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -2619,7 +2531,6 @@ Return dual investment product list.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/sfp/dcd/products?baseCcy=BTC&quoteCcy=USDT&optType=C
 ```
 
@@ -2634,7 +2545,6 @@ GET /api/v5/finance/sfp/dcd/products?baseCcy=BTC&quoteCcy=USDT&optType=C
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -2705,7 +2615,6 @@ Requests a real-time quote for a dual investment product. The quote has a TTL an
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/finance/sfp/dcd/quote
 body
 {
@@ -2726,7 +2635,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -2777,7 +2685,6 @@ Places a dual investment order using a valid quote.
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/finance/sfp/dcd/trade
 body
 {
@@ -2794,7 +2701,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -2833,7 +2739,6 @@ Requests an early redemption quote for a live dual investment order. This is ste
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/finance/sfp/dcd/redeem-quote
 body
 {
@@ -2850,7 +2755,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -2895,7 +2799,6 @@ Confirms early redemption using a valid redeem quote. This is step 2 of the two-
 > Request Example
 
 ```
-Copy to Clipboard
 POST /api/v5/finance/sfp/dcd/redeem
 body
 {
@@ -2914,7 +2817,6 @@ body
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -2951,7 +2853,6 @@ Returns the current state of a dual investment order.
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/sfp/dcd/order-status?ordId=987654321
 ```
 
@@ -2964,7 +2865,6 @@ GET /api/v5/finance/sfp/dcd/order-status?ordId=987654321
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",
@@ -3001,7 +2901,6 @@ Return dual investment history orders
 > Request Example
 
 ```
-Copy to Clipboard
 GET /api/v5/finance/sfp/dcd/order-history
 ```
 
@@ -3022,7 +2921,6 @@ GET /api/v5/finance/sfp/dcd/order-history
 > Response Example
 
 ```
-Copy to Clipboard
 {
     "code": "0",
     "msg": "",

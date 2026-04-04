@@ -4,6 +4,16 @@ Source: https://developers.binance.com/docs/
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: public spot market data for the spot-futures engine
+- Base URL in this repo: `https://api.binance.com`
+- Repo symbol format: `BTCUSDT`
+- Most relevant endpoints for this repo:
+  - `GET /api/v3/ticker/bookTicker`
+  - `GET /api/v3/exchangeInfo`
+- Important repo note: public spot market-data requests must be unsigned; do not attach `timestamp` or `signature`
+
 Spot Trading
 
 # CHANGELOG for Binance's API
@@ -40335,4 +40345,3 @@ Memory
 Copyright © 2026 Binance.
 
 ---
-

@@ -4,6 +4,18 @@ Crawled from https://www.bitget.com/api-doc/earn/loan/
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: usually reference-only; not part of the normal funding-arb execution path unless adapter code explicitly adds it
+- Repo symbol context:
+  - repo trading symbols look like `BTCUSDT`
+  - earn-loan APIs operate mainly on currencies such as `BTC`, `ETH`, `USDT`
+- Most relevant sections if this repo ever uses them:
+  - borrow
+  - currency list / borrowable assets
+  - loan order state and repayment flows
+- Important repo note: do not confuse Bitget earn-loan borrowing with the cross-margin borrow path used by the spot-futures engine; they are operationally different products
+
 - [Earn API](https://www.bitget.com/api-doc/earn/intro)
 # Borrow
 
@@ -829,4 +841,3 @@ Response example
 | repayUnlockAmount | String | Pledge (Collateral) redeemed amount |
 
 ---
-

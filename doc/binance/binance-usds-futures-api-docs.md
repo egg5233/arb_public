@@ -4,6 +4,18 @@ Source: https://developers.binance.com/docs/
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: perp-perp trading and the futures leg of spot-futures
+- Base URL in this repo: `https://fapi.binance.com`
+- Repo symbol format: `BTCUSDT`
+- Most relevant endpoints for this repo:
+  - exchange info and contract metadata
+  - order placement / cancel / query
+  - funding rate and funding info
+  - balances, positions, leverage, margin mode
+- Important repo note: this repo currently uses classic `fapi` endpoints, not portfolio margin routing
+
 Derivatives Trading
 
 # General Info
@@ -12858,4 +12870,3 @@ Trading session information for the underlying assets of TradFi Perpetual contra
 Copyright © 2026 Binance.
 
 ---
-

@@ -4,6 +4,17 @@ Source: https://developers.binance.com/docs/
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: currently limited; this repo mainly uses classic cross-margin plus USDT-M futures rather than portfolio-margin routing
+- Base URL in this doc: `https://papi.binance.com`
+- Repo symbol format: `BTCUSDT`
+- Most relevant sections if portfolio margin work is added:
+  - account state and balances
+  - order placement / cancel / query
+  - margin and risk endpoints
+- Important repo note: before using any `papi` endpoint in this codebase, verify the adapter is actually operating in portfolio-margin mode; most current Binance logic is built around `api.binance.com` plus `fapi.binance.com`
+
 Derivatives Trading
 
 # General Info
@@ -7567,4 +7578,3 @@ POST `/papi/v1/listenKey`
 Copyright © 2026 Binance.
 
 ---
-

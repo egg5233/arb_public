@@ -4,6 +4,18 @@ Source: https://developers.binance.com/docs/
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: cross-margin operations for the spot-futures engine
+- Base URL in this repo: `https://api.binance.com`
+- Repo symbol format: `BTCUSDT`
+- Most relevant behaviors for this repo:
+  - cross-margin balances and borrowability
+  - auto-borrow / auto-repay spot-margin orders
+  - max borrowable queries
+  - margin account transfers coordinated with futures wallet transfers
+- Important repo note: Binance spot, wallet, margin, and futures APIs live on different base URLs in this codebase; confirm the product family before changing endpoints
+
 Margin Trading
 
 # Change Log
@@ -5970,4 +5982,3 @@ GET `/sapi/v1/margin/maxTransferable`
 Copyright © 2026 Binance.
 
 ---
-

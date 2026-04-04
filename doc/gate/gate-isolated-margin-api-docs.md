@@ -4,6 +4,17 @@ Source: https://www.gate.com/docs/developers/apiv4/en/#isolated-margin
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: supplemental reference for margin behavior; this repo's Gate spot-futures work is more closely tied to unified-account and transfer flows than classic isolated-margin trading
+- Repo symbol format: `BTCUSDT`
+- Vendor/API margin symbol format usually uses underscore form: `BTC_USDT`
+- Most relevant sections for this repo:
+  - margin account state
+  - borrow / repayment behavior
+  - transferability and funding-account interactions
+- Important repo note: use this file carefully alongside the repo's Gate unified-account notes. Some Gate margin behaviors differ materially between isolated, classic margin, and unified-account flows
+
 # Isolated-Margin
 
 Isolated Margin

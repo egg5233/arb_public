@@ -4,6 +4,17 @@ Crawled from https://www.bitget.com/api-doc/spot/
 
 ---
 
+## Repo Usage Quick Reference
+
+- Primary repo use: spot-market metadata, balances, and spot order support around transfers and exchange capability checks
+- Repo symbol format: `BTCUSDT`
+- Most relevant behaviors for this repo:
+  - spot symbols and coin metadata
+  - spot order placement / cancel / query
+  - balances and transfers
+  - public market data such as ticker, candles, and depth
+- Important repo note: this repo's main Bitget trading path is futures plus cross-margin for spot-futures workflows; read spot endpoints together with the margin docs when evaluating actual executable flows
+
 # Market Endpoints
 
 # Get Candlestick Data
@@ -4651,4 +4662,3 @@ Push Data
 | 95014 | The sub-account has contract orders and cannot be added |
 
 ---
-
