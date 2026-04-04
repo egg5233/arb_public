@@ -246,6 +246,20 @@ export function useApi() {
   }, []);
 
   // Analytics API
+  const batchCheckGap = useCallback((items: { symbol: string; exchange: string; direction: string }[]) => {
+    return request<{ symbol: string; exchange: string; direction: string; gap_pct: number; spot_bid: number; spot_ask: number; futures_bid: number; futures_ask: number; error?: string }[]>('/api/spot/batch-check-gap', {
+      method: 'POST',
+      body: JSON.stringify({ items }),
+    });
+  }, []);
+
+  const batchCheckBorrowable = useCallback((items: { symbol: string; exchange: string }[]) => {
+    return request<{ symbol: string; exchange: string; max_borrowable: number; error?: string }[]>('/api/spot/batch-check-borrowable', {
+      method: 'POST',
+      body: JSON.stringify({ items }),
+    });
+  }, []);
+
   const getAnalyticsPnL = useCallback((from: number, to: number, strategy: string) => {
     return request<PnLSnapshot[]>(`/api/analytics/pnl-history?from=${from}&to=${to}&strategy=${strategy}`);
   }, []);
@@ -296,5 +310,7 @@ export function useApi() {
     removeFromBlacklist,
     getAnalyticsPnL,
     getAnalyticsSummary,
+    batchCheckGap,
+    batchCheckBorrowable,
   };
 }

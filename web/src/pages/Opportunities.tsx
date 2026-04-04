@@ -1,18 +1,52 @@
-import { useState, useEffect, useCallback, type FC } from 'react';
+import { useState, useEffect, useCallback, type Dispatch, type FC, type SetStateAction } from 'react';
 import type { Opportunity, SpotOpportunity, PriceGapResult } from '../types.ts';
 import { useLocale } from '../i18n/index.ts';
 import { ExchangeLink } from '../utils/tradingUrl.tsx';
 
 type Tab = 'perp' | 'spot';
+type TranslateFn = ReturnType<typeof useLocale>['t'];
+
+interface BorrowResult {
+  symbol: string;
+  exchange: string;
+  max_borrowable: number;
+  error?: string;
+}
 
 interface OpportunitiesProps {
   opportunities: Opportunity[];
   spotOpportunities?: SpotOpportunity[];
+  spotScannerMode?: string;
   onOpen?: (symbol: string, longExchange: string, shortExchange: string, force?: boolean) => Promise<void>;
   onSpotOpen?: (symbol: string, exchange: string, direction: string) => Promise<void>;
   onCheckPriceGap?: (symbol: string, exchange: string, direction: string) => Promise<PriceGapResult>;
+  onBatchCheckGap?: (items: { symbol: string; exchange: string; direction: string }[]) => Promise<{ symbol: string; exchange: string; direction: string; gap_pct: number; error?: string }[]>;
+  onBatchCheckBorrowable?: (items: { symbol: string; exchange: string }[]) => Promise<BorrowResult[]>;
   blacklist?: string[];
   onBlacklistToggle?: (symbol: string) => Promise<void>;
+}
+
+interface SpotSectionProps {
+  title?: string;
+  sourceLabel?: string;
+  opportunities: SpotOpportunity[];
+  t: TranslateFn;
+  onSpotOpen?: (symbol: string, exchange: string, direction: string) => Promise<void>;
+  gapResults: Record<string, PriceGapResult>;
+  borrowResults: Record<string, BorrowResult>;
+  spotOpening: string | null;
+  setSpotOpening: (value: string | null) => void;
+  setSpotError: (value: string | null) => void;
+  page: number;
+  setPage: (p: number) => void;
+  onBatchCheckGap?: (items: { symbol: string; exchange: string; direction: string }[]) => Promise<{ symbol: string; exchange: string; direction: string; gap_pct: number; error?: string }[]>;
+  onBatchCheckBorrowable?: (items: { symbol: string; exchange: string }[]) => Promise<BorrowResult[]>;
+  setGapResults: Dispatch<SetStateAction<Record<string, PriceGapResult>>>;
+  setBorrowResults: Dispatch<SetStateAction<Record<string, BorrowResult>>>;
+  gapLoading: boolean;
+  setGapLoading: (v: boolean) => void;
+  borrowLoading: boolean;
+  setBorrowLoading: (v: boolean) => void;
 }
 
 function scoreColor(score: number): string {
@@ -45,16 +79,371 @@ function formatTimestamp(ts?: string): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunities = [], onOpen, onSpotOpen, onCheckPriceGap, blacklist = [], onBlacklistToggle }) => {
+function isCoinGlassSource(source?: string): boolean {
+  return source === 'coinglass_spot' || source === 'coinglass';
+}
+
+function getSpotSourceLabel(t: TranslateFn, source?: string): string {
+  if (source === 'native') return t('spot.sourceNative');
+  if (isCoinGlassSource(source)) return t('spot.sourceCoinGlass');
+  return t('spot.sourceFallback');
+}
+
+const PAGE_SIZE = 20;
+
+// ---------------------------------------------------------------------------
+// Spot opportunity row (shared between full and compact modes)
+// ---------------------------------------------------------------------------
+interface SpotRowProps {
+  opp: SpotOpportunity;
+  index: number;
+  compact?: boolean;
+  t: TranslateFn;
+  onSpotOpen?: (symbol: string, exchange: string, direction: string) => Promise<void>;
+  gapResult?: PriceGapResult;
+  borrowResult?: BorrowResult;
+  spotOpening: string | null;
+  setSpotOpening: (v: string | null) => void;
+  setSpotError: (v: string | null) => void;
+}
+
+const SpotRow: FC<SpotRowProps> = ({ opp, index, compact, t, onSpotOpen, gapResult, borrowResult, spotOpening, setSpotOpening, setSpotError }) => {
+  const filtered = !!opp.filter_status;
+  const isA = opp.direction === 'borrow_sell_long';
+  const oppKey = `${opp.symbol}-${opp.exchange}-${opp.direction}`;
+  const dirLabel = isA ? t('spot.dirA') : t('spot.dirB');
+  const dirDesc = isA ? t('spot.dirADesc') : t('spot.dirBDesc');
+
+  const handleOpen = async () => {
+    if (!onSpotOpen) return;
+    setSpotOpening(oppKey);
+    setSpotError(null);
+    try {
+      await onSpotOpen(opp.symbol, opp.exchange, opp.direction);
+    } catch (err: unknown) {
+      setSpotError(err instanceof Error ? err.message : 'Open failed');
+    } finally {
+      setSpotOpening(null);
+    }
+  };
+
+  // Borrow warning: max_borrowable too low (< 5 USDT worth)
+  const borrowWarn = isA && borrowResult && !borrowResult.error && borrowResult.max_borrowable <= 0;
+
+  if (compact) {
+    const detailTooltip = `Funding: ${(opp.funding_apr * 100).toFixed(1)}% | Borrow: ${opp.borrow_apr > 0 ? (opp.borrow_apr * 100).toFixed(1) + '%' : '-'} | Fees: ${(opp.fee_pct * 100).toFixed(2)}%${opp.filter_status ? ' | ' + opp.filter_status : ''}`;
+    return (
+      <tr className={`${filtered ? 'text-gray-600' : borrowWarn ? 'text-gray-100 bg-red-500/5' : 'text-gray-100 hover:bg-gray-800/40'}`} title={detailTooltip}>
+        <td className="py-1.5 pr-2 font-mono text-gray-500 text-xs">{index + 1}</td>
+        <td className="py-1.5 pr-2 font-mono text-xs">{opp.symbol}</td>
+        <td className="py-1.5 pr-2 capitalize text-xs">
+          {filtered ? opp.exchange : <ExchangeLink exchange={opp.exchange} symbol={opp.symbol} className="text-gray-100" />}
+        </td>
+        <td className={`py-1.5 pr-2 font-mono text-xs ${filtered ? '' : isA ? 'text-blue-400' : 'text-purple-400'}`}>{dirLabel}</td>
+        <td className={`py-1.5 pr-2 text-right font-mono text-xs font-semibold ${filtered ? '' : opp.net_apr >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{(opp.net_apr * 100).toFixed(1)}%</td>
+        <td className="py-1.5 pr-2 text-right font-mono text-[10px]">
+          {gapResult && !filtered && (
+            gapResult.gap_pct <= -999 ? <span className="text-gray-600">N/A</span>
+            : <span className={gapResult.gap_pct <= 0 ? 'text-emerald-400' : gapResult.gap_pct < 0.5 ? 'text-amber-400' : 'text-red-400'}>{gapResult.gap_pct.toFixed(3)}%</span>
+          )}
+        </td>
+        <td className="py-1.5 pr-2 text-right font-mono text-[10px]">
+          {!isA && !filtered && <span className="text-gray-600">—</span>}
+          {isA && borrowResult && !filtered && (
+            borrowResult.error ? <span className="text-gray-600" title={borrowResult.error}>err</span>
+            : borrowResult.max_borrowable <= 0 ? <span className="text-red-400">0</span>
+            : <span className="text-emerald-400">{borrowResult.max_borrowable.toFixed(2)}</span>
+          )}
+        </td>
+        <td className="py-1.5 text-right whitespace-nowrap">
+          {onSpotOpen && !filtered && !borrowWarn && (
+            <button disabled={spotOpening === oppKey} onClick={handleOpen}
+              className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${spotOpening === oppKey ? 'bg-gray-700 text-gray-400 cursor-wait' : 'bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/40'}`}>
+              {spotOpening === oppKey ? '..' : 'Open'}
+            </button>
+          )}
+          {filtered && <span className="w-1.5 h-1.5 rounded-full bg-gray-600 inline-block" />}
+        </td>
+      </tr>
+    );
+  }
+
+  // Full row for single-source view
+  return (
+    <tr key={oppKey} className={`${filtered ? 'text-gray-600' : borrowWarn ? 'text-gray-100 bg-red-500/5' : 'text-gray-100'}`}>
+      <td className="py-2 font-mono text-gray-500">{index + 1}</td>
+      <td className="py-2 font-mono">{opp.symbol}</td>
+      <td className="py-2 capitalize">
+        {filtered ? opp.exchange : <ExchangeLink exchange={opp.exchange} symbol={opp.symbol} className="text-gray-100" />}
+      </td>
+      <td className={`py-2 font-mono ${filtered ? '' : isA ? 'text-blue-400' : 'text-purple-400'}`} title={dirDesc}>
+        {dirLabel} <span className="text-xs text-gray-500 font-normal hidden sm:inline">({dirDesc})</span>
+      </td>
+      <td className={`py-2 text-right font-mono ${filtered ? '' : 'text-emerald-400'}`}>{(opp.funding_apr * 100).toFixed(1)}%</td>
+      <td className={`py-2 text-right font-mono ${filtered ? '' : 'text-amber-400'}`}>{opp.borrow_apr > 0 ? `${(opp.borrow_apr * 100).toFixed(1)}%` : '-'}</td>
+      <td className={`py-2 text-right font-mono ${filtered ? '' : 'text-gray-400'}`}>{(opp.fee_pct * 100).toFixed(2)}%</td>
+      <td className={`py-2 text-right font-mono font-semibold ${filtered ? '' : opp.net_apr >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{(opp.net_apr * 100).toFixed(1)}%</td>
+      <td className="py-2 text-right font-mono text-xs">
+        {gapResult && !filtered && (
+          gapResult.gap_pct < 0 ? <span className="text-gray-600">N/A</span>
+          : <span className={gapResult.gap_pct < 0.3 ? 'text-emerald-400' : 'text-amber-400'}>{gapResult.gap_pct.toFixed(3)}%</span>
+        )}
+      </td>
+      <td className="py-2 text-right font-mono text-xs">
+        {!isA && !filtered && <span className="text-gray-600">—</span>}
+        {isA && borrowResult && !filtered && (
+          borrowResult.error ? <span className="text-gray-600" title={borrowResult.error}>err</span>
+          : borrowResult.max_borrowable <= 0 ? <span className="text-red-400">0</span>
+          : <span className="text-emerald-400">{borrowResult.max_borrowable.toFixed(2)}</span>
+        )}
+      </td>
+      <td className="py-2">
+        {filtered
+          ? <span className="inline-flex items-center gap-1 text-xs text-gray-600"><span className="w-1.5 h-1.5 rounded-full bg-gray-600" />{t('spot.filtered')}</span>
+          : <span className="inline-flex items-center gap-1 text-xs text-emerald-400"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />{t('spot.ready')}</span>}
+      </td>
+      <td className="px-2 py-1">
+        {onSpotOpen && !filtered && !borrowWarn && (
+          <button disabled={spotOpening === oppKey} onClick={handleOpen}
+            className={`px-2 py-0.5 text-xs rounded transition-colors ${spotOpening === oppKey ? 'bg-gray-700 text-gray-400 cursor-wait' : 'bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/40'}`}>
+            {spotOpening === oppKey ? 'Opening...' : 'Open'}
+          </button>
+        )}
+      </td>
+    </tr>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// SpotSection — renders a panel of spot opportunities (full or compact)
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Pagination controls
+// ---------------------------------------------------------------------------
+const Pagination: FC<{ page: number; total: number; setPage: (p: number) => void }> = ({ page, total, setPage }) => {
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+  if (totalPages <= 1) return null;
+  return (
+    <div className="flex items-center justify-between pt-2 border-t border-gray-800/50">
+      <span className="text-[10px] text-gray-500">{page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} of {total}</span>
+      <div className="flex gap-1">
+        <button onClick={() => setPage(page - 1)} disabled={page === 0}
+          className="px-2 py-0.5 text-[10px] rounded bg-gray-800 text-gray-400 hover:text-gray-200 disabled:opacity-30 disabled:cursor-not-allowed">&lt;</button>
+        <button onClick={() => setPage(page + 1)} disabled={page >= totalPages - 1}
+          className="px-2 py-0.5 text-[10px] rounded bg-gray-800 text-gray-400 hover:text-gray-200 disabled:opacity-30 disabled:cursor-not-allowed">&gt;</button>
+      </div>
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// SpotSection — renders a panel of spot opportunities with pagination + batch actions
+// ---------------------------------------------------------------------------
+const SpotSection: FC<SpotSectionProps & { compact?: boolean; accent?: 'emerald' | 'amber' }> = ({
+  title,
+  sourceLabel,
+  opportunities,
+  t,
+  compact,
+  accent = 'emerald',
+  page,
+  setPage,
+  gapResults,
+  borrowResults,
+  onBatchCheckGap,
+  onBatchCheckBorrowable,
+  setGapResults,
+  setBorrowResults,
+  gapLoading,
+  setGapLoading,
+  borrowLoading,
+  setBorrowLoading,
+  ...rowProps
+}) => {
+  const actionableCount = opportunities.filter((opp) => !opp.filter_status).length;
+  const bestApr = opportunities.reduce((best, o) => !o.filter_status && o.net_apr > best ? o.net_apr : best, -Infinity);
+  const accentBorder = accent === 'amber' ? 'border-l-amber-500/60' : 'border-l-emerald-500/60';
+  const accentBg = accent === 'amber' ? 'bg-amber-500/5' : 'bg-emerald-500/5';
+  const accentText = accent === 'amber' ? 'text-amber-400' : 'text-emerald-400';
+  const accentBadge = accent === 'amber' ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300';
+
+  const pageOpps = opportunities.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+
+  const handleBatchGap = async () => {
+    if (!onBatchCheckGap || gapLoading) return;
+    setGapLoading(true);
+    try {
+      const items = pageOpps.filter(o => !o.filter_status).map(o => ({ symbol: o.symbol, exchange: o.exchange, direction: o.direction }));
+      if (items.length === 0) return;
+      const results = await onBatchCheckGap(items);
+      setGapResults(prev => {
+        const next = { ...prev };
+        for (const r of results) {
+          const key = `${r.symbol}-${r.exchange}-${r.direction}`;
+          if (r.error) {
+            next[key] = { gap_pct: -999, spot_bid: 0, spot_ask: 0, futures_bid: 0, futures_ask: 0, direction: r.direction };
+          } else {
+            next[key] = { gap_pct: r.gap_pct, spot_bid: 0, spot_ask: 0, futures_bid: 0, futures_ask: 0, direction: r.direction };
+          }
+        }
+        return next;
+      });
+    } catch { /* ignore */ } finally { setGapLoading(false); }
+  };
+
+  const handleBatchBorrow = async () => {
+    if (!onBatchCheckBorrowable || borrowLoading) return;
+    setBorrowLoading(true);
+    try {
+      const dirAOpps = pageOpps.filter(o => !o.filter_status && o.direction === 'borrow_sell_long');
+      const items = dirAOpps.map(o => ({ symbol: o.symbol, exchange: o.exchange }));
+      if (items.length === 0) return;
+      const results = await onBatchCheckBorrowable(items);
+      setBorrowResults(prev => {
+        const next = { ...prev };
+        for (const r of results) next[`${r.symbol}-${r.exchange}`] = r;
+        return next;
+      });
+    } catch { /* ignore */ } finally { setBorrowLoading(false); }
+  };
+
+  const actionBar = (
+    <div className="flex items-center gap-2">
+      {onBatchCheckGap && (
+        <button onClick={handleBatchGap} disabled={gapLoading}
+          className={`px-2.5 py-1 text-[10px] font-semibold rounded transition-colors ${gapLoading ? 'bg-gray-700 text-gray-400 cursor-wait' : 'bg-sky-600/20 text-sky-300 hover:bg-sky-600/40'}`}>
+          {gapLoading ? t('spot.batchChecking') : t('spot.batchCheckGap')}
+        </button>
+      )}
+      {onBatchCheckBorrowable && (
+        <button onClick={handleBatchBorrow} disabled={borrowLoading}
+          className={`px-2.5 py-1 text-[10px] font-semibold rounded transition-colors ${borrowLoading ? 'bg-gray-700 text-gray-400 cursor-wait' : 'bg-violet-600/20 text-violet-300 hover:bg-violet-600/40'}`}>
+          {borrowLoading ? t('spot.batchChecking') : t('spot.batchCheckBorrow')}
+        </button>
+      )}
+    </div>
+  );
+
+  if (compact) {
+    return (
+      <div className={`bg-gray-900 border border-gray-800 border-l-2 ${accentBorder} rounded-lg overflow-hidden`}>
+        <div className={`flex items-center justify-between px-4 py-2.5 ${accentBg} border-b border-gray-800`}>
+          <div className="flex items-center gap-2">
+            <h3 className={`text-xs font-bold uppercase tracking-wider ${accentText}`}>{title}</h3>
+            <span className={`px-1.5 py-0.5 text-[10px] font-bold rounded-full ${accentBadge}`}>{opportunities.length}</span>
+          </div>
+          <div className="flex items-center gap-3">
+            {actionBar}
+            <div className="text-[10px] text-gray-500">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1" />{actionableCount} ready
+              {bestApr > -Infinity && <span className="ml-2 font-mono text-emerald-400">Best: {(bestApr * 100).toFixed(1)}%</span>}
+            </div>
+          </div>
+        </div>
+        <div className="px-3 py-2 overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-gray-500 text-left border-b border-gray-800/50">
+                <th className="pb-1.5 pr-2">#</th>
+                <th className="pb-1.5 pr-2">{t('spot.symbol')}</th>
+                <th className="pb-1.5 pr-2">{t('spot.exchange')}</th>
+                <th className="pb-1.5 pr-2">Dir</th>
+                <th className="pb-1.5 pr-2 text-right">{t('spot.netApr')}</th>
+                <th className="pb-1.5 pr-2 text-right">Gap</th>
+                <th className="pb-1.5 pr-2 text-right">Borrow</th>
+                <th className="pb-1.5 text-right"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800/30">
+              {pageOpps.map((opp, i) => {
+                const oppKey = `${opp.symbol}-${opp.exchange}-${opp.direction}`;
+                const borrowKey = `${opp.symbol}-${opp.exchange}`;
+                return <SpotRow key={oppKey} opp={opp} index={page * PAGE_SIZE + i} compact t={t}
+                  gapResult={gapResults[oppKey]} borrowResult={borrowResults[borrowKey]} {...rowProps} />;
+              })}
+              {pageOpps.length === 0 && (
+                <tr><td colSpan={8} className="py-6 text-center text-gray-600 text-xs">{t('spot.noOpportunities')}</td></tr>
+              )}
+            </tbody>
+          </table>
+          <Pagination page={page} total={opportunities.length} setPage={setPage} />
+        </div>
+      </div>
+    );
+  }
+
+  // Full-width single-source view
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 overflow-x-auto">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-4 text-xs text-gray-500">
+          {title && <h3 className="text-sm font-semibold text-gray-100 uppercase tracking-wide">{title}</h3>}
+          <span><span className="inline-block w-2 h-2 rounded-full bg-emerald-400 mr-1.5" />{actionableCount} {t('spot.actionable')}</span>
+          <span><span className="inline-block w-2 h-2 rounded-full bg-gray-600 mr-1.5" />{opportunities.length - actionableCount} {t('spot.filtered')}</span>
+          {sourceLabel && <span>{t('spot.source')}: {sourceLabel}</span>}
+        </div>
+        {actionBar}
+      </div>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-gray-400 text-left border-b border-gray-800">
+            <th className="pb-2">#</th>
+            <th className="pb-2">{t('spot.symbol')}</th>
+            <th className="pb-2">{t('spot.exchange')}</th>
+            <th className="pb-2">{t('spot.direction')}</th>
+            <th className="pb-2 text-right">{t('spot.funding')}</th>
+            <th className="pb-2 text-right">{t('spot.borrow')}</th>
+            <th className="pb-2 text-right">{t('spot.fees')}</th>
+            <th className="pb-2 text-right">{t('spot.netApr')}</th>
+            <th className="pb-2 text-right">Gap</th>
+            <th className="pb-2 text-right">Borrow</th>
+            <th className="pb-2">{t('spot.status')}</th>
+            <th className="pb-2"></th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-800/50">
+          {pageOpps.map((opp, i) => {
+            const oppKey = `${opp.symbol}-${opp.exchange}-${opp.direction}`;
+            const borrowKey = `${opp.symbol}-${opp.exchange}`;
+            return <SpotRow key={oppKey} opp={opp} index={page * PAGE_SIZE + i} t={t}
+              gapResult={gapResults[oppKey]} borrowResult={borrowResults[borrowKey]} {...rowProps} />;
+          })}
+          {pageOpps.length === 0 && (
+            <tr><td colSpan={12} className="py-8 text-center text-gray-500">{t('spot.noOpportunities')}</td></tr>
+          )}
+        </tbody>
+      </table>
+      <Pagination page={page} total={opportunities.length} setPage={setPage} />
+    </div>
+  );
+};
+
+const Opportunities: FC<OpportunitiesProps> = ({
+  opportunities,
+  spotOpportunities = [],
+  spotScannerMode,
+  onOpen,
+  onSpotOpen,
+  onCheckPriceGap,
+  onBatchCheckGap,
+  onBatchCheckBorrowable,
+  blacklist = [],
+  onBlacklistToggle,
+}) => {
   const { t } = useLocale();
   const [tab, setTab] = useState<Tab>('perp');
   const [openingOpp, setOpeningOpp] = useState<Opportunity | null>(null);
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
   const [spotOpening, setSpotOpening] = useState<string | null>(null);
-  const [gapChecking, setGapChecking] = useState<string | null>(null);
   const [gapResults, setGapResults] = useState<Record<string, PriceGapResult>>({});
+  const [borrowResults, setBorrowResults] = useState<Record<string, BorrowResult>>({});
   const [spotError, setSpotError] = useState<string | null>(null);
+  const [nativePage, setNativePage] = useState(0);
+  const [cgPage, setCgPage] = useState(0);
+  const [singlePage, setSinglePage] = useState(0);
+  const [gapLoading, setGapLoading] = useState(false);
+  const [borrowLoading, setBorrowLoading] = useState(false);
 
   const dismissModal = useCallback(() => { if (!opening) setOpeningOpp(null); }, [opening]);
   useEffect(() => {
@@ -65,6 +454,10 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
 
   const sorted = [...opportunities].sort((a, b) => b.score - a.score);
   const spotPassed = spotOpportunities.filter((o) => !o.filter_status);
+  const nativeSpotOpportunities = spotOpportunities.filter((o) => o.source === 'native');
+  const coinGlassSpotOpportunities = spotOpportunities.filter((o) => isCoinGlassSource(o.source));
+  const fallbackSpotOpportunities = spotOpportunities.filter((o) => o.source !== 'native' && !isCoinGlassSource(o.source));
+  const showSplitSpotView = spotScannerMode === 'both';
 
   const handleConfirmOpen = async (force = false) => {
     if (!openingOpp || !onOpen) return;
@@ -82,11 +475,9 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
 
   return (
     <div className="space-y-4">
-      {/* Header with segmented toggle */}
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-bold text-gray-100">{t('opp.title')}</h2>
 
-        {/* Strategy toggle */}
         <div className="flex bg-gray-900 border border-gray-700 rounded-lg p-0.5 gap-0.5">
           <button
             onClick={() => setTab('perp')}
@@ -117,7 +508,6 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
         </div>
       </div>
 
-      {/* Perp-Perp Tab */}
       {tab === 'perp' && (
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 overflow-x-auto">
           <table className="w-full text-sm">
@@ -171,8 +561,11 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
                       </button>
                     )}
                     {onOpen && (
-                      <button onClick={() => { setOpeningOpp(opp); setOpenError(null); }} disabled={opening}
-                        className="px-2 py-0.5 text-xs bg-green-600/20 text-green-400 rounded hover:bg-green-600/40 disabled:opacity-50">
+                      <button
+                        onClick={() => { setOpeningOpp(opp); setOpenError(null); }}
+                        disabled={opening}
+                        className="px-2 py-0.5 text-xs bg-green-600/20 text-green-400 rounded hover:bg-green-600/40 disabled:opacity-50"
+                      >
                         {t('opp.open')}
                       </button>
                     )}
@@ -189,30 +582,27 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
         </div>
       )}
 
-      {/* Spot-Futures Tab */}
       {tab === 'spot' && (
-        <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 overflow-x-auto">
-          {/* Summary bar */}
-          <div className="flex items-center gap-4 mb-3 text-xs text-gray-500">
-            <span>
-              <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 mr-1.5" />
-              {spotPassed.length} {t('spot.actionable')}
-            </span>
-            <span>
-              <span className="inline-block w-2 h-2 rounded-full bg-gray-600 mr-1.5" />
-              {spotOpportunities.length - spotPassed.length} {t('spot.filtered')}
-            </span>
-            {spotOpportunities.length > 0 && (
-              <span className="text-xs text-gray-500">
-                Source: {spotOpportunities[0].source === 'native'
-                  ? t('spot.sourceNative')
-                  : spotOpportunities[0].source === 'coinglass'
-                    ? t('spot.sourceCoinGlass')
-                    : t('spot.sourceFallback')}
-              </span>
-            )}
+        <div className="space-y-4">
+          {/* Info legend */}
+          <div className="bg-gray-900/50 border border-gray-800 rounded-lg px-4 py-2.5 space-y-1.5">
+            <div className="flex items-center gap-4 flex-wrap">
+              <span className="text-blue-400 text-xs font-semibold">Dir A</span>
+              <span className="text-xs text-gray-500">{t('spot.dirLegend.dirA')}</span>
+              <span className="text-gray-700">|</span>
+              <span className="text-purple-400 text-xs font-semibold">Dir B</span>
+              <span className="text-xs text-gray-500">{t('spot.dirLegend.dirB')}</span>
+            </div>
+            <div className="flex items-center gap-3 flex-wrap text-[10px] border-t border-gray-800/50 pt-1.5">
+              <span className="text-gray-500 font-semibold">{t('spot.gapLegend')}</span>
+              <span><span className="text-emerald-400 font-mono">-0.5%</span> <span className="text-gray-600">{t('spot.gapGood')}</span></span>
+              <span><span className="text-amber-400 font-mono">+0.3%</span> <span className="text-gray-600">{t('spot.gapWarn')}</span></span>
+              <span className="text-gray-700">|</span>
+              <span className="text-gray-500 font-semibold">{t('spot.borrowLegend')}</span>
+              <span><span className="text-emerald-400 font-mono">12.50</span> <span className="text-gray-600">{t('spot.borrowGood')}</span></span>
+              <span><span className="text-red-400 font-mono">0</span> <span className="text-gray-600">{t('spot.borrowBad')}</span></span>
+            </div>
           </div>
-
           {spotError && (
             <div className="flex items-center justify-between bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 text-sm text-red-400">
               <span>{spotError}</span>
@@ -220,157 +610,91 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
             </div>
           )}
 
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-gray-400 text-left border-b border-gray-800">
-                <th className="pb-2">#</th>
-                <th className="pb-2">{t('spot.symbol')}</th>
-                <th className="pb-2">{t('spot.exchange')}</th>
-                <th className="pb-2">{t('spot.direction')}</th>
-                <th className="pb-2 text-right">{t('spot.funding')}</th>
-                <th className="pb-2 text-right">{t('spot.borrow')}</th>
-                <th className="pb-2 text-right">{t('spot.fees')}</th>
-                <th className="pb-2 text-right">{t('spot.netApr')}</th>
-                <th className="pb-2">{t('spot.priceGap')}</th>
-                <th className="pb-2">{t('spot.status')}</th>
-                <th className="pb-2">{t('spot.reason')}</th>
-                <th className="pb-2"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-800/50">
-              {spotOpportunities.map((opp, i) => {
-                const filtered = !!opp.filter_status;
-                const isA = opp.direction === 'borrow_sell_long';
-                const oppKey = `${opp.symbol}-${opp.exchange}-${opp.direction}`;
-                const dirLabel = isA ? t('spot.dirA') : t('spot.dirB');
-                const dirDesc = isA ? t('spot.dirADesc') : t('spot.dirBDesc');
-                const gapResult = gapResults[oppKey];
-                return (
-                  <tr
-                    key={`${opp.symbol}-${opp.exchange}-${opp.direction}`}
-                    className={filtered ? 'text-gray-600' : 'text-gray-100'}
-                  >
-                    <td className="py-2 font-mono text-gray-500">{i + 1}</td>
-                    <td className="py-2 font-mono">{opp.symbol}</td>
-                    <td className="py-2 capitalize">
-                      {filtered
-                        ? opp.exchange
-                        : <ExchangeLink exchange={opp.exchange} symbol={opp.symbol} className="text-gray-100" />
-                      }
-                    </td>
-                    <td className={`py-2 font-mono ${
-                      filtered ? '' : isA ? 'text-blue-400' : 'text-purple-400'
-                    }`} title={dirDesc}>
-                      {dirLabel} <span className="text-xs text-gray-500 font-normal hidden sm:inline">({dirDesc})</span>
-                    </td>
-                    <td className={`py-2 text-right font-mono ${filtered ? '' : 'text-emerald-400'}`}>
-                      {(opp.funding_apr * 100).toFixed(1)}%
-                    </td>
-                    <td className={`py-2 text-right font-mono ${filtered ? '' : 'text-amber-400'}`}>
-                      {opp.borrow_apr > 0 ? `${(opp.borrow_apr * 100).toFixed(1)}%` : '-'}
-                    </td>
-                    <td className={`py-2 text-right font-mono ${filtered ? '' : 'text-gray-400'}`}>
-                      {(opp.fee_pct * 100).toFixed(2)}%
-                    </td>
-                    <td className={`py-2 text-right font-mono font-semibold ${
-                      filtered ? '' : opp.net_apr >= 0 ? 'text-emerald-400' : 'text-red-400'
-                    }`}>
-                      {(opp.net_apr * 100).toFixed(1)}%
-                    </td>
-                    <td className="py-2 whitespace-nowrap">
-                      {!filtered && onCheckPriceGap && (
-                        <div className="inline-flex items-center gap-2">
-                          <button
-                            disabled={gapChecking === oppKey}
-                            onClick={async () => {
-                              setGapChecking(oppKey);
-                              setSpotError(null);
-                              try {
-                                const result = await onCheckPriceGap(opp.symbol, opp.exchange, opp.direction);
-                                setGapResults((prev) => ({ ...prev, [oppKey]: result }));
-                              } catch (err: unknown) {
-                                setSpotError(err instanceof Error ? err.message : 'Check failed');
-                              } finally {
-                                setGapChecking(null);
-                              }
-                            }}
-                            className={`px-2 py-0.5 text-xs rounded transition-colors ${
-                              gapChecking === oppKey
-                                ? 'bg-gray-700 text-gray-400 cursor-wait'
-                                : 'bg-sky-600/20 text-sky-300 hover:bg-sky-600/40'
-                            }`}
-                          >
-                            {gapChecking === oppKey ? '...' : t('spot.checkGap')}
-                          </button>
-                          {gapResult && (
-                            <span className={`text-xs font-mono ${gapResult.gap_pct < 0.3 ? 'text-emerald-400' : 'text-amber-400'}`}>
-                              {gapResult.gap_pct.toFixed(3)}%
-                            </span>
-                          )}
-                        </div>
-                      )}
-                    </td>
-                    <td className="py-2">
-                      {filtered ? (
-                        <span className="inline-flex items-center gap-1 text-xs text-gray-600">
-                          <span className="w-1.5 h-1.5 rounded-full bg-gray-600" />
-                          {t('spot.filtered')}
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-xs text-emerald-400">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                          {t('spot.ready')}
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-2">
-                      {filtered && (
-                        <span className="text-xs text-gray-600 truncate max-w-[200px] inline-block" title={opp.filter_status}>
-                          {opp.filter_status}
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-2 py-1">
-                      {onSpotOpen && !filtered && (
-                        <button
-                          disabled={spotOpening === oppKey}
-                          onClick={async () => {
-                            setSpotOpening(oppKey);
-                            setSpotError(null);
-                            try {
-                              await onSpotOpen(opp.symbol, opp.exchange, opp.direction);
-                              setSpotOpening(null);
-                            } catch (err: unknown) {
-                              setSpotError(err instanceof Error ? err.message : 'Open failed');
-                              setSpotOpening(null);
-                            }
-                          }}
-                          className={`px-2 py-0.5 text-xs rounded transition-colors ${
-                            spotOpening === oppKey
-                              ? 'bg-gray-700 text-gray-400 cursor-wait'
-                              : 'bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/40'
-                          }`}
-                        >
-                          {spotOpening === oppKey ? 'Opening...' : 'Open'}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-              {spotOpportunities.length === 0 && (
-                <tr>
-                  <td colSpan={12} className="py-8 text-center text-gray-500">
-                    {t('spot.noOpportunities')}
-                  </td>
-                </tr>
+          {showSplitSpotView ? (
+            <div className="space-y-3">
+              {/* Comparison summary bar */}
+              <div className="flex items-center gap-2 bg-gray-900/50 border border-gray-800 rounded-lg px-4 py-2.5">
+                <div className="flex items-center gap-2 flex-1">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                  <span className="text-xs font-semibold text-emerald-400 uppercase tracking-wide">{t('spot.sourceNative')}</span>
+                  <span className="text-xs text-gray-500">{nativeSpotOpportunities.filter(o => !o.filter_status).length}/{nativeSpotOpportunities.length}</span>
+                </div>
+                <div className="text-[10px] text-gray-600 font-mono px-3">vs</div>
+                <div className="flex items-center gap-2 flex-1 justify-end">
+                  <span className="text-xs text-gray-500">{coinGlassSpotOpportunities.filter(o => !o.filter_status).length}/{coinGlassSpotOpportunities.length}</span>
+                  <span className="text-xs font-semibold text-amber-400 uppercase tracking-wide">{t('spot.sourceCoinGlass')}</span>
+                  <span className="w-2 h-2 rounded-full bg-amber-400" />
+                </div>
+              </div>
+              {/* Side-by-side panels */}
+              <div className="grid gap-3 xl:grid-cols-2">
+                <SpotSection
+                  title={t('spot.sourceNative')}
+                  sourceLabel={t('spot.sourceNative')}
+                  opportunities={nativeSpotOpportunities}
+                  t={t}
+                  compact accent="emerald"
+                  page={nativePage} setPage={setNativePage}
+                  gapResults={gapResults} setGapResults={setGapResults}
+                  borrowResults={borrowResults} setBorrowResults={setBorrowResults}
+                  gapLoading={gapLoading} setGapLoading={setGapLoading}
+                  borrowLoading={borrowLoading} setBorrowLoading={setBorrowLoading}
+                  onBatchCheckGap={onBatchCheckGap} onBatchCheckBorrowable={onBatchCheckBorrowable}
+                  onSpotOpen={onSpotOpen} spotOpening={spotOpening}
+                  setSpotOpening={setSpotOpening} setSpotError={setSpotError}
+                />
+                <SpotSection
+                  title={t('spot.sourceCoinGlass')}
+                  sourceLabel={t('spot.sourceCoinGlass')}
+                  opportunities={coinGlassSpotOpportunities}
+                  t={t}
+                  compact accent="amber"
+                  page={cgPage} setPage={setCgPage}
+                  gapResults={gapResults} setGapResults={setGapResults}
+                  borrowResults={borrowResults} setBorrowResults={setBorrowResults}
+                  gapLoading={gapLoading} setGapLoading={setGapLoading}
+                  borrowLoading={borrowLoading} setBorrowLoading={setBorrowLoading}
+                  onBatchCheckGap={onBatchCheckGap} onBatchCheckBorrowable={onBatchCheckBorrowable}
+                  onSpotOpen={onSpotOpen} spotOpening={spotOpening}
+                  setSpotOpening={setSpotOpening} setSpotError={setSpotError}
+                />
+              </div>
+              {fallbackSpotOpportunities.length > 0 && (
+                <SpotSection
+                  title={t('spot.sourceFallback')}
+                  sourceLabel={t('spot.sourceFallback')}
+                  opportunities={fallbackSpotOpportunities}
+                  t={t}
+                  compact accent="emerald"
+                  page={0} setPage={() => {}}
+                  gapResults={gapResults} setGapResults={setGapResults}
+                  borrowResults={borrowResults} setBorrowResults={setBorrowResults}
+                  gapLoading={gapLoading} setGapLoading={setGapLoading}
+                  borrowLoading={borrowLoading} setBorrowLoading={setBorrowLoading}
+                  onBatchCheckGap={onBatchCheckGap} onBatchCheckBorrowable={onBatchCheckBorrowable}
+                  onSpotOpen={onSpotOpen} spotOpening={spotOpening}
+                  setSpotOpening={setSpotOpening} setSpotError={setSpotError}
+                />
               )}
-            </tbody>
-          </table>
+            </div>
+          ) : (
+            <SpotSection
+              opportunities={spotOpportunities}
+              sourceLabel={spotOpportunities.length > 0 ? getSpotSourceLabel(t, spotOpportunities[0].source) : undefined}
+              t={t}
+              page={singlePage} setPage={setSinglePage}
+              gapResults={gapResults} setGapResults={setGapResults}
+              borrowResults={borrowResults} setBorrowResults={setBorrowResults}
+              gapLoading={gapLoading} setGapLoading={setGapLoading}
+              borrowLoading={borrowLoading} setBorrowLoading={setBorrowLoading}
+              onBatchCheckGap={onBatchCheckGap} onBatchCheckBorrowable={onBatchCheckBorrowable}
+              onSpotOpen={onSpotOpen} spotOpening={spotOpening}
+              setSpotOpening={setSpotOpening} setSpotError={setSpotError}
+            />
+          )}
         </div>
       )}
 
-      {/* Open confirmation dialog (perp-perp only) */}
       {openingOpp && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
           <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 max-w-md w-full mx-4">
@@ -390,20 +714,29 @@ const Opportunities: FC<OpportunitiesProps> = ({ opportunities, spotOpportunitie
               <div className="mb-4">
                 <p className="text-red-400 text-sm">{openError}</p>
                 {openError.includes('risk rejected') && (
-                  <button onClick={() => handleConfirmOpen(true)} disabled={opening}
-                    className="mt-2 px-3 py-1.5 text-sm bg-yellow-600/20 text-yellow-400 rounded hover:bg-yellow-600/40 disabled:opacity-50">
+                  <button
+                    onClick={() => handleConfirmOpen(true)}
+                    disabled={opening}
+                    className="mt-2 px-3 py-1.5 text-sm bg-yellow-600/20 text-yellow-400 rounded hover:bg-yellow-600/40 disabled:opacity-50"
+                  >
                     {opening ? '...' : t('opp.forceOpen')}
                   </button>
                 )}
               </div>
             )}
             <div className="flex gap-3 justify-end">
-              <button onClick={() => setOpeningOpp(null)} disabled={opening}
-                className="px-4 py-2 text-sm text-gray-400 hover:text-gray-200 disabled:opacity-50">
+              <button
+                onClick={() => setOpeningOpp(null)}
+                disabled={opening}
+                className="px-4 py-2 text-sm text-gray-400 hover:text-gray-200 disabled:opacity-50"
+              >
                 {t('opp.openCancel')}
               </button>
-              <button onClick={() => handleConfirmOpen(false)} disabled={opening}
-                className="px-4 py-2 text-sm bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50">
+              <button
+                onClick={() => handleConfirmOpen(false)}
+                disabled={opening}
+                className="px-4 py-2 text-sm bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
+              >
                 {opening ? '...' : t('opp.openConfirm')}
               </button>
             </div>

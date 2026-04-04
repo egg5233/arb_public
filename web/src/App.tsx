@@ -20,11 +20,19 @@ type Page = 'overview' | 'opportunities' | 'positions' | 'history' | 'analytics'
 
 const UPDATE_DISMISS_KEY = 'arb_update_dismissed';
 
+function readSpotScannerMode(config: Record<string, unknown>): string | undefined {
+  const spotFutures = config.spot_futures;
+  if (!spotFutures || typeof spotFutures !== 'object') return undefined;
+  const scannerMode = (spotFutures as Record<string, unknown>).scanner_mode;
+  return typeof scannerMode === 'string' ? scannerMode : undefined;
+}
+
 function App() {
   const api = useApi();
   const [page, setPage] = useState<Page>('overview');
   const [exchanges, setExchanges] = useState<ExchangeInfo[]>([]);
   const [blacklist, setBlacklist] = useState<string[]>([]);
+  const [spotScannerMode, setSpotScannerMode] = useState('native');
   const [locale, setLocaleState] = useState<Locale>(getStoredLocale);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const ws = useWebSocket(!!api.token);
@@ -104,6 +112,12 @@ function App() {
     } catch { /* ignore */ }
   }, [api, blacklist]);
 
+  const handleUpdateConfig = useCallback(async (data: Record<string, unknown>) => {
+    const updated = await api.updateConfig(data);
+    setSpotScannerMode(readSpotScannerMode(updated) ?? readSpotScannerMode(data) ?? 'native');
+    return updated;
+  }, [api]);
+
   // Seed WS state from REST on initial load, and refresh exchanges periodically.
   useEffect(() => {
     if (!api.token) return;
@@ -112,6 +126,9 @@ function App() {
     api.getStats().then(ws.setStats).catch(() => {});
     api.getSpotPositions().then(ws.setSpotPositions).catch(() => {});
     api.getSpotOpportunities().then(ws.setSpotOpportunities).catch(() => {});
+    api.getConfig().then((config) => {
+      setSpotScannerMode(readSpotScannerMode(config) ?? 'native');
+    }).catch(() => {});
     api.getBlacklist().then(setBlacklist).catch(() => {});
     const loadExchanges = () => {
       api.getExchanges().then(setExchanges).catch(() => {});
@@ -160,9 +177,12 @@ function App() {
           <Opportunities
             opportunities={ws.opportunities}
             spotOpportunities={ws.spotOpportunities}
+            spotScannerMode={spotScannerMode}
             onOpen={api.openPosition}
             onSpotOpen={api.spotManualOpen}
             onCheckPriceGap={api.checkSpotPriceGap}
+            onBatchCheckGap={api.batchCheckGap}
+            onBatchCheckBorrowable={api.batchCheckBorrowable}
             blacklist={blacklist}
             onBlacklistToggle={handleBlacklistToggle}
           />
@@ -182,7 +202,7 @@ function App() {
       case 'analytics':
         return <Analytics getAnalyticsPnL={api.getAnalyticsPnL} getAnalyticsSummary={api.getAnalyticsSummary} />;
       case 'config':
-        return <Config getConfig={api.getConfig} updateConfig={api.updateConfig} blacklist={blacklist} onBlacklistRemove={async (s) => { await api.removeFromBlacklist(s); setBlacklist(prev => prev.filter(x => x !== s)); }} />;
+        return <Config getConfig={api.getConfig} updateConfig={handleUpdateConfig} blacklist={blacklist} onBlacklistRemove={async (s) => { await api.removeFromBlacklist(s); setBlacklist(prev => prev.filter(x => x !== s)); }} />;
       case 'transfers':
         return (
           <Transfers

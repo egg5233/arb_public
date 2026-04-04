@@ -9,26 +9,38 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"arb/internal/database"
 )
 
-const sessionTTL = 24 * time.Hour
+const sessionTTL = 7 * 24 * time.Hour
 
 // authStore holds active sessions.
 type authStore struct {
 	mu       sync.RWMutex
+	db       *database.Client
 	sessions map[string]time.Time // token -> expiry
 	done     chan struct{}
 }
 
-func newAuthStore() *authStore {
+func newAuthStore(db *database.Client) *authStore {
 	return &authStore{
+		db:       db,
 		sessions: make(map[string]time.Time),
 		done:     make(chan struct{}),
 	}
 }
 
+func authSessionKey(token string) string {
+	return "arb:auth:session:" + token
+}
+
 // cleanupLoop periodically removes expired sessions.
 func (a *authStore) cleanupLoop() {
+	if a.db != nil {
+		<-a.done
+		return
+	}
 	ticker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
 	for {
@@ -67,6 +79,12 @@ func (a *authStore) createSession() (string, error) {
 		return "", err
 	}
 	token := hex.EncodeToString(b)
+	if a.db != nil {
+		if err := a.db.SetWithTTL(authSessionKey(token), "1", sessionTTL); err != nil {
+			return "", err
+		}
+		return token, nil
+	}
 	a.mu.Lock()
 	a.sessions[token] = time.Now().Add(sessionTTL)
 	a.mu.Unlock()
@@ -75,6 +93,10 @@ func (a *authStore) createSession() (string, error) {
 
 // validate checks whether the token exists and is not expired.
 func (a *authStore) validate(token string) bool {
+	if a.db != nil {
+		_, err := a.db.Get(authSessionKey(token))
+		return err == nil
+	}
 	a.mu.RLock()
 	exp, ok := a.sessions[token]
 	a.mu.RUnlock()

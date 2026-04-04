@@ -47,7 +47,7 @@ func NewServer(db *database.Client, cfg *config.Config, exchanges map[string]exc
 		cfg:            cfg,
 		hub:            NewHub(),
 		log:            utils.NewLogger("api"),
-		auth:           newAuthStore(),
+		auth:           newAuthStore(db),
 		exchanges:      exchanges,
 		configNotifier: config.NewConfigNotifier(),
 	}
@@ -115,6 +115,8 @@ func (s *Server) Start() {
 	mux.HandleFunc("/api/spot/opportunities", s.cors(s.authMiddleware(s.handleGetSpotOpportunities)))
 	mux.HandleFunc("/api/spot/open", s.cors(s.authMiddleware(s.handleSpotManualOpen)))
 	mux.HandleFunc("/api/spot/check-price-gap", s.cors(s.authMiddleware(s.handleSpotCheckPriceGap)))
+	mux.HandleFunc("/api/spot/batch-check-gap", s.cors(s.authMiddleware(s.handleSpotBatchCheckGap)))
+	mux.HandleFunc("/api/spot/batch-check-borrowable", s.cors(s.authMiddleware(s.handleSpotBatchCheckBorrowable)))
 	mux.HandleFunc("/api/spot/close", s.cors(s.authMiddleware(s.handleSpotManualClose)))
 	mux.HandleFunc("GET /api/spot/positions/{id}/health", s.cors(s.authMiddleware(s.handleSpotPositionHealth)))
 	mux.HandleFunc("/api/spot/config/auto", s.cors(s.authMiddleware(s.handleSpotAutoConfig)))

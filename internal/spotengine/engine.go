@@ -1,6 +1,7 @@
 package spotengine
 
 import (
+	"encoding/json"
 	"strings"
 	"sync"
 	"time"
@@ -173,6 +174,12 @@ func (e *SpotEngine) discoveryLoop() {
 		e.log.Info("seeded lastSeen with %d symbols from Redis persistence keys", len(syms))
 	}
 
+	// Load cached opportunities from previous session for instant dashboard display.
+	if cached := e.loadCachedOpps(); len(cached) > 0 {
+		e.log.Info("loaded %d cached spot opportunities for instant display", len(cached))
+		e.pushOppsToAPI(cached)
+	}
+
 	// Initial scan on startup.
 	e.log.Info("spot-futures discovery scan (interval: %s)", scanInterval)
 	opps := e.runDiscoveryScan()
@@ -225,14 +232,60 @@ func (e *SpotEngine) discoveryLoop() {
 
 // pushOppsToAPI sends discovery results to the API server for /api/spot/opportunities
 // and caches them locally for ManualOpen lookups.
+const spotOppsCacheKey = "spot:opps:cache"
+
+// loadCachedOpps loads previous scan results from Redis for instant display on startup.
+func (e *SpotEngine) loadCachedOpps() []SpotArbOpportunity {
+	raw, err := e.db.Get(spotOppsCacheKey)
+	if err != nil || raw == "" {
+		return nil
+	}
+	var opps []SpotArbOpportunity
+	if err := json.Unmarshal([]byte(raw), &opps); err != nil {
+		e.log.Warn("failed to parse cached spot opps: %v", err)
+		return nil
+	}
+	return opps
+}
+
+// saveCachedOpps persists scan results to Redis (TTL 30min) for fast startup.
+func (e *SpotEngine) saveCachedOpps(opps []SpotArbOpportunity) {
+	data, err := json.Marshal(opps)
+	if err != nil {
+		return
+	}
+	_ = e.db.SetWithTTL(spotOppsCacheKey, string(data), 30*time.Minute)
+}
+
 func (e *SpotEngine) pushOppsToAPI(opps []SpotArbOpportunity) {
 	// Cache locally for ManualOpen.
 	e.oppsMu.Lock()
 	e.latestOpps = opps
 	e.oppsMu.Unlock()
 
+	// Persist to Redis for instant display after restart.
+	e.saveCachedOpps(opps)
+
+	// In "both" mode, cap each source to 100 so neither drowns the other.
+	// In single-source mode, cap total to 100.
 	apiOpps := opps
-	if len(apiOpps) > 100 {
+	if e.cfg.SpotFuturesScannerMode == "both" {
+		var native, cg []SpotArbOpportunity
+		for _, o := range opps {
+			if o.Source == "native" {
+				native = append(native, o)
+			} else {
+				cg = append(cg, o)
+			}
+		}
+		if len(native) > 100 {
+			native = native[:100]
+		}
+		if len(cg) > 100 {
+			cg = cg[:100]
+		}
+		apiOpps = append(native, cg...)
+	} else if len(apiOpps) > 100 {
 		apiOpps = apiOpps[:100]
 	}
 

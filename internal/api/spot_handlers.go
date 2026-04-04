@@ -101,9 +101,9 @@ func (s *Server) handleGetSpotOpportunities(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Cap to 100 entries to avoid overwhelming the dashboard.
-	if len(opps) > 100 {
-		opps = opps[:100]
+	// Cap to 200 entries (100 per source in "both" scanner mode).
+	if len(opps) > 200 {
+		opps = opps[:200]
 	}
 
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: opps})
@@ -806,4 +806,173 @@ func (s *Server) handleSpotTestLifecycle(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: report})
+}
+
+// handleSpotBatchCheckBorrowable checks MaxBorrowable for a batch of symbol/exchange pairs.
+func (s *Server) handleSpotBatchCheckBorrowable(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Items []struct {
+			Symbol   string `json:"symbol"`
+			Exchange string `json:"exchange"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "invalid JSON"})
+		return
+	}
+	if len(req.Items) > 50 {
+		req.Items = req.Items[:50]
+	}
+
+	type borrowResult struct {
+		Symbol        string  `json:"symbol"`
+		Exchange      string  `json:"exchange"`
+		MaxBorrowable float64 `json:"max_borrowable"`
+		Error         string  `json:"error,omitempty"`
+	}
+
+	results := make([]borrowResult, len(req.Items))
+	for i, item := range req.Items {
+		sym := strings.ToUpper(strings.TrimSpace(item.Symbol))
+		exch := strings.ToLower(strings.TrimSpace(item.Exchange))
+		results[i] = borrowResult{Symbol: sym, Exchange: exch}
+
+		adapter, ok := s.exchanges[exch]
+		if !ok {
+			results[i].Error = "exchange not found"
+			continue
+		}
+		smExch, ok := adapter.(exchange.SpotMarginExchange)
+		if !ok {
+			results[i].Error = "no margin support"
+			continue
+		}
+
+		// Extract base coin from symbol (strip USDT suffix).
+		baseCoin := strings.TrimSuffix(sym, "USDT")
+		if baseCoin == "" || baseCoin == sym {
+			results[i].Error = "invalid symbol"
+			continue
+		}
+
+		mb, err := smExch.GetMarginBalance(baseCoin)
+		if err != nil {
+			errStr := err.Error()
+			// Known "not borrowable" errors — return 0 instead of error.
+			if strings.Contains(errStr, "not found") ||
+				strings.Contains(errStr, "not enough asset") ||
+				strings.Contains(errStr, "-3045") {
+				results[i].MaxBorrowable = 0
+				continue
+			}
+			results[i].Error = fmt.Sprintf("query failed: %v", err)
+			continue
+		}
+		results[i].MaxBorrowable = mb.MaxBorrowable
+	}
+
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: results})
+}
+
+// handleSpotBatchCheckGap checks price gaps for a batch of symbol/exchange/direction tuples.
+func (s *Server) handleSpotBatchCheckGap(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Items []struct {
+			Symbol    string `json:"symbol"`
+			Exchange  string `json:"exchange"`
+			Direction string `json:"direction"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "invalid JSON"})
+		return
+	}
+	if len(req.Items) > 50 {
+		req.Items = req.Items[:50]
+	}
+
+	type gapResult struct {
+		Symbol    string  `json:"symbol"`
+		Exchange  string  `json:"exchange"`
+		Direction string  `json:"direction"`
+		SpotBid   float64 `json:"spot_bid"`
+		SpotAsk   float64 `json:"spot_ask"`
+		FutBid    float64 `json:"futures_bid"`
+		FutAsk    float64 `json:"futures_ask"`
+		GapPct    float64 `json:"gap_pct"`
+		Error     string  `json:"error,omitempty"`
+	}
+
+	results := make([]gapResult, len(req.Items))
+	for i, item := range req.Items {
+		sym := strings.ToUpper(strings.TrimSpace(item.Symbol))
+		exch := strings.ToLower(strings.TrimSpace(item.Exchange))
+		dir := strings.TrimSpace(item.Direction)
+		results[i] = gapResult{Symbol: sym, Exchange: exch, Direction: dir}
+
+		adapter, ok := s.exchanges[exch]
+		if !ok {
+			results[i].Error = "exchange not found"
+			continue
+		}
+		smExch, ok := adapter.(exchange.SpotMarginExchange)
+		if !ok {
+			results[i].Error = "no margin support"
+			continue
+		}
+
+		futBBO, err := getFuturesBBOForAPI(adapter, sym)
+		if err != nil {
+			errStr := err.Error()
+			if strings.Contains(errStr, "invalid") ||
+				strings.Contains(errStr, "not found") ||
+				strings.Contains(errStr, "does not exist") ||
+				strings.Contains(errStr, "110013") {
+				results[i].Error = "not listed"
+				continue
+			}
+			results[i].Error = fmt.Sprintf("futures BBO: %v", err)
+			continue
+		}
+		spotBBO, err := smExch.GetSpotBBO(sym)
+		if err != nil {
+			errStr := err.Error()
+			if strings.Contains(errStr, "invalid") ||
+				strings.Contains(errStr, "not found") ||
+				strings.Contains(errStr, "does not exist") {
+				results[i].Error = "not listed"
+				continue
+			}
+			results[i].Error = fmt.Sprintf("spot BBO: %v", err)
+			continue
+		}
+
+		results[i].SpotBid = spotBBO.Bid
+		results[i].SpotAsk = spotBBO.Ask
+		results[i].FutBid = futBBO.Bid
+		results[i].FutAsk = futBBO.Ask
+
+		switch dir {
+		case "borrow_sell_long":
+			if spotBBO.Bid > 0 {
+				results[i].GapPct = (futBBO.Ask - spotBBO.Bid) / spotBBO.Bid * 100
+			}
+		case "buy_spot_short":
+			if futBBO.Bid > 0 {
+				results[i].GapPct = (spotBBO.Ask - futBBO.Bid) / futBBO.Bid * 100
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: results})
 }
