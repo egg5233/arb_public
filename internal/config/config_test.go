@@ -8,6 +8,78 @@ import (
 	"testing"
 )
 
+func TestApplyJSON_StrategyScanMinutesAllowZero(t *testing.T) {
+	cfg := &Config{
+		EntryScanMinute:     40,
+		ExitScanMinute:      30,
+		RotateScanMinute:    35,
+		RebalanceScanMinute: 10,
+	}
+
+	zero := 0
+	jc := &jsonConfig{
+		Strategy: &jsonStrategy{
+			EntryScanMinute:     &zero,
+			ExitScanMinute:      &zero,
+			RotateScanMinute:    &zero,
+			RebalanceScanMinute: &zero,
+		},
+	}
+
+	cfg.applyJSON(jc)
+
+	if cfg.EntryScanMinute != 0 {
+		t.Fatalf("expected entry_scan_minute=0, got %d", cfg.EntryScanMinute)
+	}
+	if cfg.ExitScanMinute != 0 {
+		t.Fatalf("expected exit_scan_minute=0, got %d", cfg.ExitScanMinute)
+	}
+	if cfg.RotateScanMinute != 0 {
+		t.Fatalf("expected rotate_scan_minute=0, got %d", cfg.RotateScanMinute)
+	}
+	if cfg.RebalanceScanMinute != 0 {
+		t.Fatalf("expected rebalance_scan_minute=0, got %d", cfg.RebalanceScanMinute)
+	}
+}
+
+func TestApplyJSON_FundRebalanceDoesNotOverrideStrategy(t *testing.T) {
+	cfg := &Config{RebalanceScanMinute: 10}
+
+	strategyMinute := 35
+	fundMinute := 20
+	jc := &jsonConfig{
+		Strategy: &jsonStrategy{
+			RebalanceScanMinute: &strategyMinute,
+		},
+		Fund: &jsonFund{
+			RebalanceScanMinute: &fundMinute,
+		},
+	}
+
+	cfg.applyJSON(jc)
+
+	if cfg.RebalanceScanMinute != 35 {
+		t.Fatalf("expected strategy rebalance_scan_minute to win, got %d", cfg.RebalanceScanMinute)
+	}
+}
+
+func TestApplyJSON_FundRebalanceFallbackWhenStrategyMissing(t *testing.T) {
+	cfg := &Config{RebalanceScanMinute: 10}
+
+	fundMinute := 20
+	jc := &jsonConfig{
+		Fund: &jsonFund{
+			RebalanceScanMinute: &fundMinute,
+		},
+	}
+
+	cfg.applyJSON(jc)
+
+	if cfg.RebalanceScanMinute != 20 {
+		t.Fatalf("expected fund rebalance_scan_minute=20 to apply as fallback, got %d", cfg.RebalanceScanMinute)
+	}
+}
+
 func TestSaveJSON_PreservesExistingExchangeCredentialsWhenRuntimeEmpty(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	original := `{

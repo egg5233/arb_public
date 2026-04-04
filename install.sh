@@ -222,8 +222,7 @@ if [ ! -f "$INSTALL_DIR/config.json" ]; then
   "fund": {
     "max_positions": 5,
     "leverage": 2,
-    "capital_per_leg": 50,
-    "rebalance_advance_min": 10
+    "capital_per_leg": 50
   },
   "strategy": {
     "top_opportunities": 25,

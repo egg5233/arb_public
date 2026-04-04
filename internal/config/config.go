@@ -313,11 +313,6 @@ type jsonSpotFutures struct {
 	EnableExitSpreadGate  *bool    `json:"enable_exit_spread_gate"`
 	ExitSpreadPct         *float64 `json:"exit_spread_pct"`
 
-	// Backward-compat: accept old key names from existing config files.
-	LegacyEnableBasisGate     *bool    `json:"enable_basis_gate"`
-	LegacyMaxBasisPct         *float64 `json:"max_basis_pct"`
-	LegacySeparateAcctMaxUSDT *float64 `json:"separate_acct_max_usdt"`
-	LegacyUnifiedAcctMaxUSDT  *float64 `json:"unified_acct_max_usdt"`
 }
 
 type jsonExchange struct {
@@ -425,7 +420,6 @@ type jsonFund struct {
 	Leverage            *int     `json:"leverage"`
 	CapitalPerLeg       *float64 `json:"capital_per_leg"`
 	RebalanceScanMinute *int     `json:"rebalance_scan_minute"` // legacy: also accepted here
-	RebalanceAdvanceMin *int     `json:"rebalance_advance_min"` // deprecated alias
 }
 
 type jsonRisk struct {
@@ -667,6 +661,10 @@ func (c *Config) loadJSON() {
 }
 
 func (c *Config) applyJSON(jc *jsonConfig) {
+	validMinute := func(v *int) bool {
+		return v != nil && *v >= 0 && *v <= 59
+	}
+
 	if jc.DryRun != nil {
 		c.DryRun = *jc.DryRun
 	}
@@ -679,16 +677,16 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if len(s.ScanMinutes) > 0 {
 			c.ScanMinutes = s.ScanMinutes
 		}
-		if s.EntryScanMinute != nil && *s.EntryScanMinute > 0 {
+		if validMinute(s.EntryScanMinute) {
 			c.EntryScanMinute = *s.EntryScanMinute
 		}
-		if s.ExitScanMinute != nil && *s.ExitScanMinute > 0 {
+		if validMinute(s.ExitScanMinute) {
 			c.ExitScanMinute = *s.ExitScanMinute
 		}
-		if s.RotateScanMinute != nil && *s.RotateScanMinute > 0 {
+		if validMinute(s.RotateScanMinute) {
 			c.RotateScanMinute = *s.RotateScanMinute
 		}
-		if s.RebalanceScanMinute != nil && *s.RebalanceScanMinute > 0 {
+		if validMinute(s.RebalanceScanMinute) {
 			c.RebalanceScanMinute = *s.RebalanceScanMinute
 		}
 		if s.EnablePoolAllocator != nil {
@@ -851,11 +849,8 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if f.CapitalPerLeg != nil {
 			c.CapitalPerLeg = *f.CapitalPerLeg
 		}
-		if f.RebalanceScanMinute != nil {
+		if validMinute(f.RebalanceScanMinute) && (jc.Strategy == nil || jc.Strategy.RebalanceScanMinute == nil) {
 			c.RebalanceScanMinute = *f.RebalanceScanMinute
-		} else if f.RebalanceAdvanceMin != nil {
-			// Deprecated: accept old field name as fallback.
-			c.RebalanceScanMinute = *f.RebalanceAdvanceMin
 		}
 	}
 
@@ -1102,13 +1097,9 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		}
 		if sf.CapitalSeparateUSDT != nil && *sf.CapitalSeparateUSDT > 0 {
 			c.SpotFuturesCapitalSeparate = *sf.CapitalSeparateUSDT
-		} else if sf.LegacySeparateAcctMaxUSDT != nil && *sf.LegacySeparateAcctMaxUSDT > 0 {
-			c.SpotFuturesCapitalSeparate = *sf.LegacySeparateAcctMaxUSDT
 		}
 		if sf.CapitalUnifiedUSDT != nil && *sf.CapitalUnifiedUSDT > 0 {
 			c.SpotFuturesCapitalUnified = *sf.CapitalUnifiedUSDT
-		} else if sf.LegacyUnifiedAcctMaxUSDT != nil && *sf.LegacyUnifiedAcctMaxUSDT > 0 {
-			c.SpotFuturesCapitalUnified = *sf.LegacyUnifiedAcctMaxUSDT
 		}
 		if sf.NativeScannerEnabled != nil {
 			c.SpotFuturesNativeScannerEnabled = *sf.NativeScannerEnabled
@@ -1127,13 +1118,9 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		}
 		if sf.EnablePriceGapGate != nil {
 			c.SpotFuturesEnablePriceGapGate = *sf.EnablePriceGapGate
-		} else if sf.LegacyEnableBasisGate != nil {
-			c.SpotFuturesEnablePriceGapGate = *sf.LegacyEnableBasisGate
 		}
 		if sf.MaxPriceGapPct != nil && *sf.MaxPriceGapPct > 0 {
 			c.SpotFuturesMaxPriceGapPct = *sf.MaxPriceGapPct
-		} else if sf.LegacyMaxBasisPct != nil && *sf.LegacyMaxBasisPct > 0 {
-			c.SpotFuturesMaxPriceGapPct = *sf.LegacyMaxBasisPct
 		}
 		if sf.EnableExitSpreadGate != nil {
 			c.SpotFuturesEnableExitSpreadGate = *sf.EnableExitSpreadGate
@@ -1419,12 +1406,7 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	sf["max_price_gap_pct"] = c.SpotFuturesMaxPriceGapPct
 	sf["enable_exit_spread_gate"] = c.SpotFuturesEnableExitSpreadGate
 	sf["exit_spread_pct"] = c.SpotFuturesExitSpreadPct
-	// Clean up old keys if present in the config file.
-	delete(sf, "capital_per_position")
-	delete(sf, "enable_basis_gate")
-	delete(sf, "max_basis_pct")
-	delete(sf, "separate_acct_max_usdt")
-	delete(sf, "unified_acct_max_usdt")
+	delete(sf, "capital_per_position") // removed field
 
 	// Safety
 	safety := getMap(raw, "safety")
@@ -1481,11 +1463,6 @@ func (c *Config) loadEnvOverrides() {
 		}
 	}
 	if v := os.Getenv("REBALANCE_SCAN_MINUTE"); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			c.RebalanceScanMinute = i
-		}
-	} else if v := os.Getenv("REBALANCE_ADVANCE_MIN"); v != "" {
-		// Deprecated: accept old env var as fallback.
 		if i, err := strconv.Atoi(v); err == nil {
 			c.RebalanceScanMinute = i
 		}
