@@ -289,6 +289,35 @@ const NumberField: FC<{
 }
 
 // ---------------------------------------------------------------------------
+// Managed-by-Allocation badge (shown when field is controlled by Allocation)
+// ---------------------------------------------------------------------------
+const ManagedBadge: FC<{ text: string }> = ({ text }) => (
+  <span className="ml-2 px-2 py-0.5 text-[10px] font-semibold rounded-full bg-violet-900/40 text-violet-300 border border-violet-700/50">
+    {text}
+  </span>
+);
+
+const ReadOnlyNumberField: FC<{
+  label: string;
+  desc?: string;
+  value: unknown;
+  unit?: string;
+  badge?: string;
+}> = ({ label, desc, value, unit, badge }) => (
+  <div className="bg-gray-900 rounded-xl p-4 border border-gray-800 opacity-60">
+    <div className="flex items-center gap-2 mb-2">
+      <label className="text-sm font-medium text-gray-400">{label}</label>
+      {unit && <span className="text-xs text-gray-500">({unit})</span>}
+      {desc && <Tooltip text={desc} />}
+      {badge && <ManagedBadge text={badge} />}
+    </div>
+    <div className="w-full bg-gray-800/50 border border-gray-700/50 rounded-lg py-1.5 px-3 text-sm font-mono text-gray-400 cursor-not-allowed">
+      {String(value ?? '—')}
+    </div>
+  </div>
+);
+
+// ---------------------------------------------------------------------------
 // Main Config Component
 // ---------------------------------------------------------------------------
 const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBlacklistRemove }) => {
@@ -505,39 +534,74 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
   // =========================================================================
   const renderFundTab = () => {
     const dryRun = getByPath(config, ['dry_run']) as boolean | undefined;
+    const unifiedOn = getByPath(config, ['allocation', 'enable_unified_capital']) === true;
+    const badge = unifiedOn ? t('cfg.alloc.managedBadge' as TranslationKey) : undefined;
+    const managedDesc = unifiedOn ? t('cfg.alloc.managedDesc' as TranslationKey) : undefined;
 
     return (
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <NumberField
-          label={t('cfg.field.maxPositions')}
-          desc={t('cfg.desc.maxPositions')}
-          value={getByPath(config, ['fund', 'max_positions'])}
-          onChange={(v) => handleChange(['fund', 'max_positions'], v)}
-        />
+        {unifiedOn ? (
+          <ReadOnlyNumberField
+            label={t('cfg.field.maxPositions')}
+            desc={managedDesc}
+            value={getByPath(config, ['fund', 'max_positions'])}
+            badge={badge}
+          />
+        ) : (
+          <NumberField
+            label={t('cfg.field.maxPositions')}
+            desc={t('cfg.desc.maxPositions')}
+            value={getByPath(config, ['fund', 'max_positions'])}
+            onChange={(v) => handleChange(['fund', 'max_positions'], v)}
+          />
+        )}
         {/* Leverage dropdown */}
-        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-          <div className="flex items-center gap-2 mb-2">
-            <label className="text-sm font-medium">{t('cfg.field.leverage')}</label>
-            <Tooltip text={t('cfg.desc.leverage')} />
+        {unifiedOn ? (
+          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800 opacity-60">
+            <div className="flex items-center gap-2 mb-2">
+              <label className="text-sm font-medium text-gray-400">{t('cfg.field.leverage')}</label>
+              <Tooltip text={managedDesc || t('cfg.desc.leverage')} />
+              {badge && <ManagedBadge text={badge} />}
+            </div>
+            <div className="w-full bg-gray-800/50 border border-gray-700/50 rounded-lg py-2 px-3 text-sm text-gray-400 cursor-not-allowed">
+              {String(getByPath(config, ['fund', 'leverage']) ?? 3)}x
+            </div>
           </div>
-          <select
-            value={String(getByPath(config, ['fund', 'leverage']) ?? 3)}
-            onChange={(e) => handleChange(['fund', 'leverage'], e.target.value)}
-            className="w-full bg-gray-800 border border-gray-700 rounded-lg py-2 px-3 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
-          >
-            {LEVERAGE_OPTIONS.map((lev) => (
-              <option key={lev} value={lev}>{lev}x</option>
-            ))}
-          </select>
-        </div>
+        ) : (
+          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+            <div className="flex items-center gap-2 mb-2">
+              <label className="text-sm font-medium">{t('cfg.field.leverage')}</label>
+              <Tooltip text={t('cfg.desc.leverage')} />
+            </div>
+            <select
+              value={String(getByPath(config, ['fund', 'leverage']) ?? 3)}
+              onChange={(e) => handleChange(['fund', 'leverage'], e.target.value)}
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg py-2 px-3 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+            >
+              {LEVERAGE_OPTIONS.map((lev) => (
+                <option key={lev} value={lev}>{lev}x</option>
+              ))}
+            </select>
+          </div>
+        )}
 
-        <NumberField
-          label={t('cfg.field.capitalPerLeg')}
-          desc={t('cfg.desc.capitalPerLeg')}
-          value={getByPath(config, ['fund', 'capital_per_leg'])}
-          unit="USDT"
-          onChange={(v) => handleChange(['fund', 'capital_per_leg'], v)}
-        />
+        {unifiedOn ? (
+          <ReadOnlyNumberField
+            label={t('cfg.field.capitalPerLeg')}
+            desc={managedDesc}
+            value={getByPath(config, ['fund', 'capital_per_leg'])}
+            unit="USDT"
+            badge={badge}
+          />
+        ) : (
+          <NumberField
+            label={t('cfg.field.capitalPerLeg')}
+            desc={t('cfg.desc.capitalPerLeg')}
+            value={getByPath(config, ['fund', 'capital_per_leg'])}
+            unit="USDT"
+            onChange={(v) => handleChange(['fund', 'capital_per_leg'], v)}
+          />
+        )}
 
         {/* Dry Run toggle */}
         <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
@@ -1108,6 +1172,9 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
   const renderRiskAllocTab = () => {
     const allocatorEnabled = getByPath(config, ['risk', 'enable_capital_allocator']) === true;
     const exchangeHealthEnabled = getByPath(config, ['risk', 'enable_exchange_health_scoring']) === true;
+    const unifiedOn = getByPath(config, ['allocation', 'enable_unified_capital']) === true;
+    const badge = unifiedOn ? t('cfg.alloc.managedBadge' as TranslationKey) : undefined;
+    const managedDesc = unifiedOn ? t('cfg.alloc.managedDesc' as TranslationKey) : undefined;
 
     return (
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1151,19 +1218,37 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
           onChange={(v) => handleChange(['risk', 'max_total_exposure_usdt'], v)}
         />
 
-        <NumberField
-          label={t('cfg.field.maxPerpPerpPct')}
-          desc={t('cfg.desc.maxPerpPerpPct')}
-          value={getByPath(config, ['risk', 'max_perp_perp_pct'])}
-          onChange={(v) => handleChange(['risk', 'max_perp_perp_pct'], v)}
-        />
+        {unifiedOn ? (
+          <ReadOnlyNumberField
+            label={t('cfg.field.maxPerpPerpPct')}
+            desc={managedDesc}
+            value={getByPath(config, ['risk', 'max_perp_perp_pct'])}
+            badge={badge}
+          />
+        ) : (
+          <NumberField
+            label={t('cfg.field.maxPerpPerpPct')}
+            desc={t('cfg.desc.maxPerpPerpPct')}
+            value={getByPath(config, ['risk', 'max_perp_perp_pct'])}
+            onChange={(v) => handleChange(['risk', 'max_perp_perp_pct'], v)}
+          />
+        )}
 
-        <NumberField
-          label={t('cfg.field.maxSpotFuturesPct')}
-          desc={t('cfg.desc.maxSpotFuturesPct')}
-          value={getByPath(config, ['risk', 'max_spot_futures_pct'])}
-          onChange={(v) => handleChange(['risk', 'max_spot_futures_pct'], v)}
-        />
+        {unifiedOn ? (
+          <ReadOnlyNumberField
+            label={t('cfg.field.maxSpotFuturesPct')}
+            desc={managedDesc}
+            value={getByPath(config, ['risk', 'max_spot_futures_pct'])}
+            badge={badge}
+          />
+        ) : (
+          <NumberField
+            label={t('cfg.field.maxSpotFuturesPct')}
+            desc={t('cfg.desc.maxSpotFuturesPct')}
+            value={getByPath(config, ['risk', 'max_spot_futures_pct'])}
+            onChange={(v) => handleChange(['risk', 'max_spot_futures_pct'], v)}
+          />
+        )}
 
         <NumberField
           label={t('cfg.field.maxPerExchangePct')}

@@ -386,6 +386,8 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.alloc.lookbackDays': '績效回顧期',
   'cfg.alloc.lookbackDaysDesc': '用於權衡策略間分配的績效數據天數。',
   'cfg.alloc.days': '天',
+  'cfg.alloc.managedBadge': '由分配管理',
+  'cfg.alloc.managedDesc': '此欄位由分配配置控制。請在分配頁籤中更改。',
 
   // Overview - Allocation
   'overview.alloc.title': '資金分配',
