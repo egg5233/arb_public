@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 05-01-PLAN.md
-last_updated: "2026-04-04T03:04:35.241Z"
+stopped_at: Completed 05-02-PLAN.md
+last_updated: "2026-04-04T03:24:25.066Z"
 last_activity: 2026-04-04
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 16
-  completed_plans: 14
+  completed_plans: 15
   percent: 87
 ---
 
@@ -26,8 +26,8 @@ See: .planning/PROJECT.md (updated 2026-04-01)
 ## Current Position
 
 Phase: 5
-Plan: 1 of 3 complete
-Status: Executing Wave 2
+Plan: 2 of 3 complete
+Status: Ready to execute
 Last activity: 2026-04-04
 
 Progress: [████████░░] 87%
@@ -56,6 +56,7 @@ Progress: [████████░░] 87%
 | Phase 04 P03 | 19min | 2 tasks | 10 files |
 | Phase 04 P04 | 8 | 3 tasks | 16 files |
 | Phase 05 P01 | 7min | 2 tasks | 5 files |
+| Phase 05 P02 | 13min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -82,6 +83,9 @@ Recent decisions affecting current work:
 - [Phase 05]: New allocation JSON section in config -- groups all Phase 5 fields together
 - [Phase 05]: ComputeEffectiveAllocation is a pure function (not method) for easy unit testing
 - [Phase 05]: SizeMultiplier applied only in EffectiveCapitalPerLeg derivation, not during profile application
+- [Phase 05]: Use GetHistory(200)/GetSpotHistory(200) for trailing APR instead of nonexistent GetClosedPositions
+- [Phase 05]: Server gets allocator via SetCapitalAllocator setter, matching existing DI pattern
+- [Phase 05]: Minimum 3 trades per strategy before performance-weighted allocation tilt
 
 ### Pending Todos
 
@@ -94,6 +98,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-04T03:04:35.237Z
-Stopped at: Completed 05-01-PLAN.md
+Last session: 2026-04-04T03:24:25.062Z
+Stopped at: Completed 05-02-PLAN.md
 Resume file: None

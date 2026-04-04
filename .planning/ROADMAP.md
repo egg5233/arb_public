@@ -98,8 +98,8 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 05-01-PLAN.md -- Config fields (6-touch-point), risk profile presets, allocator dynamic allocation + derived capital + tests
-- [ ] 05-02-PLAN.md -- Engine + risk manager integration, API layer (allocation endpoint, config section, profile handling)
+- [x] 05-01-PLAN.md -- Config fields (6-touch-point), risk profile presets, allocator dynamic allocation + derived capital + tests
+- [x] 05-02-PLAN.md -- Engine + risk manager integration, API layer (allocation endpoint, config section, profile handling)
 - [ ] 05-03-PLAN.md -- Frontend: Allocation config tab, Overview allocation card, i18n, version bump
 
 ## Progress
