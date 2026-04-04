@@ -128,6 +128,10 @@ type Balance struct {
 	Frozen         float64 // locked in positions/orders
 	Currency       string  // "USDT"
 	MarginRatio    float64 // maintenanceMargin / equity; 0 = unknown, 1.0 = liquidation
+	// MarginRatioUnavailable marks exchanges/accounts where we do not have a
+	// trusted maintenance-style risk ratio and should not synthesize one from
+	// available/equity heuristics for global L3/L4/L5 health decisions.
+	MarginRatioUnavailable bool
 	MaxTransferOut float64 // max amount that can be transferred out; 0 = unknown (use Available as fallback)
 }
 

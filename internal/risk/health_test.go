@@ -86,6 +86,13 @@ func TestComputeLevel(t *testing.T) {
 			posCount: 1,
 			want:     L3Medium, // 1 - 40/100 = 0.60 >= L3(0.50)
 		},
+		{
+			name:     "skip synthetic fallback when ratio explicitly unavailable",
+			bal:      &exchange.Balance{Total: 100, Available: 40, MarginRatio: 0, MarginRatioUnavailable: true},
+			pnl:      -5.0,
+			posCount: 1,
+			want:     L2Low,
+		},
 	}
 
 	for _, tt := range tests {

@@ -239,6 +239,9 @@ func (h *HealthMonitor) normalizeMarginRatio(bal *exchange.Balance) float64 {
 	if bal == nil {
 		return 0
 	}
+	if bal.MarginRatioUnavailable {
+		return 0
+	}
 	marginRatio := bal.MarginRatio
 	if marginRatio <= 0 && bal.Total > 0 && bal.Available > 0 {
 		return 1.0 - (bal.Available / bal.Total)
