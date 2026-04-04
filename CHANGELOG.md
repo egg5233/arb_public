@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.26.2] - 2026-04-04
+
+### Fixed
+- **BingX rate limit** — replaced cache approach with client-level rate limiter (150ms minimum interval between API calls) to prevent 100410 frequency bans while keeping data fresh
+
 ## [0.26.1] - 2026-04-04
 
 ### Fixed

@@ -40,16 +40,6 @@ type Adapter struct {
 	fundingFeesCacheTime  time.Time
 	fundingFeesCacheSince time.Time // the 'since' param used for this cache
 
-	// Position cache (5s TTL) — reduces GetAllPositions API calls from
-	// multiple consumers (health monitor, risk monitor, consolidator).
-	posCache     []exchange.Position
-	posCacheMu   sync.Mutex
-	posCacheTime time.Time
-
-	// Balance cache (5s TTL) — reduces GetFuturesBalance API calls.
-	balCache     *exchange.Balance
-	balCacheMu   sync.Mutex
-	balCacheTime time.Time
 }
 
 func (a *Adapter) SetMetricsCallback(fn exchange.MetricsCallback) {
@@ -372,27 +362,12 @@ func (a *Adapter) GetPosition(symbol string) ([]exchange.Position, error) {
 }
 
 // GetAllPositions returns all open positions.
-// Uses a 5-second cache to reduce API calls when multiple consumers
-// (health monitor, risk monitor, consolidator) query in rapid succession.
 func (a *Adapter) GetAllPositions() ([]exchange.Position, error) {
-	a.posCacheMu.Lock()
-	defer a.posCacheMu.Unlock()
-
-	if a.posCache != nil && time.Since(a.posCacheTime) < 5*time.Second {
-		return a.posCache, nil
-	}
-
 	result, err := a.client.Get("/openApi/swap/v2/user/positions", map[string]string{})
 	if err != nil {
 		return nil, fmt.Errorf("bingx GetAllPositions: %w", err)
 	}
-	positions, err := a.parsePositions(result)
-	if err != nil {
-		return nil, err
-	}
-	a.posCache = positions
-	a.posCacheTime = time.Now()
-	return positions, nil
+	return a.parsePositions(result)
 }
 
 func (a *Adapter) parsePositions(data json.RawMessage) ([]exchange.Position, error) {
@@ -662,15 +637,7 @@ func (a *Adapter) GetFundingInterval(symbol string) (time.Duration, error) {
 // ---------- Account ----------
 
 // GetFuturesBalance returns the futures account balance.
-// Uses a 5-second cache to reduce API calls from concurrent consumers.
 func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
-	a.balCacheMu.Lock()
-	defer a.balCacheMu.Unlock()
-
-	if a.balCache != nil && time.Since(a.balCacheTime) < 5*time.Second {
-		return a.balCache, nil
-	}
-
 	result, err := a.client.Get("/openApi/swap/v3/user/balance", map[string]string{})
 	if err != nil {
 		return nil, fmt.Errorf("bingx GetFuturesBalance: %w", err)
@@ -706,17 +673,14 @@ func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 				maxTransfer = 0
 			}
 
-			bal := &exchange.Balance{
+			return &exchange.Balance{
 				Total:          total,
 				Available:      available,
 				Frozen:         used,
 				Currency:       "USDT",
 				MarginRatio:    marginRatio,
 				MaxTransferOut: maxTransfer,
-			}
-			a.balCache = bal
-			a.balCacheTime = time.Now()
-			return bal, nil
+			}, nil
 		}
 	}
 	return &exchange.Balance{Currency: "USDT"}, nil
