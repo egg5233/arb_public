@@ -566,7 +566,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			}
 
 			// Margin-related rejection: check if cross-exchange transfer from a donor could help.
-			estMargin := e.cfg.CapitalPerLeg * e.cfg.MarginSafetyMultiplier
+			estMargin := e.effectiveCapitalPerLeg() * e.cfg.MarginSafetyMultiplier
 			if estMargin <= 0 {
 				if approval.RequiredMargin > 0 {
 					estMargin = approval.RequiredMargin
@@ -637,7 +637,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 		// Approval passed. Check if exchanges need cross-exchange transfers.
 		requiredMargin := approval.RequiredMargin
 		if requiredMargin <= 0 {
-			requiredMargin = e.cfg.CapitalPerLeg * e.cfg.MarginSafetyMultiplier
+			requiredMargin = e.effectiveCapitalPerLeg() * e.cfg.MarginSafetyMultiplier
 		}
 
 		needsTransfer := false

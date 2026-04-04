@@ -46,6 +46,17 @@ func NewManager(exchanges map[string]exchange.Exchange, db *database.Client, cfg
 	}
 }
 
+// effectiveCapitalPerLeg returns the USDT per leg using the allocator's derived
+// value when unified capital is enabled, falling back to cfg.CapitalPerLeg.
+func (m *Manager) effectiveCapitalPerLeg() float64 {
+	if m.allocator != nil {
+		if ecl := m.allocator.EffectiveCapitalPerLeg(); ecl > 0 {
+			return ecl
+		}
+	}
+	return m.cfg.CapitalPerLeg
+}
+
 func (m *Manager) SetSpreadHistoryProvider(provider func(models.Opportunity, int, time.Duration) []database.SpreadHistoryPoint) {
 	if m == nil || m.spreadStability == nil {
 		return
@@ -149,7 +160,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		}
 	}
 
-	needed := m.cfg.CapitalPerLeg
+	needed := m.effectiveCapitalPerLeg()
 	if needed > 0 && !dryRun {
 		bufferedNeed := needed * m.cfg.MarginSafetyMultiplier
 		m.ensureFuturesBalance(opp.LongExchange, longExch, longBal, bufferedNeed)
@@ -485,9 +496,10 @@ func (m *Manager) CalculateSize(opp models.Opportunity, balances map[string]floa
 	balB := balances[opp.ShortExchange]
 	availableCapital := math.Min(balA, balB)
 
+	ecl := m.effectiveCapitalPerLeg()
 	m.log.Info("[sizing] %s: %s=%.4f %s=%.4f availCap=%.4f capPerLeg=%.2f lev=%d",
 		opp.Symbol, opp.LongExchange, balA, opp.ShortExchange, balB,
-		availableCapital, m.cfg.CapitalPerLeg, m.cfg.Leverage)
+		availableCapital, ecl, m.cfg.Leverage)
 
 	if availableCapital <= 0 {
 		m.log.Info("[sizing] %s: rejected — zero available capital", opp.Symbol)
@@ -512,9 +524,9 @@ func (m *Manager) CalculateSize(opp models.Opportunity, balances map[string]floa
 
 	// Determine position value per leg.
 	var maxPositionValue float64
-	if m.cfg.CapitalPerLeg > 0 {
-		// Fixed capital per leg — use configured amount × leverage.
-		maxPositionValue = m.cfg.CapitalPerLeg * float64(leverage)
+	if ecl > 0 {
+		// Fixed capital per leg — use configured (or derived) amount × leverage.
+		maxPositionValue = ecl * float64(leverage)
 		// Clamp to available capital so we never exceed what the exchange allows.
 		maxFromBalance := availableCapital * float64(leverage)
 		if maxPositionValue > maxFromBalance {
@@ -595,9 +607,10 @@ func (m *Manager) calculateSizeWithPrice(opp models.Opportunity, balances map[st
 	balB := balances[opp.ShortExchange]
 	availableCapital := math.Min(balA, balB)
 
+	ecl2 := m.effectiveCapitalPerLeg()
 	m.log.Info("[sizing] %s: %s=%.4f %s=%.4f availCap=%.4f capPerLeg=%.2f lev=%d",
 		opp.Symbol, opp.LongExchange, balA, opp.ShortExchange, balB,
-		availableCapital, m.cfg.CapitalPerLeg, m.cfg.Leverage)
+		availableCapital, ecl2, m.cfg.Leverage)
 
 	if availableCapital <= 0 {
 		m.log.Info("[sizing] %s: rejected — zero available capital", opp.Symbol)
@@ -620,8 +633,8 @@ func (m *Manager) calculateSizeWithPrice(opp models.Opportunity, balances map[st
 	}
 
 	var maxPositionValue float64
-	if m.cfg.CapitalPerLeg > 0 {
-		maxPositionValue = m.cfg.CapitalPerLeg * float64(leverage)
+	if ecl2 > 0 {
+		maxPositionValue = ecl2 * float64(leverage)
 		maxFromBalance := availableCapital * float64(leverage)
 		if maxPositionValue > maxFromBalance {
 			maxPositionValue = maxFromBalance

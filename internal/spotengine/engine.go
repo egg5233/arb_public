@@ -372,9 +372,19 @@ func isSeparateAccount(exchName string) bool {
 }
 
 // capitalForExchange returns the position capital limit appropriate for the
-// exchange's account type. Separate-account exchanges (Binance, Bitget) use a
-// lower default since cross-margin collateral is not shared.
+// exchange's account type. When unified capital is enabled, uses the allocator's
+// derived value (single code path shared with perp-perp engine). Falls back to
+// per-exchange capital config for separate/unified account types.
 func (e *SpotEngine) capitalForExchange(exchName string) float64 {
+	// When unified capital is enabled, use the allocator's derived value.
+	// This calls the same EffectiveCapitalPerLeg() used by the perp-perp engine,
+	// ensuring a single code path for capital derivation.
+	if e.cfg.EnableUnifiedCapital && e.allocator != nil {
+		if ecl := e.allocator.EffectiveCapitalPerLeg(); ecl > 0 {
+			return ecl
+		}
+	}
+	// Fallback: existing per-exchange capital logic
 	if isSeparateAccount(exchName) {
 		cap := e.cfg.SpotFuturesCapitalSeparate
 		if cap <= 0 {

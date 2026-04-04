@@ -53,6 +53,17 @@ func (e *Engine) commitPerpCapital(res *risk.CapitalReservation, posID string) e
 	})
 }
 
+// effectiveCapitalPerLeg returns the USDT per leg, using allocator's derived value
+// when unified capital is enabled, or falling back to cfg.CapitalPerLeg.
+func (e *Engine) effectiveCapitalPerLeg() float64 {
+	if e.allocator != nil && e.allocator.Enabled() {
+		if ecl := e.allocator.EffectiveCapitalPerLeg(); ecl > 0 {
+			return ecl
+		}
+	}
+	return e.cfg.CapitalPerLeg
+}
+
 func (e *Engine) releasePerpReservation(res *risk.CapitalReservation) {
 	if e.allocator == nil || !e.allocator.Enabled() || res == nil {
 		return
