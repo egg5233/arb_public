@@ -439,22 +439,13 @@ if e.cfg.SpotFuturesEnableMaintenanceGate {
 
 **Verification plan for A1:** During adapter implementation, query Bybit `GET /v5/market/risk-limit?category=linear&symbol=BTCUSDT` and verify that BTCUSDT's lowest-tier `maintenanceMargin` value is around "0.5" (meaning 0.5%). If it returns "0.005", the format is decimal like others.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Health monitor action dispatch for spot-futures positions**
-   - What we know: `HealthAction` struct uses `Positions []*models.ArbitragePosition`. Spot-futures uses `SpotFuturesPosition` (different type).
-   - What's unclear: Exact mechanism for the engine consumer to dispatch spot-futures health actions to the SpotEngine.
-   - Recommendation: Add `SpotPositions []*models.SpotFuturesPosition` field to `HealthAction`. The `cmd/main.go` health action consumer checks which field is populated and calls the appropriate engine's close/reduce.
+1. **Health monitor action dispatch for spot-futures positions** — RESOLVED: Add `SpotPositions []*models.SpotFuturesPosition` field to `HealthAction`. Engine's `consumeHealthActions()` checks which field is populated and dispatches to SpotEngine via `SetSpotCloseCallback` (Plan 03 Task 2).
 
-2. **Manual open bypass mechanism**
-   - What we know: Per D-04, manual opens should bypass the maintenance_rate gate with a warning.
-   - What's unclear: How `ManualOpen()` (called from `spotOpenPosition`) distinguishes manual vs auto-entry. Currently both call the same `ManualOpen()` method, with `checkRiskGate()` only called from `attemptAutoEntries()`.
-   - Recommendation: Since `checkRiskGate()` is only called in the auto-entry path, manual opens already bypass it. For the warning, add a separate `checkMaintenanceRateWarning()` call in the manual open path that returns a warning string (appended to the API response) without blocking.
+2. **Manual open bypass mechanism** — RESOLVED: `checkRiskGate()` is auto-entry only; manual opens already bypass it. A separate `checkMaintenanceRateWarning()` in the manual open path returns a warning string without blocking (Plan 02 Task 1).
 
-3. **Planned notional size for pre-entry tier matching**
-   - What we know: Per D-18, use the tier matching the planned position size.
-   - What's unclear: The planned notional is calculated from `SpotFuturesCapitalSeparate`/`SpotFuturesCapitalUnified` * leverage. This value may not be exact.
-   - Recommendation: Use `capitalPerLeg * leverage` as the planned notional. Since maintenance rates generally increase with position size, using an approximate notional that may be slightly larger than actual is conservative (returns higher maintenance rate).
+3. **Planned notional size for pre-entry tier matching** — RESOLVED: Use `capitalPerLeg * leverage` as planned notional. Conservative bias is acceptable since maintenance rates increase with position size (Plan 02 Task 1).
 
 ## Environment Availability
 
