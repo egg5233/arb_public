@@ -580,7 +580,7 @@ type FlashRepayer interface {
 }
 ```
 
-Implemented by: Bitget (via `/api/v2/margin/crossed/account/flash-repay`). Use type assertion `exch.(exchange.FlashRepayer)` to check support.
+Implemented by: Bitget (via `/api/v2/margin/crossed/account/flash-repay`), Gate.io (via Flash Swap API `/flash_swap/orders` + `MarginRepay(repaid_all=true)`). Use type assertion `exch.(exchange.FlashRepayer)` to check support.
 
 #### SpotMarginOrderQuerier (optional interface)
 

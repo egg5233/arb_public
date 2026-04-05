@@ -10,8 +10,96 @@ import (
 	"arb/pkg/exchange"
 )
 
-// Compile-time interface check.
+// Compile-time interface checks.
 var _ exchange.SpotMarginExchange = (*Adapter)(nil)
+var _ exchange.FlashRepayer = (*Adapter)(nil)
+
+// ---------------------------------------------------------------------------
+// Flash Repay (Flash Swap USDT→coin + MarginRepay)
+// ---------------------------------------------------------------------------
+
+// FlashRepay converts USDT collateral to the borrowed coin via Gate.io's flash
+// swap API, then repays the full outstanding borrow. This avoids the spot
+// buyback path entirely — no partial fills, no dust, no minimum order issues.
+//
+// Flow: GetMarginBalance → flash swap preview → flash swap execute → MarginRepay.
+func (a *Adapter) FlashRepay(coin string) (string, error) {
+	// 1. Get outstanding borrow amount.
+	mb, err := a.GetMarginBalance(coin)
+	if err != nil {
+		return "", fmt.Errorf("FlashRepay: get borrow balance: %w", err)
+	}
+	debt := mb.Borrowed + mb.Interest
+	if debt <= 0 {
+		return "no_debt", nil
+	}
+
+	// Buy slightly more than the debt to cover any rounding/interest accrual
+	// during the swap settlement window.
+	buyAmount := strconv.FormatFloat(debt*1.002, 'f', 8, 64)
+
+	// 2. Preview flash swap: sell USDT, buy {coin}.
+	previewReq := map[string]string{
+		"sell_currency": "USDT",
+		"buy_currency":  strings.ToUpper(coin),
+		"buy_amount":    buyAmount,
+	}
+	previewBody, _ := json.Marshal(previewReq)
+	previewData, err := a.client.Post("/flash_swap/orders/preview", string(previewBody))
+	if err != nil {
+		return "", fmt.Errorf("FlashRepay: flash swap preview: %w", err)
+	}
+
+	var preview struct {
+		PreviewID  string `json:"preview_id"`
+		SellAmount string `json:"sell_amount"`
+		BuyAmount  string `json:"buy_amount"`
+	}
+	if err := json.Unmarshal(previewData, &preview); err != nil {
+		return "", fmt.Errorf("FlashRepay: preview unmarshal: %w (body: %s)", err, string(previewData))
+	}
+	if preview.PreviewID == "" {
+		return "", fmt.Errorf("FlashRepay: preview returned empty ID (body: %s)", string(previewData))
+	}
+
+	// 3. Execute flash swap with preview ID.
+	swapReq := map[string]string{
+		"preview_id":    preview.PreviewID,
+		"sell_currency": "USDT",
+		"sell_amount":   preview.SellAmount,
+		"buy_currency":  strings.ToUpper(coin),
+		"buy_amount":    preview.BuyAmount,
+	}
+	swapBody, _ := json.Marshal(swapReq)
+	swapData, err := a.client.Post("/flash_swap/orders", string(swapBody))
+	if err != nil {
+		return "", fmt.Errorf("FlashRepay: flash swap execute: %w", err)
+	}
+
+	var swapResp struct {
+		ID     int64  `json:"id"`
+		Status int    `json:"status"`
+		ErrMsg string `json:"message"`
+	}
+	if err := json.Unmarshal(swapData, &swapResp); err != nil {
+		return "", fmt.Errorf("FlashRepay: swap unmarshal: %w (body: %s)", err, string(swapData))
+	}
+	if swapResp.Status == 2 {
+		return "", fmt.Errorf("FlashRepay: swap failed: %s", swapResp.ErrMsg)
+	}
+
+	// 4. Repay the full borrow (repaid_all=true handles any dust).
+	if err := a.MarginRepay(exchange.MarginRepayParams{
+		Coin:   coin,
+		Amount: "0", // triggers repaid_all=true
+	}); err != nil {
+		// Swap succeeded but repay failed — coin is in account, will be
+		// picked up by the step 3b dust sweep in the engine.
+		return fmt.Sprintf("swap-%d", swapResp.ID), fmt.Errorf("FlashRepay: swap OK but repay failed: %w", err)
+	}
+
+	return fmt.Sprintf("swap-%d", swapResp.ID), nil
+}
 
 // ---------------------------------------------------------------------------
 // Spot Margin: Borrow / Repay (Unified Account — /unified/*)

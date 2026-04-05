@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.27.1] - 2026-04-05
+
+### Fixed
+- **Gate.io Dir A close dust bug**: spot buyback partial fills could leave untradeable remainder below exchange minimum order size, permanently sticking the position in 'exiting' state (GUAUSDT: 1019/1020 filled, 1 GUA rejected as "order size too small")
+- **Gate.io FlashRepay**: implemented `FlashRepayer` interface for Gate.io — uses Flash Swap API (USDT→borrowed coin) + `MarginRepay(repaid_all=true)` to skip spot buyback entirely during Dir A close, eliminating partial-fill and dust issues
+- **`cmd/gatecheck`**: rewritten to test the FlashRepay flow (borrow → flash repay → verify debt cleared)
+
+### Added
+- Phase 6 (spot-futures risk hardening) planning artifacts: research, 4 plans in 2 waves, validation strategy
+
 ## [0.27.0] - 2026-04-04
 
 ### Added — Performance Analytics (Phase 4)
