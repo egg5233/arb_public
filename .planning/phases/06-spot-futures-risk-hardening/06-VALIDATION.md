@@ -45,7 +45,7 @@ created: 2026-04-05
 | 06-02-02 | 02 | 1 | SF-RISK-02 | T-06-02 | Liq distance exit triggers normal close | unit | `go test ./internal/spotengine/ -run TestLiqDistanceExit -count=1 -v` | ❌ W0 | ⬜ pending |
 | 06-02-03 | 02 | 1 | SF-RISK-02 | — | Liq distance warn logs but does not exit | unit | `go test ./internal/spotengine/ -run TestLiqDistanceWarn -count=1 -v` | ❌ W0 | ⬜ pending |
 | 06-03-01 | 03 | 2 | SF-RISK-03 | — | Health monitor includes spot positions in checkAll | unit | `go test ./internal/risk/ -run TestHealthMonitorSpotPositions -count=1 -v` | ❌ W0 | ⬜ pending |
-| 06-04-01 | 04 | 1 | SF-RISK-04 | — | Discovery penalizes high maintenance_rate coins | unit | `go test ./internal/spotengine/ -run TestDiscoveryMaintenanceRate -count=1 -v` | ❌ W0 | ⬜ pending |
+| 06-04-01 | 04 | 1 | SF-RISK-04 | — | Discovery populates MaintenanceRate display field only — no FilterStatus set based on MaintenanceRate | unit | `go test ./internal/spotengine/ -run TestDiscoveryMaintenanceRate -count=1 -v` | ❌ W0 | ⬜ pending |
 | 06-XX-01 | All | 1 | All | T-06-03 | Adapter maintenance_rate normalization per exchange | unit | `go test ./pkg/exchange/... -run TestMaintenanceRate -count=1 -v` | ❌ W0 | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
