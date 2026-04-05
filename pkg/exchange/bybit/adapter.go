@@ -1206,30 +1206,46 @@ func (a *Adapter) GetFundingFees(symbol string, since time.Time) ([]exchange.Fun
 		"startTime": strconv.FormatInt(since.UnixMilli(), 10),
 		"limit":     "50",
 	}
-	raw, err := a.client.Get("/v5/account/transaction-log", params)
-	if err != nil {
-		return nil, fmt.Errorf("GetFundingFees: %w", err)
+	var out []exchange.FundingPayment
+	cursor := ""
+	for {
+		if cursor != "" {
+			params["cursor"] = cursor
+		} else {
+			delete(params, "cursor")
+		}
+
+		raw, err := a.client.Get("/v5/account/transaction-log", params)
+		if err != nil {
+			return nil, fmt.Errorf("GetFundingFees: %w", err)
+		}
+
+		var resp struct {
+			List []struct {
+				Funding         string `json:"funding"`
+				TransactionTime string `json:"transactionTime"`
+			} `json:"list"`
+			NextPageCursor string `json:"nextPageCursor"`
+		}
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			return nil, fmt.Errorf("GetFundingFees unmarshal: %w", err)
+		}
+
+		for _, r := range resp.List {
+			amt, _ := strconv.ParseFloat(r.Funding, 64)
+			ms, _ := strconv.ParseInt(r.TransactionTime, 10, 64)
+			out = append(out, exchange.FundingPayment{
+				Amount: amt,
+				Time:   time.UnixMilli(ms),
+			})
+		}
+
+		if resp.NextPageCursor == "" || len(resp.List) == 0 || resp.NextPageCursor == cursor {
+			break
+		}
+		cursor = resp.NextPageCursor
 	}
 
-	var resp struct {
-		List []struct {
-			Funding         string `json:"funding"`
-			TransactionTime string `json:"transactionTime"`
-		} `json:"list"`
-	}
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil, fmt.Errorf("GetFundingFees unmarshal: %w", err)
-	}
-
-	out := make([]exchange.FundingPayment, 0, len(resp.List))
-	for _, r := range resp.List {
-		amt, _ := strconv.ParseFloat(r.Funding, 64)
-		ms, _ := strconv.ParseInt(r.TransactionTime, 10, 64)
-		out = append(out, exchange.FundingPayment{
-			Amount: amt,
-			Time:   time.UnixMilli(ms),
-		})
-	}
 	return out, nil
 }
 

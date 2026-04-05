@@ -212,6 +212,11 @@ type Config struct {
 	SpotFuturesEnableExitSpreadGate  bool    // gate exits by unwind slippage (default: false)
 	SpotFuturesExitSpreadPct         float64 // max slippage % to allow exit (default: 0.3)
 
+	// Phase 6: maintenance rate risk hardening
+	SpotFuturesEnableMaintenanceGate bool    // enable maintenance_rate pre-entry and runtime liq distance checks (default: false)
+	SpotFuturesMaintenanceDefault    float64 // conservative default when rate=0/unknown (default: 0.05 = 5%)
+	SpotFuturesMaintenanceCacheTTL   int     // cache TTL in minutes for tiered rate data (default: 60)
+
 	// Telegram notifications
 	TelegramBotToken string
 	TelegramChatID   string
@@ -336,6 +341,10 @@ type jsonSpotFutures struct {
 	EnableExitSpreadGate  *bool    `json:"enable_exit_spread_gate"`
 	ExitSpreadPct         *float64 `json:"exit_spread_pct"`
 
+	// Phase 6: maintenance rate risk hardening
+	EnableMaintenanceGate *bool    `json:"enable_maintenance_gate"`
+	MaintenanceDefault    *float64 `json:"maintenance_default"`
+	MaintenanceCacheTTL   *int     `json:"maintenance_cache_ttl"`
 }
 
 type jsonExchange struct {
@@ -592,6 +601,11 @@ func Load() *Config {
 		SpotFuturesMaxPriceGapPct:        0.5,
 		SpotFuturesEnableExitSpreadGate:  false,
 		SpotFuturesExitSpreadPct:         0.3,
+
+		// Phase 6: maintenance rate risk hardening defaults
+		SpotFuturesEnableMaintenanceGate: false,
+		SpotFuturesMaintenanceDefault:    0.05,
+		SpotFuturesMaintenanceCacheTTL:   60,
 
 		// Unified capital allocation defaults (Phase 5)
 		EnableUnifiedCapital:   false,
@@ -1172,6 +1186,16 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if sf.ExitSpreadPct != nil && *sf.ExitSpreadPct > 0 {
 			c.SpotFuturesExitSpreadPct = *sf.ExitSpreadPct
 		}
+		// Phase 6: maintenance rate risk hardening
+		if sf.EnableMaintenanceGate != nil {
+			c.SpotFuturesEnableMaintenanceGate = *sf.EnableMaintenanceGate
+		}
+		if sf.MaintenanceDefault != nil && *sf.MaintenanceDefault > 0 && *sf.MaintenanceDefault < 1.0 {
+			c.SpotFuturesMaintenanceDefault = *sf.MaintenanceDefault
+		}
+		if sf.MaintenanceCacheTTL != nil && *sf.MaintenanceCacheTTL >= 1 {
+			c.SpotFuturesMaintenanceCacheTTL = *sf.MaintenanceCacheTTL
+		}
 	}
 
 	// Telegram
@@ -1476,6 +1500,9 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	sf["max_price_gap_pct"] = c.SpotFuturesMaxPriceGapPct
 	sf["enable_exit_spread_gate"] = c.SpotFuturesEnableExitSpreadGate
 	sf["exit_spread_pct"] = c.SpotFuturesExitSpreadPct
+	sf["enable_maintenance_gate"] = c.SpotFuturesEnableMaintenanceGate
+	sf["maintenance_default"] = c.SpotFuturesMaintenanceDefault
+	sf["maintenance_cache_ttl"] = c.SpotFuturesMaintenanceCacheTTL
 	delete(sf, "capital_per_position") // removed field
 
 	// Allocation (Phase 5)
@@ -1743,6 +1770,20 @@ func (c *Config) loadEnvOverrides() {
 	if v := os.Getenv("SPOT_FUTURES_EXIT_SPREAD_PCT"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			c.SpotFuturesExitSpreadPct = f
+		}
+	}
+	// Phase 6: maintenance rate risk hardening env vars
+	if v := os.Getenv("SPOT_FUTURES_ENABLE_MAINTENANCE_GATE"); v != "" {
+		c.SpotFuturesEnableMaintenanceGate = v == "1" || v == "true" || v == "yes"
+	}
+	if v := os.Getenv("SPOT_FUTURES_MAINTENANCE_DEFAULT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 && f < 1.0 {
+			c.SpotFuturesMaintenanceDefault = f
+		}
+	}
+	if v := os.Getenv("SPOT_FUTURES_MAINTENANCE_CACHE_TTL"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
+			c.SpotFuturesMaintenanceCacheTTL = n
 		}
 	}
 

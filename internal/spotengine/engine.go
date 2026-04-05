@@ -50,6 +50,9 @@ type SpotEngine struct {
 	// borrowVelocity tracks recent borrow APR samples per position for spike detection.
 	borrowVelocity *RateVelocityDetector
 
+	// maintCache caches per-symbol maintenance margin rates with TTL.
+	maintCache *maintenanceRateCache
+
 	// telegram sends trade lifecycle alerts. Nil if unconfigured.
 	telegram *notify.TelegramNotifier
 
