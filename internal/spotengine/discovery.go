@@ -18,17 +18,18 @@ import (
 
 // SpotArbOpportunity represents a scored spot-futures arbitrage opportunity.
 type SpotArbOpportunity struct {
-	Symbol       string    `json:"symbol"`
-	BaseCoin     string    `json:"base_coin"`
-	Exchange     string    `json:"exchange"`
-	Direction    string    `json:"direction"` // "borrow_sell_long" or "buy_spot_short"
-	FundingAPR   float64   `json:"funding_apr"`
-	BorrowAPR    float64   `json:"borrow_apr"` // 0 for Direction B
-	FeePct       float64   `json:"fee_pct"`
-	NetAPR       float64   `json:"net_apr"`
-	Source       string    `json:"source"`
-	Timestamp    time.Time `json:"timestamp"`
-	FilterStatus string    `json:"filter_status,omitempty"` // empty = passed all filters
+	Symbol          string    `json:"symbol"`
+	BaseCoin        string    `json:"base_coin"`
+	Exchange        string    `json:"exchange"`
+	Direction       string    `json:"direction"` // "borrow_sell_long" or "buy_spot_short"
+	FundingAPR      float64   `json:"funding_apr"`
+	BorrowAPR       float64   `json:"borrow_apr"` // 0 for Direction B
+	FeePct          float64   `json:"fee_pct"`
+	NetAPR          float64   `json:"net_apr"`
+	MaintenanceRate float64   `json:"maintenance_rate"` // tier-1 rate from ContractInfo (display only, per D-15)
+	Source          string    `json:"source"`
+	Timestamp       time.Time `json:"timestamp"`
+	FilterStatus    string    `json:"filter_status,omitempty"` // empty = passed all filters
 }
 
 // borrowRateEntry is a cached borrow rate with expiry.
@@ -221,6 +222,10 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 				spotFilterStatus = "spot market unavailable"
 			}
 
+			// Per D-13: fetch maintenance_rate from ContractInfo for display.
+			// Compute planned notional for tier matching (mirrors risk_gate.go pattern).
+			maintRate := e.lookupMaintenanceRateForDisplay(symbol, exchName)
+
 			// --- Dir A: borrow_sell_long ---
 			{
 				isActive := activeKeys[symbol+":"+exchName+":borrow_sell_long"]
@@ -246,17 +251,18 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 				}
 
 				opps = append(opps, SpotArbOpportunity{
-					Symbol:       symbol,
-					BaseCoin:     strings.ToUpper(baseSym),
-					Exchange:     exchName,
-					Direction:    "borrow_sell_long",
-					FundingAPR:   dirAFundingAPR,
-					BorrowAPR:    borrowAPR,
-					FeePct:       feePct,
-					NetAPR:       netAPR,
-					Source:       "native",
-					Timestamp:    now,
-					FilterStatus: filterStatus,
+					Symbol:          symbol,
+					BaseCoin:        strings.ToUpper(baseSym),
+					Exchange:        exchName,
+					Direction:       "borrow_sell_long",
+					FundingAPR:      dirAFundingAPR,
+					BorrowAPR:       borrowAPR,
+					FeePct:          feePct,
+					NetAPR:          netAPR,
+					MaintenanceRate: maintRate,
+					Source:          "native",
+					Timestamp:       now,
+					FilterStatus:    filterStatus,
 				})
 			}
 
@@ -272,17 +278,18 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 				}
 
 				opps = append(opps, SpotArbOpportunity{
-					Symbol:       symbol,
-					BaseCoin:     strings.ToUpper(baseSym),
-					Exchange:     exchName,
-					Direction:    "buy_spot_short",
-					FundingAPR:   dirBFundingAPR,
-					BorrowAPR:    borrowAPR,
-					FeePct:       feePct,
-					NetAPR:       netAPR,
-					Source:       "native",
-					Timestamp:    now,
-					FilterStatus: filterStatus,
+					Symbol:          symbol,
+					BaseCoin:        strings.ToUpper(baseSym),
+					Exchange:        exchName,
+					Direction:       "buy_spot_short",
+					FundingAPR:      dirBFundingAPR,
+					BorrowAPR:       borrowAPR,
+					FeePct:          feePct,
+					NetAPR:          netAPR,
+					MaintenanceRate: maintRate,
+					Source:          "native",
+					Timestamp:       now,
+					FilterStatus:    filterStatus,
 				})
 			}
 		}
@@ -450,18 +457,22 @@ func (e *SpotEngine) runCoinGlassFallback() []SpotArbOpportunity {
 		if filterStatus != "" && !isActive {
 		}
 
+		// Per D-13: fetch maintenance_rate from ContractInfo for display.
+		maintRate := e.lookupMaintenanceRateForDisplay(spotSymbol, exchName)
+
 		opps = append(opps, SpotArbOpportunity{
-			Symbol:       spotSymbol,
-			BaseCoin:     baseCoin,
-			Exchange:     exchName,
-			Direction:    direction,
-			FundingAPR:   fundingAPR,
-			BorrowAPR:    borrowAPR,
-			FeePct:       feePct,
-			NetAPR:       netAPR,
-			Source:       "coinglass_spot",
-			Timestamp:    now,
-			FilterStatus: filterStatus,
+			Symbol:          spotSymbol,
+			BaseCoin:        baseCoin,
+			Exchange:        exchName,
+			Direction:       direction,
+			FundingAPR:      fundingAPR,
+			BorrowAPR:       borrowAPR,
+			FeePct:          feePct,
+			NetAPR:          netAPR,
+			MaintenanceRate: maintRate,
+			Source:          "coinglass_spot",
+			Timestamp:       now,
+			FilterStatus:    filterStatus,
 		})
 	}
 
@@ -602,6 +613,23 @@ func isMissingSpotMarketError(err error) bool {
 		strings.Contains(msg, "does not exist") ||
 		strings.Contains(msg, "invalid symbol") ||
 		strings.Contains(msg, "no data for")
+}
+
+// lookupMaintenanceRateForDisplay returns the maintenance margin rate for a
+// symbol on an exchange, suitable for display in the opportunities table.
+// Uses planned notional from config for tier matching (mirrors risk_gate.go).
+// Returns 0 if unavailable (UI shows dash). Per D-15: display only, no scoring.
+func (e *SpotEngine) lookupMaintenanceRateForDisplay(symbol, exchName string) float64 {
+	capitalPerLeg := e.cfg.SpotFuturesCapitalSeparate
+	if !isSeparateAccount(exchName) {
+		capitalPerLeg = e.cfg.SpotFuturesCapitalUnified
+	}
+	leverage := float64(e.cfg.SpotFuturesLeverage)
+	if leverage <= 0 {
+		leverage = 3.0
+	}
+	plannedNotional := capitalPerLeg * leverage
+	return e.getMaintenanceRate(symbol, exchName, plannedNotional)
 }
 
 // logDiscoveryResults logs the top opportunities in a table format.

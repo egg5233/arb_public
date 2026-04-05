@@ -13,6 +13,175 @@ import (
 	"arb/pkg/exchange"
 )
 
+// TestDiscoveryMaintenanceRate_PopulatedFromContracts verifies that the
+// native scanner populates MaintenanceRate on SpotArbOpportunity from
+// ContractInfo via the getMaintenanceRate pathway.
+func TestDiscoveryMaintenanceRate_PopulatedFromContracts(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	// Stub exchange that also implements maintenanceRateProvider.
+	stubExch := &nativeScannerStubExchange{
+		borrowRate: &exchange.MarginInterestRate{
+			Coin:       "BTC",
+			HourlyRate: 0.00001,
+		},
+	}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{
+		"binance": stubExch,
+	}
+	// Provide a mock exchange with known ContractInfo.MaintenanceRate.
+	engine.exchanges = map[string]exchange.Exchange{
+		"binance": &mockExchange{
+			contracts: map[string]exchange.ContractInfo{
+				"BTCUSDT": {MaintenanceRate: 0.005},
+			},
+		},
+	}
+	engine.cfg = &config.Config{
+		SpotFuturesScannerMode:         "native",
+		SpotFuturesMinNetYieldAPR:      0.0,
+		SpotFuturesCapitalSeparate:     200,
+		SpotFuturesLeverage:            3,
+		SpotFuturesMaintenanceDefault:  0.05,
+		SpotFuturesMaintenanceCacheTTL: 60,
+	}
+
+	lorisResp := buildTestLorisResponse(
+		[]string{"BTC"},
+		map[string]map[string]float64{
+			"binance": {"BTC": 10.0},
+		},
+	)
+
+	server := mockLorisServer(lorisResp)
+	defer server.Close()
+
+	opps := engine.runNativeDiscoveryScanWithURL(server.URL)
+	if len(opps) == 0 {
+		t.Fatal("expected opportunities, got none")
+	}
+
+	for _, opp := range opps {
+		if opp.MaintenanceRate != 0.005 {
+			t.Errorf("%s %s: MaintenanceRate = %v, want 0.005", opp.Symbol, opp.Direction, opp.MaintenanceRate)
+		}
+	}
+}
+
+// TestDiscoveryMaintenanceRate_ZeroWhenContractMissing verifies that when
+// the contract is not in LoadAllContracts, the maintenance rate falls back
+// to the configured default (not zero) which is the safe-display behavior.
+func TestDiscoveryMaintenanceRate_ZeroWhenContractMissing(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	stubExch := &nativeScannerStubExchange{
+		borrowRate: &exchange.MarginInterestRate{
+			Coin:       "XYZ",
+			HourlyRate: 0.00001,
+		},
+	}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{
+		"binance": stubExch,
+	}
+	// Exchange has empty contracts map -> MaintenanceRate from ContractInfo = 0 -> falls back to default.
+	engine.exchanges = map[string]exchange.Exchange{
+		"binance": &mockExchange{
+			contracts: map[string]exchange.ContractInfo{},
+		},
+	}
+	engine.cfg = &config.Config{
+		SpotFuturesScannerMode:         "native",
+		SpotFuturesMinNetYieldAPR:      0.0,
+		SpotFuturesCapitalSeparate:     200,
+		SpotFuturesLeverage:            3,
+		SpotFuturesMaintenanceDefault:  0.05,
+		SpotFuturesMaintenanceCacheTTL: 60,
+	}
+
+	lorisResp := buildTestLorisResponse(
+		[]string{"XYZ"},
+		map[string]map[string]float64{
+			"binance": {"XYZ": 10.0},
+		},
+	)
+
+	server := mockLorisServer(lorisResp)
+	defer server.Close()
+
+	opps := engine.runNativeDiscoveryScanWithURL(server.URL)
+	if len(opps) == 0 {
+		t.Fatal("expected opportunities, got none")
+	}
+
+	// When contract is missing, getMaintenanceRate falls back to default 0.05.
+	for _, opp := range opps {
+		if opp.MaintenanceRate != 0.05 {
+			t.Errorf("%s %s: MaintenanceRate = %v, want 0.05 (default)", opp.Symbol, opp.Direction, opp.MaintenanceRate)
+		}
+	}
+}
+
+// TestDiscoveryMaintenanceRate_NotUsedForScoring verifies that MaintenanceRate
+// does NOT affect FilterStatus (display only per D-15).
+func TestDiscoveryMaintenanceRate_NotUsedForScoring(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	stubExch := &nativeScannerStubExchange{
+		borrowRate: &exchange.MarginInterestRate{
+			Coin:       "GUA",
+			HourlyRate: 0.00001,
+		},
+	}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{
+		"binance": stubExch,
+	}
+	// Very high maintenance rate (30% — GUAUSDT-like case).
+	engine.exchanges = map[string]exchange.Exchange{
+		"binance": &mockExchange{
+			contracts: map[string]exchange.ContractInfo{
+				"GUAUSDT": {MaintenanceRate: 0.30},
+			},
+		},
+	}
+	engine.cfg = &config.Config{
+		SpotFuturesScannerMode:         "native",
+		SpotFuturesMinNetYieldAPR:      0.0,
+		SpotFuturesCapitalSeparate:     200,
+		SpotFuturesLeverage:            3,
+		SpotFuturesMaintenanceDefault:  0.05,
+		SpotFuturesMaintenanceCacheTTL: 60,
+	}
+
+	lorisResp := buildTestLorisResponse(
+		[]string{"GUA"},
+		map[string]map[string]float64{
+			"binance": {"GUA": 50.0}, // high funding to pass yield filter
+		},
+	)
+
+	server := mockLorisServer(lorisResp)
+	defer server.Close()
+
+	opps := engine.runNativeDiscoveryScanWithURL(server.URL)
+
+	// Find Dir B (buy_spot_short) — should have no FilterStatus despite high maintenance rate.
+	for _, opp := range opps {
+		if opp.Direction == "buy_spot_short" && opp.Symbol == "GUAUSDT" {
+			if opp.MaintenanceRate != 0.30 {
+				t.Errorf("MaintenanceRate = %v, want 0.30", opp.MaintenanceRate)
+			}
+			if opp.FilterStatus != "" {
+				t.Errorf("FilterStatus = %q, want empty (maintenance_rate is display only)", opp.FilterStatus)
+			}
+			return
+		}
+	}
+	t.Fatal("expected Dir B GUAUSDT opportunity")
+}
+
 func TestRunDiscoveryScan_KeepsActivePositionWithNonPositiveFunding(t *testing.T) {
 	tests := []struct {
 		name string
