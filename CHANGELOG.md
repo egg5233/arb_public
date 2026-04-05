@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.28.3] - 2026-04-05
+
+### Added — Spot-Futures Risk Hardening (Phase 6, Plan 04)
+- **MaintenanceRate on SpotArbOpportunity**: discovery populates maintenance_rate from ContractInfo for both native and CoinGlass scanner paths
+- **Dashboard maintenance rate column**: opportunities table shows per-contract maintenance_rate with color coding (red >=10%, amber >=5%, gray <5%, dash for unknown)
+- **i18n**: both EN (`Maint %`) and ZH-TW (`維持率`) locale files updated with maintenance rate translation keys
+- **Display only (D-15)**: no scoring or filtering penalty on maintenance_rate — provides data visibility for future risk refinement
+
 ## [0.28.2] - 2026-04-05
 
 ### Added — Spot-Futures Risk Hardening (Phase 6, Plan 03)

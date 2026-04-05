@@ -108,6 +108,8 @@ const en = {
   'spot.borrowLegend': 'Borrow:',
   'spot.borrowGood': 'amount available to borrow',
   'spot.borrowBad': '0 = not borrowable on this exchange',
+  'spot.maintenanceRate': 'Maint %',
+  'spot.maintenanceRateTooltip': 'Maintenance margin rate — higher = closer to liquidation at same leverage',
   'spot.status': 'Status',
   'spot.reason': 'Reason',
   'spot.ready': 'ready',

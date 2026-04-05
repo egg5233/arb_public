@@ -168,6 +168,7 @@ export interface SpotOpportunity {
   borrow_apr: number;
   fee_pct: number;
   net_apr: number;
+  maintenance_rate: number;  // tier-1 maintenance margin rate (decimal, 0.005 = 0.5%)
   source: string;
   timestamp: string;
   filter_status?: string;

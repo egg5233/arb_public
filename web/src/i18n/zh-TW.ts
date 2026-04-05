@@ -110,6 +110,8 @@ const zhTW: Record<TranslationKey, string> = {
   'spot.borrowLegend': '可借：',
   'spot.borrowGood': '可借入的數量',
   'spot.borrowBad': '0 = 該交易所無法借入',
+  'spot.maintenanceRate': '維持率',
+  'spot.maintenanceRateTooltip': '維持保證金率 — 越高表示相同槓桿下越接近清算',
   'spot.status': '狀態',
   'spot.reason': '原因',
   'spot.ready': '就緒',

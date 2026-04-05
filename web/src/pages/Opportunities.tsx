@@ -142,6 +142,13 @@ const SpotRow: FC<SpotRowProps> = ({ opp, index, compact, t, onSpotOpen, gapResu
         <td className={`py-1.5 pr-2 font-mono text-xs ${filtered ? '' : isA ? 'text-blue-400' : 'text-purple-400'}`}>{dirLabel}</td>
         <td className={`py-1.5 pr-2 text-right font-mono text-xs font-semibold ${filtered ? '' : opp.net_apr >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{(opp.net_apr * 100).toFixed(1)}%</td>
         <td className="py-1.5 pr-2 text-right font-mono text-[10px]">
+          {opp.maintenance_rate > 0 ? (
+            <span className={opp.maintenance_rate >= 0.10 ? 'text-red-400' : opp.maintenance_rate >= 0.05 ? 'text-amber-400' : 'text-gray-400'}>
+              {(opp.maintenance_rate * 100).toFixed(1)}%
+            </span>
+          ) : <span className="text-gray-600">-</span>}
+        </td>
+        <td className="py-1.5 pr-2 text-right font-mono text-[10px]">
           {gapResult && !filtered && (
             gapResult.gap_pct <= -999 ? <span className="text-gray-600">N/A</span>
             : <span className={gapResult.gap_pct <= 0 ? 'text-emerald-400' : gapResult.gap_pct < 0.5 ? 'text-amber-400' : 'text-red-400'}>{gapResult.gap_pct.toFixed(3)}%</span>
@@ -183,6 +190,15 @@ const SpotRow: FC<SpotRowProps> = ({ opp, index, compact, t, onSpotOpen, gapResu
       <td className={`py-2 text-right font-mono ${filtered ? '' : 'text-amber-400'}`}>{opp.borrow_apr > 0 ? `${(opp.borrow_apr * 100).toFixed(1)}%` : '-'}</td>
       <td className={`py-2 text-right font-mono ${filtered ? '' : 'text-gray-400'}`}>{(opp.fee_pct * 100).toFixed(2)}%</td>
       <td className={`py-2 text-right font-mono font-semibold ${filtered ? '' : opp.net_apr >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{(opp.net_apr * 100).toFixed(1)}%</td>
+      <td className="py-2 text-right font-mono text-xs">
+        {opp.maintenance_rate > 0 ? (
+          <span className={opp.maintenance_rate >= 0.10 ? 'text-red-400' : opp.maintenance_rate >= 0.05 ? 'text-amber-400' : 'text-gray-400'}>
+            {(opp.maintenance_rate * 100).toFixed(2)}%
+          </span>
+        ) : (
+          <span className="text-gray-600">-</span>
+        )}
+      </td>
       <td className="py-2 text-right font-mono text-xs">
         {gapResult && !filtered && (
           gapResult.gap_pct < 0 ? <span className="text-gray-600">N/A</span>
@@ -349,6 +365,7 @@ const SpotSection: FC<SpotSectionProps & { compact?: boolean; accent?: 'emerald'
                 <th className="pb-1.5 pr-2">{t('spot.exchange')}</th>
                 <th className="pb-1.5 pr-2">Dir</th>
                 <th className="pb-1.5 pr-2 text-right">{t('spot.netApr')}</th>
+                <th className="pb-1.5 pr-2 text-right" title={t('spot.maintenanceRateTooltip')}>MR</th>
                 <th className="pb-1.5 pr-2 text-right">Gap</th>
                 <th className="pb-1.5 pr-2 text-right">Borrow</th>
                 <th className="pb-1.5 text-right"></th>
@@ -362,7 +379,7 @@ const SpotSection: FC<SpotSectionProps & { compact?: boolean; accent?: 'emerald'
                   gapResult={gapResults[oppKey]} borrowResult={borrowResults[borrowKey]} {...rowProps} />;
               })}
               {pageOpps.length === 0 && (
-                <tr><td colSpan={8} className="py-6 text-center text-gray-600 text-xs">{t('spot.noOpportunities')}</td></tr>
+                <tr><td colSpan={9} className="py-6 text-center text-gray-600 text-xs">{t('spot.noOpportunities')}</td></tr>
               )}
             </tbody>
           </table>
@@ -395,6 +412,7 @@ const SpotSection: FC<SpotSectionProps & { compact?: boolean; accent?: 'emerald'
             <th className="pb-2 text-right">{t('spot.borrow')}</th>
             <th className="pb-2 text-right">{t('spot.fees')}</th>
             <th className="pb-2 text-right">{t('spot.netApr')}</th>
+            <th className="pb-2 text-right" title={t('spot.maintenanceRateTooltip')}>{t('spot.maintenanceRate')}</th>
             <th className="pb-2 text-right">Gap</th>
             <th className="pb-2 text-right">Borrow</th>
             <th className="pb-2">{t('spot.status')}</th>
@@ -409,7 +427,7 @@ const SpotSection: FC<SpotSectionProps & { compact?: boolean; accent?: 'emerald'
               gapResult={gapResults[oppKey]} borrowResult={borrowResults[borrowKey]} {...rowProps} />;
           })}
           {pageOpps.length === 0 && (
-            <tr><td colSpan={12} className="py-8 text-center text-gray-500">{t('spot.noOpportunities')}</td></tr>
+            <tr><td colSpan={13} className="py-8 text-center text-gray-500">{t('spot.noOpportunities')}</td></tr>
           )}
         </tbody>
       </table>
