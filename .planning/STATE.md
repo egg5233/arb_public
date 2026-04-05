@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: verifying
-stopped_at: Phase 6 context gathered
-last_updated: "2026-04-05T01:30:02.880Z"
-last_activity: 2026-04-04
+status: executing
+stopped_at: Completed 06-01-PLAN.md
+last_updated: "2026-04-05T14:14:23.333Z"
+last_activity: 2026-04-05
 progress:
   total_phases: 6
   completed_phases: 5
-  total_plans: 16
-  completed_plans: 16
-  percent: 100
+  total_plans: 20
+  completed_plans: 17
+  percent: 85
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-01)
 
 **Core value:** "I deposit USDT, select my risk preference, and the system automatically finds opportunities across both strategies, opens positions, collects funding, exits when profitable, and I can see exactly how much each position earned."
-**Current focus:** Phase 05 — capital-allocation
+**Current focus:** Phase 06 — spot-futures-risk-hardening
 
 ## Current Position
 
-Phase: 5
-Plan: 3 of 3 complete (human-verify checkpoint pending)
-Status: Awaiting human verification
-Last activity: 2026-04-04
+Phase: 06 (spot-futures-risk-hardening) — EXECUTING
+Plan: 2 of 4
+Status: Ready to execute
+Last activity: 2026-04-05
 
 Progress: [██████████] 100%
 
@@ -58,6 +58,7 @@ Progress: [██████████] 100%
 | Phase 05 P01 | 7min | 2 tasks | 5 files |
 | Phase 05 P02 | 13min | 3 tasks | 7 files |
 | Phase 05 P03 | 5min | 2 tasks | 6 files |
+| Phase 06 P01 | 16min | 2 tasks | 15 files |
 
 ## Accumulated Context
 
@@ -89,6 +90,9 @@ Recent decisions affecting current work:
 - [Phase 05]: Minimum 3 trades per strategy before performance-weighted allocation tilt
 - [Phase 05]: Direct fetch in Overview useEffect for allocation data instead of threading through App props
 - [Phase 05]: Violet color scheme for allocation tab to distinguish from risk (amber) and safety (emerald)
+- [Phase 06]: GetMaintenanceRate kept as optional interface (maintenanceRateProvider), not on Exchange interface -- BingX excluded
+- [Phase 06]: OKX/Bitget MaintenanceRate=0 in LoadAllContracts (fetched on demand); Gate.io populates inline
+- [Phase 06]: Lazy cache initialization in getMaintenanceRate() avoids SpotEngine constructor changes
 
 ### Pending Todos
 
@@ -101,6 +105,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-05T01:30:02.876Z
-Stopped at: Phase 6 context gathered
-Resume file: .planning/phases/06-spot-futures-risk-hardening/06-CONTEXT.md
+Last session: 2026-04-05T14:14:23.329Z
+Stopped at: Completed 06-01-PLAN.md
+Resume file: None
