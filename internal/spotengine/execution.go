@@ -120,7 +120,27 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		return fmt.Errorf("exchange %s not found", exchName)
 	}
 
-	// 1d. Check no duplicate symbol already open (any exchange).
+	// 1d. Maintenance rate warning for manual opens (per D-04: allow bypass with warning).
+	if e.cfg.SpotFuturesEnableMaintenanceGate {
+		leverage := float64(e.cfg.SpotFuturesLeverage)
+		if leverage <= 0 {
+			leverage = 3.0
+		}
+		capitalPerLeg := e.cfg.SpotFuturesCapitalSeparate
+		if !isSeparateAccount(exchName) {
+			capitalPerLeg = e.cfg.SpotFuturesCapitalUnified
+		}
+		notional := capitalPerLeg * leverage
+		mr := e.getMaintenanceRate(symbol, exchName, notional)
+		survivable := (1.0 / leverage) - mr
+		threshold := 0.90 / leverage
+		if survivable < threshold {
+			e.log.Warn("manual-open: %s on %s maintenance_rate=%.1f%%, survivable=%.1f%% < threshold=%.1f%% — proceeding per manual override",
+				symbol, exchName, mr*100, survivable*100, threshold*100)
+		}
+	}
+
+	// 1e. Check no duplicate symbol already open (any exchange).
 	active, err := e.db.GetActiveSpotPositions()
 	if err != nil {
 		return fmt.Errorf("failed to check active positions: %w", err)
@@ -131,7 +151,7 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		}
 	}
 
-	// 1e. Check capacity.
+	// 1f. Check capacity.
 	if len(active) >= e.cfg.SpotFuturesMaxPositions {
 		return fmt.Errorf("at max capacity (%d/%d)", len(active), e.cfg.SpotFuturesMaxPositions)
 	}

@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.28.1] - 2026-04-05
+
+### Added — Spot-Futures Risk Hardening (Phase 6, Plan 02)
+- **Maintenance rate gate (check 6)**: pre-entry risk gate rejects auto-entries where survivable price drop < leverage-scaled threshold (formula: `survivable = 1/leverage - maintenance_rate`, threshold = `90%/leverage`)
+- **GUAUSDT prevention**: 30% maintenance at 3x leverage gives 3.3% survivable vs 30% threshold — hard rejected
+- **Manual open warning**: ManualOpen logs warning but does not block for high-maintenance-rate symbols (per D-04 bypass)
+- **API maintenance_rate_warning**: `POST /api/spot/open` success response includes `maintenance_rate_warning` field when maintenance gate would have rejected
+- **Leverage scaling**: 2x→45%, 3x→30%, 4x→22.5%, 5x→18% thresholds tested
+- **Unit tests**: 6 test functions (14 test cases) covering rejection, allow, disabled gate, leverage scaling, zero-rate default, dry-run ordering
+
 ## [0.28.0] - 2026-04-05
 
 ### Added — Spot-Futures Risk Hardening (Phase 6, Plan 01)

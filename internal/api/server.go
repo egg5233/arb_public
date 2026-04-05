@@ -32,9 +32,10 @@ type Server struct {
 	permissions       map[string]exchange.PermissionResult
 	scorer            *risk.ExchangeScorer
 	spotOpps          atomic.Value // []interface{}
-	spotOpenPosition  func(symbol, exchange, direction string) error
-	spotClosePosition func(positionID string) error
-	spotInjectTestOpp func(symbol, exchange string)
+	spotOpenPosition      func(symbol, exchange, direction string) error
+	spotClosePosition    func(positionID string) error
+	spotInjectTestOpp    func(symbol, exchange string)
+	spotMaintenanceWarning func(symbol, exchange string) string
 	configNotifier    *config.ConfigNotifier
 	analyticsStore    *analytics.Store
 	allocator         *risk.CapitalAllocator
@@ -284,6 +285,12 @@ func (s *Server) SetSpotCloseHandler(fn func(positionID string) error) {
 // SetSpotTestInjectHandler registers the spot-futures engine's test inject callback.
 func (s *Server) SetSpotTestInjectHandler(fn func(symbol, exchange string)) {
 	s.spotInjectTestOpp = fn
+}
+
+// SetSpotMaintenanceWarning registers the callback that checks whether a
+// symbol has an elevated maintenance rate. Returns a warning string or "".
+func (s *Server) SetSpotMaintenanceWarning(fn func(symbol, exchange string) string) {
+	s.spotMaintenanceWarning = fn
 }
 
 // SetPermissions stores the startup permission check results.

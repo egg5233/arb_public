@@ -234,7 +234,14 @@ func (s *Server) handleSpotManualOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, Response{OK: true})
+	// Check for maintenance rate warning (per D-04: manual bypass with warning).
+	resp := map[string]interface{}{"status": "opened"}
+	if s.spotMaintenanceWarning != nil {
+		if warning := s.spotMaintenanceWarning(req.Symbol, req.Exchange); warning != "" {
+			resp["maintenance_rate_warning"] = warning
+		}
+	}
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: resp})
 }
 
 // handleSpotCheckPriceGap fetches live spot and futures BBOs for a one-off price gap check.
