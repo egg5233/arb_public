@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.28.2] - 2026-04-05
+
+### Added — Spot-Futures Risk Hardening (Phase 6, Plan 03, Task 1)
+- **Liquidation distance exit trigger 2b**: maintenance-rate-aware liquidation distance monitor in `checkExitTriggers()` Phase 1 safety triggers
+- **Graduated response**: emergency at 10% of entry threshold (parallel close), exit at 20% (depth-fill), warn at 50% (log only)
+- **Leverage-scaled thresholds**: entryThreshold = 0.90/leverage, all sub-thresholds scale automatically (3x: emerg=3%, exit=6%, warn=15%)
+- **Long/short formulas**: long estLiqPrice = entry*(1 - 1/lev + mr), short estLiqPrice = entry*(1 + 1/lev - mr)
+- **Config gated**: `SpotFuturesEnableMaintenanceGate` must be true for trigger 2b to fire (default OFF)
+- **Unit tests**: 7 test functions covering GUAUSDT emergency, moderate exit, warn-only, safe, disabled gate, short futures, short emergency
+
 ## [0.28.1] - 2026-04-05
 
 ### Added — Spot-Futures Risk Hardening (Phase 6, Plan 02)

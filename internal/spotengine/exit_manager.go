@@ -203,6 +203,64 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 		}
 	}
 
+	// ---------------------------------------------------------------
+	// 2b. Maintenance-rate-aware liquidation distance
+	//     Per D-06: additional trigger, not replacement for trigger 2.
+	//     Per D-07: distance = |mark_price - est_liq_price| / mark_price
+	//     Per D-08: graduated response at 50%/20%/10% of entry threshold.
+	// ---------------------------------------------------------------
+	if e.cfg.SpotFuturesEnableMaintenanceGate && pos.FuturesEntry > 0 {
+		futExch, ok := e.exchanges[pos.Exchange]
+		if ok {
+			ob, err := futExch.GetOrderbook(pos.Symbol, 5)
+			if err == nil && len(ob.Bids) > 0 && len(ob.Asks) > 0 {
+				markPrice := (ob.Bids[0].Price + ob.Asks[0].Price) / 2
+
+				notional := pos.NotionalUSDT
+				if notional <= 0 {
+					notional = pos.FuturesEntry * pos.FuturesSize // fallback estimate
+				}
+				maintenanceRate := e.getMaintenanceRate(pos.Symbol, pos.Exchange, notional)
+
+				leverage := float64(e.cfg.SpotFuturesLeverage)
+				if leverage <= 0 {
+					leverage = 3.0
+				}
+
+				// Estimate liquidation price (conservative, isolated-margin formula per Pitfall 7).
+				var estLiqPrice float64
+				if pos.FuturesSide == "long" {
+					estLiqPrice = pos.FuturesEntry * (1 - (1 / leverage) + maintenanceRate)
+				} else { // short
+					estLiqPrice = pos.FuturesEntry * (1 + (1 / leverage) - maintenanceRate)
+				}
+
+				distance := math.Abs(markPrice-estLiqPrice) / markPrice
+				entryThreshold := 0.90 / leverage
+
+				emergThreshold := entryThreshold * 0.10 // per D-08
+				exitThreshold := entryThreshold * 0.20  // per D-08
+				warnThreshold := entryThreshold * 0.50  // per D-08
+
+				if distance < emergThreshold {
+					e.log.Error("exit trigger: %s EMERGENCY liq distance %.1f%% < %.1f%% (mr=%.2f%%, lev=%dx, entry=%.4f mark=%.4f estLiq=%.4f)",
+						pos.Symbol, distance*100, emergThreshold*100, maintenanceRate*100, int(leverage), pos.FuturesEntry, markPrice, estLiqPrice)
+					return "liq_distance_emergency", true
+				}
+				if distance < exitThreshold {
+					e.log.Warn("exit trigger: %s liq distance %.1f%% < exit %.1f%% (mr=%.2f%%, entry=%.4f mark=%.4f)",
+						pos.Symbol, distance*100, exitThreshold*100, maintenanceRate*100, pos.FuturesEntry, markPrice)
+					return "liq_distance_exit", false
+				}
+				if distance < warnThreshold {
+					e.log.Warn("exit trigger: %s liq distance %.1f%% < warn %.1f%% (mr=%.2f%%)",
+						pos.Symbol, distance*100, warnThreshold*100, maintenanceRate*100)
+					// Warn only -- do not exit
+				}
+			}
+		}
+	}
+
 	// ===============================================================
 	// PHASE 2: GUARD GATES (block yield-based triggers only)
 	// ===============================================================
