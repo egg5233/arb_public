@@ -133,4 +133,4 @@ Plans:
 - [x] 06-01-PLAN.md -- Foundation: ContractInfo.MaintenanceRate, 5 adapter implementations, getMaintenanceRate helper, config fields
 - [x] 06-02-PLAN.md -- Pre-entry risk gate: maintenance_rate check 6 in checkRiskGate, manual bypass warning
 - [x] 06-03-PLAN.md -- Runtime liq distance trigger + health monitor spot-futures integration
-- [ ] 06-04-PLAN.md -- Discovery display: MaintenanceRate in opportunities, dashboard column, i18n, version bump
+- [x] 06-04-PLAN.md -- Discovery display: MaintenanceRate in opportunities, dashboard column, i18n, version bump
