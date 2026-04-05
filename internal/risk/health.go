@@ -61,14 +61,15 @@ type ExchangeHealth struct {
 
 // HealthAction represents a protective action to be taken by the engine.
 type HealthAction struct {
-	Type           string                      // "transfer", "reduce", "close", "close_orphan", "close_orphan_dust"
-	Exchange       string                      // affected exchange
-	Positions      []*models.ArbitragePosition // positions to act on
-	Fraction       float64                     // for reduce (e.g. 0.5)
-	DonorExch      string                      // for transfer: source exchange
-	Amount         float64                     // for transfer: USDT amount
-	OrphanSide     string                      // for orphan: "long" or "short"
-	OrphanExchange string                      // for orphan: which exchange has the orphan leg
+	Type           string                           // "transfer", "reduce", "close", "close_orphan", "close_orphan_dust"
+	Exchange       string                           // affected exchange
+	Positions      []*models.ArbitragePosition      // perp-perp positions to act on
+	SpotPositions  []*models.SpotFuturesPosition    // spot-futures positions for cross-engine dispatch
+	Fraction       float64                          // for reduce (e.g. 0.5)
+	DonorExch      string                           // for transfer: source exchange
+	Amount         float64                          // for transfer: USDT amount
+	OrphanSide     string                           // for orphan: "long" or "short"
+	OrphanExchange string                           // for orphan: which exchange has the orphan leg
 }
 
 // HealthMonitor checks per-exchange margin health and emits protective actions.
@@ -157,12 +158,19 @@ func (h *HealthMonitor) checkAll() {
 		return
 	}
 
+	spotPositions, err := h.db.GetActiveSpotPositions()
+	if err != nil {
+		h.log.Error("failed to get active spot positions: %v", err)
+		// Fail-open: continue with perp-perp only (per Phase 3 fail-open pattern)
+		spotPositions = nil
+	}
+
 	for name := range h.exchanges {
-		h.checkExchangeHealth(name, positions)
+		h.checkExchangeHealth(name, positions, spotPositions)
 	}
 }
 
-func (h *HealthMonitor) checkExchangeHealth(name string, positions []*models.ArbitragePosition) {
+func (h *HealthMonitor) checkExchangeHealth(name string, positions []*models.ArbitragePosition, spotPositions []*models.SpotFuturesPosition) {
 	exch, ok := h.exchanges[name]
 	if !ok {
 		return
@@ -174,7 +182,7 @@ func (h *HealthMonitor) checkExchangeHealth(name string, positions []*models.Arb
 		return
 	}
 
-	// Find positions with legs on this exchange
+	// Find perp-perp positions with legs on this exchange.
 	var exchPositions []*models.ArbitragePosition
 	var posIDs []string
 	var totalPnL float64
@@ -193,9 +201,20 @@ func (h *HealthMonitor) checkExchangeHealth(name string, positions []*models.Arb
 		}
 	}
 
-	// Determine health level
+	// Find spot-futures positions on this exchange.
+	var exchSpotPositions []*models.SpotFuturesPosition
+	for _, sp := range spotPositions {
+		if sp.Status == models.SpotStatusActive && sp.Exchange == name {
+			exchSpotPositions = append(exchSpotPositions, sp)
+			posIDs = append(posIDs, sp.ID)
+			// Note: spot PnL already included in exchange margin ratio
+		}
+	}
+
+	// Determine health level — include both perp and spot in position count.
+	totalPositionCount := len(exchPositions) + len(exchSpotPositions)
 	marginRatio := h.normalizeMarginRatio(bal)
-	level := h.computeLevel(marginRatio, totalPnL, len(exchPositions))
+	level := h.computeLevel(marginRatio, totalPnL, totalPositionCount)
 	trend := h.liqTrend.Sample(name, marginRatio, time.Now(), h.cfg.MarginL3Threshold, h.cfg.MarginL4Threshold)
 
 	prevState := h.states[name]
@@ -218,8 +237,8 @@ func (h *HealthMonitor) checkExchangeHealth(name string, positions []*models.Arb
 		if spotBal, err := exch.GetSpotBalance(); err == nil && spotBal.Available > 0 {
 			spotStr = fmt.Sprintf(" spot=%.2f", spotBal.Available)
 		}
-		h.log.Info("%s health: %s (marginRatio=%.4f pnl=%.4f positions=%d futBal=%.2f (avail=%.2f|frozen=%.2f)%s)",
-			name, level, bal.MarginRatio, totalPnL, len(exchPositions),
+		h.log.Info("%s health: %s (marginRatio=%.4f pnl=%.4f positions=%d[perp=%d spot=%d] futBal=%.2f (avail=%.2f|frozen=%.2f)%s)",
+			name, level, bal.MarginRatio, totalPnL, totalPositionCount, len(exchPositions), len(exchSpotPositions),
 			bal.Total, bal.Available, bal.Frozen, spotStr)
 	}
 
@@ -228,9 +247,9 @@ func (h *HealthMonitor) checkExchangeHealth(name string, positions []*models.Arb
 	case L3Medium:
 		h.handleL3(name, state, exchPositions)
 	case L4High:
-		h.handleL4(name, state, exchPositions)
+		h.handleL4(name, state, exchPositions, exchSpotPositions)
 	case L5Critical:
-		h.handleL5(name, state, exchPositions)
+		h.handleL5(name, state, exchPositions, exchSpotPositions)
 	}
 	h.handleTrend(name, state, exchPositions, trend)
 }
@@ -414,47 +433,68 @@ func (h *HealthMonitor) handleL3(name string, state *ExchangeHealth, positions [
 }
 
 // handleL4 requests position reduction on the at-risk exchange.
-func (h *HealthMonitor) handleL4(name string, state *ExchangeHealth, positions []*models.ArbitragePosition) {
-	if len(positions) == 0 {
+func (h *HealthMonitor) handleL4(name string, state *ExchangeHealth, positions []*models.ArbitragePosition, spotPositions []*models.SpotFuturesPosition) {
+	if len(positions) == 0 && len(spotPositions) == 0 {
 		return
 	}
 
-	h.log.Warn("L4 %s: marginRatio=%.4f, requesting position reduction (%.0f%%)",
-		name, state.MarginRatio, h.cfg.L4ReduceFraction*100)
-	h.queueReduceAction(name, positions, h.cfg.L4ReduceFraction)
+	h.log.Warn("L4 %s: marginRatio=%.4f, requesting position reduction (%.0f%%) [perp=%d spot=%d]",
+		name, state.MarginRatio, h.cfg.L4ReduceFraction*100, len(positions), len(spotPositions))
+
+	// For L4 reduce: select the largest spot position (by NotionalUSDT) as candidate.
+	var spotCandidates []*models.SpotFuturesPosition
+	if len(spotPositions) > 0 {
+		largest := spotPositions[0]
+		for _, sp := range spotPositions[1:] {
+			if sp.NotionalUSDT > largest.NotionalUSDT {
+				largest = sp
+			}
+		}
+		spotCandidates = []*models.SpotFuturesPosition{largest}
+	}
+
+	h.queueReduceActionWithSpot(name, positions, spotCandidates, h.cfg.L4ReduceFraction)
 }
 
 func (h *HealthMonitor) queueReduceAction(name string, positions []*models.ArbitragePosition, fraction float64) {
-	if len(positions) == 0 {
+	h.queueReduceActionWithSpot(name, positions, nil, fraction)
+}
+
+func (h *HealthMonitor) queueReduceActionWithSpot(name string, positions []*models.ArbitragePosition, spotPositions []*models.SpotFuturesPosition, fraction float64) {
+	if len(positions) == 0 && len(spotPositions) == 0 {
 		return
 	}
 
-	// Sort positions by PnL ascending (worst first) using the leg on this exchange.
-	type posPnL struct {
-		pos *models.ArbitragePosition
-		pnl float64
-	}
-	var sorted []posPnL
-	exch := h.exchanges[name]
-	for _, pos := range positions {
-		pnl := h.getLegPnL(exch, pos, name)
-		sorted = append(sorted, posPnL{pos: pos, pnl: pnl})
-	}
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].pnl < sorted[j].pnl
-	})
+	// Sort perp-perp positions by PnL ascending (worst first) using the leg on this exchange.
+	var sortedPositions []*models.ArbitragePosition
+	if len(positions) > 0 {
+		type posPnL struct {
+			pos *models.ArbitragePosition
+			pnl float64
+		}
+		var sorted []posPnL
+		exch := h.exchanges[name]
+		for _, pos := range positions {
+			pnl := h.getLegPnL(exch, pos, name)
+			sorted = append(sorted, posPnL{pos: pos, pnl: pnl})
+		}
+		sort.Slice(sorted, func(i, j int) bool {
+			return sorted[i].pnl < sorted[j].pnl
+		})
 
-	sortedPositions := make([]*models.ArbitragePosition, len(sorted))
-	for i, sp := range sorted {
-		sortedPositions[i] = sp.pos
+		sortedPositions = make([]*models.ArbitragePosition, len(sorted))
+		for i, sp := range sorted {
+			sortedPositions[i] = sp.pos
+		}
 	}
 
 	select {
 	case h.actionCh <- HealthAction{
-		Type:      "reduce",
-		Exchange:  name,
-		Positions: sortedPositions,
-		Fraction:  fraction,
+		Type:          "reduce",
+		Exchange:      name,
+		Positions:     sortedPositions,
+		SpotPositions: spotPositions,
+		Fraction:      fraction,
 	}:
 	default:
 		h.log.Warn("L4 %s: action channel full, dropping reduce request", name)
@@ -462,19 +502,20 @@ func (h *HealthMonitor) queueReduceAction(name string, positions []*models.Arbit
 }
 
 // handleL5 requests emergency close of all positions on the at-risk exchange.
-func (h *HealthMonitor) handleL5(name string, state *ExchangeHealth, positions []*models.ArbitragePosition) {
-	if len(positions) == 0 {
+func (h *HealthMonitor) handleL5(name string, state *ExchangeHealth, positions []*models.ArbitragePosition, spotPositions []*models.SpotFuturesPosition) {
+	if len(positions) == 0 && len(spotPositions) == 0 {
 		return
 	}
 
-	h.log.Error("L5 %s: marginRatio=%.4f CRITICAL — requesting emergency close of %d positions",
-		name, state.MarginRatio, len(positions))
+	h.log.Error("L5 %s: marginRatio=%.4f CRITICAL — requesting emergency close of %d positions (%d perp + %d spot)",
+		name, state.MarginRatio, len(positions)+len(spotPositions), len(positions), len(spotPositions))
 
 	select {
 	case h.actionCh <- HealthAction{
-		Type:      "close",
-		Exchange:  name,
-		Positions: positions,
+		Type:          "close",
+		Exchange:      name,
+		Positions:     positions,
+		SpotPositions: spotPositions,
 	}:
 	default:
 		h.log.Error("L5 %s: action channel full, dropping emergency close!", name)

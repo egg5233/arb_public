@@ -98,6 +98,10 @@ type Engine struct {
 	// patch opportunities so the executed pair matches the rebalanced pair.
 	allocOverrideMu sync.Mutex
 	allocOverrides  map[string]allocatorChoice // symbol → chosen pair
+
+	// spotCloseCallback dispatches spot-futures health actions to SpotEngine.
+	// Set via SetSpotCloseCallback after both engines are initialized.
+	spotCloseCallback func(pos *models.SpotFuturesPosition, reason string, isEmergency bool) error
 }
 
 // slEntry maps a stop-loss order to its position and leg.
@@ -156,6 +160,14 @@ func (e *Engine) SetLossLimiter(ll *risk.LossLimitChecker) {
 // position close events. The writer is optional; nil means analytics disabled.
 func (e *Engine) SetSnapshotWriter(sw interface{ RecordPerpClose(pos *models.ArbitragePosition) }) {
 	e.snapshotWriter = sw
+}
+
+// SetSpotCloseCallback registers the SpotEngine's ClosePosition method for
+// cross-engine dispatch. When the health monitor detects L4/L5 conditions,
+// spot-futures positions are dispatched via this callback instead of the
+// perp-perp close path.
+func (e *Engine) SetSpotCloseCallback(fn func(pos *models.SpotFuturesPosition, reason string, isEmergency bool) error) {
+	e.spotCloseCallback = fn
 }
 
 // recordAPIError increments the consecutive error counter for an exchange.
@@ -1142,8 +1154,12 @@ func (e *Engine) consumeHealthActions() {
 				e.handleTransfer(action)
 			case "reduce":
 				e.handleReduce(action)
+				// Dispatch spot-futures position reduction to SpotEngine (per D-10).
+				e.dispatchSpotHealthAction(action.SpotPositions, "health_reduce", false)
 			case "close":
 				e.handleEmergencyClose(action)
+				// Dispatch spot-futures emergency close to SpotEngine (per D-10).
+				e.dispatchSpotHealthAction(action.SpotPositions, "health_emergency", true)
 			case "close_orphan", "close_orphan_dust":
 				e.handleOrphanClose(action)
 			default:
@@ -1152,6 +1168,22 @@ func (e *Engine) consumeHealthActions() {
 		case <-e.stopCh:
 			return
 		}
+	}
+}
+
+// dispatchSpotHealthAction sends spot-futures positions to the SpotEngine via
+// the registered callback. Each position is closed in a separate goroutine to
+// avoid blocking the health action consumer.
+func (e *Engine) dispatchSpotHealthAction(spotPositions []*models.SpotFuturesPosition, reason string, isEmergency bool) {
+	if len(spotPositions) == 0 || e.spotCloseCallback == nil {
+		return
+	}
+	for _, sp := range spotPositions {
+		go func(pos *models.SpotFuturesPosition) {
+			if err := e.spotCloseCallback(pos, reason, isEmergency); err != nil {
+				e.log.Error("health %s: spot close %s failed: %v", reason, pos.ID, err)
+			}
+		}(sp)
 	}
 }
 

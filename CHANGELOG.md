@@ -4,13 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [0.28.2] - 2026-04-05
 
-### Added — Spot-Futures Risk Hardening (Phase 6, Plan 03, Task 1)
+### Added — Spot-Futures Risk Hardening (Phase 6, Plan 03)
 - **Liquidation distance exit trigger 2b**: maintenance-rate-aware liquidation distance monitor in `checkExitTriggers()` Phase 1 safety triggers
 - **Graduated response**: emergency at 10% of entry threshold (parallel close), exit at 20% (depth-fill), warn at 50% (log only)
 - **Leverage-scaled thresholds**: entryThreshold = 0.90/leverage, all sub-thresholds scale automatically (3x: emerg=3%, exit=6%, warn=15%)
 - **Long/short formulas**: long estLiqPrice = entry*(1 - 1/lev + mr), short estLiqPrice = entry*(1 + 1/lev - mr)
 - **Config gated**: `SpotFuturesEnableMaintenanceGate` must be true for trigger 2b to fire (default OFF)
 - **Unit tests**: 7 test functions covering GUAUSDT emergency, moderate exit, warn-only, safe, disabled gate, short futures, short emergency
+- **Health monitor spot-futures integration**: `HealthMonitor.checkAll()` now fetches both perp-perp and spot-futures positions
+- **SpotPositions field on HealthAction**: L4/L5 actions carry spot-futures positions for cross-engine dispatch
+- **Cross-engine dispatch**: `Engine.consumeHealthActions()` routes `SpotPositions` to SpotEngine via `SetSpotCloseCallback`
+- **Position count aggregation**: health level calculation includes both perp and spot positions per exchange
+- **Health monitor tests**: 4 test functions with miniredis covering L4/L5 spot inclusion and mixed position aggregation
 
 ## [0.28.1] - 2026-04-05
 

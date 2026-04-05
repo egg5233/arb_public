@@ -407,6 +407,7 @@ func main() {
 		apiSrv.SetSpotTestInjectHandler(spotEng.InjectTestOpportunity)
 		apiSrv.SetSpotMaintenanceWarning(spotEng.MaintenanceWarning)
 		spotEng.Start()
+		eng.SetSpotCloseCallback(spotEng.ClosePosition)
 		log.Info("Spot-futures engine started")
 	}
 
