@@ -5,6 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## CRITICAL: npm security lockdown
 **DO NOT run `npm install`, `npm update`, `npm upgrade`, `npx`, or `pnpm install` in the `web/` directory or anywhere in this repo.** The npm axios package has been compromised with a malicious dependency. All frontend dependencies are locked in `web/package-lock.json` — use ONLY `npm ci` (clean install from lockfile) if a fresh install is absolutely needed. Never add, remove, or update npm packages without explicit board/user approval.
 
+## CRITICAL: Do not modify config.json
+**DO NOT read, write, modify, or delete `config.json` in the repo root.** This is the live runtime configuration containing API keys, exchange credentials, and tuned trading parameters. Any accidental overwrite or value change can break live trading. If a task requires config changes, tell the user — never touch the file directly.
+
 ## CRITICAL: Delegation mode
 - You are the coordinator/team lead. For any task involving 2+ files or non-trivial logic, break it into subtasks and delegate to teammates. Wait for teammates to complete before proceeding.
 - For trivial changes (single-line fixes, config edits, typos), you may implement directly.
