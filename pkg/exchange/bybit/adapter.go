@@ -500,6 +500,10 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 			PriceDecimals: countDecimals(priceStep),
 		}
 	}
+
+	// Load tier-1 maintenance rates from risk-limit endpoint
+	a.loadMaintenanceRates(contracts)
+
 	return contracts, nil
 }
 
@@ -514,6 +518,136 @@ func countDecimals(v float64) int {
 		return 0
 	}
 	return len(s) - idx - 1
+}
+
+// ---------- Maintenance Rate ----------
+
+// loadMaintenanceRates fetches risk-limit data for all symbols and populates
+// the tier-1 (lowest risk) maintenance rate in each ContractInfo.
+// CRITICAL: Bybit maintenanceMargin is a PERCENTAGE string ("0.5" = 0.5%).
+// Must divide by 100 to get decimal.
+func (a *Adapter) loadMaintenanceRates(contracts map[string]exchange.ContractInfo) {
+	params := map[string]string{
+		"category": "linear",
+	}
+	cursor := ""
+	for {
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		result, err := a.client.Get("/v5/market/risk-limit", params)
+		if err != nil {
+			log.Warn("loadMaintenanceRates: %v", err)
+			return
+		}
+
+		var resp struct {
+			List []struct {
+				Symbol            string `json:"symbol"`
+				MaintenanceMargin string `json:"maintenanceMargin"`
+				IsLowestRisk      int    `json:"isLowestRisk"`
+			} `json:"list"`
+			NextPageCursor string `json:"nextPageCursor"`
+		}
+		if err := json.Unmarshal(result, &resp); err != nil {
+			log.Warn("loadMaintenanceRates unmarshal: %v", err)
+			return
+		}
+
+		for _, item := range resp.List {
+			if item.IsLowestRisk != 1 {
+				continue
+			}
+			mm, _ := strconv.ParseFloat(item.MaintenanceMargin, 64)
+			// Bybit returns percentage: "0.5" means 0.5%. Divide by 100.
+			rate := mm / 100.0
+			if rate <= 0 || rate >= 1.0 {
+				continue
+			}
+			if ci, ok := contracts[item.Symbol]; ok {
+				ci.MaintenanceRate = rate
+				contracts[item.Symbol] = ci
+			}
+		}
+
+		if resp.NextPageCursor == "" || len(resp.List) == 0 {
+			break
+		}
+		cursor = resp.NextPageCursor
+	}
+}
+
+// GetMaintenanceRate returns the maintenance margin rate for a symbol at a given
+// notional size by querying the per-symbol risk-limit endpoint.
+// CRITICAL: Bybit maintenanceMargin is a PERCENTAGE. Divide by 100.
+func (a *Adapter) GetMaintenanceRate(symbol string, notionalUSDT float64) (float64, error) {
+	params := map[string]string{
+		"category": "linear",
+		"symbol":   symbol,
+	}
+	result, err := a.client.Get("/v5/market/risk-limit", params)
+	if err != nil {
+		return 0, fmt.Errorf("GetMaintenanceRate: %w", err)
+	}
+
+	var resp struct {
+		List []struct {
+			RiskLimitValue    string `json:"riskLimitValue"`
+			MaintenanceMargin string `json:"maintenanceMargin"`
+			IsLowestRisk      int    `json:"isLowestRisk"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return 0, fmt.Errorf("GetMaintenanceRate unmarshal: %w", err)
+	}
+
+	if len(resp.List) == 0 {
+		return 0, fmt.Errorf("GetMaintenanceRate: no tiers for %s", symbol)
+	}
+
+	// For notional=0, return the lowest-risk tier
+	if notionalUSDT <= 0 {
+		for _, tier := range resp.List {
+			if tier.IsLowestRisk == 1 {
+				mm, _ := strconv.ParseFloat(tier.MaintenanceMargin, 64)
+				rate := mm / 100.0
+				if rate <= 0 || rate >= 1.0 {
+					return 0, nil
+				}
+				return rate, nil
+			}
+		}
+		// Fallback to first tier
+		mm, _ := strconv.ParseFloat(resp.List[0].MaintenanceMargin, 64)
+		rate := mm / 100.0
+		if rate <= 0 || rate >= 1.0 {
+			return 0, nil
+		}
+		return rate, nil
+	}
+
+	// Sort tiers by riskLimitValue and find matching tier
+	// Tiers are ordered by riskLimitValue ascending
+	for _, tier := range resp.List {
+		limit, _ := strconv.ParseFloat(tier.RiskLimitValue, 64)
+		if notionalUSDT <= limit {
+			mm, _ := strconv.ParseFloat(tier.MaintenanceMargin, 64)
+			rate := mm / 100.0
+			if rate <= 0 || rate >= 1.0 {
+				return 0, nil
+			}
+			return rate, nil
+		}
+	}
+
+	// Exceeds all tiers: return last tier's rate
+	last := resp.List[len(resp.List)-1]
+	mm, _ := strconv.ParseFloat(last.MaintenanceMargin, 64)
+	rate := mm / 100.0
+	if rate <= 0 || rate >= 1.0 {
+		return 0, nil
+	}
+	return rate, nil
 }
 
 // ---------- Funding Rate ----------

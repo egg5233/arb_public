@@ -590,6 +590,93 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 }
 
 // ---------------------------------------------------------------------------
+// Maintenance Rate
+// ---------------------------------------------------------------------------
+
+// GetMaintenanceRate returns the maintenance margin rate for a symbol at a given
+// notional size by querying OKX position-tiers endpoint.
+// OKX mmr is already decimal string ("0.03" = 3%). Parse directly.
+// OKX tiers use contract count boundaries (maxSz), so we convert notional USDT
+// to approximate contract count using ctVal.
+func (a *Adapter) GetMaintenanceRate(symbol string, notionalUSDT float64) (float64, error) {
+	instID := toOKXInstID(symbol)
+	// OKX requires instFamily (e.g., "BTC-USDT") not instId for SWAP position-tiers
+	instFamily := strings.TrimSuffix(instID, "-SWAP")
+
+	params := map[string]string{
+		"instType":   "SWAP",
+		"tdMode":     "cross",
+		"instFamily": instFamily,
+	}
+	data, err := a.client.Get("/api/v5/public/position-tiers", params)
+	if err != nil {
+		return 0, fmt.Errorf("GetMaintenanceRate: %w", err)
+	}
+
+	var tiers []struct {
+		Tier   string `json:"tier"`
+		MinSz  string `json:"minSz"`
+		MaxSz  string `json:"maxSz"`
+		Mmr    string `json:"mmr"`
+	}
+	if err := json.Unmarshal(data, &tiers); err != nil {
+		return 0, fmt.Errorf("GetMaintenanceRate unmarshal: %w", err)
+	}
+
+	if len(tiers) == 0 {
+		return 0, fmt.Errorf("GetMaintenanceRate: no tiers for %s", symbol)
+	}
+
+	// For notional=0, return the first (lowest) tier
+	if notionalUSDT <= 0 {
+		rate, _ := strconv.ParseFloat(tiers[0].Mmr, 64)
+		if rate <= 0 || rate >= 1.0 {
+			return 0, nil
+		}
+		return rate, nil
+	}
+
+	// Convert notionalUSDT to approximate contract count for tier matching.
+	// OKX tier boundaries (maxSz) are in contract counts.
+	// We need ctVal and approximate price to convert.
+	ctVal := a.getCtVal(symbol)
+	// Estimate contracts: notional / (ctVal * price). Since we don't have price
+	// readily available, use notionalUSDT directly as a position-size proxy.
+	// For a rough conversion: contracts ~= notionalUSDT / (ctVal * approxPrice)
+	// Since we can't know the price here, we use the tier boundaries directly
+	// by comparing our contract estimate. Use a simple heuristic: if ctVal is
+	// small (BTC: 0.01), contracts = notional / (ctVal * ~price).
+	// However, for safety, just iterate tiers and use contract count boundaries.
+	// The caller should pass a reasonable estimate.
+	contractEstimate := notionalUSDT // fallback: treat as contract count
+	if ctVal > 0 {
+		// Use BBO if available for better estimate
+		if bbo, ok := a.GetBBO(symbol); ok && bbo.Ask > 0 {
+			contractEstimate = notionalUSDT / (ctVal * bbo.Ask)
+		}
+	}
+
+	// Match tier where contractEstimate falls within [minSz, maxSz)
+	for _, tier := range tiers {
+		maxSz, _ := strconv.ParseFloat(tier.MaxSz, 64)
+		if contractEstimate <= maxSz || maxSz == 0 {
+			rate, _ := strconv.ParseFloat(tier.Mmr, 64)
+			if rate <= 0 || rate >= 1.0 {
+				return 0, nil
+			}
+			return rate, nil
+		}
+	}
+
+	// Exceeds all tiers: return last tier's rate
+	rate, _ := strconv.ParseFloat(tiers[len(tiers)-1].Mmr, 64)
+	if rate <= 0 || rate >= 1.0 {
+		return 0, nil
+	}
+	return rate, nil
+}
+
+// ---------------------------------------------------------------------------
 // Funding Rate
 // ---------------------------------------------------------------------------
 

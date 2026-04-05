@@ -101,13 +101,14 @@ type Position struct {
 
 // ContractInfo holds contract specifications for a symbol.
 type ContractInfo struct {
-	Symbol        string
-	MinSize       float64
-	StepSize      float64
-	MaxSize       float64
-	SizeDecimals  int
-	PriceStep     float64
-	PriceDecimals int
+	Symbol          string
+	MinSize         float64
+	StepSize        float64
+	MaxSize         float64
+	SizeDecimals    int
+	PriceStep       float64
+	PriceDecimals   int
+	MaintenanceRate float64 // tier-1 maintenance margin rate as decimal (0.005 = 0.5%). 0 = unknown.
 }
 
 // FundingRate holds the current funding rate from an exchange.

@@ -242,3 +242,180 @@ func TestGetSpotMarginOrder_ClosedIOCPartialIsNotMarkedFilled(t *testing.T) {
 		t.Fatalf("avg price = %.2f, want 101.5", status.AvgPrice)
 	}
 }
+
+// TestMaintenanceRateNormalization_GateIO verifies that Gate.io maintenance_rate
+// is parsed correctly from the contracts endpoint (already decimal: "0.005" = 0.5%).
+func TestMaintenanceRateNormalization_GateIO(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v4/futures/usdt/contracts" {
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"name":              "BTC_USDT",
+					"quanto_multiplier": "0.0001",
+					"order_size_min":    1,
+					"order_size_max":    1000000,
+					"order_price_round": "0.1",
+					"maintenance_rate":  "0.005",
+				},
+				{
+					"name":              "GUA_USDT",
+					"quanto_multiplier": "1",
+					"order_size_min":    1,
+					"order_size_max":    100000,
+					"order_price_round": "0.0001",
+					"maintenance_rate":  "0.3",
+				},
+			})
+		} else {
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	adapter := &Adapter{
+		client:    NewClientWithBase(srv.URL + "/api/v4"),
+		priceSyms: make(map[string]bool),
+	}
+
+	contracts, err := adapter.LoadAllContracts()
+	if err != nil {
+		t.Fatalf("LoadAllContracts: %v", err)
+	}
+
+	// BTC: maintenance_rate "0.005" should be 0.005 (0.5%)
+	btc, ok := contracts["BTCUSDT"]
+	if !ok {
+		t.Fatal("BTCUSDT not found")
+	}
+	if btc.MaintenanceRate != 0.005 {
+		t.Errorf("BTCUSDT MaintenanceRate = %v, want 0.005", btc.MaintenanceRate)
+	}
+
+	// GUA: maintenance_rate "0.3" should be 0.3 (30%)
+	gua, ok := contracts["GUAUSDT"]
+	if !ok {
+		t.Fatal("GUAUSDT not found")
+	}
+	if gua.MaintenanceRate != 0.3 {
+		t.Errorf("GUAUSDT MaintenanceRate = %v, want 0.3", gua.MaintenanceRate)
+	}
+}
+
+// TestGetMaintenanceRate_GateIO_TierMatching verifies tier-matched rate lookup
+// from Gate.io risk_limit_tiers endpoint.
+func TestGetMaintenanceRate_GateIO_TierMatching(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v4/futures/usdt/contracts":
+			json.NewEncoder(w).Encode([]map[string]interface{}{{
+				"name":              "BTC_USDT",
+				"quanto_multiplier": "0.0001",
+				"order_size_min":    1,
+				"order_size_max":    1000000,
+				"order_price_round": "0.1",
+				"maintenance_rate":  "0.005",
+			}})
+		case r.URL.Path == "/api/v4/futures/usdt/risk_limit_tiers":
+			// Tiered response: tier 1 up to 500k, tier 2 up to 2M
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"risk_limit":       500000,
+					"maintenance_rate": "0.005",
+				},
+				{
+					"risk_limit":       2000000,
+					"maintenance_rate": "0.01",
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	adapter := &Adapter{
+		client:    NewClientWithBase(srv.URL + "/api/v4"),
+		priceSyms: make(map[string]bool),
+	}
+	// Load contracts first (to populate contractMult)
+	adapter.LoadAllContracts()
+
+	// Notional 100k should match tier 1 (0.005)
+	rate, err := adapter.GetMaintenanceRate("BTCUSDT", 100000)
+	if err != nil {
+		t.Fatalf("GetMaintenanceRate: %v", err)
+	}
+	if rate != 0.005 {
+		t.Errorf("tier 1 rate = %v, want 0.005", rate)
+	}
+
+	// Notional 600k should match tier 2 (0.01)
+	rate2, err := adapter.GetMaintenanceRate("BTCUSDT", 600000)
+	if err != nil {
+		t.Fatalf("GetMaintenanceRate: %v", err)
+	}
+	if rate2 != 0.01 {
+		t.Errorf("tier 2 rate = %v, want 0.01", rate2)
+	}
+
+	// Notional 0 should return tier 1 (lowest)
+	rate0, err := adapter.GetMaintenanceRate("BTCUSDT", 0)
+	if err != nil {
+		t.Fatalf("GetMaintenanceRate: %v", err)
+	}
+	if rate0 != 0.005 {
+		t.Errorf("notional=0 rate = %v, want 0.005 (tier 1)", rate0)
+	}
+}
+
+// TestMaintenanceRate_GateIO_BoundsCheck verifies that invalid rates are rejected.
+func TestMaintenanceRate_GateIO_BoundsCheck(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v4/futures/usdt/contracts":
+			json.NewEncoder(w).Encode([]map[string]interface{}{{
+				"name":              "BAD_USDT",
+				"quanto_multiplier": "1",
+				"order_size_min":    1,
+				"order_size_max":    100000,
+				"order_price_round": "0.01",
+				"maintenance_rate":  "-0.5",
+			}})
+		case r.URL.Path == "/api/v4/futures/usdt/risk_limit_tiers":
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"risk_limit":       500000,
+					"maintenance_rate": "1.5",
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	adapter := &Adapter{
+		client:    NewClientWithBase(srv.URL + "/api/v4"),
+		priceSyms: make(map[string]bool),
+	}
+
+	contracts, err := adapter.LoadAllContracts()
+	if err != nil {
+		t.Fatalf("LoadAllContracts: %v", err)
+	}
+
+	// Negative rate should be clamped to 0
+	bad := contracts["BADUSDT"]
+	if bad.MaintenanceRate != 0 {
+		t.Errorf("negative rate should be 0, got %v", bad.MaintenanceRate)
+	}
+
+	// GetMaintenanceRate with rate >= 1.0 should return 0
+	rate, err := adapter.GetMaintenanceRate("BADUSDT", 100000)
+	if err != nil {
+		t.Fatalf("GetMaintenanceRate: %v", err)
+	}
+	if rate != 0 {
+		t.Errorf("rate >= 1.0 should return 0, got %v", rate)
+	}
+}

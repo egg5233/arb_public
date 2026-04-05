@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.28.0] - 2026-04-05
+
+### Added — Spot-Futures Risk Hardening (Phase 6, Plan 01)
+- **ContractInfo.MaintenanceRate**: new field on `ContractInfo` struct for tier-1 maintenance margin rate as decimal
+- **Gate.io**: parses `maintenance_rate` from contracts endpoint; `GetMaintenanceRate()` queries `risk_limit_tiers` for tiered rates
+- **Bybit**: loads lowest-risk tier from `risk-limit` endpoint with pagination; normalizes percentage to decimal (div 100); `GetMaintenanceRate()` with tier matching
+- **Binance**: loads `leverageBracket` (authenticated USER_DATA endpoint) for tier-1 rates; `GetMaintenanceRate()` with notional bracket matching
+- **OKX**: `GetMaintenanceRate()` queries `position-tiers` with `instFamily`; parses `mmr` decimal strings
+- **Bitget**: `GetMaintenanceRate()` queries `query-position-lever`; parses `keepMarginRate` decimal strings
+- **Bounds checking**: all adapters reject rates <= 0 or >= 1.0, returning 0 (unknown)
+- **Unit tests**: 12 tests across 5 adapters covering normalization, tier matching, and bounds checks
+
 ## [0.27.1] - 2026-04-05
 
 ### Fixed

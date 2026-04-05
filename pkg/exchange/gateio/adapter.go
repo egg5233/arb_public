@@ -529,6 +529,7 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 		OrderSizeMax     json.Number `json:"order_size_max"`
 		OrderPriceRound  string      `json:"order_price_round"`
 		InTrade          bool        `json:"in_delisting"`
+		MaintenanceRate  string      `json:"maintenance_rate"`
 	}
 	if err := json.Unmarshal(data, &contracts); err != nil {
 		return nil, fmt.Errorf("LoadAllContracts unmarshal: %w", err)
@@ -565,14 +566,21 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 		// units are formatted correctly (e.g., BTC quanto=0.0001 → 4 decimals).
 		sizeDecimals := countDecimals(c.QuantoMultiplier)
 
+		// Parse maintenance_rate (already decimal: "0.005" = 0.5%)
+		mr, _ := strconv.ParseFloat(c.MaintenanceRate, 64)
+		if mr <= 0 || mr >= 1.0 {
+			mr = 0 // bounds check: treat invalid as unknown
+		}
+
 		ci := exchange.ContractInfo{
-			Symbol:        internalSymbol,
-			MinSize:       minBase,
-			StepSize:      stepSize,
-			MaxSize:       maxBase,
-			SizeDecimals:  sizeDecimals,
-			PriceStep:     priceStep,
-			PriceDecimals: countDecimals(c.OrderPriceRound),
+			Symbol:          internalSymbol,
+			MinSize:         minBase,
+			StepSize:        stepSize,
+			MaxSize:         maxBase,
+			SizeDecimals:    sizeDecimals,
+			PriceStep:       priceStep,
+			PriceDecimals:   countDecimals(c.OrderPriceRound),
+			MaintenanceRate: mr,
 		}
 		result[internalSymbol] = ci
 	}
@@ -582,6 +590,61 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 		return nil, fmt.Errorf("no contracts loaded from Gate.io")
 	}
 	return result, nil
+}
+
+// ---------------------------------------------------------------------------
+// Maintenance Rate
+// ---------------------------------------------------------------------------
+
+// GetMaintenanceRate returns the maintenance margin rate for a symbol at a given
+// notional size by querying the risk_limit_tiers endpoint. Falls back to the
+// cached ContractInfo.MaintenanceRate if the tiered endpoint fails.
+func (a *Adapter) GetMaintenanceRate(symbol string, notionalUSDT float64) (float64, error) {
+	contract := toGateSymbol(symbol)
+	path := "/futures/usdt/risk_limit_tiers?contract=" + contract
+	data, err := a.client.Get(path, nil)
+	if err != nil {
+		return 0, fmt.Errorf("GetMaintenanceRate: %w", err)
+	}
+
+	var tiers []struct {
+		RiskLimit       float64 `json:"risk_limit"`
+		MaintenanceRate string  `json:"maintenance_rate"`
+	}
+	if err := json.Unmarshal(data, &tiers); err != nil {
+		return 0, fmt.Errorf("GetMaintenanceRate unmarshal: %w", err)
+	}
+
+	if len(tiers) == 0 {
+		return 0, fmt.Errorf("GetMaintenanceRate: no tiers for %s", symbol)
+	}
+
+	// For notional=0, return the first (lowest) tier
+	if notionalUSDT <= 0 {
+		rate, _ := strconv.ParseFloat(tiers[0].MaintenanceRate, 64)
+		if rate <= 0 || rate >= 1.0 {
+			return 0, nil
+		}
+		return rate, nil
+	}
+
+	// Match tier where notionalUSDT <= risk_limit
+	for _, tier := range tiers {
+		if notionalUSDT <= tier.RiskLimit {
+			rate, _ := strconv.ParseFloat(tier.MaintenanceRate, 64)
+			if rate <= 0 || rate >= 1.0 {
+				return 0, nil
+			}
+			return rate, nil
+		}
+	}
+
+	// If notional exceeds all tiers, return the last (highest) tier
+	rate, _ := strconv.ParseFloat(tiers[len(tiers)-1].MaintenanceRate, 64)
+	if rate <= 0 || rate >= 1.0 {
+		return 0, nil
+	}
+	return rate, nil
 }
 
 // ---------------------------------------------------------------------------

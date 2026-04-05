@@ -477,6 +477,75 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 	return result, nil
 }
 
+// ==================== Maintenance Rate ====================
+
+// GetMaintenanceRate returns the maintenance margin rate for a symbol at a given
+// notional size by querying the query-position-lever endpoint.
+// Bitget keepMarginRate is already decimal string ("0.004" = 0.4%). Parse directly.
+func (a *Adapter) GetMaintenanceRate(symbol string, notionalUSDT float64) (float64, error) {
+	params := map[string]string{
+		"symbol":      symbol,
+		"productType": productTypeUSDTFutures,
+	}
+
+	raw, err := a.client.Get("/api/v2/mix/market/query-position-lever", params)
+	if err != nil {
+		return 0, fmt.Errorf("GetMaintenanceRate: %w", err)
+	}
+
+	var resp struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+		Data []struct {
+			Level          string `json:"level"`
+			StartUnit      string `json:"startUnit"`
+			EndUnit        string `json:"endUnit"`
+			Leverage       string `json:"leverage"`
+			KeepMarginRate string `json:"keepMarginRate"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		return 0, fmt.Errorf("GetMaintenanceRate unmarshal: %w", err)
+	}
+	if resp.Code != "00000" {
+		return 0, fmt.Errorf("GetMaintenanceRate: code=%s msg=%s", resp.Code, resp.Msg)
+	}
+
+	if len(resp.Data) == 0 {
+		return 0, fmt.Errorf("GetMaintenanceRate: no tiers for %s", symbol)
+	}
+
+	// For notional=0, return the first (lowest) tier
+	if notionalUSDT <= 0 {
+		rate, _ := strconv.ParseFloat(resp.Data[0].KeepMarginRate, 64)
+		if rate <= 0 || rate >= 1.0 {
+			return 0, nil
+		}
+		return rate, nil
+	}
+
+	// Match tier where startUnit <= notionalUSDT <= endUnit
+	for _, tier := range resp.Data {
+		start, _ := strconv.ParseFloat(tier.StartUnit, 64)
+		end, _ := strconv.ParseFloat(tier.EndUnit, 64)
+		if notionalUSDT >= start && notionalUSDT <= end {
+			rate, _ := strconv.ParseFloat(tier.KeepMarginRate, 64)
+			if rate <= 0 || rate >= 1.0 {
+				return 0, nil
+			}
+			return rate, nil
+		}
+	}
+
+	// Exceeds all tiers: return last tier's rate
+	last := resp.Data[len(resp.Data)-1]
+	rate, _ := strconv.ParseFloat(last.KeepMarginRate, 64)
+	if rate <= 0 || rate >= 1.0 {
+		return 0, nil
+	}
+	return rate, nil
+}
+
 // ==================== Funding Rate ====================
 
 func (a *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {

@@ -404,7 +404,114 @@ func (b *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 	if len(result) == 0 {
 		return nil, fmt.Errorf("no contracts loaded from Binance exchangeInfo")
 	}
+
+	// Load tier-1 maintenance rates from leverageBracket (authenticated)
+	b.loadMaintenanceRates(result)
+
 	return result, nil
+}
+
+// ---------------------------------------------------------------------------
+// Maintenance Rate
+// ---------------------------------------------------------------------------
+
+// loadMaintenanceRates fetches leverageBracket data for all symbols and populates
+// the first bracket's maintMarginRatio in each ContractInfo.
+// NOTE: leverageBracket is a USER_DATA endpoint requiring authentication.
+func (b *Adapter) loadMaintenanceRates(contracts map[string]exchange.ContractInfo) {
+	body, err := b.client.Get("/fapi/v1/leverageBracket", map[string]string{})
+	if err != nil {
+		log.Printf("[binance] loadMaintenanceRates: %v", err)
+		return
+	}
+
+	var brackets []struct {
+		Symbol   string `json:"symbol"`
+		Brackets []struct {
+			Bracket          int     `json:"bracket"`
+			NotionalCap      float64 `json:"notionalCap"`
+			NotionalFloor    float64 `json:"notionalFloor"`
+			MaintMarginRatio float64 `json:"maintMarginRatio"`
+			Cum              float64 `json:"cum"`
+		} `json:"brackets"`
+	}
+	if err := json.Unmarshal(body, &brackets); err != nil {
+		log.Printf("[binance] loadMaintenanceRates unmarshal: %v", err)
+		return
+	}
+
+	for _, item := range brackets {
+		ci, ok := contracts[item.Symbol]
+		if !ok || len(item.Brackets) == 0 {
+			continue
+		}
+		// First bracket (lowest notional) maintenance rate
+		rate := item.Brackets[0].MaintMarginRatio
+		if rate > 0 && rate < 1.0 {
+			ci.MaintenanceRate = rate
+			contracts[item.Symbol] = ci
+		}
+	}
+}
+
+// GetMaintenanceRate returns the maintenance margin rate for a symbol at a given
+// notional size by querying the authenticated leverageBracket endpoint.
+// Binance maintMarginRatio is already decimal (0.0065 = 0.65%).
+func (b *Adapter) GetMaintenanceRate(symbol string, notionalUSDT float64) (float64, error) {
+	params := map[string]string{
+		"symbol": symbol,
+	}
+	body, err := b.client.Get("/fapi/v1/leverageBracket", params)
+	if err != nil {
+		return 0, fmt.Errorf("GetMaintenanceRate: %w", err)
+	}
+
+	var brackets []struct {
+		Symbol   string `json:"symbol"`
+		Brackets []struct {
+			Bracket          int     `json:"bracket"`
+			NotionalCap      float64 `json:"notionalCap"`
+			NotionalFloor    float64 `json:"notionalFloor"`
+			MaintMarginRatio float64 `json:"maintMarginRatio"`
+			Cum              float64 `json:"cum"`
+		} `json:"brackets"`
+	}
+	if err := json.Unmarshal(body, &brackets); err != nil {
+		return 0, fmt.Errorf("GetMaintenanceRate unmarshal: %w", err)
+	}
+
+	if len(brackets) == 0 || len(brackets[0].Brackets) == 0 {
+		return 0, fmt.Errorf("GetMaintenanceRate: no brackets for %s", symbol)
+	}
+
+	bkts := brackets[0].Brackets
+
+	// For notional=0, return the first (lowest) bracket
+	if notionalUSDT <= 0 {
+		rate := bkts[0].MaintMarginRatio
+		if rate <= 0 || rate >= 1.0 {
+			return 0, nil
+		}
+		return rate, nil
+	}
+
+	// Find bracket where notionalFloor <= notionalUSDT < notionalCap
+	for _, bkt := range bkts {
+		if notionalUSDT >= bkt.NotionalFloor && notionalUSDT < bkt.NotionalCap {
+			rate := bkt.MaintMarginRatio
+			if rate <= 0 || rate >= 1.0 {
+				return 0, nil
+			}
+			return rate, nil
+		}
+	}
+
+	// Exceeds all brackets: return last bracket's rate
+	rate := bkts[len(bkts)-1].MaintMarginRatio
+	if rate <= 0 || rate >= 1.0 {
+		return 0, nil
+	}
+	return rate, nil
 }
 
 // ---------------------------------------------------------------------------
