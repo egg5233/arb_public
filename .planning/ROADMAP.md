@@ -115,7 +115,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | 3. Operational Safety | 3/3 | Complete (pending human verify) | 2026-04-03 |
 | 4. Performance Analytics | 0/4 | Not started | - |
 | 5. Capital Allocation | 0/3 | Not started | - |
-| 6. Spot-Futures Risk Hardening | 0/0 | Not started | - |
+| 6. Spot-Futures Risk Hardening | 0/4 | Not started | - |
 
 ### Phase 6: Spot-Futures Risk Hardening
 
@@ -125,9 +125,12 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
   1. Pre-entry check fetches per-contract maintenance_rate and rejects positions where max survivable price drop < configured threshold (e.g., 30%)
   2. Runtime monitor calculates liquidation distance using current mark price + maintenance_rate, triggers exit when distance falls below threshold
   3. Health monitor (L3/L4/L5) evaluates spot-futures positions — not just perp-perp
-  4. Discovery scoring penalizes coins with high maintenance_rate (>10%), reducing their ranking
+  4. Discovery displays maintenance_rate per contract for user observation (scoring deferred per D-15)
 **Depends on:** Phase 2
-**Plans:** 0 plans
+**Plans:** 4 plans
 
 Plans:
-- [ ] TBD (run /gsd:plan-phase 6 to break down)
+- [ ] 06-01-PLAN.md -- Foundation: ContractInfo.MaintenanceRate, 5 adapter implementations, getMaintenanceRate helper, config fields
+- [ ] 06-02-PLAN.md -- Pre-entry risk gate: maintenance_rate check 6 in checkRiskGate, manual bypass warning
+- [ ] 06-03-PLAN.md -- Runtime liq distance trigger + health monitor spot-futures integration
+- [ ] 06-04-PLAN.md -- Discovery display: MaintenanceRate in opportunities, dashboard column, i18n, version bump
