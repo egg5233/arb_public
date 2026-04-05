@@ -1032,6 +1032,14 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
           />
 
           <NumberField
+            label={t('cfg.field.entryMarginHeadroom')}
+            desc={t('cfg.desc.entryMarginHeadroom')}
+            value={getByPath(config, ['risk', 'entry_margin_headroom'])}
+            unit="×"
+            onChange={(v) => handleChange(['risk', 'entry_margin_headroom'], v)}
+          />
+
+          <NumberField
             label={t('cfg.field.riskMonitorInterval')}
             desc={t('cfg.desc.riskMonitorInterval')}
             value={getByPath(config, ['risk', 'risk_monitor_interval_sec'])}

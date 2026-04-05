@@ -41,6 +41,7 @@ type Config struct {
 	MaxIntervalHours        float64       // max funding interval hours to accept (0=disabled, e.g. 1=only 1h)
 	AllowMixedIntervals     bool          // allow cross-interval pairs in ranker (default false)
 	DryRun                  bool          // if true, skip trade execution (log only)
+	TradFiSigned            bool          // true after Binance TradFi-Perps agreement is signed
 
 	// Depth-driven entry execution
 	EntryTimeoutSec int     // max seconds for depth fill loop (default 60)
@@ -52,6 +53,7 @@ type Config struct {
 	MarginL5Threshold      float64 // trigger emergency close (default: 0.95)
 	L4ReduceFraction       float64 // fraction to reduce at L4 (default: 0.50)
 	MarginSafetyMultiplier float64 // margin buffer multiplier for entry check (default: 2.0)
+	EntryMarginHeadroom    float64 // fraction of L3 threshold used as entry limit (default: 0.80, i.e. L3×0.80)
 
 	// Exit strategy
 	ExitDepthTimeoutSec int     // depth-fill exit loop timeout before market fallback (default 300)
@@ -231,6 +233,7 @@ type Config struct {
 
 type jsonConfig struct {
 	DryRun      *bool                   `json:"dry_run"`
+	TradFiSigned *bool                  `json:"tradfi_signed"`
 	Exchanges   map[string]jsonExchange `json:"exchanges"`
 	Redis       *jsonRedis              `json:"redis"`
 	Dashboard   *jsonDashboard          `json:"dashboard"`
@@ -420,6 +423,7 @@ type jsonRisk struct {
 	MarginL5Threshold           *float64 `json:"margin_l5_threshold"`
 	L4ReduceFraction            *float64 `json:"l4_reduce_fraction"`
 	MarginSafetyMultiplier      *float64 `json:"margin_safety_multiplier"`
+	EntryMarginHeadroom         *float64 `json:"entry_margin_headroom"`
 	RiskMonitorIntervalSec      *int     `json:"risk_monitor_interval_sec"`
 	EnableLiqTrendTracking      *bool    `json:"enable_liq_trend_tracking"`
 	LiqProjectionMinutes        *int     `json:"liq_projection_minutes"`
@@ -480,6 +484,7 @@ func Load() *Config {
 		MarginL5Threshold:               0.95,
 		L4ReduceFraction:                0.30,
 		MarginSafetyMultiplier:          2.0,
+		EntryMarginHeadroom:             0.80,
 		ExitDepthTimeoutSec:             300,
 		ExitMaxGapBPS:                   10.0,
 		RiskMonitorIntervalSec:          300,
@@ -651,6 +656,9 @@ func (c *Config) loadJSON() {
 func (c *Config) applyJSON(jc *jsonConfig) {
 	if jc.DryRun != nil {
 		c.DryRun = *jc.DryRun
+	}
+	if jc.TradFiSigned != nil {
+		c.TradFiSigned = *jc.TradFiSigned
 	}
 
 	// Strategy
@@ -857,6 +865,9 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		}
 		if rk.MarginSafetyMultiplier != nil && *rk.MarginSafetyMultiplier > 0 {
 			c.MarginSafetyMultiplier = *rk.MarginSafetyMultiplier
+		}
+		if rk.EntryMarginHeadroom != nil && *rk.EntryMarginHeadroom > 0 {
+			c.EntryMarginHeadroom = *rk.EntryMarginHeadroom
 		}
 		if rk.RiskMonitorIntervalSec != nil && *rk.RiskMonitorIntervalSec > 0 {
 			c.RiskMonitorIntervalSec = *rk.RiskMonitorIntervalSec
@@ -1205,6 +1216,7 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	}
 
 	raw["dry_run"] = c.DryRun
+	raw["tradfi_signed"] = c.TradFiSigned
 
 	strategy := getMap(raw, "strategy")
 	strategy["top_opportunities"] = c.TopOpportunities
@@ -1280,6 +1292,7 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	risk["margin_l5_threshold"] = c.MarginL5Threshold
 	risk["l4_reduce_fraction"] = c.L4ReduceFraction
 	risk["margin_safety_multiplier"] = c.MarginSafetyMultiplier
+	risk["entry_margin_headroom"] = c.EntryMarginHeadroom
 	risk["risk_monitor_interval_sec"] = c.RiskMonitorIntervalSec
 	risk["enable_liq_trend_tracking"] = c.EnableLiqTrendTracking
 	risk["liq_projection_minutes"] = c.LiqProjectionMinutes

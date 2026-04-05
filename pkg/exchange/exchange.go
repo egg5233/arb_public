@@ -76,6 +76,10 @@ type Exchange interface {
 	PlaceStopLoss(params StopLossParams) (orderID string, err error)
 	CancelStopLoss(symbol, orderID string) error
 
+	// Take-Profit (conditional orders)
+	PlaceTakeProfit(params TakeProfitParams) (orderID string, err error)
+	CancelTakeProfit(symbol, orderID string) error
+
 	// Trade History
 	GetUserTrades(symbol string, startTime time.Time, limit int) ([]Trade, error)
 

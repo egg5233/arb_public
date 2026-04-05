@@ -26,6 +26,8 @@ func isMarginError(err error) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "insufficient") ||
 		strings.Contains(msg, "not enough") ||
+		strings.Contains(msg, "exceeds the balance") ||
+		strings.Contains(msg, "exceeds balance") ||
 		strings.Contains(msg, "margin") && strings.Contains(msg, "available")
 }
 
@@ -735,57 +737,6 @@ func (e *Engine) run() {
 
 					var entryOpps []models.Opportunity
 					tier := "none"
-
-					// Tier 1: Run allocator inline with :40's fresh opps.
-					if e.cfg.EnablePoolAllocator {
-						active, dbErr := e.db.GetActivePositions()
-						remainingSlots := 0
-						if dbErr != nil {
-							e.log.Warn("entry tier-1: failed to get active positions, skipping tier-1: %v", dbErr)
-						} else {
-							remainingSlots = e.cfg.MaxPositions - len(active)
-						}
-						if remainingSlots > 0 {
-							// Build exchange positions set.
-							exchWithPositions := make(map[string]bool)
-							if dbErr == nil {
-								for _, p := range active {
-									if p.Status != models.StatusClosed {
-										exchWithPositions[p.LongExchange] = true
-										exchWithPositions[p.ShortExchange] = true
-									}
-								}
-							}
-
-							// Query balances (same pattern as rebalanceFunds).
-							balances := map[string]rebalanceBalanceInfo{}
-							for name, exch := range e.exchanges {
-								var bi rebalanceBalanceInfo
-								if futBal, bErr := exch.GetFuturesBalance(); bErr == nil {
-									bi.futures = futBal.Available
-									bi.futuresTotal = futBal.Total
-									bi.marginRatio = futBal.MarginRatio
-									bi.maxTransferOut = futBal.MaxTransferOut
-								}
-								if spotBal, bErr := exch.GetSpotBalance(); bErr == nil {
-									bi.spot = spotBal.Available
-								}
-								bi.hasPositions = exchWithPositions[name]
-								balances[name] = bi
-							}
-
-							allocSel, allocErr := e.runPoolAllocator(result.Opps, balances, remainingSlots)
-							if allocErr == nil && allocSel != nil && allocSel.feasible && len(allocSel.choices) > 0 {
-								entryOpps = e.buildOppsFromAllocatorChoices(result.Opps, allocSel)
-								if len(entryOpps) > 0 {
-									tier = "tier-1-inline-allocator"
-									e.log.Info("entry: %s selected %d opps", tier, len(entryOpps))
-								}
-							} else if allocErr != nil {
-								e.log.Warn("entry tier-1: allocator failed: %v", allocErr)
-							}
-						}
-					}
 
 					// Tier 2: Fall back to :35 allocator overrides.
 					if len(entryOpps) == 0 {
@@ -3243,8 +3194,10 @@ func (e *Engine) queryEntryFees(pos *models.ArbitragePosition) {
 		pos.ID, totalFees, pos.LongExchange, longFees, pos.ShortExchange, shortFees)
 }
 
-// attachStopLosses places protective stop-loss orders on both legs of a position.
+// attachStopLosses places protective stop-loss and take-profit orders on both legs.
 // SL distance = 90% / leverage (e.g. 3x → 30%).
+// TP on each leg is set at the other leg's SL trigger price, so both legs close
+// when price moves significantly in either direction (prevents orphan positions).
 // Logs errors but does not fail — position is already open.
 func (e *Engine) attachStopLosses(pos *models.ArbitragePosition) {
 	leverage := float64(e.cfg.Leverage)
@@ -3257,11 +3210,15 @@ func (e *Engine) attachStopLosses(pos *models.ArbitragePosition) {
 	shortExch, sok := e.exchanges[pos.ShortExchange]
 
 	var longSLID, shortSLID string
+	var longTPID, shortTPID string
+
+	// Compute SL trigger prices for both legs.
+	longSLTrigger := pos.LongEntry * (1 - distance)   // price drops → long loses
+	shortSLTrigger := pos.ShortEntry * (1 + distance)  // price rises → short loses
 
 	// Long SL: trigger when price drops → sell to close.
 	if lok && pos.LongEntry > 0 {
-		triggerPrice := pos.LongEntry * (1 - distance)
-		tp := e.formatPrice(pos.LongExchange, pos.Symbol, triggerPrice)
+		tp := e.formatPrice(pos.LongExchange, pos.Symbol, longSLTrigger)
 		oid, err := longExch.PlaceStopLoss(exchange.StopLossParams{
 			Symbol:       pos.Symbol,
 			Side:         exchange.SideSell,
@@ -3279,8 +3236,7 @@ func (e *Engine) attachStopLosses(pos *models.ArbitragePosition) {
 
 	// Short SL: trigger when price rises → buy to close.
 	if sok && pos.ShortEntry > 0 {
-		triggerPrice := pos.ShortEntry * (1 + distance)
-		tp := e.formatPrice(pos.ShortExchange, pos.Symbol, triggerPrice)
+		tp := e.formatPrice(pos.ShortExchange, pos.Symbol, shortSLTrigger)
 		oid, err := shortExch.PlaceStopLoss(exchange.StopLossParams{
 			Symbol:       pos.Symbol,
 			Side:         exchange.SideBuy,
@@ -3296,8 +3252,46 @@ func (e *Engine) attachStopLosses(pos *models.ArbitragePosition) {
 		}
 	}
 
-	// Persist SL order IDs.
-	if longSLID != "" || shortSLID != "" {
+	// Long TP: trigger when price rises to short's SL level → sell to close.
+	// This ensures the long leg closes when the short leg's SL fires.
+	if lok && pos.LongEntry > 0 && pos.ShortEntry > 0 {
+		tp := e.formatPrice(pos.LongExchange, pos.Symbol, shortSLTrigger)
+		oid, err := longExch.PlaceTakeProfit(exchange.TakeProfitParams{
+			Symbol:       pos.Symbol,
+			Side:         exchange.SideSell,
+			Size:         e.formatSize(pos.LongExchange, pos.Symbol, pos.LongSize),
+			TriggerPrice: tp,
+		})
+		if err != nil {
+			e.log.Error("TP placement failed on %s %s (long): %v", pos.LongExchange, pos.Symbol, err)
+		} else {
+			longTPID = oid
+			e.log.Info("TP placed on %s %s: sell trigger=%s (= short SL level, long entry=%.4f)",
+				pos.LongExchange, pos.Symbol, tp, pos.LongEntry)
+		}
+	}
+
+	// Short TP: trigger when price drops to long's SL level → buy to close.
+	// This ensures the short leg closes when the long leg's SL fires.
+	if sok && pos.ShortEntry > 0 && pos.LongEntry > 0 {
+		tp := e.formatPrice(pos.ShortExchange, pos.Symbol, longSLTrigger)
+		oid, err := shortExch.PlaceTakeProfit(exchange.TakeProfitParams{
+			Symbol:       pos.Symbol,
+			Side:         exchange.SideBuy,
+			Size:         e.formatSize(pos.ShortExchange, pos.Symbol, pos.ShortSize),
+			TriggerPrice: tp,
+		})
+		if err != nil {
+			e.log.Error("TP placement failed on %s %s (short): %v", pos.ShortExchange, pos.Symbol, err)
+		} else {
+			shortTPID = oid
+			e.log.Info("TP placed on %s %s: buy trigger=%s (= long SL level, short entry=%.4f)",
+				pos.ShortExchange, pos.Symbol, tp, pos.ShortEntry)
+		}
+	}
+
+	// Persist SL and TP order IDs.
+	if longSLID != "" || shortSLID != "" || longTPID != "" || shortTPID != "" {
 		_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
 			if longSLID != "" {
 				fresh.LongSLOrderID = longSLID
@@ -3305,17 +3299,25 @@ func (e *Engine) attachStopLosses(pos *models.ArbitragePosition) {
 			if shortSLID != "" {
 				fresh.ShortSLOrderID = shortSLID
 			}
+			if longTPID != "" {
+				fresh.LongTPOrderID = longTPID
+			}
+			if shortTPID != "" {
+				fresh.ShortTPOrderID = shortTPID
+			}
 			return true
 		})
 		pos.LongSLOrderID = longSLID
 		pos.ShortSLOrderID = shortSLID
+		pos.LongTPOrderID = longTPID
+		pos.ShortTPOrderID = shortTPID
 	}
 
 	// Register in SL index for instant fill detection.
 	e.registerSLOrders(pos)
 }
 
-// cancelStopLosses cancels any active stop-loss orders on both legs.
+// cancelStopLosses cancels any active stop-loss and take-profit orders on both legs.
 // Logs errors but does not block exit.
 func (e *Engine) cancelStopLosses(pos *models.ArbitragePosition) {
 	// Unregister from SL index first to prevent stale triggers.
@@ -3336,6 +3338,26 @@ func (e *Engine) cancelStopLosses(pos *models.ArbitragePosition) {
 				e.log.Warn("cancel short SL %s on %s: %v", pos.ShortSLOrderID, pos.ShortExchange, err)
 			} else {
 				e.log.Info("cancelled short SL %s on %s", pos.ShortSLOrderID, pos.ShortExchange)
+			}
+		}
+	}
+
+	// Cancel take-profit orders.
+	if pos.LongTPOrderID != "" {
+		if exch, ok := e.exchanges[pos.LongExchange]; ok {
+			if err := exch.CancelTakeProfit(pos.Symbol, pos.LongTPOrderID); err != nil {
+				e.log.Warn("cancel long TP %s on %s: %v", pos.LongTPOrderID, pos.LongExchange, err)
+			} else {
+				e.log.Info("cancelled long TP %s on %s", pos.LongTPOrderID, pos.LongExchange)
+			}
+		}
+	}
+	if pos.ShortTPOrderID != "" {
+		if exch, ok := e.exchanges[pos.ShortExchange]; ok {
+			if err := exch.CancelTakeProfit(pos.Symbol, pos.ShortTPOrderID); err != nil {
+				e.log.Warn("cancel short TP %s on %s: %v", pos.ShortTPOrderID, pos.ShortExchange, err)
+			} else {
+				e.log.Info("cancelled short TP %s on %s", pos.ShortTPOrderID, pos.ShortExchange)
 			}
 		}
 	}

@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.27.1] - 2026-04-06
+
+### Added
+- **Binance TradFi-Perps agreement signing** — dashboard banner notifies when Binance TradFi agreement is unsigned; one-click signing via `POST /fapi/v1/stock/contract` with config persistence
+- **TradFiSigner interface** — optional exchange interface for agreement signing, follows existing PermissionChecker pattern
+- **Dashboard TradFi banner** — orange banner with sign button, session-scoped dismiss, runtime Binance presence check
+
+## [0.27.0] - 2026-04-05
+
+### Added
+- **Cross-exchange transfer comparison in allocator** — solver now considers pairs requiring cross-exchange fund transfers instead of silently skipping them. Pairs are admitted when `firstSettlementProfit > transferFee`, with baseValue adjusted by transfer fee for fair comparison
+- **Dynamic transfer thresholds** — replaced all hardcoded `$10` minimum transfer amounts with fee-based dynamic checks (`netAmount > fee`, `donorSurplus > 2*fee`)
+- **Donor capacity validation** — `cheapestTransferFee` now verifies donor has actual surplus (using solver's current capacity + margin health cap) before selecting as viable donor
+
+### Fixed
+- **Bitget balance accuracy** — use `crossedMaxAvailable` (actual openable amount in cross margin mode) instead of generic `available` field, preventing "order amount exceeds balance" errors when margin tiers reduce effective capacity
+- **Double-counting prevention** — `allocatorChoiceValue` tracks `xferFeeDeducted` per choice to avoid penalizing transfer pairs twice (once in solver, once in final scoring)
+- **Greedy seed logging** — added reject logging for transfer pairs in `greedyAllocatorSeed` to match solver's observability
+
 ## [0.26.2] - 2026-04-04
 
 ### Fixed

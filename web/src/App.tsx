@@ -28,6 +28,9 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const ws = useWebSocket(!!api.token);
 
+  // TradFi signing state
+  const [tradfiUnsigned, setTradfiUnsigned] = useState(false);
+
   // Update state
   const [updateInfo, setUpdateInfo] = useState<{ latestVersion: string; changelog: string } | null>(null);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
@@ -91,6 +94,15 @@ function App() {
     }
   }, [api, t]);
 
+  const handleSignTradFi = useCallback(async () => {
+    try {
+      await api.signTradFi();
+      setTradfiUnsigned(false);
+    } catch (err) {
+      alert(t('tradfi.error') + ': ' + (err instanceof Error ? err.message : String(err)));
+    }
+  }, [api]);
+
   const handleBlacklistToggle = useCallback(async (symbol: string) => {
     try {
       if (blacklist.includes(symbol)) {
@@ -117,6 +129,14 @@ function App() {
     };
     loadExchanges();
     const interval = setInterval(loadExchanges, 60000);
+
+    // Check TradFi signing status.
+    api.getTradFiStatus().then(d => {
+      if (!d.signed) {
+        const dismissed = sessionStorage.getItem('arb_tradfi_dismissed');
+        if (!dismissed) setTradfiUnsigned(true);
+      }
+    }).catch(() => {});
 
     // Check for updates on login and every 30 minutes.
     silentCheckUpdate();
@@ -252,6 +272,19 @@ function App() {
               >
                 ✕
               </button>
+            </div>
+          )}
+          {/* TradFi signing banner */}
+          {tradfiUnsigned && (
+            <div className="bg-orange-600 text-white px-4 py-2 flex items-center justify-between text-sm">
+              <span>{t('tradfi.banner')}</span>
+              <div className="flex items-center gap-2">
+                <button onClick={handleSignTradFi} className="bg-white/20 hover:bg-white/30 px-3 py-1 rounded text-xs font-medium">
+                  {t('tradfi.sign')}
+                </button>
+                <button onClick={() => { sessionStorage.setItem('arb_tradfi_dismissed', '1'); setTradfiUnsigned(false); }}
+                  className="text-white/70 hover:text-white">✕</button>
+              </div>
             </div>
           )}
           <main className="flex-1 p-3 md:p-6">

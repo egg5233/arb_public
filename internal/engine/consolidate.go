@@ -578,6 +578,10 @@ func (e *Engine) enforceBalance(pos *models.ArbitragePosition, longSize, shortSi
 		}
 		fresh.LongSize = actualNewLong
 		fresh.ShortSize = actualNewShort
+		fresh.LongSLOrderID = ""
+		fresh.ShortSLOrderID = ""
+		fresh.LongTPOrderID = ""
+		fresh.ShortTPOrderID = ""
 		fresh.UpdatedAt = time.Now().UTC()
 		return true
 	}); err != nil {

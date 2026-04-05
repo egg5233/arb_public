@@ -39,6 +39,9 @@ func NewAdapter(cfg exchange.ExchangeConfig) *Adapter {
 
 func (a *Adapter) Name() string { return "bitget" }
 
+// IsUnified returns false — Bitget has no unified account mode.
+func (a *Adapter) IsUnified() bool { return false }
+
 func (a *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
 	a.orderCallback = fn
 }
@@ -604,11 +607,12 @@ func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 		Code string `json:"code"`
 		Msg  string `json:"msg"`
 		Data struct {
-			AccountEquity   string `json:"accountEquity"`
-			Available       string `json:"available"`
-			Frozen          string `json:"locked"`
-			CrossedRiskRate string `json:"crossedRiskRate"`
-			MaxTransferOut  string `json:"maxTransferOut"`
+			AccountEquity      string `json:"accountEquity"`
+			Available          string `json:"available"`
+			CrossedMaxAvail    string `json:"crossedMaxAvailable"`
+			Frozen             string `json:"locked"`
+			CrossedRiskRate    string `json:"crossedRiskRate"`
+			MaxTransferOut     string `json:"maxTransferOut"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
@@ -620,11 +624,17 @@ func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 
 	total, _ := strconv.ParseFloat(resp.Data.AccountEquity, 64)
 	avail, _ := strconv.ParseFloat(resp.Data.Available, 64)
+	crossedMaxAvail, _ := strconv.ParseFloat(resp.Data.CrossedMaxAvail, 64)
 	frozen, _ := strconv.ParseFloat(resp.Data.Frozen, 64)
 	marginRatio, _ := strconv.ParseFloat(resp.Data.CrossedRiskRate, 64)
 
-	// Defensive: if available is 0 but equity exists, fall back to equity minus frozen.
-	if avail <= 0 && total > 0 {
+	// Use crossedMaxAvailable (actual openable amount in cross margin mode)
+	// instead of generic available, which may not account for margin tiers.
+	// Distinguish "field present with value 0" (real: no margin left) from
+	// "field absent/empty" (API didn't return it, fall back to available).
+	if resp.Data.CrossedMaxAvail != "" {
+		avail = crossedMaxAvail // trust the value even if 0
+	} else if avail <= 0 && total > 0 {
 		avail = total - frozen
 	}
 
@@ -1228,6 +1238,49 @@ func (a *Adapter) PlaceStopLoss(params exchange.StopLossParams) (string, error) 
 		return "", fmt.Errorf("PlaceStopLoss failed: code=%s msg=%s", resp.Code, resp.Msg)
 	}
 	return resp.Data.OrderId, nil
+}
+
+// PlaceTakeProfit places a take-profit plan order on Bitget futures.
+func (a *Adapter) PlaceTakeProfit(params exchange.TakeProfitParams) (string, error) {
+	p := map[string]string{
+		"symbol":       params.Symbol,
+		"productType":  productTypeUSDTFutures,
+		"marginCoin":   marginCoinUSDT,
+		"marginMode":   "crossed",
+		"planType":     "normal_plan",
+		"orderType":    "market",
+		"triggerPrice": params.TriggerPrice,
+		"triggerType":  "mark_price",
+		"size":         params.Size,
+		"side":         string(params.Side),
+		"reduceOnly":   "YES",
+	}
+
+	raw, err := a.client.Post("/api/v2/mix/order/place-plan-order", p)
+	if err != nil {
+		return "", fmt.Errorf("PlaceTakeProfit: %w", err)
+	}
+
+	var resp struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			OrderId   string `json:"orderId"`
+			ClientOid string `json:"clientOid"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		return "", fmt.Errorf("PlaceTakeProfit unmarshal: %w", err)
+	}
+	if resp.Code != "00000" {
+		return "", fmt.Errorf("PlaceTakeProfit failed: code=%s msg=%s", resp.Code, resp.Msg)
+	}
+	return resp.Data.OrderId, nil
+}
+
+// CancelTakeProfit cancels a plan (take-profit) order on Bitget.
+func (a *Adapter) CancelTakeProfit(symbol, orderID string) error {
+	return a.CancelStopLoss(symbol, orderID)
 }
 
 // CancelStopLoss cancels a plan (conditional) order on Bitget.

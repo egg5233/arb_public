@@ -84,7 +84,9 @@ func (s *closeTestExchange) SetMetricsCallback(exchange.MetricsCallback) {}
 func (s *closeTestExchange) PlaceStopLoss(exchange.StopLossParams) (string, error) {
 	return "", nil
 }
-func (s *closeTestExchange) CancelStopLoss(string, string) error { return nil }
+func (s *closeTestExchange) CancelStopLoss(string, string) error                      { return nil }
+func (s *closeTestExchange) PlaceTakeProfit(exchange.TakeProfitParams) (string, error) { return "", nil }
+func (s *closeTestExchange) CancelTakeProfit(string, string) error                     { return nil }
 func (s *closeTestExchange) GetUserTrades(string, time.Time, int) ([]exchange.Trade, error) {
 	return nil, nil
 }

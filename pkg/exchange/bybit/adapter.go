@@ -45,6 +45,9 @@ func (a *Adapter) Name() string {
 	return "bybit"
 }
 
+// IsUnified returns true because all Bybit accounts use Unified Trading Account (UTA).
+func (a *Adapter) IsUnified() bool { return true }
+
 func (a *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
 	a.orderCallback = fn
 }
@@ -1217,6 +1220,49 @@ func (a *Adapter) PlaceStopLoss(params exchange.StopLossParams) (string, error) 
 		return "", fmt.Errorf("bybit PlaceStopLoss parse: %w", err)
 	}
 	return resp.OrderID, nil
+}
+
+// PlaceTakeProfit places a take-profit conditional order on Bybit V5.
+func (a *Adapter) PlaceTakeProfit(params exchange.TakeProfitParams) (string, error) {
+	// triggerDirection for TP is opposite of SL:
+	// 1 = triggered when price rises above (long TP — sell when price goes up),
+	// 2 = triggered when price falls below (short TP — buy when price goes down).
+	triggerDir := "1"
+	if params.Side == exchange.SideBuy {
+		triggerDir = "2"
+	}
+
+	p := map[string]string{
+		"category":         "linear",
+		"symbol":           params.Symbol,
+		"side":             toBybitSide(params.Side),
+		"orderType":        "Market",
+		"qty":              params.Size,
+		"triggerPrice":     params.TriggerPrice,
+		"triggerDirection": triggerDir,
+		"triggerBy":        "MarkPrice",
+		"orderFilter":      "StopOrder",
+		"timeInForce":      "GTC",
+		"reduceOnly":       "true",
+	}
+
+	result, err := a.client.Post("/v5/order/create", p)
+	if err != nil {
+		return "", fmt.Errorf("bybit PlaceTakeProfit: %w", err)
+	}
+
+	var resp struct {
+		OrderID string `json:"orderId"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return "", fmt.Errorf("bybit PlaceTakeProfit parse: %w", err)
+	}
+	return resp.OrderID, nil
+}
+
+// CancelTakeProfit cancels a conditional take-profit order on Bybit V5.
+func (a *Adapter) CancelTakeProfit(symbol, orderID string) error {
+	return a.CancelStopLoss(symbol, orderID)
 }
 
 // CancelStopLoss cancels a conditional stop order on Bybit V5.

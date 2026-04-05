@@ -42,6 +42,9 @@ type Adapter struct {
 
 }
 
+// IsUnified returns false — BingX has no unified account mode.
+func (a *Adapter) IsUnified() bool { return false }
+
 func (a *Adapter) SetMetricsCallback(fn exchange.MetricsCallback) {
 	if a.client != nil {
 		a.client.SetMetricsCallback(fn)
@@ -993,6 +996,39 @@ func (a *Adapter) PlaceStopLoss(params exchange.StopLossParams) (string, error) 
 		return "", fmt.Errorf("bingx PlaceStopLoss parse: %w", err)
 	}
 	return resp.Order.OrderID.String(), nil
+}
+
+// PlaceTakeProfit places a take-profit market order on BingX.
+func (a *Adapter) PlaceTakeProfit(params exchange.TakeProfitParams) (string, error) {
+	p := map[string]string{
+		"symbol":       toBingXSymbol(params.Symbol),
+		"type":         "TAKE_PROFIT_MARKET",
+		"side":         toBingXSide(params.Side),
+		"positionSide": "BOTH",
+		"quantity":     params.Size,
+		"stopPrice":    params.TriggerPrice,
+		"reduceOnly":   "true",
+	}
+
+	result, err := a.client.Post("/openApi/swap/v2/trade/order", p)
+	if err != nil {
+		return "", fmt.Errorf("bingx PlaceTakeProfit: %w", err)
+	}
+
+	var resp struct {
+		Order struct {
+			OrderID json.Number `json:"orderId"`
+		} `json:"order"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return "", fmt.Errorf("bingx PlaceTakeProfit parse: %w", err)
+	}
+	return resp.Order.OrderID.String(), nil
+}
+
+// CancelTakeProfit cancels a take-profit order (same as CancelOrder on BingX).
+func (a *Adapter) CancelTakeProfit(symbol, orderID string) error {
+	return a.CancelOrder(symbol, orderID)
 }
 
 // CancelStopLoss cancels a stop-loss order (same as CancelOrder on BingX).

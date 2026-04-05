@@ -49,8 +49,10 @@ func (s stubExchange) GetOrderUpdate(string) (exchange.OrderUpdate, bool) {
 func (s stubExchange) GetUserTrades(string, time.Time, int) ([]exchange.Trade, error) {
 	return nil, nil
 }
-func (s stubExchange) PlaceStopLoss(exchange.StopLossParams) (string, error) { return "", nil }
-func (s stubExchange) CancelStopLoss(string, string) error                   { return nil }
+func (s stubExchange) PlaceStopLoss(exchange.StopLossParams) (string, error)    { return "", nil }
+func (s stubExchange) CancelStopLoss(string, string) error                     { return nil }
+func (s stubExchange) PlaceTakeProfit(exchange.TakeProfitParams) (string, error) { return "", nil }
+func (s stubExchange) CancelTakeProfit(string, string) error                    { return nil }
 func (s stubExchange) SetOrderCallback(func(exchange.OrderUpdate))           {}
 func (s stubExchange) SetMetricsCallback(exchange.MetricsCallback)           {}
 func (s stubExchange) GetFundingFees(string, time.Time) ([]exchange.FundingPayment, error) {

@@ -18,6 +18,7 @@ import (
 // Compile-time check that *Adapter satisfies exchange.Exchange.
 var _ exchange.Exchange = (*Adapter)(nil)
 var _ exchange.TradingFeeProvider = (*Adapter)(nil)
+var _ exchange.TradFiSigner = (*Adapter)(nil)
 
 // Adapter implements the exchange.Exchange interface for Binance USDT-M Futures.
 type Adapter struct {
@@ -42,6 +43,8 @@ type Adapter struct {
 	orderCallback        func(exchange.OrderUpdate)
 	wsMetricsCallback    exchange.WSMetricsCallback
 	orderMetricsCallback exchange.OrderMetricsCallback
+
+	isUnified bool // true when Portfolio Margin is enabled
 }
 
 func (b *Adapter) SetMetricsCallback(fn exchange.MetricsCallback) {
@@ -62,6 +65,11 @@ func (b *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
 	b.orderCallback = fn
 }
 
+func (b *Adapter) SignTradFi() error {
+	_, err := b.client.Post("/fapi/v1/stock/contract", map[string]string{})
+	return err
+}
+
 func (b *Adapter) CheckPermissions() exchange.PermissionResult {
 	// Must use api.binance.com (spot), not fapi.binance.com (futures).
 	spotClient := b.client.WithBaseURL("https://api.binance.com")
@@ -73,10 +81,11 @@ func (b *Adapter) CheckPermissions() exchange.PermissionResult {
 			Withdraw: exchange.PermUnknown, Transfer: exchange.PermUnknown}
 	}
 	var resp struct {
-		EnableReading          bool `json:"enableReading"`
-		EnableFutures          bool `json:"enableFutures"`
-		EnableWithdrawals      bool `json:"enableWithdrawals"`
-		EnableInternalTransfer bool `json:"enableInternalTransfer"`
+		EnableReading            bool `json:"enableReading"`
+		EnableFutures            bool `json:"enableFutures"`
+		EnableWithdrawals        bool `json:"enableWithdrawals"`
+		EnableInternalTransfer   bool `json:"enableInternalTransfer"`
+		PermitsUniversalTransfer bool `json:"permitsUniversalTransfer"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return exchange.PermissionResult{Method: "direct", Error: err.Error(),
@@ -91,8 +100,28 @@ func (b *Adapter) CheckPermissions() exchange.PermissionResult {
 	}
 	return exchange.PermissionResult{
 		Read: toBool(resp.EnableReading), FuturesTrade: toBool(resp.EnableFutures),
-		Withdraw: toBool(resp.EnableWithdrawals), Transfer: toBool(resp.EnableInternalTransfer),
+		Withdraw: toBool(resp.EnableWithdrawals),
+		Transfer: toBool(resp.EnableInternalTransfer || resp.PermitsUniversalTransfer),
 		Method: "direct",
+	}
+}
+
+// IsUnified returns true when the account has Portfolio Margin enabled.
+func (b *Adapter) IsUnified() bool { return b.isUnified }
+
+// DetectPortfolioMargin probes /sapi/v1/account/apiRestrictions and sets isUnified
+// if enablePortfolioMarginTrading is true. Safe to call multiple times.
+func (b *Adapter) DetectPortfolioMargin() {
+	spotClient := b.client.WithBaseURL("https://api.binance.com")
+	data, err := spotClient.Get("/sapi/v1/account/apiRestrictions", map[string]string{})
+	if err != nil {
+		return
+	}
+	var resp struct {
+		EnablePortfolioMarginTrading bool `json:"enablePortfolioMarginTrading"`
+	}
+	if json.Unmarshal(data, &resp) == nil && resp.EnablePortfolioMarginTrading {
+		b.isUnified = true
 	}
 }
 
@@ -1016,6 +1045,37 @@ func (b *Adapter) PlaceStopLoss(params exchange.StopLossParams) (string, error) 
 		return "", fmt.Errorf("PlaceStopLoss unmarshal: %w", err)
 	}
 	return strconv.FormatInt(resp.AlgoID, 10), nil
+}
+
+// PlaceTakeProfit places a take-profit market order on Binance futures using the algo order API.
+func (b *Adapter) PlaceTakeProfit(params exchange.TakeProfitParams) (string, error) {
+	p := map[string]string{
+		"algoType":      "CONDITIONAL",
+		"symbol":        params.Symbol,
+		"side":          mapSide(params.Side),
+		"type":          "TAKE_PROFIT_MARKET",
+		"triggerPrice":  params.TriggerPrice,
+		"quantity":      params.Size,
+		"closePosition": "false",
+	}
+
+	body, err := b.client.Post("/fapi/v1/algoOrder", p)
+	if err != nil {
+		return "", fmt.Errorf("PlaceTakeProfit: %w", err)
+	}
+
+	var resp struct {
+		AlgoID int64 `json:"algoId"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("PlaceTakeProfit unmarshal: %w", err)
+	}
+	return strconv.FormatInt(resp.AlgoID, 10), nil
+}
+
+// CancelTakeProfit cancels an algo take-profit order on Binance futures.
+func (b *Adapter) CancelTakeProfit(symbol, orderID string) error {
+	return b.CancelStopLoss(symbol, orderID)
 }
 
 // CancelStopLoss cancels an algo stop-loss order on Binance futures.

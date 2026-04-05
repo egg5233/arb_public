@@ -18,8 +18,9 @@ var _ models.RiskChecker = (*Manager)(nil)
 // PrefetchCache holds pre-fetched exchange data (balances, orderbooks) to avoid
 // redundant API calls when approving multiple opportunities in a batch.
 type PrefetchCache struct {
-	Balances   map[string]*exchange.Balance   // exchange name -> futures balance
-	Orderbooks map[string]*exchange.Orderbook // "exchange:symbol" -> orderbook
+	Balances               map[string]*exchange.Balance   // exchange name -> futures balance
+	Orderbooks             map[string]*exchange.Orderbook // "exchange:symbol" -> orderbook
+	TransferablePerExchange map[string]float64             // exchange name -> max USDT receivable from other exchanges
 }
 
 // Manager performs pre-trade risk assessment before entering positions.
@@ -90,7 +91,7 @@ func (m *Manager) SimulateApproval(opp models.Opportunity, reserved map[string]f
 // alt, when non-nil, overrides the rate/spread/cost fields so that downstream
 // checks (gap recovery, spread stability) use the alternative pair's values
 // instead of the primary pair's.
-func (m *Manager) SimulateApprovalForPair(opp models.Opportunity, longExch, shortExch string, reserved map[string]float64, alt *models.AlternativePair) (*models.RiskApproval, error) {
+func (m *Manager) SimulateApprovalForPair(opp models.Opportunity, longExch, shortExch string, reserved map[string]float64, alt *models.AlternativePair, cache *PrefetchCache) (*models.RiskApproval, error) {
 	pairOpp := opp
 	pairOpp.LongExchange = longExch
 	pairOpp.ShortExchange = shortExch
@@ -102,7 +103,7 @@ func (m *Manager) SimulateApprovalForPair(opp models.Opportunity, longExch, shor
 		pairOpp.Score = alt.Score
 		pairOpp.IntervalHours = alt.IntervalHours
 	}
-	return m.approveInternal(pairOpp, reserved, true, nil)
+	return m.approveInternal(pairOpp, reserved, true, cache)
 }
 
 // approveInternal is the shared implementation for Approve and ApproveWithReserved.
@@ -171,9 +172,14 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		}
 	}
 
-	// In simulate mode, account for spot balance that could be transferred to futures.
-	// This matches what ensureFuturesBalance would do without actually transferring.
+	// In simulate mode, account for spot balance and cross-exchange transferable
+	// funds. We clone the balance structs first to avoid cumulative mutations
+	// when the same exchange appears in multiple candidate evaluations.
 	if dryRun && needed > 0 {
+		longClone := *longBal
+		shortClone := *shortBal
+		longBal = &longClone
+		shortBal = &shortClone
 		for _, pair := range []struct {
 			name string
 			exch exchange.Exchange
@@ -187,6 +193,52 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 				if spotBal, err := pair.exch.GetSpotBalance(); err == nil && spotBal.Available > 0 {
 					pair.bal.Available += spotBal.Available
 					pair.bal.Total += spotBal.Available
+				}
+			}
+			// Add cross-exchange transferable surplus (allocator planning only).
+			// Trigger when EITHER margin buffer is insufficient OR post-trade
+			// ratio would exceed L4. Only inflate by the deficit needed.
+			if cache != nil && cache.TransferablePerExchange != nil {
+				// Check if post-trade ratio would exceed L4 even with sufficient margin buffer.
+				margin := needed
+				wouldExceedL4 := false
+				if pair.bal.Total > 0 {
+					postAvail := pair.bal.Available - margin
+					if postAvail < 0 {
+						postAvail = 0
+					}
+					postRatio := 1 - postAvail/pair.bal.Total
+					wouldExceedL4 = postRatio >= m.cfg.MarginL4Threshold
+				}
+
+				if pair.bal.Available < bufferedNeed || wouldExceedL4 {
+					if topUp, ok := cache.TransferablePerExchange[pair.name]; ok && topUp > 0 {
+						// Compute margin buffer deficit.
+						deficit := bufferedNeed - pair.bal.Available
+						if deficit < 0 {
+							deficit = 0
+						}
+
+						// Also compute the post-trade ratio deficit: how much extra
+						// is needed so that post-trade ratio stays below L4.
+						targetRatio := m.cfg.MarginL4Threshold - 0.005 // marginEpsilon: avoid hitting L4 boundary
+						freeTarget := 1.0 - targetRatio
+						if freeTarget > 0 && pair.bal.Total > 0 {
+							ratioDeficit := (freeTarget*pair.bal.Total - pair.bal.Available + margin) / targetRatio
+							if ratioDeficit > deficit {
+								deficit = ratioDeficit
+							}
+						}
+
+						actualTopUp := deficit
+						if actualTopUp > topUp {
+							actualTopUp = topUp
+						}
+						if actualTopUp > 0 {
+							pair.bal.Available += actualTopUp
+							pair.bal.Total += actualTopUp
+						}
+					}
 				}
 			}
 		}

@@ -238,6 +238,14 @@ export function useApi() {
     });
   }, []);
 
+  const getTradFiStatus = useCallback(() => {
+    return request<{ signed: boolean }>('/api/tradfi-status');
+  }, []);
+
+  const signTradFi = useCallback(() => {
+    return request<{ signed: boolean }>('/api/sign-tradfi', { method: 'POST' });
+  }, []);
+
   const logout = useCallback(() => {
     clearToken();
     _setToken(null);
@@ -277,5 +285,7 @@ export function useApi() {
     getBlacklist,
     addToBlacklist,
     removeFromBlacklist,
+    getTradFiStatus,
+    signTradFi,
   };
 }
