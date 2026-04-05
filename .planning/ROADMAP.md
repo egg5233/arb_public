@@ -17,6 +17,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 3: Operational Safety** - Telegram alerts, circuit breakers, and loss limits protecting the live system
 - [ ] **Phase 4: Performance Analytics** - SQLite-backed PnL decomposition, strategy comparison, and dashboard charts
 - [ ] **Phase 5: Capital Allocation** - Unified capital pool with risk profiles and dynamic strategy-weighted allocation
+- [ ] **Phase 6: Spot-Futures Risk Hardening** - Pre-entry maintenance_rate check, liquidation distance monitor, health monitor for spot-futures
 
 ## Phase Details
 
@@ -105,7 +106,7 @@ Plans:
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
+Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -114,3 +115,19 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | 3. Operational Safety | 3/3 | Complete (pending human verify) | 2026-04-03 |
 | 4. Performance Analytics | 0/4 | Not started | - |
 | 5. Capital Allocation | 0/3 | Not started | - |
+| 6. Spot-Futures Risk Hardening | 0/0 | Not started | - |
+
+### Phase 6: Spot-Futures Risk Hardening
+
+**Goal:** Prevent spot-futures positions that are immediately overleveraged relative to the contract's maintenance requirements, and detect/act on liquidation proximity at runtime across all 5 margin exchanges
+**Requirements:** SF-RISK-01, SF-RISK-02, SF-RISK-03, SF-RISK-04
+**Success Criteria** (what must be TRUE):
+  1. Pre-entry check fetches per-contract maintenance_rate and rejects positions where max survivable price drop < configured threshold (e.g., 30%)
+  2. Runtime monitor calculates liquidation distance using current mark price + maintenance_rate, triggers exit when distance falls below threshold
+  3. Health monitor (L3/L4/L5) evaluates spot-futures positions — not just perp-perp
+  4. Discovery scoring penalizes coins with high maintenance_rate (>10%), reducing their ranking
+**Depends on:** Phase 2
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd:plan-phase 6 to break down)
