@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 06-01-PLAN.md
-last_updated: "2026-04-05T14:14:23.333Z"
+stopped_at: Completed 06-02-PLAN.md
+last_updated: "2026-04-05T14:28:26.210Z"
 last_activity: 2026-04-05
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 20
-  completed_plans: 17
-  percent: 85
+  completed_plans: 18
+  percent: 90
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-01)
 ## Current Position
 
 Phase: 06 (spot-futures-risk-hardening) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-04-05
 
@@ -59,6 +59,7 @@ Progress: [██████████] 100%
 | Phase 05 P02 | 13min | 3 tasks | 7 files |
 | Phase 05 P03 | 5min | 2 tasks | 6 files |
 | Phase 06 P01 | 16min | 2 tasks | 15 files |
+| Phase 06 P02 | 10min | 1 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -93,6 +94,7 @@ Recent decisions affecting current work:
 - [Phase 06]: GetMaintenanceRate kept as optional interface (maintenanceRateProvider), not on Exchange interface -- BingX excluded
 - [Phase 06]: OKX/Bitget MaintenanceRate=0 in LoadAllContracts (fetched on demand); Gate.io populates inline
 - [Phase 06]: Lazy cache initialization in getMaintenanceRate() avoids SpotEngine constructor changes
+- [Phase 06]: Used isSeparateAccount() for capital-per-leg selection in maintenance gate -- consistent with existing codebase pattern
 
 ### Pending Todos
 
@@ -105,6 +107,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-05T14:14:23.329Z
-Stopped at: Completed 06-01-PLAN.md
+Last session: 2026-04-05T14:28:26.206Z
+Stopped at: Completed 06-02-PLAN.md
 Resume file: None
