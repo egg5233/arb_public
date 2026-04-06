@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: verifying
-stopped_at: Completed 06-04-PLAN.md
-last_updated: "2026-04-05T15:07:55.037Z"
-last_activity: 2026-04-05
+stopped_at: Completed 07-01-PLAN.md
+last_updated: "2026-04-06T01:36:14.970Z"
+last_activity: 2026-04-06
 progress:
-  total_phases: 6
-  completed_phases: 6
-  total_plans: 20
-  completed_plans: 20
+  total_phases: 7
+  completed_phases: 7
+  total_plans: 21
+  completed_plans: 21
   percent: 100
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-01)
 
 **Core value:** "I deposit USDT, select my risk preference, and the system automatically finds opportunities across both strategies, opens positions, collects funding, exits when profitable, and I can see exactly how much each position earned."
-**Current focus:** Phase 06 — spot-futures-risk-hardening
+**Current focus:** Phase 07 — milestone-polish
 
 ## Current Position
 
-Phase: 06
-Plan: Not started
+Phase: 07 (milestone-polish) — EXECUTING
+Plan: 1 of 1
 Status: Phase complete — ready for verification
-Last activity: 2026-04-05
+Last activity: 2026-04-06
 
 Progress: [██████████] 100%
 
@@ -63,6 +63,7 @@ Progress: [██████████] 100%
 | Phase 06 P02 | 10min | 1 tasks | 7 files |
 | Phase 06 P03 | 15min | 2 tasks | 6 files |
 | Phase 06 P04 | 7min | 2 tasks | 8 files |
+| Phase 07 P01 | 4min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -103,6 +104,8 @@ Recent decisions affecting current work:
 - [Phase 06]: L4 selects largest spot position by NotionalUSDT; L5 includes ALL spot positions
 - [Phase 06]: lookupMaintenanceRateForDisplay() reuses existing getMaintenanceRate() with planned notional from config
 - [Phase 06]: Maintenance rate column after Net APR / before Gap; color thresholds 10%/5% for visual risk assessment
+- [Phase 07]: Maintenance gate toggle placed in sf-general tab (top-level engine feature, not exit-specific)
+- [Phase 07]: Server-side validation matches config.go applyJSON: MaintenanceDefault 0 < val < 1.0, CacheTTL >= 1
 
 ### Pending Todos
 
@@ -115,6 +118,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-05T14:57:31.469Z
-Stopped at: Completed 06-04-PLAN.md
+Last session: 2026-04-06T01:36:14.966Z
+Stopped at: Completed 07-01-PLAN.md
 Resume file: None
