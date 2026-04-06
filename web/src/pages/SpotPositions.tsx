@@ -206,7 +206,7 @@ const SpotPositions: FC<SpotPositionsProps> = ({ positions, onClose, getStats, g
                 </td>
                 <td className="py-2 text-right font-mono">${n(p.notional_usdt).toFixed(2)}</td>
                 <td className={`py-2 text-right font-mono ${pnlColor(n(p.current_net_yield_apr))}`}>
-                  {n(p.current_net_yield_apr).toFixed(1)}%
+                  {(n(p.current_net_yield_apr) * 100).toFixed(1)}%
                   {p.yield_data_source === 'fallback' && <span className="text-gray-500 ml-0.5">*</span>}
                 </td>
                 <td className="py-2 text-right font-mono">
@@ -267,12 +267,12 @@ const SpotPositions: FC<SpotPositionsProps> = ({ positions, onClose, getStats, g
                       <div>
                         <div className="text-gray-300 text-xs font-semibold mb-1">{t('spotPos.yieldBreakdown')}</div>
                         <div className="text-gray-400 text-xs space-y-0.5">
-                          <div>{t('spotPos.fundingApr')}: <span className={`font-mono ${pnlColor(n(p.current_funding_apr))}`}>{n(p.current_funding_apr).toFixed(1)}%</span> (entry: {n(p.funding_apr).toFixed(1)}%)</div>
+                          <div>{t('spotPos.fundingApr')}: <span className={`font-mono ${pnlColor(n(p.current_funding_apr))}`}>{(n(p.current_funding_apr) * 100).toFixed(1)}%</span> (entry: {(n(p.funding_apr) * 100).toFixed(1)}%)</div>
                           {isDirA(p.direction) && (
-                            <div>{t('spotPos.borrowApr')}: <span className="font-mono text-red-400">-{n(p.current_borrow_apr).toFixed(1)}%</span></div>
+                            <div>{t('spotPos.borrowApr')}: <span className="font-mono text-red-400">-{(n(p.current_borrow_apr) * 100).toFixed(1)}%</span></div>
                           )}
-                          <div>{t('spotPos.feeImpact')}: <span className="font-mono text-red-400">-{n(p.current_fee_pct).toFixed(1)}%</span></div>
-                          <div>{t('spotPos.netYield')}: <span className={`font-mono ${pnlColor(n(p.current_net_yield_apr))}`}>{n(p.current_net_yield_apr).toFixed(1)}%</span></div>
+                          <div>{t('spotPos.feeImpact')}: <span className="font-mono text-red-400">-{(n(p.current_fee_pct) * 100).toFixed(2)}%</span></div>
+                          <div>{t('spotPos.netYield')}: <span className={`font-mono ${pnlColor(n(p.current_net_yield_apr))}`}>{(n(p.current_net_yield_apr) * 100).toFixed(1)}%</span></div>
                           <div>{t('spotPos.dataSource')}: <span className="font-mono text-gray-200">{p.yield_data_source}</span></div>
                         </div>
                       </div>

@@ -248,12 +248,40 @@ func (e *SpotEngine) updateLiveEconomics(pos *models.SpotFuturesPosition, isDirA
 	var currentFundingAPR, feePct float64
 	source := "entry_fallback"
 
-	if opp, found := e.lookupCurrentOpp(pos.Symbol, pos.Exchange, pos.Direction); found {
-		currentFundingAPR = opp.FundingAPR
-		feePct = opp.FeePct
-		source = "live_scan"
-	} else {
+	// Priority 1: live exchange funding rate (most accurate for active positions).
+	if exch, ok := e.exchanges[pos.Exchange]; ok {
+		if fr, err := exch.GetFundingRate(pos.Symbol); err == nil && fr.Interval > 0 {
+			// Rate is per-period decimal (e.g., 0.0001 per 8h).
+			// Dir A (long futures): pays when rate positive → negate.
+			// Dir B (short futures): receives when rate positive → keep sign.
+			ratePerHour := fr.Rate / fr.Interval.Hours()
+			apr := ratePerHour * 8760.0
+			if isDirA {
+				currentFundingAPR = -apr
+			} else {
+				currentFundingAPR = apr
+			}
+			source = "exchange"
+		}
+	}
+
+	// Priority 2: Loris scan data (aggregated, slight lag).
+	if source == "entry_fallback" {
+		if opp, found := e.lookupCurrentOpp(pos.Symbol, pos.Exchange, pos.Direction); found {
+			currentFundingAPR = opp.FundingAPR
+			feePct = opp.FeePct
+			source = "live_scan"
+		}
+	}
+
+	// Priority 3: entry-time rate (stale but always available).
+	if source == "entry_fallback" {
 		currentFundingAPR = pos.FundingAPR
+		feePct = pos.FeePct
+	}
+
+	// Fee fallback if not set by scan lookup.
+	if feePct == 0 {
 		feePct = pos.FeePct
 	}
 

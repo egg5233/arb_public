@@ -53,6 +53,7 @@ func (s priceGapStubExchange) GetMarginBalance(string) (*exchange.MarginBalance,
 }
 func (s priceGapStubExchange) TransferToMargin(string, string) error   { return nil }
 func (s priceGapStubExchange) TransferFromMargin(string, string) error { return nil }
+func (s priceGapStubExchange) CancelAllOrders(string) error            { return nil }
 
 func newPriceGapGateEngine(t *testing.T, cfg *config.Config, stub priceGapStubExchange) (*SpotEngine, *miniredis.Miniredis) {
 	t.Helper()

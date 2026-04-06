@@ -100,8 +100,9 @@ func (s *closeTestExchange) WithdrawFeeInclusive() bool { return false }
 func (s *closeTestExchange) GetWithdrawFee(string, string) (float64, error) {
 	return 0, fmt.Errorf("not implemented")
 }
-func (s *closeTestExchange) EnsureOneWayMode() error { return nil }
-func (s *closeTestExchange) Close()                  {}
+func (s *closeTestExchange) EnsureOneWayMode() error  { return nil }
+func (s *closeTestExchange) CancelAllOrders(string) error { return nil }
+func (s *closeTestExchange) Close()                   {}
 
 type closeTestSpotMargin struct {
 	placeCalls   int

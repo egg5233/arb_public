@@ -77,8 +77,9 @@ func (s priceStubExchange) WithdrawFeeInclusive() bool { return false }
 func (s priceStubExchange) GetWithdrawFee(string, string) (float64, error) {
 	return 0, fmt.Errorf("not implemented")
 }
-func (s priceStubExchange) EnsureOneWayMode() error { return nil }
-func (s priceStubExchange) Close()                  {}
+func (s priceStubExchange) EnsureOneWayMode() error  { return nil }
+func (s priceStubExchange) CancelAllOrders(string) error { return nil }
+func (s priceStubExchange) Close()                   {}
 
 // newPriceSpikeEngine creates a SpotEngine wired to return a fixed current price.
 func newPriceSpikeEngine(currentPrice float64) *SpotEngine {
