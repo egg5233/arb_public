@@ -377,6 +377,15 @@ func (b *Adapter) SetMarginMode(symbol string, mode string) error {
 		if isAPIError(err, -4046) {
 			return nil
 		}
+		if isAPIError(err, -4067) {
+			// Open orders blocking margin type change — cancel and retry
+			b.CancelAllOrders(symbol)
+			_, err = b.client.Post("/fapi/v1/marginType", params)
+			if err != nil && isAPIError(err, -4046) {
+				return nil
+			}
+			return err
+		}
 		return fmt.Errorf("SetMarginMode: %w", err)
 	}
 	return nil
@@ -1214,6 +1223,13 @@ func (b *Adapter) EnsureOneWayMode() error {
 		}
 		return fmt.Errorf("EnsureOneWayMode: %w", err)
 	}
+	return nil
+}
+
+// CancelAllOrders cancels all open orders (regular + conditional/algo) for a symbol.
+func (b *Adapter) CancelAllOrders(symbol string) error {
+	b.client.Delete("/fapi/v1/allOpenOrders", map[string]string{"symbol": symbol})
+	b.client.Delete("/fapi/v1/algoOpenOrders", map[string]string{"symbol": symbol})
 	return nil
 }
 

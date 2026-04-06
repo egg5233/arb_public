@@ -696,6 +696,11 @@ marketFallback:
 	}
 
 	if fullyFlat {
+		// Cancel orphan TP/SL/algo orders BEFORE marking closed — prevents race
+		// where a new entry re-uses the symbol and the async cancel wipes its orders.
+		longExch.CancelAllOrders(pos.Symbol)
+		shortExch.CancelAllOrders(pos.Symbol)
+
 		if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
 			fresh.RealizedPnL = realizedPnL
 			fresh.LongExit = longClosePrice
@@ -1568,6 +1573,11 @@ func (e *Engine) closePositionWithMode(pos *models.ArbitragePosition, emergency 
 	pos.Status = models.StatusClosed
 	pos.UpdatedAt = time.Now().UTC()
 
+	// Cancel orphan TP/SL/algo orders BEFORE SavePosition — prevents race
+	// where a new entry re-uses the symbol and the async cancel wipes its orders.
+	longExch.CancelAllOrders(pos.Symbol)
+	shortExch.CancelAllOrders(pos.Symbol)
+
 	if err := e.db.SavePosition(pos); err != nil {
 		e.log.Error("failed to save closed position: %v", err)
 	}
@@ -2193,6 +2203,9 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 	if rem > 0 {
 		e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", pos.Symbol, closeSide, rem, oldExch.Name())
 	}
+
+	// Cancel orphan TP/SL/algo orders on old exchange after rotation close
+	go oldExch.CancelAllOrders(pos.Symbol)
 
 	// Verify old leg is actually flat before updating position record.
 	time.Sleep(500 * time.Millisecond)

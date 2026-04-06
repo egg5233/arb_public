@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.29.2] - 2026-04-06
+
+### Added
+- **CancelAllOrders interface** — new Exchange method cancels all open orders (regular + conditional/algo) for a symbol; implemented in all 6 adapters (Binance, BingX, Bitget, Gate.io, OKX, Bybit)
+- **Orphan order cleanup on position close** — CancelAllOrders called synchronously at 5 close paths (depth exit, smart close, rotation, consolidator, orphan close) to prevent leftover TP/SL/algo orders
+
+### Fixed
+- **Binance SetMarginMode -4067** — when open orders block margin type change, automatically calls CancelAllOrders then retries once, instead of failing the entry
+- **CancelAllOrders race condition** — changed from async goroutine to synchronous execution before SavePosition/UpdatePositionFields, ensuring symbol is not released for re-entry until orphan orders are cancelled
+
 ## [0.29.1] - 2026-04-06
 
 ### Fixed

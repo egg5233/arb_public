@@ -1520,6 +1520,14 @@ func (a *Adapter) CancelStopLoss(symbol, orderID string) error {
 	return nil
 }
 
+// CancelAllOrders cancels all open orders (regular + conditional/algo) for a symbol.
+func (a *Adapter) CancelAllOrders(symbol string) error {
+	gtSym := toGateSymbol(symbol)
+	a.client.Delete("/futures/usdt/price_orders", map[string]string{"contract": gtSym})
+	a.client.Delete("/futures/usdt/orders", map[string]string{"contract": gtSym})
+	return nil
+}
+
 // EnsureOneWayMode ensures Gate.io is in single (non-dual) position mode.
 // Close terminates all WebSocket connections for graceful shutdown.
 func (a *Adapter) Close() {

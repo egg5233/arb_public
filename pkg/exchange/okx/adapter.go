@@ -1510,6 +1510,59 @@ func (a *Adapter) EnsureOneWayMode() error {
 	return nil
 }
 
+// CancelAllOrders cancels all open orders (regular + conditional/algo) for a symbol.
+func (a *Adapter) CancelAllOrders(symbol string) error {
+	instID := toOKXInstID(symbol)
+
+	// 1. Cancel algo/conditional orders (TP/SL)
+	algoData, err := a.client.Get("/api/v5/trade/orders-algo-pending", map[string]string{
+		"instId": instID, "ordType": "conditional",
+	})
+	if err == nil {
+		var algoResp []struct {
+			AlgoID string `json:"algoId"`
+			InstID string `json:"instId"`
+		}
+		if json.Unmarshal(algoData, &algoResp) == nil && len(algoResp) > 0 {
+			for i := 0; i < len(algoResp); i += 10 {
+				end := i + 10
+				if end > len(algoResp) {
+					end = len(algoResp)
+				}
+				batch := make([]map[string]interface{}, 0, end-i)
+				for _, algo := range algoResp[i:end] {
+					batch = append(batch, map[string]interface{}{
+						"instId": algo.InstID,
+						"algoId": algo.AlgoID,
+					})
+				}
+				a.client.Post("/api/v5/trade/cancel-algos", batch)
+			}
+		}
+	}
+
+	// 2. Cancel regular pending orders
+	ordData, err := a.client.Get("/api/v5/trade/orders-pending", map[string]string{
+		"instId": instID, "instType": "SWAP",
+	})
+	if err == nil {
+		var ordResp []struct {
+			OrdID  string `json:"ordId"`
+			InstID string `json:"instId"`
+		}
+		if json.Unmarshal(ordData, &ordResp) == nil {
+			for _, ord := range ordResp {
+				a.client.Post("/api/v5/trade/cancel-order", map[string]interface{}{
+					"instId": ord.InstID,
+					"ordId":  ord.OrdID,
+				})
+			}
+		}
+	}
+
+	return nil
+}
+
 // Close terminates all WebSocket connections for graceful shutdown.
 func (a *Adapter) Close() {
 	a.priceMu.Lock()

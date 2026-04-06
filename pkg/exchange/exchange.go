@@ -96,6 +96,9 @@ type Exchange interface {
 	// Account Setup — ensure cross margin + one-way position mode
 	EnsureOneWayMode() error
 
+	// CancelAllOrders cancels all open orders (regular + conditional/algo) for a symbol.
+	CancelAllOrders(symbol string) error
+
 	// Close terminates all WebSocket connections for graceful shutdown.
 	Close()
 }
