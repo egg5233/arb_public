@@ -1199,51 +1199,70 @@ func (b *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 
 // GetFundingFees returns funding fee history for a symbol since the given time.
 func (a *Adapter) GetFundingFees(symbol string, since time.Time) ([]exchange.FundingPayment, error) {
-	params := map[string]string{
-		"category":  "linear",
-		"symbol":    symbol,
-		"type":      "SETTLEMENT",
-		"startTime": strconv.FormatInt(since.UnixMilli(), 10),
-		"limit":     "50",
-	}
 	var out []exchange.FundingPayment
-	cursor := ""
+	start := since.UTC()
+	now := time.Now().UTC()
+	if !start.Before(now) {
+		return out, nil
+	}
+
 	for {
-		if cursor != "" {
-			params["cursor"] = cursor
-		} else {
-			delete(params, "cursor")
+		end := start.Add(24 * time.Hour)
+		if end.After(now) {
+			end = now
 		}
 
-		raw, err := a.client.Get("/v5/account/transaction-log", params)
-		if err != nil {
-			return nil, fmt.Errorf("GetFundingFees: %w", err)
+		params := map[string]string{
+			"category":  "linear",
+			"symbol":    symbol,
+			"type":      "SETTLEMENT",
+			"startTime": strconv.FormatInt(start.UnixMilli(), 10),
+			"endTime":   strconv.FormatInt(end.UnixMilli(), 10),
+			"limit":     "50",
+		}
+		cursor := ""
+		for {
+			if cursor != "" {
+				params["cursor"] = cursor
+			} else {
+				delete(params, "cursor")
+			}
+
+			raw, err := a.client.Get("/v5/account/transaction-log", params)
+			if err != nil {
+				return nil, fmt.Errorf("GetFundingFees: %w", err)
+			}
+
+			var resp struct {
+				List []struct {
+					Funding         string `json:"funding"`
+					TransactionTime string `json:"transactionTime"`
+				} `json:"list"`
+				NextPageCursor string `json:"nextPageCursor"`
+			}
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				return nil, fmt.Errorf("GetFundingFees unmarshal: %w", err)
+			}
+
+			for _, r := range resp.List {
+				amt, _ := strconv.ParseFloat(r.Funding, 64)
+				ms, _ := strconv.ParseInt(r.TransactionTime, 10, 64)
+				out = append(out, exchange.FundingPayment{
+					Amount: amt,
+					Time:   time.UnixMilli(ms),
+				})
+			}
+
+			if resp.NextPageCursor == "" || len(resp.List) == 0 || resp.NextPageCursor == cursor {
+				break
+			}
+			cursor = resp.NextPageCursor
 		}
 
-		var resp struct {
-			List []struct {
-				Funding         string `json:"funding"`
-				TransactionTime string `json:"transactionTime"`
-			} `json:"list"`
-			NextPageCursor string `json:"nextPageCursor"`
-		}
-		if err := json.Unmarshal(raw, &resp); err != nil {
-			return nil, fmt.Errorf("GetFundingFees unmarshal: %w", err)
-		}
-
-		for _, r := range resp.List {
-			amt, _ := strconv.ParseFloat(r.Funding, 64)
-			ms, _ := strconv.ParseInt(r.TransactionTime, 10, 64)
-			out = append(out, exchange.FundingPayment{
-				Amount: amt,
-				Time:   time.UnixMilli(ms),
-			})
-		}
-
-		if resp.NextPageCursor == "" || len(resp.List) == 0 || resp.NextPageCursor == cursor {
+		if !end.Before(now) {
 			break
 		}
-		cursor = resp.NextPageCursor
+		start = end.Add(time.Millisecond)
 	}
 
 	return out, nil

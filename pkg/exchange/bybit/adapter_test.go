@@ -248,7 +248,7 @@ func TestGetFundingFeesPaginatesTransactionLog(t *testing.T) {
 		},
 	}
 
-	fees, err := adapter.GetFundingFees("BTCUSDT", time.Date(2026, 4, 4, 0, 0, 0, 0, time.UTC))
+	fees, err := adapter.GetFundingFees("BTCUSDT", time.Now().UTC().Add(-1*time.Hour))
 	if err != nil {
 		t.Fatalf("GetFundingFees: %v", err)
 	}
@@ -267,5 +267,79 @@ func TestGetFundingFeesPaginatesTransactionLog(t *testing.T) {
 	}
 	if !fees[len(fees)-1].Time.Equal(time.Date(2026, 4, 6, 4, 0, 0, 0, time.UTC)) {
 		t.Fatalf("last funding time = %s, want 2026-04-06 04:00 UTC", fees[len(fees)-1].Time.UTC().Format(time.RFC3339))
+	}
+}
+
+func TestGetFundingFeesWalksTransactionLog24hWindows(t *testing.T) {
+	var calls []string
+	now := time.Now().UTC()
+	since := now.Add(-49 * time.Hour)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v5/account/transaction-log":
+			startMs, _ := strconv.ParseInt(r.URL.Query().Get("startTime"), 10, 64)
+			endMs, _ := strconv.ParseInt(r.URL.Query().Get("endTime"), 10, 64)
+			start := time.UnixMilli(startMs).UTC()
+			end := time.UnixMilli(endMs).UTC()
+			calls = append(calls, start.Format(time.RFC3339)+"->"+end.Format(time.RFC3339))
+
+			var list []map[string]string
+			switch len(calls) {
+			case 1:
+				list = []map[string]string{
+					{"funding": "1.00", "transactionTime": strconv.FormatInt(start.Add(1*time.Hour).UnixMilli(), 10)},
+					{"funding": "1.25", "transactionTime": strconv.FormatInt(start.Add(2*time.Hour).UnixMilli(), 10)},
+				}
+			case 2:
+				list = []map[string]string{
+					{"funding": "2.00", "transactionTime": strconv.FormatInt(start.Add(1*time.Hour).UnixMilli(), 10)},
+					{"funding": "2.25", "transactionTime": strconv.FormatInt(start.Add(2*time.Hour).UnixMilli(), 10)},
+				}
+			case 3:
+				list = []map[string]string{
+					{"funding": "3.00", "transactionTime": strconv.FormatInt(start.Add(1*time.Hour).UnixMilli(), 10)},
+				}
+			default:
+				t.Fatalf("unexpected extra window request %v", calls)
+			}
+
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"retCode": 0,
+				"retMsg":  "OK",
+				"result": map[string]interface{}{
+					"list":           list,
+					"nextPageCursor": "",
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	adapter := &Adapter{
+		client: &Client{
+			baseURL:    srv.URL,
+			apiKey:     "test",
+			secretKey:  "test",
+			recvWindow: "5000",
+			httpClient: http.DefaultClient,
+		},
+	}
+
+	fees, err := adapter.GetFundingFees("BTCUSDT", since)
+	if err != nil {
+		t.Fatalf("GetFundingFees: %v", err)
+	}
+
+	if len(calls) != 3 {
+		t.Fatalf("window calls = %d, want 3 (%v)", len(calls), calls)
+	}
+	if len(fees) != 5 {
+		t.Fatalf("funding payments = %d, want 5", len(fees))
+	}
+	if fees[0].Amount != 1.00 || fees[2].Amount != 2.00 || fees[4].Amount != 3.00 {
+		t.Fatalf("unexpected funding sequence: %+v", fees)
 	}
 }

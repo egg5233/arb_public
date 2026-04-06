@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.29.1] - 2026-04-06
+
+### Fixed
+- **Bybit GetFundingFees 24h window walk**: transaction-log API returns incomplete results for unbounded time ranges; now walks 24h windows from `since` to `now` with cursor pagination within each window, collecting all settlement entries
+- **Bybit funding fees test**: existing test adjusted to use recent time window matching new windowed logic
+
+### Added
+- **Bybit funding fees window test**: `TestGetFundingFeesWalksTransactionLog24hWindows` verifies 49h span produces 3 API windows and collects all 5 funding payments
+- **Funding history rotation test**: `TestHandleGetPositionFundingIncludesRotatedAwayBybitWindow` verifies rotated-away exchange funding is included through rotation boundary
+
 ## [0.29.0] - 2026-04-06
 
 ### Added — Milestone Polish (Phase 7, Plan 01)
