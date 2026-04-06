@@ -1277,6 +1277,7 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
     const sfAutoEnabled = getByPath(config, ['spot_futures', 'auto_enabled']) === true;
     const sfDryRun = getByPath(config, ['spot_futures', 'auto_dry_run']) === true;
     const sfExchanges = (getByPath(config, ['spot_futures', 'exchanges']) as string[] | undefined) || [];
+    const sfMaintenanceGate = getByPath(config, ['spot_futures', 'enable_maintenance_gate']) === true;
 
     return (
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1365,6 +1366,40 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
             }}
             placeholder="binance, bybit, gateio, bitget, okx"
             className="w-full bg-gray-800 border border-gray-700 rounded-lg py-1.5 px-3 text-sm font-mono text-gray-100 focus:outline-none focus:border-blue-500"
+          />
+        </div>
+
+        {/* Maintenance Rate Gate */}
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.sf.enableMaintenanceGate')}</label>
+            <Tooltip text={t('cfg.sf.enableMaintenanceGateDesc')} />
+          </div>
+          <div className="flex items-center gap-3">
+            <ToggleSwitch
+              on={sfMaintenanceGate}
+              onChange={(v) => handleBoolChange(['spot_futures', 'enable_maintenance_gate'], v)}
+            />
+            <span className={`text-sm font-semibold ${sfMaintenanceGate ? 'text-green-400' : 'text-red-400'}`}>
+              {sfMaintenanceGate ? 'ON' : 'OFF'}
+            </span>
+          </div>
+        </div>
+        <div className={!sfMaintenanceGate ? 'opacity-50' : ''}>
+          <NumberField
+            label={t('cfg.sf.maintenanceDefault')}
+            desc={t('cfg.sf.maintenanceDefaultDesc')}
+            value={getByPath(config, ['spot_futures', 'maintenance_default'])}
+            onChange={(v) => handleChange(['spot_futures', 'maintenance_default'], v)}
+          />
+        </div>
+        <div className={!sfMaintenanceGate ? 'opacity-50' : ''}>
+          <NumberField
+            label={t('cfg.sf.maintenanceCacheTTL')}
+            desc={t('cfg.sf.maintenanceCacheTTLDesc')}
+            value={getByPath(config, ['spot_futures', 'maintenance_cache_ttl'])}
+            unit="min"
+            onChange={(v) => handleChange(['spot_futures', 'maintenance_cache_ttl'], v)}
           />
         </div>
       </div>
