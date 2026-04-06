@@ -756,3 +756,109 @@ func TestHandlePostConfig_PersistsExplicitExchangeCredentialUpdates(t *testing.T
 		t.Fatalf("expected config secret_key update, got %#v", got)
 	}
 }
+
+func TestHandleConfig_MaintenanceGateRoundTrip(t *testing.T) {
+	s, mr := newTestServer(t)
+	defer mr.Close()
+
+	// Set initial config values
+	s.cfg.SpotFuturesEnableMaintenanceGate = false
+	s.cfg.SpotFuturesMaintenanceDefault = 0.05
+	s.cfg.SpotFuturesMaintenanceCacheTTL = 60
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	initialConfig := `{
+  "spot_futures": {
+    "enable_maintenance_gate": false,
+    "maintenance_default": 0.05,
+    "maintenance_cache_ttl": 60
+  }
+}`
+	if err := os.WriteFile(configPath, []byte(initialConfig), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("CONFIG_FILE", configPath)
+
+	// GET /api/config — verify fields are returned
+	getReq := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	getW := httptest.NewRecorder()
+	s.handleGetConfig(getW, getReq)
+	if getW.Code != http.StatusOK {
+		t.Fatalf("GET expected 200, got %d: %s", getW.Code, getW.Body.String())
+	}
+
+	var getResp struct {
+		OK   bool                   `json:"ok"`
+		Data map[string]interface{} `json:"data"`
+	}
+	if err := json.NewDecoder(getW.Body).Decode(&getResp); err != nil {
+		t.Fatalf("decode GET response: %v", err)
+	}
+	spotFutures, ok := getResp.Data["spot_futures"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("spot_futures payload missing or wrong type: %#v", getResp.Data["spot_futures"])
+	}
+	if spotFutures["enable_maintenance_gate"] != false {
+		t.Fatalf("expected enable_maintenance_gate=false, got %#v", spotFutures["enable_maintenance_gate"])
+	}
+	if spotFutures["maintenance_default"] != 0.05 {
+		t.Fatalf("expected maintenance_default=0.05, got %#v", spotFutures["maintenance_default"])
+	}
+	if spotFutures["maintenance_cache_ttl"] != float64(60) {
+		t.Fatalf("expected maintenance_cache_ttl=60, got %#v", spotFutures["maintenance_cache_ttl"])
+	}
+
+	// POST /api/config — update all 3 fields
+	postReq := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"spot_futures":{"enable_maintenance_gate":true,"maintenance_default":0.08,"maintenance_cache_ttl":120}}`))
+	postW := httptest.NewRecorder()
+	s.handlePostConfig(postW, postReq)
+	if postW.Code != http.StatusOK {
+		t.Fatalf("POST expected 200, got %d: %s", postW.Code, postW.Body.String())
+	}
+
+	// Verify in-memory config updated
+	if !s.cfg.SpotFuturesEnableMaintenanceGate {
+		t.Fatal("expected SpotFuturesEnableMaintenanceGate=true after POST")
+	}
+	if s.cfg.SpotFuturesMaintenanceDefault != 0.08 {
+		t.Fatalf("expected SpotFuturesMaintenanceDefault=0.08, got %v", s.cfg.SpotFuturesMaintenanceDefault)
+	}
+	if s.cfg.SpotFuturesMaintenanceCacheTTL != 120 {
+		t.Fatalf("expected SpotFuturesMaintenanceCacheTTL=120, got %d", s.cfg.SpotFuturesMaintenanceCacheTTL)
+	}
+
+	// Verify Redis persistence
+	persisted, err := s.db.GetConfigField("spot_futures_enable_maintenance_gate")
+	if err != nil {
+		t.Fatalf("redis get spot_futures_enable_maintenance_gate: %v", err)
+	}
+	if persisted != "true" {
+		t.Fatalf("expected redis spot_futures_enable_maintenance_gate=true, got %q", persisted)
+	}
+	persisted, err = s.db.GetConfigField("spot_futures_maintenance_default")
+	if err != nil {
+		t.Fatalf("redis get spot_futures_maintenance_default: %v", err)
+	}
+	if persisted != "0.08" {
+		t.Fatalf("expected redis spot_futures_maintenance_default=0.08, got %q", persisted)
+	}
+	persisted, err = s.db.GetConfigField("spot_futures_maintenance_cache_ttl")
+	if err != nil {
+		t.Fatalf("redis get spot_futures_maintenance_cache_ttl: %v", err)
+	}
+	if persisted != "120" {
+		t.Fatalf("expected redis spot_futures_maintenance_cache_ttl=120, got %q", persisted)
+	}
+
+	// Verify config.json reload
+	reloaded := config.Load()
+	if !reloaded.SpotFuturesEnableMaintenanceGate {
+		t.Fatal("expected reloaded SpotFuturesEnableMaintenanceGate=true")
+	}
+	if reloaded.SpotFuturesMaintenanceDefault != 0.08 {
+		t.Fatalf("expected reloaded SpotFuturesMaintenanceDefault=0.08, got %v", reloaded.SpotFuturesMaintenanceDefault)
+	}
+	if reloaded.SpotFuturesMaintenanceCacheTTL != 120 {
+		t.Fatalf("expected reloaded SpotFuturesMaintenanceCacheTTL=120, got %d", reloaded.SpotFuturesMaintenanceCacheTTL)
+	}
+}

@@ -205,30 +205,18 @@ func (s *Server) handleGetPositionFunding(w http.ResponseWriter, r *http.Request
 
 	// Rotated-away legs: active from their start until the rotation timestamp.
 	// Walk rotations to reconstruct each previous leg's window.
-	prevLongExch, prevShortExch := pos.LongExchange, pos.ShortExchange
 	prevLongStart, prevShortStart := pos.CreatedAt, pos.CreatedAt
 	for _, rot := range pos.RotationHistory {
 		if rot.LegSide == "long" {
-			legs = append(legs, legWindow{prevLongExch, "long", prevLongStart, rot.Timestamp})
-			prevLongExch = rot.To
+			legs = append(legs, legWindow{rot.From, "long", prevLongStart, rot.Timestamp})
 			prevLongStart = rot.Timestamp
 		} else {
-			legs = append(legs, legWindow{prevShortExch, "short", prevShortStart, rot.Timestamp})
-			prevShortExch = rot.To
+			legs = append(legs, legWindow{rot.From, "short", prevShortStart, rot.Timestamp})
 			prevShortStart = rot.Timestamp
 		}
 	}
 
-	// Deduplicate: if a current leg was never rotated, it appears twice.
-	// Keep the widest window (start=CreatedAt, end=zero).
-	seen := make(map[string]bool)
 	for _, leg := range legs {
-		key := leg.name + ":" + leg.side
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-
 		exch, ok := s.exchanges[leg.name]
 		if !ok {
 			continue
@@ -373,6 +361,9 @@ type configSpotFuturesResponse struct {
 	MaxPriceGapPct             float64  `json:"max_price_gap_pct"`
 	EnableExitSpreadGate       bool     `json:"enable_exit_spread_gate"`
 	ExitSpreadPct              float64  `json:"exit_spread_pct"`
+	EnableMaintenanceGate      bool     `json:"enable_maintenance_gate"`
+	MaintenanceDefault         float64  `json:"maintenance_default"`
+	MaintenanceCacheTTL        int      `json:"maintenance_cache_ttl"`
 }
 
 type configExchangeResponse struct {
@@ -680,6 +671,9 @@ func (s *Server) buildConfigResponse() configResponse {
 		MaxPriceGapPct:             s.cfg.SpotFuturesMaxPriceGapPct,
 		EnableExitSpreadGate:       s.cfg.SpotFuturesEnableExitSpreadGate,
 		ExitSpreadPct:              s.cfg.SpotFuturesExitSpreadPct,
+		EnableMaintenanceGate:      s.cfg.SpotFuturesEnableMaintenanceGate,
+		MaintenanceDefault:         s.cfg.SpotFuturesMaintenanceDefault,
+		MaintenanceCacheTTL:        s.cfg.SpotFuturesMaintenanceCacheTTL,
 	}
 	return resp
 }
@@ -810,6 +804,9 @@ type spotFuturesUpdate struct {
 	MaxPriceGapPct             *float64 `json:"max_price_gap_pct"`
 	EnableExitSpreadGate       *bool    `json:"enable_exit_spread_gate"`
 	ExitSpreadPct              *float64 `json:"exit_spread_pct"`
+	EnableMaintenanceGate      *bool    `json:"enable_maintenance_gate"`
+	MaintenanceDefault         *float64 `json:"maintenance_default"`
+	MaintenanceCacheTTL        *int     `json:"maintenance_cache_ttl"`
 }
 
 type exchangeUpdate struct {
@@ -1417,6 +1414,15 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		if sf.ExitSpreadPct != nil && *sf.ExitSpreadPct >= 0 {
 			s.cfg.SpotFuturesExitSpreadPct = *sf.ExitSpreadPct
 		}
+		if sf.EnableMaintenanceGate != nil {
+			s.cfg.SpotFuturesEnableMaintenanceGate = *sf.EnableMaintenanceGate
+		}
+		if sf.MaintenanceDefault != nil && *sf.MaintenanceDefault > 0 && *sf.MaintenanceDefault < 1.0 {
+			s.cfg.SpotFuturesMaintenanceDefault = *sf.MaintenanceDefault
+		}
+		if sf.MaintenanceCacheTTL != nil && *sf.MaintenanceCacheTTL >= 1 {
+			s.cfg.SpotFuturesMaintenanceCacheTTL = *sf.MaintenanceCacheTTL
+		}
 	}
 
 	if sa := upd.Safety; sa != nil {
@@ -1616,6 +1622,9 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		fields["spot_futures_max_price_gap_pct"] = strconv.FormatFloat(sf.MaxPriceGapPct, 'f', -1, 64)
 		fields["spot_futures_enable_exit_spread_gate"] = strconv.FormatBool(sf.EnableExitSpreadGate)
 		fields["spot_futures_exit_spread_pct"] = strconv.FormatFloat(sf.ExitSpreadPct, 'f', -1, 64)
+		fields["spot_futures_enable_maintenance_gate"] = strconv.FormatBool(sf.EnableMaintenanceGate)
+		fields["spot_futures_maintenance_default"] = strconv.FormatFloat(sf.MaintenanceDefault, 'f', -1, 64)
+		fields["spot_futures_maintenance_cache_ttl"] = strconv.Itoa(sf.MaintenanceCacheTTL)
 	}
 
 	// Allocation fields
