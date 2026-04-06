@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.29.2] - 2026-04-06
+
+### Fixed
+- **Config scan minute 0 rejection**: `applyJSON` and `toJSON` now reject scan minute 0 (collides with normalScan, silently disabling typed scans); changed `validMinute` from `>= 0` to `> 0`
+- **Config SaveJSON caller trace**: logs caller file:line to stderr on every `config.json` write for audit trail
+- **Spot-engine maintenance rate log level**: downgraded maintenance rate lookup logs from warning to debug — symbols with multiplier prefixes (e.g., `1000000BABYDOGEUSDT`) have no matching futures contract; fallback to default is expected behavior, not a warning
+
+### Changed
+- **Tests no longer call SaveJSON**: removed all `SaveJSON` calls from tests to prevent accidental writes to real `config.json`
+
 ## [0.29.1] - 2026-04-06
 
 ### Fixed
