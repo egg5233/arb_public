@@ -608,8 +608,8 @@ func (a *Adapter) GetMaintenanceRate(symbol string, notionalUSDT float64) (float
 	}
 
 	var tiers []struct {
-		RiskLimit       float64 `json:"risk_limit"`
-		MaintenanceRate string  `json:"maintenance_rate"`
+		RiskLimit       json.Number `json:"risk_limit"`
+		MaintenanceRate string      `json:"maintenance_rate"`
 	}
 	if err := json.Unmarshal(data, &tiers); err != nil {
 		return 0, fmt.Errorf("GetMaintenanceRate unmarshal: %w", err)
@@ -630,7 +630,11 @@ func (a *Adapter) GetMaintenanceRate(symbol string, notionalUSDT float64) (float
 
 	// Match tier where notionalUSDT <= risk_limit
 	for _, tier := range tiers {
-		if notionalUSDT <= tier.RiskLimit {
+		riskLimit, err := tier.RiskLimit.Float64()
+		if err != nil {
+			continue
+		}
+		if notionalUSDT <= riskLimit {
 			rate, _ := strconv.ParseFloat(tier.MaintenanceRate, 64)
 			if rate <= 0 || rate >= 1.0 {
 				return 0, nil
