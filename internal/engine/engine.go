@@ -1575,6 +1575,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 	var pfWg sync.WaitGroup
 	balanceSyncMap := sync.Map{}
 	orderbookSyncMap := sync.Map{}
+	spotBalanceSyncMap := sync.Map{}
 
 	for exch := range exchangeSet {
 		pfWg.Add(1)
@@ -1585,6 +1586,17 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 					balanceSyncMap.Store(name, bal)
 				} else {
 					e.log.Warn("prefetch: GetFuturesBalance(%s) failed: %v", name, err)
+				}
+			}
+		}(exch)
+	}
+	for exch := range exchangeSet {
+		pfWg.Add(1)
+		go func(name string) {
+			defer pfWg.Done()
+			if adapter, ok := e.exchanges[name]; ok {
+				if sb, err := adapter.GetSpotBalance(); err == nil {
+					spotBalanceSyncMap.Store(name, sb)
 				}
 			}
 		}(exch)
@@ -1661,6 +1673,24 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 	})
 	e.log.Info("executeArbitrage: pre-fetched %d balances + %d orderbooks in %v",
 		len(prefetchCache.Balances), len(prefetchCache.Orderbooks), time.Since(prefetchStart).Round(time.Millisecond))
+	// Log balance summary — uses prefetched data only (no extra API calls post-prefetch).
+	{
+		var summary string
+		for name, bal := range prefetchCache.Balances {
+			spotStr := ""
+			if v, ok := spotBalanceSyncMap.Load(name); ok {
+				sb := v.(*exchange.Balance)
+				if sb.Available > 0.01 {
+					spotStr = fmt.Sprintf(" spot=%.2f", sb.Available)
+				}
+			}
+			if summary != "" {
+				summary += " | "
+			}
+			summary += fmt.Sprintf("%s: total=%.2f frozen=%.2f avail=%.2f%s", name, bal.Total, bal.Frozen, bal.Available, spotStr)
+		}
+		e.log.Info("[entry] balances: %s", summary)
+	}
 
 	// Phase 1: Sequential pre-filter — approve up to `slots` candidates.
 	type candidate struct {

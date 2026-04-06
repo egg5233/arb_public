@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.27.3] - 2026-04-06
+
+### Added
+- **Entry balance summary log** — `[entry] balances:` line now printed at each entry scan showing per-exchange total/frozen/available + spot balance; spot balances prefetched in parallel goroutines
+
+### Fixed
+- **TransferToFutures comment** — corrected to list all 6 exchanges' actual behavior (OKX/Bybit are real transfers, not no-ops)
+- **ensureFuturesBalance comment** — corrected to reflect all 6 exchanges are supported
+
 ## [0.27.2] - 2026-04-06
 
 ### Fixed
@@ -14,7 +23,7 @@ All notable changes to this project will be documented in this file.
 - **Allocator commit race** — Commit now watches both allocatorVersionKey and reservation key; uses separate newTotals map to prevent over-counting on retry
 
 ### Added
-- **Auto-size spot sweep** — when CapitalPerLeg=0 (auto-size), ensureFuturesBalance now sweeps all available spot into futures on split-account exchanges (Binance, Bitget, Gate.io) to maximize position sizing; transfer amount floored to prevent rounding above available balance
+- **Auto-size spot sweep** — when CapitalPerLeg=0 (auto-size), ensureFuturesBalance now sweeps all available spot/funding into futures/trading on all 6 exchanges to maximize position sizing; transfer amount floored to prevent rounding above available balance
 
 ### Changed
 - Updated scan schedule comments to match actual config defaults (:20 rebalance, :30 exit, :35 rotate, :40 entry)

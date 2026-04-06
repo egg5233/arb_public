@@ -752,8 +752,10 @@ func (m *Manager) calculateSizeWithPrice(opp models.Opportunity, balances map[st
 }
 
 // ensureFuturesBalance checks if the futures balance is below the needed amount
-// and transfers from spot if possible. Only effective on split-account exchanges
-// (Binance, Bitget, Gate.io); no-op on unified accounts (OKX, Bybit).
+// and transfers from spot/funding if possible. Effective on all 6 exchanges:
+// Binance (spot→futures), Bybit (FUND→UNIFIED), Gate.io (spot→futures or no-op
+// if unified), Bitget (spot→usdt_futures), OKX (funding→trading), BingX (FUND→PFUTURES).
+// GetSpotBalance returns the source bucket (spot/FUND/funding), not unified total.
 func (m *Manager) ensureFuturesBalance(exchName string, exc exchange.Exchange, futBal *exchange.Balance, needed float64) {
 	if futBal.Available >= needed {
 		return
