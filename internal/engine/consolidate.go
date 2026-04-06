@@ -242,6 +242,7 @@ func (e *Engine) consolidatePositions(missCount map[string]int, dustIgnore map[s
 				if rem > 0 {
 					e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", ep.Symbol, closeSide, rem, exch.Name())
 				}
+				exch.CancelAllOrders(ep.Symbol)
 			}
 		}
 	}
@@ -491,6 +492,15 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 	pos.ShortSize = 0
 	pos.Status = models.StatusClosed
 	pos.UpdatedAt = time.Now().UTC()
+
+	// Cancel orphan TP/SL/algo orders BEFORE SavePosition — prevents race
+	// where a new entry re-uses the symbol and the async cancel wipes its orders.
+	if le, ok := e.exchanges[pos.LongExchange]; ok {
+		le.CancelAllOrders(pos.Symbol)
+	}
+	if se, ok := e.exchanges[pos.ShortExchange]; ok {
+		se.CancelAllOrders(pos.Symbol)
+	}
 
 	if err := e.db.SavePosition(pos); err != nil {
 		e.log.Error("consolidate: failed to close %s: %v", pos.ID, err)

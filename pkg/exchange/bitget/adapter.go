@@ -1377,6 +1377,17 @@ func (a *Adapter) CancelStopLoss(symbol, orderID string) error {
 	return nil
 }
 
+// CancelAllOrders cancels all open orders (regular + conditional/algo) for a symbol.
+func (a *Adapter) CancelAllOrders(symbol string) error {
+	a.client.Post("/api/v2/mix/order/cancel-plan-order", map[string]string{
+		"symbol": symbol, "productType": "USDT-FUTURES",
+	})
+	a.client.Post("/api/v2/mix/order/batch-cancel-orders", map[string]string{
+		"symbol": symbol, "productType": "USDT-FUTURES",
+	})
+	return nil
+}
+
 // EnsureOneWayMode sets the account to one-way position mode.
 // Close terminates all WebSocket connections for graceful shutdown.
 func (a *Adapter) Close() {

@@ -4,7 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [0.29.2] - 2026-04-06
 
+### Added
+- **CancelAllOrders interface** — new Exchange method cancels all open orders (regular + conditional/algo) for a symbol; implemented in all 6 adapters (Binance, BingX, Bitget, Gate.io, OKX, Bybit)
+- **Orphan order cleanup on position close** — CancelAllOrders called synchronously at 5 close paths (depth exit, smart close, rotation, consolidator, orphan close) to prevent leftover TP/SL/algo orders
+
 ### Fixed
+- **Binance SetMarginMode -4067** — when open orders block margin type change, automatically calls CancelAllOrders then retries once, instead of failing the entry
+- **CancelAllOrders race condition** — changed from async goroutine to synchronous execution before SavePosition/UpdatePositionFields, ensuring symbol is not released for re-entry until orphan orders are cancelled
 - **Config scan minute 0 rejection**: `applyJSON` and `toJSON` now reject scan minute 0 (collides with normalScan, silently disabling typed scans); changed `validMinute` from `>= 0` to `> 0`
 - **Config SaveJSON caller trace**: logs caller file:line to stderr on every `config.json` write for audit trail
 - **Spot-engine maintenance rate log level**: downgraded maintenance rate lookup logs from warning to debug — symbols with multiplier prefixes (e.g., `1000000BABYDOGEUSDT`) have no matching futures contract; fallback to default is expected behavior, not a warning

@@ -1270,6 +1270,13 @@ func generateUUID() string {
 var _ exchange.Exchange = (*Adapter)(nil)
 var _ exchange.TradingFeeProvider = (*Adapter)(nil)
 
+// CancelAllOrders cancels all open orders (regular + conditional/algo) for a symbol.
+func (a *Adapter) CancelAllOrders(symbol string) error {
+	bxSym := toBingXSymbol(symbol)
+	a.client.Delete("/openApi/swap/v2/trade/allOpenOrders", map[string]string{"symbol": bxSym})
+	return nil
+}
+
 // EnsureOneWayMode is a no-op for BingX — position mode is set via UI only.
 // The adapter already uses positionSide=BOTH (one-way mode).
 // Close terminates all WebSocket connections for graceful shutdown.
