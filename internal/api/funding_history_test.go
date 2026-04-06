@@ -49,7 +49,11 @@ func (s fundingStubExchange) StartPrivateStream() {}
 func (s fundingStubExchange) GetOrderUpdate(string) (exchange.OrderUpdate, bool) { return exchange.OrderUpdate{}, false }
 func (s fundingStubExchange) SetOrderCallback(func(exchange.OrderUpdate)) {}
 func (s fundingStubExchange) PlaceStopLoss(exchange.StopLossParams) (string, error) { return "", nil }
-func (s fundingStubExchange) CancelStopLoss(string, string) error { return nil }
+func (s fundingStubExchange) CancelStopLoss(string, string) error                  { return nil }
+func (s fundingStubExchange) PlaceTakeProfit(exchange.TakeProfitParams) (string, error) {
+	return "", nil
+}
+func (s fundingStubExchange) CancelTakeProfit(string, string) error { return nil }
 func (s fundingStubExchange) GetUserTrades(string, time.Time, int) ([]exchange.Trade, error) { return nil, nil }
 func (s fundingStubExchange) GetFundingFees(string, time.Time) ([]exchange.FundingPayment, error) { return s.fees, nil }
 func (s fundingStubExchange) GetClosePnL(string, time.Time) ([]exchange.ClosePnL, error) { return nil, nil }

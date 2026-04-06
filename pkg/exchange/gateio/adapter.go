@@ -1434,6 +1434,79 @@ func (a *Adapter) PlaceStopLoss(params exchange.StopLossParams) (string, error) 
 	return strconv.FormatInt(resp.ID, 10), nil
 }
 
+// PlaceTakeProfit places a take-profit conditional order on Gate.io futures.
+func (a *Adapter) PlaceTakeProfit(params exchange.TakeProfitParams) (string, error) {
+	contract := toGateSymbol(params.Symbol)
+
+	// Convert base-unit size to contracts.
+	sizeF, err := strconv.ParseFloat(params.Size, 64)
+	if err != nil {
+		return "", fmt.Errorf("PlaceTakeProfit: invalid size %q: %w", params.Size, err)
+	}
+	if a.contractMult != nil {
+		if mult, ok := a.contractMult[params.Symbol]; ok && mult > 0 {
+			sizeF = sizeF / mult
+		}
+	}
+	size := int64(math.Round(sizeF))
+	if size == 0 {
+		size = 1
+	}
+	// Gate.io: sell orders use negative size.
+	if params.Side == exchange.SideSell {
+		size = -int64(math.Abs(float64(size)))
+	} else {
+		size = int64(math.Abs(float64(size)))
+	}
+
+	// trigger.rule for TP is opposite of SL:
+	// 1 = price >= trigger (long TP — sell when price rises),
+	// 2 = price <= trigger (short TP — buy when price drops).
+	rule := 1
+	if params.Side == exchange.SideBuy {
+		rule = 2
+	}
+
+	orderReq := map[string]interface{}{
+		"initial": map[string]interface{}{
+			"contract":    contract,
+			"size":        size,
+			"price":       "0", // market price
+			"tif":         "ioc",
+			"reduce_only": true,
+		},
+		"trigger": map[string]interface{}{
+			"strategy_type": 0,
+			"price_type":    1, // mark price
+			"price":         params.TriggerPrice,
+			"rule":          rule,
+		},
+	}
+
+	bodyBytes, err := json.Marshal(orderReq)
+	if err != nil {
+		return "", fmt.Errorf("PlaceTakeProfit: marshal: %w", err)
+	}
+
+	data, err := a.client.Post("/futures/usdt/price_orders", string(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("PlaceTakeProfit: %w", err)
+	}
+
+	var resp struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return "", fmt.Errorf("PlaceTakeProfit unmarshal: %w (body: %s)", err, string(data))
+	}
+	return strconv.FormatInt(resp.ID, 10), nil
+}
+
+// CancelTakeProfit cancels a price-triggered take-profit order on Gate.io futures.
+func (a *Adapter) CancelTakeProfit(symbol, orderID string) error {
+	return a.CancelStopLoss(symbol, orderID)
+}
+
 // CancelStopLoss cancels a price-triggered conditional order on Gate.io futures.
 func (a *Adapter) CancelStopLoss(symbol, orderID string) error {
 	path := "/futures/usdt/price_orders/" + orderID

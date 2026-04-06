@@ -28,6 +28,8 @@ type ArbitragePosition struct {
 	AllExchanges     []string  `json:"all_exchanges,omitempty"`     // all exchanges used (including rotated-away)
 	LongSLOrderID    string    `json:"long_sl_order_id,omitempty"`  // stop-loss order ID on long exchange
 	ShortSLOrderID   string    `json:"short_sl_order_id,omitempty"` // stop-loss order ID on short exchange
+	LongTPOrderID    string    `json:"long_tp_order_id,omitempty"`  // take-profit order ID on long exchange
+	ShortTPOrderID   string    `json:"short_tp_order_id,omitempty"` // take-profit order ID on short exchange
 	LastRotatedFrom  string    `json:"last_rotated_from,omitempty"` // exchange we rotated away from
 	LastRotatedAt    time.Time `json:"last_rotated_at,omitempty"`   // when last rotation happened
 	RotationCount    int       `json:"rotation_count,omitempty"`    // total rotations for this position

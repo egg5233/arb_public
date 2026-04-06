@@ -769,14 +769,18 @@ marketFallback:
 		e.log.Error("position %s depth-exit PARTIAL: longRem=%.6f shortRem=%.6f — reverted to active for retry",
 			pos.ID, longRemainder, shortRemainder)
 
-		// Clear stale SL order IDs before re-attaching.
+		// Clear stale SL and TP order IDs before re-attaching.
 		_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
 			fresh.LongSLOrderID = ""
 			fresh.ShortSLOrderID = ""
+			fresh.LongTPOrderID = ""
+			fresh.ShortTPOrderID = ""
 			return true
 		})
 		pos.LongSLOrderID = ""
 		pos.ShortSLOrderID = ""
+		pos.LongTPOrderID = ""
+		pos.ShortTPOrderID = ""
 
 		// Re-attach stop-losses for the remaining position.
 		e.attachStopLosses(pos)
@@ -1518,14 +1522,18 @@ func (e *Engine) closePositionWithMode(pos *models.ArbitragePosition, emergency 
 		pos.Status = models.StatusActive
 		pos.LongSize = actualLong
 		pos.ShortSize = actualShort
-		// Clear stale SL IDs before reattaching (old SLs were already cancelled).
+		// Clear stale SL and TP IDs before reattaching (old SLs/TPs were already cancelled).
 		_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
 			fresh.LongSLOrderID = ""
 			fresh.ShortSLOrderID = ""
+			fresh.LongTPOrderID = ""
+			fresh.ShortTPOrderID = ""
 			return true
 		})
 		pos.LongSLOrderID = ""
 		pos.ShortSLOrderID = ""
+		pos.LongTPOrderID = ""
+		pos.ShortTPOrderID = ""
 		// Reattach SL protection for the remaining position.
 		e.attachStopLosses(pos)
 		e.api.BroadcastPositionUpdate(pos)
@@ -2039,10 +2047,20 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 	// Set leverage and margin mode on new exchange.
 	leverage := strconv.Itoa(e.cfg.Leverage)
 	if err := newExch.SetLeverage(opp.Symbol, leverage, legSide); err != nil {
-		e.log.Warn("rotation: set leverage on %s: %v", newExchName, err)
+		if isAlreadySetError(err) {
+			e.log.Debug("rotation: set leverage on %s: %v (already set)", newExchName, err)
+		} else {
+			e.log.Error("rotation: set leverage on %s failed: %v — aborting rotation", newExchName, err)
+			return
+		}
 	}
 	if err := newExch.SetMarginMode(opp.Symbol, "cross"); err != nil {
-		e.log.Warn("rotation: set margin mode on %s: %v", newExchName, err)
+		if isAlreadySetError(err) {
+			e.log.Debug("rotation: set margin mode on %s: %v (already set)", newExchName, err)
+		} else {
+			e.log.Error("rotation: set margin mode on %s failed: %v — aborting rotation", newExchName, err)
+			return
+		}
 	}
 
 	// Ensure both exchanges are subscribed to the symbol's price stream.
@@ -2144,14 +2162,20 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 	}
 	if openFilled*refPrice < minNotionalUSDT {
 		e.log.Warn("rotation: open fill too small (%.2f USDT), closing it back", openFilled*refPrice)
-		e.closeFullyWithRetry(newExch, pos.Symbol, closeSide, openFilled)
+		rem := e.closeFullyWithRetry(newExch, pos.Symbol, closeSide, openFilled)
+		if rem > 0 {
+			e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", pos.Symbol, closeSide, rem, newExch.Name())
+		}
 		return
 	}
 
 	// Must have filled enough to be worth keeping (at least 50% of target).
 	if openFilled < closeSize*0.5 {
 		e.log.Warn("rotation: open fill %.6f < 50%% of target %.6f, closing it back", openFilled, closeSize)
-		e.closeFullyWithRetry(newExch, pos.Symbol, closeSide, openFilled)
+		rem := e.closeFullyWithRetry(newExch, pos.Symbol, closeSide, openFilled)
+		if rem > 0 {
+			e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", pos.Symbol, closeSide, rem, newExch.Name())
+		}
 		return
 	}
 
@@ -2165,7 +2189,10 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 	// Close old leg with verified retry (up to 10 attempts).
 	// Only proceed with position update if old leg is confirmed closed.
 	e.log.Info("rotation step 2: close %s on %s size=%s (verified retry)", closeSide, oldExchName, closeSizeStr)
-	e.closeFullyWithRetry(oldExch, pos.Symbol, closeSide, closeQty)
+	rem := e.closeFullyWithRetry(oldExch, pos.Symbol, closeSide, closeQty)
+	if rem > 0 {
+		e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", pos.Symbol, closeSide, rem, oldExch.Name())
+	}
 
 	// Verify old leg is actually flat before updating position record.
 	time.Sleep(500 * time.Millisecond)
@@ -2178,7 +2205,10 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 		// Verification failed — cannot confirm flat. Abort rotation, close new leg back.
 		e.log.Error("CRITICAL: rotation close for %s — verification failed on %s (err=%v), aborting. Closing new leg back.",
 			pos.ID, oldExchName, verifyErr)
-		e.closeFullyWithRetry(newExch, pos.Symbol, closeSide, openFilled)
+		rem := e.closeFullyWithRetry(newExch, pos.Symbol, closeSide, openFilled)
+		if rem > 0 {
+			e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", pos.Symbol, closeSide, rem, newExch.Name())
+		}
 		return
 	}
 	if remainingOnExch > 0 {
@@ -2193,7 +2223,10 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 			}
 			return true
 		})
-		e.closeFullyWithRetry(newExch, pos.Symbol, closeSide, openFilled)
+		rem := e.closeFullyWithRetry(newExch, pos.Symbol, closeSide, openFilled)
+		if rem > 0 {
+			e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", pos.Symbol, closeSide, rem, newExch.Name())
+		}
 		return
 	}
 	// Update position record atomically.
@@ -2378,6 +2411,21 @@ func (e *Engine) updateRotationStopLoss(pos *models.ArbitragePosition, legSide, 
 		}
 	}
 
+	// Cancel old TP on the rotated leg's old exchange.
+	if legSide == "short" && pos.ShortTPOrderID != "" {
+		if exch, ok := e.exchanges[oldExchName]; ok {
+			if err := exch.CancelTakeProfit(pos.Symbol, pos.ShortTPOrderID); err != nil {
+				e.log.Warn("rotation: cancel old short TP %s on %s: %v", pos.ShortTPOrderID, oldExchName, err)
+			}
+		}
+	} else if legSide == "long" && pos.LongTPOrderID != "" {
+		if exch, ok := e.exchanges[oldExchName]; ok {
+			if err := exch.CancelTakeProfit(pos.Symbol, pos.LongTPOrderID); err != nil {
+				e.log.Warn("rotation: cancel old long TP %s on %s: %v", pos.LongTPOrderID, oldExchName, err)
+			}
+		}
+	}
+
 	// Place new SL on the new exchange.
 	newExch, ok := e.exchanges[newExchName]
 	if !ok || newEntry <= 0 {
@@ -2409,19 +2457,51 @@ func (e *Engine) updateRotationStopLoss(pos *models.ArbitragePosition, legSide, 
 	e.log.Info("rotation: SL placed on %s %s: %s trigger=%s (entry=%.4f, %.1f%% distance)",
 		newExchName, pos.Symbol, side, tp, newEntry, distance*100)
 
-	// Persist new SL order ID.
+	// Place new TP on the rotated leg.
+	// TP on each leg triggers at the opposite leg's SL level.
+	var tpOID string
+	var tpTriggerPrice float64
+	if legSide == "short" && pos.LongEntry > 0 {
+		// Short TP triggers when price drops to long's SL level → buy to close.
+		tpTriggerPrice = pos.LongEntry * (1 - distance)
+	} else if legSide == "long" && pos.ShortEntry > 0 {
+		// Long TP triggers when price rises to short's SL level → sell to close.
+		tpTriggerPrice = pos.ShortEntry * (1 + distance)
+	}
+	if tpTriggerPrice > 0 {
+		tpTP := e.formatPrice(newExchName, pos.Symbol, tpTriggerPrice)
+		var tpErr error
+		tpOID, tpErr = newExch.PlaceTakeProfit(exchange.TakeProfitParams{
+			Symbol:       pos.Symbol,
+			Side:         side,
+			Size:         e.formatSize(newExchName, pos.Symbol, newSize),
+			TriggerPrice: tpTP,
+		})
+		if tpErr != nil {
+			e.log.Error("rotation: TP placement failed on %s %s (%s): %v", newExchName, pos.Symbol, legSide, tpErr)
+		} else {
+			e.log.Info("rotation: TP placed on %s %s: %s trigger=%s (opposite leg SL level)",
+				newExchName, pos.Symbol, side, tpTP)
+		}
+	}
+
+	// Persist new SL and TP order IDs.
 	_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
 		if legSide == "short" {
 			fresh.ShortSLOrderID = oid
+			fresh.ShortTPOrderID = tpOID
 		} else {
 			fresh.LongSLOrderID = oid
+			fresh.LongTPOrderID = tpOID
 		}
 		return true
 	})
 	if legSide == "short" {
 		pos.ShortSLOrderID = oid
+		pos.ShortTPOrderID = tpOID
 	} else {
 		pos.LongSLOrderID = oid
+		pos.LongTPOrderID = tpOID
 	}
 
 	// Register new SL in slIndex for instant fill detection (mirrors attachStopLosses).
@@ -2463,8 +2543,33 @@ func (e *Engine) closeOldLegMarket(exch exchange.Exchange, symbol string, side e
 // closeFullyWithRetry places repeated reduce-only market IOC orders until
 // the full quantity is closed or max retries exhausted. Single closeLeg calls
 // can partially fill on exchanges with low liquidity, leaving orphan positions.
-func (e *Engine) closeFullyWithRetry(exch exchange.Exchange, symbol string, side exchange.Side, totalQty float64) {
-	e.closeFullyWithRetryPriced(context.Background(), exch, symbol, side, totalQty)
+func (e *Engine) closeFullyWithRetry(exch exchange.Exchange, symbol string, side exchange.Side, totalQty float64) float64 {
+	filled, _ := e.closeFullyWithRetryPriced(context.Background(), exch, symbol, side, totalQty)
+	rem := totalQty - filled
+	if rem < 0 {
+		rem = 0
+	}
+	// Treat sub-minSize remainder as dust (same logic as inner function)
+	if rem > 0 {
+		var minSize float64
+		if e.contracts != nil {
+			if exContracts, ok := e.contracts[exch.Name()]; ok {
+				if ci, ok := exContracts[symbol]; ok {
+					minSize = ci.MinSize
+				}
+			}
+		}
+		if minSize > 0 && rem < minSize {
+			rem = 0
+		}
+		// Also check if formatSize would round to zero
+		if rem > 0 {
+			if sizeF, _ := strconv.ParseFloat(e.formatSize(exch.Name(), symbol, rem), 64); sizeF <= 0 {
+				rem = 0
+			}
+		}
+	}
+	return rem
 }
 
 // closeFullyWithRetryPriced retries market IOC up to 10 times. Returns total filled and VWAP avg price.

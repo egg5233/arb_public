@@ -109,6 +109,10 @@ func (s *Server) Start() {
 	// Permissions
 	mux.HandleFunc("/api/permissions", s.cors(s.authMiddleware(s.handleGetPermissions)))
 
+	// TradFi-Perps agreement
+	mux.HandleFunc("/api/tradfi-status", s.cors(s.authMiddleware(s.handleTradFiStatus)))
+	mux.HandleFunc("/api/sign-tradfi", s.cors(s.authMiddleware(s.handleSignTradFi)))
+
 	// Spot-futures routes
 	mux.HandleFunc("/api/spot/positions", s.cors(s.authMiddleware(s.handleGetSpotPositions)))
 	mux.HandleFunc("/api/spot/history", s.cors(s.authMiddleware(s.handleGetSpotHistory)))

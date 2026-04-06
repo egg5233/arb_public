@@ -79,13 +79,29 @@ func main() {
 	}
 	log.Info("Active exchanges: %d", len(exchanges))
 
-	// Detect Gate.io unified account mode.
+	// Detect unified/portfolio margin account modes.
 	if ga, ok := exchanges["gateio"].(*gateio.Adapter); ok {
 		ga.DetectUnifiedMode()
 		if ga.IsUnified() {
 			log.Info("Gate.io account mode: unified")
 		} else {
 			log.Info("Gate.io account mode: classic (fallback)")
+		}
+	}
+	if oa, ok := exchanges["okx"].(*okx.Adapter); ok {
+		oa.DetectUnifiedMode()
+		if oa.IsUnified() {
+			log.Info("OKX account mode: unified (level 3/4)")
+		} else {
+			log.Info("OKX account mode: standard (level 1/2)")
+		}
+	}
+	if ba, ok := exchanges["binance"].(*binance.Adapter); ok {
+		ba.DetectPortfolioMargin()
+		if ba.IsUnified() {
+			log.Info("Binance account mode: Portfolio Margin (unified)")
+		} else {
+			log.Info("Binance account mode: classic")
 		}
 	}
 

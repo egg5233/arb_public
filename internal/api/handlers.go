@@ -466,6 +466,7 @@ type configRiskResponse struct {
 	MarginL5Threshold           float64 `json:"margin_l5_threshold"`
 	L4ReduceFraction            float64 `json:"l4_reduce_fraction"`
 	MarginSafetyMultiplier      float64 `json:"margin_safety_multiplier"`
+	EntryMarginHeadroom         float64 `json:"entry_margin_headroom"`
 	RiskMonitorIntervalSec      int     `json:"risk_monitor_interval_sec"`
 	EnableLiqTrendTracking      bool    `json:"enable_liq_trend_tracking"`
 	LiqProjectionMinutes        int     `json:"liq_projection_minutes"`
@@ -590,6 +591,7 @@ func (s *Server) buildConfigResponse() configResponse {
 			MarginL5Threshold:           s.cfg.MarginL5Threshold,
 			L4ReduceFraction:            s.cfg.L4ReduceFraction,
 			MarginSafetyMultiplier:      s.cfg.MarginSafetyMultiplier,
+			EntryMarginHeadroom:         s.cfg.EntryMarginHeadroom,
 			RiskMonitorIntervalSec:      s.cfg.RiskMonitorIntervalSec,
 			EnableLiqTrendTracking:      s.cfg.EnableLiqTrendTracking,
 			LiqProjectionMinutes:        s.cfg.LiqProjectionMinutes,
@@ -908,6 +910,7 @@ type riskUpdate struct {
 	MarginL5Threshold           *float64 `json:"margin_l5_threshold"`
 	L4ReduceFraction            *float64 `json:"l4_reduce_fraction"`
 	MarginSafetyMultiplier      *float64 `json:"margin_safety_multiplier"`
+	EntryMarginHeadroom         *float64 `json:"entry_margin_headroom"`
 	RiskMonitorIntervalSec      *int     `json:"risk_monitor_interval_sec"`
 	EnableLiqTrendTracking      *bool    `json:"enable_liq_trend_tracking"`
 	LiqProjectionMinutes        *int     `json:"liq_projection_minutes"`
@@ -1126,6 +1129,9 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if rk.MarginSafetyMultiplier != nil && *rk.MarginSafetyMultiplier >= 1.0 {
 			s.cfg.MarginSafetyMultiplier = *rk.MarginSafetyMultiplier
+		}
+		if rk.EntryMarginHeadroom != nil && *rk.EntryMarginHeadroom > 0 && *rk.EntryMarginHeadroom <= 1.0 {
+			s.cfg.EntryMarginHeadroom = *rk.EntryMarginHeadroom
 		}
 		if rk.RiskMonitorIntervalSec != nil && *rk.RiskMonitorIntervalSec > 0 {
 			s.cfg.RiskMonitorIntervalSec = *rk.RiskMonitorIntervalSec
@@ -2321,4 +2327,55 @@ func readFileString(name string) string {
 		return ""
 	}
 	return string(data)
+}
+
+// handleTradFiStatus returns whether the Binance TradFi-Perps agreement is signed.
+func (s *Server) handleTradFiStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	signed := true
+	if _, hasBinance := s.exchanges["binance"]; hasBinance {
+		s.cfg.RLock()
+		signed = s.cfg.TradFiSigned
+		s.cfg.RUnlock()
+	}
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: map[string]bool{
+		"signed": signed,
+	}})
+}
+
+// handleSignTradFi signs the Binance TradFi-Perps agreement via API.
+func (s *Server) handleSignTradFi(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	exc, ok := s.exchanges["binance"]
+	if !ok {
+		writeJSON(w, http.StatusOK, Response{OK: true, Data: map[string]bool{"signed": true}})
+		return
+	}
+	signer, ok := exc.(exchange.TradFiSigner)
+	if !ok {
+		writeJSON(w, http.StatusOK, Response{OK: true, Data: map[string]bool{"signed": true}})
+		return
+	}
+	if err := signer.SignTradFi(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, Response{Error: fmt.Sprintf("Binance TradFi sign failed: %v", err)})
+		return
+	}
+	s.cfg.Lock()
+	s.cfg.TradFiSigned = true
+	err := s.cfg.SaveJSON()
+	if err != nil {
+		s.cfg.TradFiSigned = false // rollback in-memory on persist failure
+		s.cfg.Unlock()
+		s.log.Error("save tradfi_signed to config.json: %v", err)
+		writeJSON(w, http.StatusInternalServerError, Response{Error: "signed on Binance but failed to persist config"})
+		return
+	}
+	s.cfg.Unlock()
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: map[string]bool{"signed": true}})
 }

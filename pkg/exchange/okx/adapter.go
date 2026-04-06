@@ -66,6 +66,8 @@ type Adapter struct {
 	orderCallback        func(exchange.OrderUpdate)
 	wsMetricsCallback    exchange.WSMetricsCallback
 	orderMetricsCallback exchange.OrderMetricsCallback
+
+	isUnified bool // true when account level is 3 (multi-currency margin) or 4 (portfolio margin)
 }
 
 func (a *Adapter) SetMetricsCallback(fn exchange.MetricsCallback) {
@@ -146,6 +148,30 @@ func NewAdapter(cfg exchange.ExchangeConfig) *Adapter {
 }
 
 func (a *Adapter) Name() string { return "okx" }
+
+// IsUnified returns true when the OKX account is multi-currency margin (level 3)
+// or portfolio margin (level 4).
+func (a *Adapter) IsUnified() bool { return a.isUnified }
+
+// DetectUnifiedMode calls GET /api/v5/account/config to read the account level.
+// Levels 3 (multi-currency margin) and 4 (portfolio margin) are unified.
+func (a *Adapter) DetectUnifiedMode() {
+	data, err := a.client.Get("/api/v5/account/config", nil)
+	if err != nil {
+		return
+	}
+	var resp struct {
+		Data []struct {
+			AcctLv string `json:"acctLv"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(data, &resp) == nil && len(resp.Data) > 0 {
+		lv := resp.Data[0].AcctLv
+		if lv == "3" || lv == "4" {
+			a.isUnified = true
+		}
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Symbol mapping
@@ -1382,6 +1408,59 @@ func (a *Adapter) PlaceStopLoss(params exchange.StopLossParams) (string, error) 
 		return "", fmt.Errorf("PlaceStopLoss: code=%s msg=%s", resp[0].SCode, resp[0].SMsg)
 	}
 	return resp[0].AlgoID, nil
+}
+
+// PlaceTakeProfit places a take-profit algo order on OKX.
+func (a *Adapter) PlaceTakeProfit(params exchange.TakeProfitParams) (string, error) {
+	instID := toOKXInstID(params.Symbol)
+
+	// Convert base units to contracts.
+	sz := params.Size
+	ctVal := a.getCtVal(params.Symbol)
+	if ctVal != 1 {
+		sizeF, err := strconv.ParseFloat(params.Size, 64)
+		if err == nil {
+			contracts := math.Round(sizeF / ctVal)
+			sz = strconv.FormatFloat(contracts, 'f', 0, 64)
+		}
+	}
+
+	body := map[string]interface{}{
+		"instId":      instID,
+		"tdMode":      "cross",
+		"side":        string(params.Side),
+		"ordType":     "conditional",
+		"sz":          sz,
+		"tpTriggerPx": params.TriggerPrice,
+		"tpOrdPx":     "-1", // market price
+		"reduceOnly":  true,
+	}
+
+	data, err := a.client.Post("/api/v5/trade/order-algo", body)
+	if err != nil {
+		return "", fmt.Errorf("PlaceTakeProfit: %w", err)
+	}
+
+	var resp []struct {
+		AlgoID string `json:"algoId"`
+		SCode  string `json:"sCode"`
+		SMsg   string `json:"sMsg"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return "", fmt.Errorf("PlaceTakeProfit unmarshal: %w", err)
+	}
+	if len(resp) == 0 {
+		return "", fmt.Errorf("PlaceTakeProfit: empty response")
+	}
+	if resp[0].SCode != "0" {
+		return "", fmt.Errorf("PlaceTakeProfit: code=%s msg=%s", resp[0].SCode, resp[0].SMsg)
+	}
+	return resp[0].AlgoID, nil
+}
+
+// CancelTakeProfit cancels an algo take-profit order on OKX.
+func (a *Adapter) CancelTakeProfit(symbol, orderID string) error {
+	return a.CancelStopLoss(symbol, orderID)
 }
 
 // CancelStopLoss cancels an algo order (stop-loss) on OKX.

@@ -137,6 +137,52 @@ All notable changes to this project will be documented in this file.
 - Manual CapitalPerLeg > 0 always takes precedence over derived value
 - Redis spot opportunities cache key: `arb:spot_opportunities_cache` (no TTL — stale results shown until next scan)
 
+## [0.27.3] - 2026-04-06
+
+### Added
+- **Entry balance summary log** — `[entry] balances:` line now printed at each entry scan showing per-exchange total/frozen/available + spot balance; spot balances prefetched in parallel goroutines
+
+### Fixed
+- **TransferToFutures comment** — corrected to list all 6 exchanges' actual behavior (OKX/Bybit are real transfers, not no-ops)
+- **ensureFuturesBalance comment** — corrected to reflect all 6 exchanges are supported
+
+## [0.27.2] - 2026-04-06
+
+### Fixed
+- **Reliable scan delivery** — scanner now blocks until engine consumes ScanResult instead of silently dropping scans; empty scans also clear stale opportunity cache and send empty ScanResult so scheduled handlers (exit, rotate, rebalance) always fire
+- **retrySecondLeg formatSize** — use exchange-aware `formatSize` instead of hardcoded 6-decimal precision, preventing order rejections on exchanges with strict step-size rules (Gate.io, OKX)
+- **closeFullyWithRetry orphan detection** — all 27 callers now check return value; rollback/abort paths log ORPHAN EXPOSURE alerts when close fails; dust paths preserve correct VWAP without inflating totalFilled
+- **Leverage/margin-mode setup failures** — abort entry on real SetLeverage/SetMarginMode failures instead of warn-and-continue; tolerate "already set" responses via isAlreadySetError helper
+- **Distributed lock safety** — entry scan and manual open now use AcquireOwnedLock with compare-and-delete release, preventing accidental lock deletion after TTL expiry
+- **Orderbook staleness check** — prefetch and risk approval now reject cached orderbooks older than 5 seconds, with REST fallback for stale WS depth data
+- **Allocator commit race** — Commit now watches both allocatorVersionKey and reservation key; uses separate newTotals map to prevent over-counting on retry
+
+### Added
+- **Auto-size spot sweep** — when CapitalPerLeg=0 (auto-size), ensureFuturesBalance now sweeps all available spot/funding into futures/trading on all 6 exchanges to maximize position sizing; transfer amount floored to prevent rounding above available balance
+
+### Changed
+- Updated scan schedule comments to match actual config defaults (:20 rebalance, :30 exit, :35 rotate, :40 entry)
+- Removed unused `remainingSlots` variable from risk approval
+
+## [0.27.1a] - 2026-04-06
+
+### Added
+- **Binance TradFi-Perps agreement signing** — dashboard banner notifies when Binance TradFi agreement is unsigned; one-click signing via `POST /fapi/v1/stock/contract` with config persistence
+- **TradFiSigner interface** — optional exchange interface for agreement signing, follows existing PermissionChecker pattern
+- **Dashboard TradFi banner** — orange banner with sign button, session-scoped dismiss, runtime Binance presence check
+
+## [0.27.0a] - 2026-04-05
+
+### Added
+- **Cross-exchange transfer comparison in allocator** — solver now considers pairs requiring cross-exchange fund transfers instead of silently skipping them. Pairs are admitted when `firstSettlementProfit > transferFee`, with baseValue adjusted by transfer fee for fair comparison
+- **Dynamic transfer thresholds** — replaced all hardcoded `$10` minimum transfer amounts with fee-based dynamic checks (`netAmount > fee`, `donorSurplus > 2*fee`)
+- **Donor capacity validation** — `cheapestTransferFee` now verifies donor has actual surplus (using solver's current capacity + margin health cap) before selecting as viable donor
+
+### Fixed
+- **Bitget balance accuracy** — use `crossedMaxAvailable` (actual openable amount in cross margin mode) instead of generic `available` field, preventing "order amount exceeds balance" errors when margin tiers reduce effective capacity
+- **Double-counting prevention** — `allocatorChoiceValue` tracks `xferFeeDeducted` per choice to avoid penalizing transfer pairs twice (once in solver, once in final scoring)
+- **Greedy seed logging** — added reject logging for transfer pairs in `greedyAllocatorSeed` to match solver's observability
+
 ## [0.26.1] - 2026-04-04
 
 ### Added

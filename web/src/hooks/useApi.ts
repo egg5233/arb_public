@@ -268,6 +268,14 @@ export function useApi() {
     return request<{ strategies: StrategySummary[]; exchange_metrics: ExchangeMetric[] }>(`/api/analytics/summary?from=${from}&to=${to}`);
   }, []);
 
+  const getTradFiStatus = useCallback(() => {
+    return request<{ signed: boolean }>('/api/tradfi-status');
+  }, []);
+
+  const signTradFi = useCallback(() => {
+    return request<{ signed: boolean }>('/api/sign-tradfi', { method: 'POST' });
+  }, []);
+
   const logout = useCallback(() => {
     clearToken();
     _setToken(null);
@@ -312,5 +320,7 @@ export function useApi() {
     getAnalyticsSummary,
     batchCheckGap,
     batchCheckBorrowable,
+    getTradFiStatus,
+    signTradFi,
   };
 }

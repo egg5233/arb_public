@@ -18,8 +18,9 @@ var _ models.RiskChecker = (*Manager)(nil)
 // PrefetchCache holds pre-fetched exchange data (balances, orderbooks) to avoid
 // redundant API calls when approving multiple opportunities in a batch.
 type PrefetchCache struct {
-	Balances   map[string]*exchange.Balance   // exchange name -> futures balance
-	Orderbooks map[string]*exchange.Orderbook // "exchange:symbol" -> orderbook
+	Balances               map[string]*exchange.Balance   // exchange name -> futures balance
+	Orderbooks             map[string]*exchange.Orderbook // "exchange:symbol" -> orderbook
+	TransferablePerExchange map[string]float64             // exchange name -> max USDT receivable from other exchanges
 }
 
 // Manager performs pre-trade risk assessment before entering positions.
@@ -101,7 +102,7 @@ func (m *Manager) SimulateApproval(opp models.Opportunity, reserved map[string]f
 // alt, when non-nil, overrides the rate/spread/cost fields so that downstream
 // checks (gap recovery, spread stability) use the alternative pair's values
 // instead of the primary pair's.
-func (m *Manager) SimulateApprovalForPair(opp models.Opportunity, longExch, shortExch string, reserved map[string]float64, alt *models.AlternativePair) (*models.RiskApproval, error) {
+func (m *Manager) SimulateApprovalForPair(opp models.Opportunity, longExch, shortExch string, reserved map[string]float64, alt *models.AlternativePair, cache *PrefetchCache) (*models.RiskApproval, error) {
 	pairOpp := opp
 	pairOpp.LongExchange = longExch
 	pairOpp.ShortExchange = shortExch
@@ -113,7 +114,7 @@ func (m *Manager) SimulateApprovalForPair(opp models.Opportunity, longExch, shor
 		pairOpp.Score = alt.Score
 		pairOpp.IntervalHours = alt.IntervalHours
 	}
-	return m.approveInternal(pairOpp, reserved, true, nil)
+	return m.approveInternal(pairOpp, reserved, true, cache)
 }
 
 // approveInternal is the shared implementation for Approve and ApproveWithReserved.
@@ -161,10 +162,21 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	}
 
 	needed := m.effectiveCapitalPerLeg()
-	if needed > 0 && !dryRun {
-		bufferedNeed := needed * m.cfg.MarginSafetyMultiplier
-		m.ensureFuturesBalance(opp.LongExchange, longExch, longBal, bufferedNeed)
-		m.ensureFuturesBalance(opp.ShortExchange, shortExch, shortBal, bufferedNeed)
+	if !dryRun {
+		if needed > 0 {
+			bufferedNeed := needed * m.cfg.MarginSafetyMultiplier
+			m.ensureFuturesBalance(opp.LongExchange, longExch, longBal, bufferedNeed)
+			m.ensureFuturesBalance(opp.ShortExchange, shortExch, shortBal, bufferedNeed)
+		} else {
+			// Auto-size: sweep all available spot into futures to maximize position sizing.
+			// On split-account exchanges (Binance, Bitget, Gate.io), spot balance
+			// is invisible to futures sizing — transfer it before approval.
+			// ensureFuturesBalance transfers min(deficit, spotAvailable), so passing
+			// a large 'needed' effectively sweeps all spot into futures.
+			const sweepTarget = 1e9
+			m.ensureFuturesBalance(opp.LongExchange, longExch, longBal, sweepTarget)
+			m.ensureFuturesBalance(opp.ShortExchange, shortExch, shortBal, sweepTarget)
+		}
 		// Re-fetch after potential transfer; keep old balance on error.
 		// Always re-fetch live here since ensureFuturesBalance has side effects.
 		if lb, err := longExch.GetFuturesBalance(); err == nil {
@@ -182,9 +194,14 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		}
 	}
 
-	// In simulate mode, account for spot balance that could be transferred to futures.
-	// This matches what ensureFuturesBalance would do without actually transferring.
+	// In simulate mode, account for spot balance and cross-exchange transferable
+	// funds. We clone the balance structs first to avoid cumulative mutations
+	// when the same exchange appears in multiple candidate evaluations.
 	if dryRun && needed > 0 {
+		longClone := *longBal
+		shortClone := *shortBal
+		longBal = &longClone
+		shortBal = &shortClone
 		for _, pair := range []struct {
 			name string
 			exch exchange.Exchange
@@ -198,6 +215,52 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 				if spotBal, err := pair.exch.GetSpotBalance(); err == nil && spotBal.Available > 0 {
 					pair.bal.Available += spotBal.Available
 					pair.bal.Total += spotBal.Available
+				}
+			}
+			// Add cross-exchange transferable surplus (allocator planning only).
+			// Trigger when EITHER margin buffer is insufficient OR post-trade
+			// ratio would exceed L4. Only inflate by the deficit needed.
+			if cache != nil && cache.TransferablePerExchange != nil {
+				// Check if post-trade ratio would exceed L4 even with sufficient margin buffer.
+				margin := needed
+				wouldExceedL4 := false
+				if pair.bal.Total > 0 {
+					postAvail := pair.bal.Available - margin
+					if postAvail < 0 {
+						postAvail = 0
+					}
+					postRatio := 1 - postAvail/pair.bal.Total
+					wouldExceedL4 = postRatio >= m.cfg.MarginL4Threshold
+				}
+
+				if pair.bal.Available < bufferedNeed || wouldExceedL4 {
+					if topUp, ok := cache.TransferablePerExchange[pair.name]; ok && topUp > 0 {
+						// Compute margin buffer deficit.
+						deficit := bufferedNeed - pair.bal.Available
+						if deficit < 0 {
+							deficit = 0
+						}
+
+						// Also compute the post-trade ratio deficit: how much extra
+						// is needed so that post-trade ratio stays below L4.
+						targetRatio := m.cfg.MarginL4Threshold - 0.005 // marginEpsilon: avoid hitting L4 boundary
+						freeTarget := 1.0 - targetRatio
+						if freeTarget > 0 && pair.bal.Total > 0 {
+							ratioDeficit := (freeTarget*pair.bal.Total - pair.bal.Available + margin) / targetRatio
+							if ratioDeficit > deficit {
+								deficit = ratioDeficit
+							}
+						}
+
+						actualTopUp := deficit
+						if actualTopUp > topUp {
+							actualTopUp = topUp
+						}
+						if actualTopUp > 0 {
+							pair.bal.Available += actualTopUp
+							pair.bal.Total += actualTopUp
+						}
+					}
 				}
 			}
 		}
@@ -232,7 +295,12 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	// Get a reference price from the long exchange orderbook (use cache if available).
 	var longOB *exchange.Orderbook
 	if cache != nil && cache.Orderbooks != nil {
-		longOB = cache.Orderbooks[opp.LongExchange+":"+opp.Symbol]
+		if cached := cache.Orderbooks[opp.LongExchange+":"+opp.Symbol]; cached != nil {
+			if cached.Time.IsZero() || time.Since(cached.Time) < 5*time.Second {
+				longOB = cached
+			}
+			// else: stale, fall through to live fetch
+		}
 	}
 	if longOB == nil {
 		var err2 error
@@ -247,7 +315,6 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	midPrice := (longOB.Bids[0].Price + longOB.Asks[0].Price) / 2.0
 
 	// Calculate position size (pass midPrice to avoid redundant orderbook fetch).
-	remainingSlots := m.cfg.MaxPositions - len(active)
 	size := m.calculateSizeWithPrice(opp, balances, midPrice)
 	if size <= 0 {
 		return &models.RiskApproval{Approved: false, Reason: "insufficient capital for minimum position size"}, nil
@@ -291,7 +358,12 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	// d. Orderbook depth / slippage check on both exchanges (use cache if available).
 	var shortOB *exchange.Orderbook
 	if cache != nil && cache.Orderbooks != nil {
-		shortOB = cache.Orderbooks[opp.ShortExchange+":"+opp.Symbol]
+		if cached := cache.Orderbooks[opp.ShortExchange+":"+opp.Symbol]; cached != nil {
+			if cached.Time.IsZero() || time.Since(cached.Time) < 5*time.Second {
+				shortOB = cached
+			}
+			// else: stale, fall through to live fetch
+		}
 	}
 	if shortOB == nil {
 		var err2 error
@@ -476,8 +548,6 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	if IsExchangeOverexposed(opp.ShortExchange, active) {
 		m.log.Warn("exchange %s has >60%% of active positions (short leg)", opp.ShortExchange)
 	}
-
-	_ = remainingSlots
 
 	m.log.Info("approved %s: size=%.6f price=%.2f spread=%.2f bps/h gapBps=%.1f", opp.Symbol, size, midPrice, opp.Spread, gapBps)
 	return &models.RiskApproval{
@@ -695,8 +765,10 @@ func (m *Manager) calculateSizeWithPrice(opp models.Opportunity, balances map[st
 }
 
 // ensureFuturesBalance checks if the futures balance is below the needed amount
-// and transfers from spot if possible. Only effective on split-account exchanges
-// (Binance, Bitget, Gate.io); no-op on unified accounts (OKX, Bybit).
+// and transfers from spot/funding if possible. Effective on all 6 exchanges:
+// Binance (spot→futures), Bybit (FUND→UNIFIED), Gate.io (spot→futures or no-op
+// if unified), Bitget (spot→usdt_futures), OKX (funding→trading), BingX (FUND→PFUTURES).
+// GetSpotBalance returns the source bucket (spot/FUND/funding), not unified total.
 func (m *Manager) ensureFuturesBalance(exchName string, exc exchange.Exchange, futBal *exchange.Balance, needed float64) {
 	if futBal.Available >= needed {
 		return
@@ -719,6 +791,8 @@ func (m *Manager) ensureFuturesBalance(exchName string, exc exchange.Exchange, f
 	if transferAmt > spotBal.Available {
 		transferAmt = spotBal.Available
 	}
+	// Floor to 4 decimal places to prevent rounding above spotAvailable.
+	transferAmt = math.Floor(transferAmt*10000) / 10000
 
 	amtStr := fmt.Sprintf("%.4f", transferAmt)
 	m.log.Info("auto-transfer %s USDT spot→futures on %s (futures=%.2f, needed=%.2f)", amtStr, exchName, futBal.Available, needed)

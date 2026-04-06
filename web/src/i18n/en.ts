@@ -257,6 +257,7 @@ const en = {
   'cfg.field.l5EmergencyClose': 'L5 Emergency Close',
   'cfg.field.l4ReduceFraction': 'L4 Reduce Fraction',
   'cfg.field.marginSafetyMultiplier': 'Margin Safety Multiplier',
+  'cfg.field.entryMarginHeadroom': 'Entry Margin Headroom',
   'cfg.field.enableCapitalAllocator': 'Enable Capital Allocator',
   'cfg.field.enablePoolAllocator': 'Enable Pool Allocator',
   'cfg.field.enableExchangeHealthScoring': 'Exchange Health Scoring',
@@ -363,6 +364,7 @@ const en = {
   'cfg.desc.l5EmergencyClose': 'Margin ratio (0-1) that triggers emergency close of all positions on the exchange',
   'cfg.desc.l4ReduceFraction': 'Fraction of position to reduce when L4 threshold is hit. e.g. 0.5 = reduce by 50%',
   'cfg.desc.marginSafetyMultiplier': 'Required margin multiplier for opening positions. 2.0 = need 2× margin to prevent immediate L5 emergency close after fees',
+  'cfg.desc.entryMarginHeadroom': 'Max post-trade ratio as fraction of L3 threshold. 0.80 = ratio must stay below L3×0.80 after opening. Lower = more conservative',
   'cfg.desc.enableCapitalAllocator': 'Enable cross-strategy capital budgeting. Default OFF so production can stage the allocator safely.',
   'cfg.desc.enablePoolAllocator': 'Enable the rebalance pool allocator that ranks multiple exchange pairs per symbol and chooses a transfer-feasible set. Default OFF for staged rollout.',
   'cfg.desc.enableExchangeHealthScoring': 'Enable the exchange health gate that blends API latency, public WS uptime, and order fill rate. Default OFF so production can observe scores before blocking entries.',
@@ -606,6 +608,12 @@ const en = {
   'update.failed': 'Update failed',
   'update.checking': 'Checking for updates...',
   'update.upToDate': 'Already up to date',
+
+  // TradFi
+  'tradfi.banner': 'Binance TradFi-Perps agreement not signed — commodity contracts cannot trade',
+  'tradfi.sign': 'Sign Now',
+  'tradfi.signed': 'Agreement signed successfully',
+  'tradfi.error': 'Failed to sign TradFi agreement',
 
   // Permissions
   'perm.title': 'API Permissions',

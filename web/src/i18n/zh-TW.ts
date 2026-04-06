@@ -259,6 +259,7 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.field.l5EmergencyClose': 'L5 緊急平倉',
   'cfg.field.l4ReduceFraction': 'L4 減倉比例',
   'cfg.field.marginSafetyMultiplier': '開倉保證金安全倍數',
+  'cfg.field.entryMarginHeadroom': '開倉健康度上限',
   'cfg.field.enableCapitalAllocator': '啟用資金分配器',
   'cfg.field.enableExchangeHealthScoring': '交易所健康評分',
   'cfg.field.maxTotalExposureUSDT': '總曝險上限',
@@ -362,6 +363,7 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.desc.l5EmergencyClose': '超過此全倉維持率时触发 !!全部紧急平倉!! 以防止帳戶爆倉（0-1）',
   'cfg.desc.l4ReduceFraction': '達到L4閾值時減倉的比例。例如0.5 = 減倉50%',
   'cfg.desc.marginSafetyMultiplier': '開倉時要求的保證金倍數。2.0 = 需要2倍保證金才允許開倉，防止開倉後立即觸發風控',
+  'cfg.desc.entryMarginHeadroom': '開倉後允許的最大健康度比例（L3的倍數）。0.80 = 開倉後 ratio 不超過 L3×0.80。越低越保守',
   'cfg.desc.enableCapitalAllocator': '啟用跨策略共享資金預算。預設關閉，方便在生產環境先安全上線再逐步打開。',
   'cfg.desc.enableExchangeHealthScoring': '啟用交易所健康分數進場閘門，綜合 API 延遲、公開 WS 穩定度與訂單成交率。預設關閉，方便先觀察分數再決定是否阻擋進場。',
   'cfg.desc.maxTotalExposureUSDT': 'Perp-Perp 與 Spot-Futures 共用的總 USDT 預算。0 = 不啟用 allocator 上限。',
@@ -602,6 +604,12 @@ const zhTW: Record<TranslationKey, string> = {
   'update.failed': '更新失敗',
   'update.checking': '正在檢查更新...',
   'update.upToDate': '已是最新版本',
+
+  // TradFi
+  'tradfi.banner': 'Binance TradFi-Perps 協議未簽署，商品合約無法交易',
+  'tradfi.sign': '立即簽署',
+  'tradfi.signed': '協議簽署成功',
+  'tradfi.error': 'TradFi 協議簽署失敗',
 
   // Permissions
   'perm.title': 'API 權限',

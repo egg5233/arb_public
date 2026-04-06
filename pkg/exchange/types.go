@@ -222,6 +222,14 @@ type StopLossParams struct {
 	TriggerPrice string
 }
 
+// TakeProfitParams contains parameters for placing a take-profit (conditional) order.
+type TakeProfitParams struct {
+	Symbol       string
+	Side         Side // sell for long TP, buy for short TP
+	Size         string
+	TriggerPrice string
+}
+
 // ExchangeConfig holds the configuration for connecting to an exchange.
 type ExchangeConfig struct {
 	Exchange   string
@@ -253,6 +261,12 @@ type PermissionResult struct {
 // API key permission introspection. Use type assertion to check.
 type PermissionChecker interface {
 	CheckPermissions() PermissionResult
+}
+
+// TradFiSigner is an optional interface for exchanges that require
+// a TradFi-Perps agreement before commodity contract trading.
+type TradFiSigner interface {
+	SignTradFi() error
 }
 
 // ---------------------------------------------------------------------------

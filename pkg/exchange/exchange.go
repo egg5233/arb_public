@@ -50,7 +50,11 @@ type Exchange interface {
 	// where withdrawals already come from the main balance (e.g. Binance, Gate.io).
 	TransferToSpot(coin string, amount string) error
 	// TransferToFutures moves funds from spot/funding to the futures/trading
-	// account. No-op on unified-account exchanges (OKX, Bybit).
+	// account. All 6 exchanges perform real transfers:
+	// Binance: spot → USDT-M futures, Bybit: FUND → UNIFIED,
+	// Gate.io: spot → futures (classic) / no-op (unified),
+	// Bitget: spot → usdt_futures, OKX: funding → trading,
+	// BingX: FUND → PFUTURES.
 	TransferToFutures(coin string, amount string) error
 
 	// Orderbook
@@ -75,6 +79,10 @@ type Exchange interface {
 	// Stop-Loss (conditional orders)
 	PlaceStopLoss(params StopLossParams) (orderID string, err error)
 	CancelStopLoss(symbol, orderID string) error
+
+	// Take-Profit (conditional orders)
+	PlaceTakeProfit(params TakeProfitParams) (orderID string, err error)
+	CancelTakeProfit(symbol, orderID string) error
 
 	// Trade History
 	GetUserTrades(symbol string, startTime time.Time, limit int) ([]Trade, error)
