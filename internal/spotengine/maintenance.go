@@ -100,7 +100,7 @@ func (e *SpotEngine) getMaintenanceRate(symbol, exchName string, notionalUSDT fl
 		if provider, ok := exch.(maintenanceRateProvider); ok {
 			rate, err := provider.GetMaintenanceRate(symbol, notionalUSDT)
 			if err != nil {
-				e.log.Warn("maintenance: %s %s GetMaintenanceRate: %v", exchName, symbol, err)
+				e.log.Debug("maintenance: %s %s GetMaintenanceRate: %v", exchName, symbol, err)
 			} else if rate > 0 && rate < 1.0 {
 				e.maintCache.set(cacheKey, rate)
 				return rate
@@ -133,7 +133,7 @@ func (e *SpotEngine) applyMaintenanceDefault(rate float64, symbol, exchName stri
 	if def <= 0 || def >= 1.0 {
 		def = 0.05 // hard fallback
 	}
-	e.log.Warn("maintenance: using default %.1f%% for %s on %s (rate=0/unavailable)", def*100, symbol, exchName)
+	e.log.Debug("maintenance: using default %.1f%% for %s on %s (rate=0/unavailable)", def*100, symbol, exchName)
 	return def
 }
 
