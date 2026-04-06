@@ -18,7 +18,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 4: Performance Analytics** - SQLite-backed PnL decomposition, strategy comparison, and dashboard charts
 - [ ] **Phase 5: Capital Allocation** - Unified capital pool with risk profiles and dynamic strategy-weighted allocation
 - [x] **Phase 6: Spot-Futures Risk Hardening** - Pre-entry maintenance_rate check, liquidation distance monitor, health monitor for spot-futures
-- [ ] **Phase 7: Milestone Polish** - Maintenance gate dashboard toggle, REQUIREMENTS.md traceability fixes
+- [x] **Phase 7: Milestone Polish** - Maintenance gate dashboard toggle, REQUIREMENTS.md traceability fixes
 
 ## Phase Details
 
@@ -117,7 +117,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | 4. Performance Analytics | 0/4 | Not started | - |
 | 5. Capital Allocation | 0/3 | Not started | - |
 | 6. Spot-Futures Risk Hardening | 4/4 | Complete | 2026-04-05 |
-| 7. Milestone Polish | 0/1 | Not started | - |
+| 7. Milestone Polish | 1/1 | Complete | 2026-04-06 |
 
 ### Phase 6: Spot-Futures Risk Hardening
 
