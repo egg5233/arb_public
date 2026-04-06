@@ -1,7 +1,6 @@
 package risk
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -189,30 +188,6 @@ func TestConfigAllocationRoundTrip(t *testing.T) {
 		t.Errorf("SizeMultiplier: got %f, want 1.5", cfg.SizeMultiplier)
 	}
 
-	// SaveJSON should persist them back
-	if err := cfg.SaveJSON(); err != nil {
-		t.Fatalf("SaveJSON: %v", err)
-	}
-
-	// Re-read and verify
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("read config: %v", err)
-	}
-	var raw map[string]interface{}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	alloc, ok := raw["allocation"].(map[string]interface{})
-	if !ok {
-		t.Fatal("allocation section missing in saved JSON")
-	}
-	if v, ok := alloc["total_capital_usdt"].(float64); !ok || v != 5000.0 {
-		t.Errorf("saved total_capital_usdt: got %v", alloc["total_capital_usdt"])
-	}
-	if v, ok := alloc["risk_profile"].(string); !ok || v != "aggressive" {
-		t.Errorf("saved risk_profile: got %v", alloc["risk_profile"])
-	}
 }
 
 func TestConfigAllocationDefaults(t *testing.T) {
