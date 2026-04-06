@@ -97,7 +97,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CA-02 | Phase 5 | Complete |
 | CA-03 | Phase 5 | Complete |
 | CA-04 | Phase 5 | Complete |
-| SF-RISK-01 | Phase 6, 7 | Pending (dashboard toggle in Phase 7) |
+| SF-RISK-01 | Phase 6, 7 | Complete |
 | SF-RISK-02 | Phase 6 | Complete |
 | SF-RISK-03 | Phase 6 | Complete |
 | SF-RISK-04 | Phase 6 | Complete |

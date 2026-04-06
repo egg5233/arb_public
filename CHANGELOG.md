@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.29.0] - 2026-04-06
+
+### Added — Milestone Polish (Phase 7, Plan 01)
+- **Dashboard maintenance gate config**: GET /api/config returns `enable_maintenance_gate`, `maintenance_default`, `maintenance_cache_ttl` in spot_futures response
+- **Dashboard maintenance gate toggle**: POST /api/config accepts and persists all 3 maintenance gate fields to config.json and Redis
+- **Config.tsx sf-general tab**: Maintenance Rate Gate toggle with dependent Default Rate and Cache TTL number fields (opacity-50 dim when gate OFF)
+- **i18n**: both EN and ZH-TW locale files updated with 6 maintenance gate translation keys
+- **Server-side validation**: MaintenanceDefault bounds (0 < val < 1.0), MaintenanceCacheTTL minimum (>= 1) matching config.go applyJSON
+- **Round-trip test**: TestHandleConfig_MaintenanceGateRoundTrip verifies GET returns, POST updates in-memory + Redis + config.json reload
+- **SF-RISK-01 requirement**: marked Complete — dashboard toggle closes the Phase 6 integration gap
+
 ## [0.28.3] - 2026-04-05
 
 ### Added — Spot-Futures Risk Hardening (Phase 6, Plan 04)
