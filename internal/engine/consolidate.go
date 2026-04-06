@@ -238,7 +238,10 @@ func (e *Engine) consolidatePositions(missCount map[string]int, dustIgnore map[s
 
 				e.log.Info("consolidate: closing orphan %s %s on %s size=%.6f (verified retry)",
 					ep.Symbol, ep.HoldSide, name, size)
-				e.closeFullyWithRetry(exch, ep.Symbol, closeSide, size)
+				rem := e.closeFullyWithRetry(exch, ep.Symbol, closeSide, size)
+				if rem > 0 {
+					e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", ep.Symbol, closeSide, rem, exch.Name())
+				}
 			}
 		}
 	}
@@ -394,12 +397,18 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 			actualSize, err := getExchangePositionSize(longExch, pos.Symbol, "long")
 			if err == nil && actualSize > 0 {
 				e.log.Info("consolidate: closing long leg on %s: %.6f (verified retry)", pos.LongExchange, actualSize)
-				e.closeFullyWithRetry(longExch, pos.Symbol, exchange.SideSell, actualSize)
+				rem := e.closeFullyWithRetry(longExch, pos.Symbol, exchange.SideSell, actualSize)
+				if rem > 0 {
+					e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", pos.Symbol, exchange.SideSell, rem, longExch.Name())
+				}
 			} else {
 				// Leg not found on re-query — try closing with local size as fallback.
 				e.log.Info("consolidate: long leg not found on %s re-query, attempting close with local size %.6f",
 					pos.LongExchange, pos.LongSize)
-				e.closeFullyWithRetry(longExch, pos.Symbol, exchange.SideSell, pos.LongSize)
+				rem := e.closeFullyWithRetry(longExch, pos.Symbol, exchange.SideSell, pos.LongSize)
+				if rem > 0 {
+					e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", pos.Symbol, exchange.SideSell, rem, longExch.Name())
+				}
 			}
 		}
 	}
@@ -408,12 +417,18 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 			actualSize, err := getExchangePositionSize(shortExch, pos.Symbol, "short")
 			if err == nil && actualSize > 0 {
 				e.log.Info("consolidate: closing short leg on %s: %.6f (verified retry)", pos.ShortExchange, actualSize)
-				e.closeFullyWithRetry(shortExch, pos.Symbol, exchange.SideBuy, actualSize)
+				rem := e.closeFullyWithRetry(shortExch, pos.Symbol, exchange.SideBuy, actualSize)
+				if rem > 0 {
+					e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", pos.Symbol, exchange.SideBuy, rem, shortExch.Name())
+				}
 			} else {
 				// Leg not found on re-query — try closing with local size as fallback.
 				e.log.Info("consolidate: short leg not found on %s re-query, attempting close with local size %.6f",
 					pos.ShortExchange, pos.ShortSize)
-				e.closeFullyWithRetry(shortExch, pos.Symbol, exchange.SideBuy, pos.ShortSize)
+				rem := e.closeFullyWithRetry(shortExch, pos.Symbol, exchange.SideBuy, pos.ShortSize)
+				if rem > 0 {
+					e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", pos.Symbol, exchange.SideBuy, rem, shortExch.Name())
+				}
 			}
 		}
 	}

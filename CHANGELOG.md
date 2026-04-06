@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.27.2] - 2026-04-06
+
+### Fixed
+- **Reliable scan delivery** — scanner now blocks until engine consumes ScanResult instead of silently dropping scans; empty scans also clear stale opportunity cache and send empty ScanResult so scheduled handlers (exit, rotate, rebalance) always fire
+- **retrySecondLeg formatSize** — use exchange-aware `formatSize` instead of hardcoded 6-decimal precision, preventing order rejections on exchanges with strict step-size rules (Gate.io, OKX)
+- **closeFullyWithRetry orphan detection** — all 27 callers now check return value; rollback/abort paths log ORPHAN EXPOSURE alerts when close fails; dust paths preserve correct VWAP without inflating totalFilled
+- **Leverage/margin-mode setup failures** — abort entry on real SetLeverage/SetMarginMode failures instead of warn-and-continue; tolerate "already set" responses via isAlreadySetError helper
+- **Distributed lock safety** — entry scan and manual open now use AcquireOwnedLock with compare-and-delete release, preventing accidental lock deletion after TTL expiry
+- **Orderbook staleness check** — prefetch and risk approval now reject cached orderbooks older than 5 seconds, with REST fallback for stale WS depth data
+- **Allocator commit race** — Commit now watches both allocatorVersionKey and reservation key; uses separate newTotals map to prevent over-counting on retry
+
+### Added
+- **Auto-size spot sweep** — when CapitalPerLeg=0 (auto-size), ensureFuturesBalance now sweeps all available spot into futures on split-account exchanges (Binance, Bitget, Gate.io) to maximize position sizing; transfer amount floored to prevent rounding above available balance
+
+### Changed
+- Updated scan schedule comments to match actual config defaults (:20 rebalance, :30 exit, :35 rotate, :40 entry)
+- Removed unused `remainingSlots` variable from risk approval
+
 ## [0.27.1] - 2026-04-06
 
 ### Added

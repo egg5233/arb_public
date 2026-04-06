@@ -20,6 +20,15 @@ import (
 	"arb/pkg/utils"
 )
 
+// isAlreadySetError detects harmless "already set" responses from exchanges
+// when setting leverage or margin mode to the current value.
+func isAlreadySetError(err error) bool {
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "no need") || strings.Contains(s, "not modified") ||
+		strings.Contains(s, "already") || strings.Contains(s, "same") ||
+		strings.Contains(s, "not changed")
+}
+
 // isMarginError detects insufficient margin/balance errors across exchanges.
 // Case-insensitive to handle varying error message formats.
 func isMarginError(err error) bool {
@@ -247,7 +256,7 @@ func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bo
 
 	// 4. Acquire execution lock
 	lockResource := fmt.Sprintf("execute:%s", symbol)
-	acquired, err := e.db.AcquireLock(lockResource, 5*time.Minute)
+	lock, acquired, err := e.db.AcquireOwnedLock(lockResource, 5*time.Minute)
 	if err != nil {
 		e.capacityMu.Unlock()
 		return fmt.Errorf("failed to acquire lock for %s", symbol)
@@ -261,7 +270,7 @@ func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bo
 	approval, err := e.risk.Approve(*opp)
 	if err != nil {
 		e.capacityMu.Unlock()
-		_ = e.db.ReleaseLock(lockResource)
+		lock.Release()
 		return fmt.Errorf("risk check failed: %v", err)
 	}
 	if !approval.Approved {
@@ -269,7 +278,7 @@ func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bo
 			e.log.Info("ManualOpen %s: force=true, overriding risk rejection: %s", symbol, approval.Reason)
 		} else {
 			e.capacityMu.Unlock()
-			_ = e.db.ReleaseLock(lockResource)
+			lock.Release()
 			return fmt.Errorf("risk rejected: %s", approval.Reason)
 		}
 	}
@@ -277,14 +286,14 @@ func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bo
 	// 6. Dry run check
 	if e.cfg.DryRun {
 		e.capacityMu.Unlock()
-		_ = e.db.ReleaseLock(lockResource)
+		lock.Release()
 		return fmt.Errorf("dry run mode — trade not executed")
 	}
 
 	reservation, err := e.reservePerpCapital(*opp, approval)
 	if err != nil {
 		e.capacityMu.Unlock()
-		_ = e.db.ReleaseLock(lockResource)
+		lock.Release()
 		return fmt.Errorf("capital allocator rejected: %v", err)
 	}
 
@@ -295,7 +304,7 @@ func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bo
 	if err := e.db.SavePosition(pendingPos); err != nil {
 		e.releasePerpReservation(reservation)
 		e.capacityMu.Unlock()
-		_ = e.db.ReleaseLock(lockResource)
+		lock.Release()
 		return fmt.Errorf("failed to reserve position slot: %v", err)
 	}
 	e.api.BroadcastPositionUpdate(pendingPos)
@@ -307,7 +316,7 @@ func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bo
 	e.log.Info("manual open: executing trade for %s (L:%s S:%s) size=%.6f price=%.5f",
 		symbol, longExchange, shortExchange, approval.Size, approval.Price)
 	go func() {
-		defer func() { _ = e.db.ReleaseLock(lockResource) }()
+		defer lock.Release()
 		if err := e.executeTradeV2WithPos(*opp, pendingPos, approval.Size, approval.Price, approval.GapBPS); err != nil {
 			e.releasePerpReservation(reservation)
 			e.log.Error("manual open: trade execution failed for %s: %v", symbol, err)
@@ -687,7 +696,7 @@ func (e *Engine) Stop() {
 
 // run is the main event loop. It listens for new opportunity batches from
 // discovery and dispatches actions based on scan type:
-//   - RebalanceScan (:10) → rebalance funds across exchanges
+//   - RebalanceScan (:20) → rebalance funds across exchanges
 //   - ExitScan      (:30) → check exit conditions
 //   - RotateScan    (:35) → check leg rotations
 //   - EntryScan     (:40) → execute new arb positions
@@ -1248,7 +1257,10 @@ func (e *Engine) handleOrphanClose(action risk.HealthAction) {
 				size = pos.ShortSize
 			}
 			e.log.Info("[orphan-cleanup] closing %s %s leg on %s (size=%.6f)", pos.ID, action.OrphanSide, action.OrphanExchange, size)
-			e.closeFullyWithRetry(exch, pos.Symbol, side, size)
+			rem := e.closeFullyWithRetry(exch, pos.Symbol, side, size)
+			if rem > 0 {
+				e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", pos.Symbol, side, rem, exch.Name())
+			}
 
 			// Verify flat after close.
 			time.Sleep(500 * time.Millisecond)
@@ -1589,7 +1601,14 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 				defer pfWg.Done()
 				if adapter, ok := e.exchanges[k.exchange]; ok {
 					if ob, ok := adapter.GetDepth(k.symbol); ok {
-						orderbookSyncMap.Store(k.exchange+":"+k.symbol, ob)
+						if ob.Time.IsZero() || time.Since(ob.Time) < 5*time.Second {
+							orderbookSyncMap.Store(k.exchange+":"+k.symbol, ob)
+						} else {
+							e.log.Debug("prefetch: %s:%s orderbook stale (%.1fs)", k.exchange, k.symbol, time.Since(ob.Time).Seconds())
+							if freshOb, err := adapter.GetOrderbook(k.symbol, 20); err == nil {
+								orderbookSyncMap.Store(k.exchange+":"+k.symbol, freshOb)
+							}
+						}
 					} else if ob, err := adapter.GetOrderbook(k.symbol, 20); err == nil {
 						orderbookSyncMap.Store(k.exchange+":"+k.symbol, ob)
 					} else {
@@ -1609,7 +1628,14 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 			}
 			for _, sym := range bingxSymbols {
 				if ob, ok := adapter.GetDepth(sym); ok {
-					orderbookSyncMap.Store("bingx:"+sym, ob)
+					if ob.Time.IsZero() || time.Since(ob.Time) < 5*time.Second {
+						orderbookSyncMap.Store("bingx:"+sym, ob)
+					} else {
+						e.log.Debug("prefetch: bingx:%s orderbook stale (%.1fs)", sym, time.Since(ob.Time).Seconds())
+						if freshOb, err := adapter.GetOrderbook(sym, 20); err == nil {
+							orderbookSyncMap.Store("bingx:"+sym, freshOb)
+						}
+					}
 				} else if ob, err := adapter.GetOrderbook(sym, 20); err == nil {
 					orderbookSyncMap.Store("bingx:"+sym, ob)
 				} else {
@@ -1643,6 +1669,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 		price       float64
 		gapBPS      float64
 		lockKey     string
+		lock        *database.OwnedLock
 		pos         *models.ArbitragePosition
 		reservation *risk.CapitalReservation
 	}
@@ -1666,7 +1693,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 		}
 
 		lockResource := fmt.Sprintf("execute:%s", opp.Symbol)
-		acquired, err := e.db.AcquireLock(lockResource, 5*time.Minute)
+		symLock, acquired, err := e.db.AcquireOwnedLock(lockResource, 5*time.Minute)
 		if err != nil {
 			e.log.Error("failed to acquire lock for %s: %v", opp.Symbol, err)
 			continue
@@ -1683,7 +1710,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 			if e.rejStore != nil {
 				e.rejStore.AddOpp(opp, "risk", fmt.Sprintf("error: %v", err))
 			}
-			_ = e.db.ReleaseLock(lockResource)
+			symLock.Release()
 			continue
 		}
 		if !approval.Approved {
@@ -1691,14 +1718,14 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 			if e.rejStore != nil {
 				e.rejStore.AddOpp(opp, "risk", approval.Reason)
 			}
-			_ = e.db.ReleaseLock(lockResource)
+			symLock.Release()
 			continue
 		}
 		e.log.Info("executeArbitrage: risk approved %s size=%.6f", opp.Symbol, approval.Size)
 
 		if e.cfg.DryRun {
 			e.log.Info("[DRY RUN] would execute trade for %s: size=%.6f price=%.2f spread=%.2f bps/h", opp.Symbol, approval.Size, approval.Price, opp.Spread)
-			_ = e.db.ReleaseLock(lockResource)
+			symLock.Release()
 			continue
 		}
 
@@ -1708,7 +1735,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 			if e.rejStore != nil {
 				e.rejStore.AddOpp(opp, "risk", fmt.Sprintf("capital allocator: %v", err))
 			}
-			_ = e.db.ReleaseLock(lockResource)
+			symLock.Release()
 			continue
 		}
 
@@ -1716,7 +1743,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 		if err := e.db.SavePosition(pendingPos); err != nil {
 			e.releasePerpReservation(reservation)
 			e.log.Error("failed to save pending position for %s: %v", opp.Symbol, err)
-			_ = e.db.ReleaseLock(lockResource)
+			symLock.Release()
 			continue
 		}
 		e.api.BroadcastPositionUpdate(pendingPos)
@@ -1727,6 +1754,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 			price:       approval.Price,
 			gapBPS:      approval.GapBPS,
 			lockKey:     lockResource,
+			lock:        symLock,
 			pos:         pendingPos,
 			reservation: reservation,
 		})
@@ -1752,7 +1780,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 		wg.Add(1)
 		go func(c candidate) {
 			defer wg.Done()
-			defer func() { _ = e.db.ReleaseLock(c.lockKey) }()
+			defer c.lock.Release()
 
 			e.log.Info("executing trade for %s: size=%.6f price=%.5f gapBPS=%.1f", c.opp.Symbol, c.size, c.price, c.gapBPS)
 			if err := e.executeTradeV2WithPos(c.opp, c.pos, c.size, c.price, c.gapBPS); err != nil {
@@ -2062,7 +2090,7 @@ func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol 
 			orderPrice = bbo.Bid * (1 - slippage)
 		}
 
-		sizeStr := utils.FormatSize(remainingSize, 6)
+		sizeStr := e.formatSize(exchName, symbol, remainingSize)
 		params := exchange.PlaceOrderParams{
 			Symbol:    symbol,
 			Side:      side,
@@ -2114,7 +2142,7 @@ func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol 
 			bbo = exchange.BBO{Bid: refPrice, Ask: refPrice}
 		}
 
-		sizeStr := utils.FormatSize(remainingSize, 6)
+		sizeStr := e.formatSize(exchName, symbol, remainingSize)
 		e.log.Info("retrySecondLeg[MKT-%d] %s %s: MARKET size=%s", mktAttempt, exchName, symbol, sizeStr)
 
 		orderID, err := exch.PlaceOrder(exchange.PlaceOrderParams{
@@ -2207,10 +2235,18 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 		{shortExch, opp.ShortExchange, "short"},
 	} {
 		if err := setup.exch.SetLeverage(opp.Symbol, leverage, setup.side); err != nil {
-			e.log.Warn("set leverage on %s: %v", setup.name, err)
+			if isAlreadySetError(err) {
+				e.log.Debug("set leverage on %s: %v (already set)", setup.name, err)
+			} else {
+				return fmt.Errorf("set leverage on %s: %w", setup.name, err)
+			}
 		}
 		if err := setup.exch.SetMarginMode(opp.Symbol, "cross"); err != nil {
-			e.log.Warn("set margin mode on %s: %v", setup.name, err)
+			if isAlreadySetError(err) {
+				e.log.Debug("set margin mode on %s: %v (already set)", setup.name, err)
+			} else {
+				return fmt.Errorf("set margin mode on %s: %w", setup.name, err)
+			}
 		}
 	}
 
@@ -2282,7 +2318,10 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 	}
 	if longRes.err != nil {
 		e.log.Error("long IOC failed: %v, closing short leg", longRes.err)
-		e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, size) // buy to close short
+		rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, size) // buy to close short
+		if rem > 0 {
+			e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", opp.Symbol, exchange.SideBuy, rem, shortExch.Name())
+		}
 		pos.Status = models.StatusClosed
 		pos.UpdatedAt = time.Now().UTC()
 		_ = e.db.SavePosition(pos)
@@ -2290,7 +2329,10 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 	}
 	if shortRes.err != nil {
 		e.log.Error("short IOC failed: %v, closing long leg", shortRes.err)
-		e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, size) // sell to close long
+		rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, size) // sell to close long
+		if rem > 0 {
+			e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", opp.Symbol, exchange.SideSell, rem, longExch.Name())
+		}
 		pos.Status = models.StatusClosed
 		pos.UpdatedAt = time.Now().UTC()
 		_ = e.db.SavePosition(pos)
@@ -2324,10 +2366,16 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 		// Too small to keep — close whatever filled.
 		e.log.Warn("IOC fills too small for %s (min=%.2f USDT), aborting", posID, minFill*price)
 		if longFilled > 0 {
-			e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
+			rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
+			if rem > 0 {
+				e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", opp.Symbol, exchange.SideSell, rem, longExch.Name())
+			}
 		}
 		if shortFilled > 0 {
-			e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
+			rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
+			if rem > 0 {
+				e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", opp.Symbol, exchange.SideBuy, rem, shortExch.Name())
+			}
 		}
 		pos.Status = models.StatusClosed
 		pos.UpdatedAt = time.Now().UTC()
@@ -2339,12 +2387,18 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 	if longFilled > minFill {
 		excess := longFilled - minFill
 		e.log.Info("trimming long excess %.6f on %s", excess, opp.LongExchange)
-		e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, excess)
+		rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, excess)
+		if rem > 0 {
+			e.log.Warn("trim incomplete: %s %s %.6f remaining on %s", opp.Symbol, exchange.SideSell, rem, longExch.Name())
+		}
 	}
 	if shortFilled > minFill {
 		excess := shortFilled - minFill
 		e.log.Info("trimming short excess %.6f on %s", excess, opp.ShortExchange)
-		e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, excess)
+		rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, excess)
+		if rem > 0 {
+			e.log.Warn("trim incomplete: %s %s %.6f remaining on %s", opp.Symbol, exchange.SideBuy, rem, shortExch.Name())
+		}
 	}
 
 	// ---------------------------------------------------------------
@@ -2451,10 +2505,18 @@ func (e *Engine) executeTradeV2WithPos(opp models.Opportunity, pos *models.Arbit
 		{shortExch, opp.ShortExchange, "short"},
 	} {
 		if err := setup.exch.SetLeverage(opp.Symbol, leverage, setup.side); err != nil {
-			e.log.Warn("set leverage on %s: %v", setup.name, err)
+			if isAlreadySetError(err) {
+				e.log.Debug("set leverage on %s: %v (already set)", setup.name, err)
+			} else {
+				return fmt.Errorf("set leverage on %s: %w", setup.name, err)
+			}
 		}
 		if err := setup.exch.SetMarginMode(opp.Symbol, "cross"); err != nil {
-			e.log.Warn("set margin mode on %s: %v", setup.name, err)
+			if isAlreadySetError(err) {
+				e.log.Debug("set margin mode on %s: %v (already set)", setup.name, err)
+			} else {
+				return fmt.Errorf("set margin mode on %s: %w", setup.name, err)
+			}
 		}
 	}
 
@@ -2815,7 +2877,10 @@ fillLoop:
 					longAvg = retryAvg
 					longConsecFails = 0
 				} else {
-					e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
+					rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
+					if rem > 0 {
+						e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", opp.Symbol, exchange.SideBuy, rem, shortExch.Name())
+					}
 					longConsecFails++
 					continue
 				}
@@ -2830,7 +2895,10 @@ fillLoop:
 						longAvg = retryAvg
 						longConsecFails = 0
 					} else {
-						e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
+						rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
+						if rem > 0 {
+							e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", opp.Symbol, exchange.SideBuy, rem, shortExch.Name())
+						}
 						longConsecFails++
 						continue
 					}
@@ -2839,7 +2907,10 @@ fillLoop:
 			if longFilled > 0 && longFilled < shortFilled {
 				excess := shortFilled - longFilled
 				e.log.Info("depth tick: trimming short excess %.6f", excess)
-				e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, excess)
+				rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, excess)
+				if rem > 0 {
+					e.log.Warn("trim incomplete: %s %s %.6f remaining on %s", opp.Symbol, exchange.SideBuy, rem, shortExch.Name())
+				}
 				shortFilled = longFilled // only count matched portion
 			}
 		} else {
@@ -2900,7 +2971,10 @@ fillLoop:
 					shortAvg = retryAvg
 					shortConsecFails = 0
 				} else {
-					e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
+					rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
+					if rem > 0 {
+						e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", opp.Symbol, exchange.SideSell, rem, longExch.Name())
+					}
 					shortConsecFails++
 					continue
 				}
@@ -2915,7 +2989,10 @@ fillLoop:
 						shortAvg = retryAvg
 						shortConsecFails = 0
 					} else {
-						e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
+						rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
+						if rem > 0 {
+							e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", opp.Symbol, exchange.SideSell, rem, longExch.Name())
+						}
 						shortConsecFails++
 						continue
 					}
@@ -2924,7 +3001,10 @@ fillLoop:
 			if shortFilled > 0 && shortFilled < longFilled {
 				excess := longFilled - shortFilled
 				e.log.Info("depth tick: trimming long excess %.6f", excess)
-				e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, excess)
+				rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, excess)
+				if rem > 0 {
+					e.log.Warn("trim incomplete: %s %s %.6f remaining on %s", opp.Symbol, exchange.SideSell, rem, longExch.Name())
+				}
 				longFilled = shortFilled // only count matched portion
 			}
 		}
@@ -2978,10 +3058,16 @@ fillLoop:
 	if minFill*price < minPositionUSDT {
 		e.log.Warn("depth fill too small for %s (%.2f USDT), aborting", posID, minFill*price)
 		if confirmedLong > 0 {
-			e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, confirmedLong)
+			rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, confirmedLong)
+			if rem > 0 {
+				e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", opp.Symbol, exchange.SideSell, rem, longExch.Name())
+			}
 		}
 		if confirmedShort > 0 {
-			e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, confirmedShort)
+			rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, confirmedShort)
+			if rem > 0 {
+				e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", opp.Symbol, exchange.SideBuy, rem, shortExch.Name())
+			}
 		}
 		reason := fmt.Sprintf("depth fills below minimum (%s: long=%.6f short=%.6f)", opp.Symbol, confirmedLong, confirmedShort)
 		pos.Status = models.StatusClosed
@@ -2998,12 +3084,18 @@ fillLoop:
 	if confirmedLong > minFill {
 		excess := confirmedLong - minFill
 		e.log.Info("trimming long excess %.6f on %s", excess, opp.LongExchange)
-		e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, excess)
+		rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, excess)
+		if rem > 0 {
+			e.log.Warn("trim incomplete: %s %s %.6f remaining on %s", opp.Symbol, exchange.SideSell, rem, longExch.Name())
+		}
 	}
 	if confirmedShort > minFill {
 		excess := confirmedShort - minFill
 		e.log.Info("trimming short excess %.6f on %s", excess, opp.ShortExchange)
-		e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, excess)
+		rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, excess)
+		if rem > 0 {
+			e.log.Warn("trim incomplete: %s %s %.6f remaining on %s", opp.Symbol, exchange.SideBuy, rem, shortExch.Name())
+		}
 	}
 
 	// Finalize entry prices

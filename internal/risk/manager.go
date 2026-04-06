@@ -151,10 +151,21 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	}
 
 	needed := m.cfg.CapitalPerLeg
-	if needed > 0 && !dryRun {
-		bufferedNeed := needed * m.cfg.MarginSafetyMultiplier
-		m.ensureFuturesBalance(opp.LongExchange, longExch, longBal, bufferedNeed)
-		m.ensureFuturesBalance(opp.ShortExchange, shortExch, shortBal, bufferedNeed)
+	if !dryRun {
+		if needed > 0 {
+			bufferedNeed := needed * m.cfg.MarginSafetyMultiplier
+			m.ensureFuturesBalance(opp.LongExchange, longExch, longBal, bufferedNeed)
+			m.ensureFuturesBalance(opp.ShortExchange, shortExch, shortBal, bufferedNeed)
+		} else {
+			// Auto-size: sweep all available spot into futures to maximize position sizing.
+			// On split-account exchanges (Binance, Bitget, Gate.io), spot balance
+			// is invisible to futures sizing — transfer it before approval.
+			// ensureFuturesBalance transfers min(deficit, spotAvailable), so passing
+			// a large 'needed' effectively sweeps all spot into futures.
+			const sweepTarget = 1e9
+			m.ensureFuturesBalance(opp.LongExchange, longExch, longBal, sweepTarget)
+			m.ensureFuturesBalance(opp.ShortExchange, shortExch, shortBal, sweepTarget)
+		}
 		// Re-fetch after potential transfer; keep old balance on error.
 		// Always re-fetch live here since ensureFuturesBalance has side effects.
 		if lb, err := longExch.GetFuturesBalance(); err == nil {
@@ -273,7 +284,12 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	// Get a reference price from the long exchange orderbook (use cache if available).
 	var longOB *exchange.Orderbook
 	if cache != nil && cache.Orderbooks != nil {
-		longOB = cache.Orderbooks[opp.LongExchange+":"+opp.Symbol]
+		if cached := cache.Orderbooks[opp.LongExchange+":"+opp.Symbol]; cached != nil {
+			if cached.Time.IsZero() || time.Since(cached.Time) < 5*time.Second {
+				longOB = cached
+			}
+			// else: stale, fall through to live fetch
+		}
 	}
 	if longOB == nil {
 		var err2 error
@@ -288,7 +304,6 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	midPrice := (longOB.Bids[0].Price + longOB.Asks[0].Price) / 2.0
 
 	// Calculate position size (pass midPrice to avoid redundant orderbook fetch).
-	remainingSlots := m.cfg.MaxPositions - len(active)
 	size := m.calculateSizeWithPrice(opp, balances, midPrice)
 	if size <= 0 {
 		return &models.RiskApproval{Approved: false, Reason: "insufficient capital for minimum position size"}, nil
@@ -332,7 +347,12 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	// d. Orderbook depth / slippage check on both exchanges (use cache if available).
 	var shortOB *exchange.Orderbook
 	if cache != nil && cache.Orderbooks != nil {
-		shortOB = cache.Orderbooks[opp.ShortExchange+":"+opp.Symbol]
+		if cached := cache.Orderbooks[opp.ShortExchange+":"+opp.Symbol]; cached != nil {
+			if cached.Time.IsZero() || time.Since(cached.Time) < 5*time.Second {
+				shortOB = cached
+			}
+			// else: stale, fall through to live fetch
+		}
 	}
 	if shortOB == nil {
 		var err2 error
@@ -517,8 +537,6 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	if IsExchangeOverexposed(opp.ShortExchange, active) {
 		m.log.Warn("exchange %s has >60%% of active positions (short leg)", opp.ShortExchange)
 	}
-
-	_ = remainingSlots
 
 	m.log.Info("approved %s: size=%.6f price=%.2f spread=%.2f bps/h gapBps=%.1f", opp.Symbol, size, midPrice, opp.Spread, gapBps)
 	return &models.RiskApproval{
@@ -758,6 +776,8 @@ func (m *Manager) ensureFuturesBalance(exchName string, exc exchange.Exchange, f
 	if transferAmt > spotBal.Available {
 		transferAmt = spotBal.Available
 	}
+	// Floor to 4 decimal places to prevent rounding above spotAvailable.
+	transferAmt = math.Floor(transferAmt*10000) / 10000
 
 	amtStr := fmt.Sprintf("%.4f", transferAmt)
 	m.log.Info("auto-transfer %s USDT spot→futures on %s (futures=%.2f, needed=%.2f)", amtStr, exchName, futBal.Available, needed)

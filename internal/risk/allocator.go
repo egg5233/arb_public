@@ -147,26 +147,52 @@ func (a *CapitalAllocator) Commit(res *CapitalReservation, positionID string, ex
 	}
 
 	ctx := context.Background()
-	return a.withVersionRetry(ctx, func(tx *redis.Tx) error {
-		for exchangeName, amount := range committed {
-			current, err := a.readFloatKey(ctx, tx, a.committedKey(res.Strategy, exchangeName))
-			if err != nil {
-				return err
-			}
-			committed[exchangeName] = current + amount
-		}
+	resKey := a.reservationKey(res.ID)
 
-		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			for exchangeName, total := range committed {
-				pipe.Set(ctx, a.committedKey(res.Strategy, exchangeName), strconv.FormatFloat(total, 'f', -1, 64), 0)
+	var lastErr error
+	for range 8 {
+		err = a.db.Redis().Watch(ctx, func(tx *redis.Tx) error {
+			// Verify reservation still exists (watched — tx fails if key changes)
+			exists, err := tx.Exists(ctx, resKey).Result()
+			if err != nil {
+				return fmt.Errorf("check reservation %s: %w", res.ID, err)
 			}
-			pipe.Del(ctx, a.reservationKey(res.ID))
-			pipe.Set(ctx, a.positionKey(positionID), positionPayload, 0)
-			pipe.Incr(ctx, allocatorVersionKey)
+			if exists == 0 {
+				return fmt.Errorf("reservation %s expired or released", res.ID)
+			}
+
+			// Build new totals in a separate map to avoid mutating committed across retries
+			newTotals := make(map[string]float64, len(committed))
+			for exchangeName, amount := range committed {
+				current, err := a.readFloatKey(ctx, tx, a.committedKey(res.Strategy, exchangeName))
+				if err != nil {
+					return err
+				}
+				newTotals[exchangeName] = current + amount
+			}
+
+			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				for exchangeName, total := range newTotals {
+					pipe.Set(ctx, a.committedKey(res.Strategy, exchangeName), strconv.FormatFloat(total, 'f', -1, 64), 0)
+				}
+				pipe.Del(ctx, resKey)
+				pipe.Set(ctx, a.positionKey(positionID), positionPayload, 0)
+				pipe.Incr(ctx, allocatorVersionKey)
+				return nil
+			})
+			return err
+		}, allocatorVersionKey, resKey)
+
+		if err == nil {
 			return nil
-		})
+		}
+		if err == redis.TxFailedErr {
+			lastErr = err
+			continue
+		}
 		return err
-	})
+	}
+	return fmt.Errorf("commit after 8 retries: %w", lastErr)
 }
 
 func (a *CapitalAllocator) ReleaseReservation(reservationID string) error {

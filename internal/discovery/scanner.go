@@ -33,9 +33,9 @@ type ScanType string
 
 const (
 	NormalScan    ScanType = "normalScan"    // builds persistence history, feeds dashboard
-	ExitScan      ScanType = "exitScan"      // triggers exit checks (:25 scan)
-	RotateScan    ScanType = "rotateScan"    // triggers rotation checks (:45 scan)
-	EntryScan     ScanType = "entryScan"     // triggers trade execution (:35 scan)
+	ExitScan      ScanType = "exitScan"      // triggers exit checks (:30 scan)
+	RotateScan    ScanType = "rotateScan"    // triggers rotation checks (:35 scan)
+	EntryScan     ScanType = "entryScan"     // triggers trade execution (:40 scan)
 	RebalanceScan ScanType = "rebalanceScan" // triggers fund rebalancing (:20 scan)
 )
 
@@ -100,6 +100,17 @@ func NewScanner(exchanges map[string]exchange.Exchange, db *database.Client, cfg
 		scanHistory: make(map[string][]scanRecord),
 		oppChan:     make(chan ScanResult, 1),
 		stopCh:      make(chan struct{}),
+	}
+}
+
+// sendScanResult delivers a scan result to the engine channel, blocking until
+// consumed or the scanner is stopped. This ensures no scan results are silently
+// dropped (previously a non-blocking select/default could lose results).
+func (s *Scanner) sendScanResult(result ScanResult) {
+	select {
+	case s.oppChan <- result:
+	case <-s.stopCh:
+		s.log.Info("scanner stopped, dropping %s scan", result.Type)
 	}
 }
 
@@ -778,6 +789,10 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 	merged := mergeOpportunities(lorisOpps, cgOpps)
 	if len(merged) == 0 {
 		s.log.Info("No profitable opportunities found")
+		s.mu.Lock()
+		s.opportunities = nil
+		s.mu.Unlock()
+		s.sendScanResult(ScanResult{Opps: nil, Type: scanType})
 		return
 	}
 
@@ -967,9 +982,6 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 		go s.prefetchBacktestData(verified)
 	}
 
-	// Non-blocking send to channel so the engine can consume at its pace.
-	select {
-	case s.oppChan <- ScanResult{Opps: verified, Type: scanType}:
-	default:
-	}
+	// Send scan result to engine, blocking until consumed or scanner stopped.
+	s.sendScanResult(ScanResult{Opps: verified, Type: scanType})
 }
