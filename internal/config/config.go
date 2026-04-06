@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -1562,6 +1563,10 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 			return fmt.Errorf("write backup config: %w", err)
 		}
 	}
+
+	// Log caller so config.json writes are traceable.
+	_, caller, line, _ := runtime.Caller(1)
+	fmt.Fprintf(os.Stderr, "[config] SaveJSON: writing %s (caller: %s:%d)\n", filePath, caller, line)
 
 	return os.WriteFile(filePath, out, 0644)
 }
