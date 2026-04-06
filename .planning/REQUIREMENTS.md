@@ -76,14 +76,14 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SF-01 | Phase 1 | Pending |
-| SF-02 | Phase 1 | Pending |
-| SF-03 | Phase 1 | Pending |
-| SF-04 | Phase 2 | Pending |
-| SF-05 | Phase 2 | Pending |
-| SF-06 | Phase 2 | Pending |
-| SF-07 | Phase 2 | Pending |
-| PP-01 | Phase 3 | Pending |
+| SF-01 | Phase 1 | Complete |
+| SF-02 | Phase 1 | Complete |
+| SF-03 | Phase 1 | Complete |
+| SF-04 | Phase 2 | Complete |
+| SF-05 | Phase 2 | Complete |
+| SF-06 | Phase 2 | Complete |
+| SF-07 | Phase 2 | Complete |
+| PP-01 | Phase 3 | Partial (D-01 scope reduction) |
 | PP-02 | Phase 3 | Dropped (D-05) |
 | PP-03 | Phase 3 | Complete |
 | PP-04 | Phase 4 | Complete |
@@ -97,12 +97,16 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CA-02 | Phase 5 | Complete |
 | CA-03 | Phase 5 | Complete |
 | CA-04 | Phase 5 | Complete |
+| SF-RISK-01 | Phase 6, 7 | Pending (dashboard toggle in Phase 7) |
+| SF-RISK-02 | Phase 6 | Complete |
+| SF-RISK-03 | Phase 6 | Complete |
+| SF-RISK-04 | Phase 6 | Complete |
 
 **Coverage:**
-- v1 requirements: 21 total
-- Mapped to phases: 21
+- v1 requirements: 25 total (4 added for Phase 6)
+- Mapped to phases: 25
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-04-01*
-*Last updated: 2026-04-01 after plan-phase revision*
+*Last updated: 2026-04-06 after milestone audit gap closure*

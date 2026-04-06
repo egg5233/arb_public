@@ -17,7 +17,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 3: Operational Safety** - Telegram alerts, circuit breakers, and loss limits protecting the live system
 - [ ] **Phase 4: Performance Analytics** - SQLite-backed PnL decomposition, strategy comparison, and dashboard charts
 - [ ] **Phase 5: Capital Allocation** - Unified capital pool with risk profiles and dynamic strategy-weighted allocation
-- [ ] **Phase 6: Spot-Futures Risk Hardening** - Pre-entry maintenance_rate check, liquidation distance monitor, health monitor for spot-futures
+- [x] **Phase 6: Spot-Futures Risk Hardening** - Pre-entry maintenance_rate check, liquidation distance monitor, health monitor for spot-futures
+- [ ] **Phase 7: Milestone Polish** - Maintenance gate dashboard toggle, REQUIREMENTS.md traceability fixes
 
 ## Phase Details
 
@@ -115,7 +116,8 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | 3. Operational Safety | 3/3 | Complete (pending human verify) | 2026-04-03 |
 | 4. Performance Analytics | 0/4 | Not started | - |
 | 5. Capital Allocation | 0/3 | Not started | - |
-| 6. Spot-Futures Risk Hardening | 0/4 | Not started | - |
+| 6. Spot-Futures Risk Hardening | 4/4 | Complete | 2026-04-05 |
+| 7. Milestone Polish | 0/1 | Not started | - |
 
 ### Phase 6: Spot-Futures Risk Hardening
 
@@ -134,3 +136,13 @@ Plans:
 - [x] 06-02-PLAN.md -- Pre-entry risk gate: maintenance_rate check 6 in checkRiskGate, manual bypass warning
 - [x] 06-03-PLAN.md -- Runtime liq distance trigger + health monitor spot-futures integration
 - [x] 06-04-PLAN.md -- Discovery display: MaintenanceRate in opportunities, dashboard column, i18n, version bump
+
+### Phase 7: Milestone Polish
+**Goal:** Wire maintenance gate config to dashboard API/UI and fix REQUIREMENTS.md traceability
+**Depends on:** Phase 6
+**Requirements:** SF-RISK-01
+**Gap Closure:** Closes integration gap from v1.0 audit + traceability fixes
+**Plans:** 1 plan
+
+Plans:
+- [ ] 07-01-PLAN.md -- Maintenance gate dashboard toggle + REQUIREMENTS.md traceability update
