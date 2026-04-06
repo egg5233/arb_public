@@ -8,7 +8,9 @@ import (
 	"testing"
 )
 
-func TestApplyJSON_StrategyScanMinutesAllowZero(t *testing.T) {
+func TestApplyJSON_StrategyScanMinutesRejectZero(t *testing.T) {
+	// Minute 0 collides with normalScan at :00 and is never a valid typed scan
+	// minute. Setting 0 in config.json should NOT overwrite defaults.
 	cfg := &Config{
 		EntryScanMinute:     40,
 		ExitScanMinute:      30,
@@ -28,17 +30,17 @@ func TestApplyJSON_StrategyScanMinutesAllowZero(t *testing.T) {
 
 	cfg.applyJSON(jc)
 
-	if cfg.EntryScanMinute != 0 {
-		t.Fatalf("expected entry_scan_minute=0, got %d", cfg.EntryScanMinute)
+	if cfg.EntryScanMinute != 40 {
+		t.Fatalf("expected entry_scan_minute=40 (default preserved), got %d", cfg.EntryScanMinute)
 	}
-	if cfg.ExitScanMinute != 0 {
-		t.Fatalf("expected exit_scan_minute=0, got %d", cfg.ExitScanMinute)
+	if cfg.ExitScanMinute != 30 {
+		t.Fatalf("expected exit_scan_minute=30 (default preserved), got %d", cfg.ExitScanMinute)
 	}
-	if cfg.RotateScanMinute != 0 {
-		t.Fatalf("expected rotate_scan_minute=0, got %d", cfg.RotateScanMinute)
+	if cfg.RotateScanMinute != 35 {
+		t.Fatalf("expected rotate_scan_minute=35 (default preserved), got %d", cfg.RotateScanMinute)
 	}
-	if cfg.RebalanceScanMinute != 0 {
-		t.Fatalf("expected rebalance_scan_minute=0, got %d", cfg.RebalanceScanMinute)
+	if cfg.RebalanceScanMinute != 10 {
+		t.Fatalf("expected rebalance_scan_minute=10 (default preserved), got %d", cfg.RebalanceScanMinute)
 	}
 }
 

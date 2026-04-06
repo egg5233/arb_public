@@ -718,7 +718,7 @@ func (c *Config) loadJSON() {
 
 func (c *Config) applyJSON(jc *jsonConfig) {
 	validMinute := func(v *int) bool {
-		return v != nil && *v >= 0 && *v <= 59
+		return v != nil && *v > 0 && *v <= 59
 	}
 
 	if jc.DryRun != nil {
@@ -1333,10 +1333,20 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	strategy := getMap(raw, "strategy")
 	strategy["top_opportunities"] = c.TopOpportunities
 	strategy["scan_minutes"] = c.ScanMinutes
-	strategy["entry_scan_minute"] = c.EntryScanMinute
-	strategy["exit_scan_minute"] = c.ExitScanMinute
-	strategy["rotate_scan_minute"] = c.RotateScanMinute
-	strategy["rebalance_scan_minute"] = c.RebalanceScanMinute
+	// Only persist scan minutes when explicitly set (non-zero).
+	// Writing 0 would overwrite the user's tuned values on next load.
+	if c.EntryScanMinute > 0 {
+		strategy["entry_scan_minute"] = c.EntryScanMinute
+	}
+	if c.ExitScanMinute > 0 {
+		strategy["exit_scan_minute"] = c.ExitScanMinute
+	}
+	if c.RotateScanMinute > 0 {
+		strategy["rotate_scan_minute"] = c.RotateScanMinute
+	}
+	if c.RebalanceScanMinute > 0 {
+		strategy["rebalance_scan_minute"] = c.RebalanceScanMinute
+	}
 	strategy["enable_pool_allocator"] = c.EnablePoolAllocator
 	strategy["top_pairs_per_symbol"] = c.TopPairsPerSymbol
 	strategy["allocator_timeout_ms"] = c.AllocatorTimeoutMs
