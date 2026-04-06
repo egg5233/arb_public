@@ -13,10 +13,11 @@ import Logs from './pages/Logs.tsx';
 import Rejections from './pages/Rejections.tsx';
 import Permissions from './pages/Permissions.tsx';
 import Analytics from './pages/Analytics.tsx';
+import SpotPositions from './pages/SpotPositions.tsx';
 import { LocaleContext, getStoredLocale, storeLocale, t as translate, type Locale } from './i18n/index.ts';
 import type { ExchangeInfo } from './types.ts';
 
-type Page = 'overview' | 'opportunities' | 'positions' | 'history' | 'analytics' | 'config' | 'transfers' | 'logs' | 'rejections' | 'permissions';
+type Page = 'overview' | 'opportunities' | 'positions' | 'spot-positions' | 'history' | 'analytics' | 'config' | 'transfers' | 'logs' | 'rejections' | 'permissions';
 
 const UPDATE_DISMISS_KEY = 'arb_update_dismissed';
 
@@ -215,6 +216,15 @@ function App() {
             onFetchFunding={api.getPositionFunding}
             blacklist={blacklist}
             onBlacklistToggle={handleBlacklistToggle}
+          />
+        );
+      case 'spot-positions':
+        return (
+          <SpotPositions
+            positions={ws.spotPositions}
+            onClose={api.spotManualClose}
+            getStats={api.getSpotStats}
+            getHistory={api.getSpotHistory}
           />
         );
       case 'history':

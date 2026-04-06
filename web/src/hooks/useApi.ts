@@ -187,6 +187,10 @@ export function useApi() {
     return request<SpotPosition[]>('/api/spot/positions');
   }, []);
 
+  const getSpotHistory = useCallback((limit = 100) => {
+    return request<SpotPosition[]>(`/api/spot/history?limit=${limit}`);
+  }, []);
+
   const getSpotAutoConfig = useCallback(() => {
     return request<{ auto_enabled: boolean; dry_run: boolean; persistence_scans: number; max_positions: number; capital_separate_usdt: number; capital_unified_usdt: number }>('/api/spot/config/auto');
   }, []);
@@ -306,6 +310,7 @@ export function useApi() {
     checkUpdate,
     performUpdate,
     getSpotPositions,
+    getSpotHistory,
     getSpotAutoConfig,
     updateSpotAutoConfig,
     getSpotStats,
