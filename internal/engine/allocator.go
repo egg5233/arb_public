@@ -85,10 +85,12 @@ func (e *Engine) computeExchangeDeficit(exch string, totalNeed float64, bal reba
 		}
 	}
 
+	result := marginDef
 	if ratioDef > marginDef {
-		return ratioDef
+		result = ratioDef
 	}
-	return marginDef
+	e.log.Debug("allocator: deficit %s: totalNeed=%.2f avail=%.2f marginDef=%.2f ratioDef=%.2f result=%.2f", exch, totalNeed, avail, marginDef, ratioDef, result)
+	return result
 }
 
 func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string]rebalanceBalanceInfo, remainingSlots int) (*allocatorSelection, error) {
@@ -121,6 +123,9 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 			surplus := e.rebalanceAvailable(donor, bal)
 			if bal.hasPositions {
 				healthCap := e.capByMarginHealth(bal)
+				if healthCap == math.MaxFloat64 {
+					e.log.Debug("allocator: capByHealth %s: MaxFloat64 (no positions)", donor)
+				}
 				if surplus > healthCap {
 					surplus = healthCap
 				}
@@ -131,12 +136,14 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 		}
 		transferable[recipient] = totalSurplus
 	}
+	e.log.Debug("allocator: transferable: %v", transferable)
 
 	cache := &risk.PrefetchCache{
 		TransferablePerExchange: transferable,
 	}
 	candidates := e.buildAllocatorCandidates(opps, cache)
 	if len(candidates) == 0 {
+		e.log.Debug("allocator: no candidates built from %d opps", len(opps))
 		return &allocatorSelection{needs: map[string]float64{}, feasible: true}, nil
 	}
 
@@ -144,6 +151,7 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 	for name, bal := range balances {
 		capacity[name] = e.rebalanceAvailable(name, bal)
 	}
+	e.log.Debug("allocator: capacity map: %v", capacity)
 
 	totalDonorSurplus := 0.0
 	for donor, bal := range balances {
@@ -153,6 +161,9 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 		surplus := e.rebalanceAvailable(donor, bal)
 		if bal.hasPositions {
 			healthCap := e.capByMarginHealth(bal)
+			if healthCap == math.MaxFloat64 {
+				e.log.Debug("allocator: capByHealth %s: MaxFloat64 (no positions)", donor)
+			}
 			if surplus > healthCap {
 				surplus = healthCap
 			}
@@ -161,6 +172,7 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 			totalDonorSurplus += surplus
 		}
 	}
+	e.log.Debug("allocator: totalDonorSurplus=%.2f", totalDonorSurplus)
 
 	timeout := time.Duration(e.cfg.AllocatorTimeoutMs) * time.Millisecond
 	if timeout <= 0 {
@@ -168,6 +180,7 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 	}
 	selected := e.solveAllocator(candidates, capacity, balances, remainingSlots, timeout, totalDonorSurplus)
 	if len(selected) == 0 {
+		e.log.Debug("allocator: solver returned no selections from %d candidates", len(candidates))
 		return &allocatorSelection{needs: map[string]float64{}, feasible: false}, nil
 	}
 
@@ -175,7 +188,9 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 	// sequential approval pattern (engine.go:1651-1734).
 	{
 		reserved := map[string]float64{}
-		revalCache := &risk.PrefetchCache{} // no TransferablePerExchange — match :40's raw balance view
+		revalCache := &risk.PrefetchCache{
+			TransferablePerExchange: transferable, // same transfer-aware view as buildAllocatorCandidates
+		}
 		validated := make([]allocatorChoice, 0, len(selected))
 		for _, choice := range selected {
 			opp := findOppBySymbol(opps, choice.symbol)
@@ -184,8 +199,8 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 			}
 			approval, err := e.risk.SimulateApprovalForPair(*opp, choice.longExchange, choice.shortExchange, reserved, choice.altPair, revalCache)
 			if err != nil || approval == nil || !approval.Approved || approval.Size <= 0 {
-				e.log.Info("allocator: re-validation rejected %s (%s/%s): %v",
-					choice.symbol, choice.longExchange, choice.shortExchange,
+				e.log.Info("allocator: re-validation rejected %s (%s/%s, reserved=%v): %v",
+					choice.symbol, choice.longExchange, choice.shortExchange, reserved,
 					func() string {
 						if approval != nil {
 							return approval.Reason
@@ -197,6 +212,7 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 			choice.requiredMargin = approval.RequiredMargin
 			if choice.requiredMargin <= 0 {
 				choice.requiredMargin = e.cfg.CapitalPerLeg * e.cfg.MarginSafetyMultiplier
+				e.log.Debug("allocator: re-validate %s fallback margin=%.2f", choice.symbol, choice.requiredMargin)
 			}
 			validated = append(validated, choice)
 			reserved[choice.longExchange] += approval.RequiredMargin
@@ -303,6 +319,13 @@ func (e *Engine) buildAllocatorCandidates(opps []models.Opportunity, cache *risk
 			seen[key] = true
 			approval, err := e.risk.SimulateApprovalForPair(opp, longExch, shortExch, nil, alt, cache)
 			if err != nil || approval == nil || !approval.Approved || approval.Size <= 0 || approval.Price <= 0 {
+				if err != nil {
+					e.log.Debug("allocator: appendChoice error %s %s/%s: %v", opp.Symbol, longExch, shortExch, err)
+				} else if approval != nil && !approval.Approved {
+					e.log.Debug("allocator: appendChoice rejected %s %s/%s: %s", opp.Symbol, longExch, shortExch, approval.Reason)
+				} else if approval != nil {
+					e.log.Debug("allocator: appendChoice rejected %s %s/%s: size=%.0f price=%.6f", opp.Symbol, longExch, shortExch, approval.Size, approval.Price)
+				}
 				return
 			}
 			entryNotional := approval.Size * approval.Price
@@ -321,6 +344,7 @@ func (e *Engine) buildAllocatorCandidates(opps []models.Opportunity, cache *risk
 				baseValue:      computeAllocatorBaseValue(spread, entryNotional, longExch, shortExch, e.cfg.MinHoldTime.Hours(), fees),
 				altPair:        alt,
 			})
+			e.log.Debug("allocator: choice added %s %s/%s: margin=%.2f baseValue=%.4f notional=%.2f", opp.Symbol, longExch, shortExch, requiredMargin, choices[len(choices)-1].baseValue, entryNotional)
 		}
 
 		appendChoice(opp.LongExchange, opp.ShortExchange, opp.Spread, opp.IntervalHours, nil)
@@ -335,21 +359,14 @@ func (e *Engine) buildAllocatorCandidates(opps []models.Opportunity, cache *risk
 				continue
 			}
 			if alt.Spread <= 0 {
-				continue
-			}
-			// Lightweight verification proxy: skip alternatives whose spread
-			// deviates more than 50% from the primary pair's spread.  Real
-			// VerifyRates is pair-specific and too heavy to run here; this
-			// guards against unreliable Loris data for the alt pair.
-			if opp.Spread > 0 && math.Abs(alt.Spread-opp.Spread)/opp.Spread > 0.5 {
-				e.log.Info("allocator: skip alt %s/%s for %s — spread %.2f deviates >50%% from primary %.2f",
-					alt.LongExchange, alt.ShortExchange, opp.Symbol, alt.Spread, opp.Spread)
+				e.log.Debug("allocator: skip alt %s/%s for %s: spread=%.4f", alt.LongExchange, alt.ShortExchange, opp.Symbol, alt.Spread)
 				continue
 			}
 			altCopy := alt
 			appendChoice(alt.LongExchange, alt.ShortExchange, alt.Spread, alt.IntervalHours, &altCopy)
 		}
 		if len(choices) == 0 {
+			e.log.Debug("allocator: no viable choices for %s", opp.Symbol)
 			continue
 		}
 		sort.Slice(choices, func(i, j int) bool {
@@ -378,10 +395,13 @@ func (e *Engine) solveAllocator(candidates []allocatorCandidate, capacity map[st
 	incumbent := e.greedyAllocatorSeed(candidates, cloneFloatMap(capacity), balances, feeCache, remainingSlots, xferBudget)
 	bestValue = e.allocatorChoiceValue(incumbent, balances, feeCache)
 	bestChoices = append(bestChoices, incumbent...)
+	greedyN := len(incumbent)
+	greedyVal := bestValue
 
 	var branch func(int, map[string]float64, int, []allocatorChoice, float64, exchNeedsMap)
 	branch = func(idx int, cap map[string]float64, slots int, current []allocatorChoice, currentValue float64, needs exchNeedsMap) {
 		if time.Since(start) >= timeout {
+			e.log.Debug("allocator: B&B timeout after %v, best=%d choices", time.Since(start), len(bestChoices))
 			return
 		}
 		if idx >= len(candidates) || slots <= 0 {
@@ -393,7 +413,9 @@ func (e *Engine) solveAllocator(candidates []allocatorCandidate, capacity map[st
 			return
 		}
 
-		if currentValue+allocatorUpperBound(candidates, idx, slots) <= bestValue {
+		ub := allocatorUpperBound(candidates, idx, slots)
+		if currentValue+ub <= bestValue {
+			e.log.Debug("allocator: B&B prune idx=%d bound=%.4f<=best=%.4f", idx, currentValue+ub, bestValue)
 			return
 		}
 
@@ -421,6 +443,7 @@ func (e *Engine) solveAllocator(candidates []allocatorCandidate, capacity map[st
 					}
 				}
 				if totalDeficit > xferBudget {
+					e.log.Debug("allocator: budget exceeded %s %s/%s deficit=%.2f budget=%.2f", choice.symbol, choice.longExchange, choice.shortExchange, totalDeficit, xferBudget)
 					continue
 				}
 				e.log.Info("allocator: admit xfer %s %s/%s fsp=%.4f xferFee=%.4f",
@@ -444,6 +467,7 @@ func (e *Engine) solveAllocator(candidates []allocatorCandidate, capacity map[st
 			nextCap := cloneFloatMap(cap)
 			nextCap[choice.longExchange] -= choice.requiredMargin
 			nextCap[choice.shortExchange] -= choice.requiredMargin
+			e.log.Debug("allocator: B&B selected %s %s/%s (no xfer)", choice.symbol, choice.longExchange, choice.shortExchange)
 			next := append(current, choice)
 			branch(idx+1, nextCap, slots-1, next, currentValue+choice.baseValue, nextNeeds)
 		}
@@ -452,6 +476,7 @@ func (e *Engine) solveAllocator(candidates []allocatorCandidate, capacity map[st
 	}
 
 	branch(0, cloneFloatMap(capacity), remainingSlots, nil, 0, exchNeedsMap{})
+	e.log.Debug("allocator: solver done: greedy=%d/%.4f B&B=%d/%.4f improved=%v", greedyN, greedyVal, len(bestChoices), bestValue, bestValue > greedyVal)
 	return bestChoices
 }
 
@@ -486,6 +511,7 @@ func (e *Engine) greedyAllocatorSeed(candidates []allocatorCandidate, capacity m
 					}
 				}
 				if totalDeficit > xferBudget {
+					e.log.Debug("allocator: greedy budget exceeded %s %s/%s deficit=%.2f budget=%.2f", choice.symbol, choice.longExchange, choice.shortExchange, totalDeficit, xferBudget)
 					continue
 				}
 				adjustedChoice := choice
@@ -495,6 +521,7 @@ func (e *Engine) greedyAllocatorSeed(candidates []allocatorCandidate, capacity m
 				capacity[adjustedChoice.shortExchange] = math.Max(0, capacity[adjustedChoice.shortExchange]-adjustedChoice.requiredMargin)
 				needs[choice.longExchange] += choice.requiredMargin
 				needs[choice.shortExchange] += choice.requiredMargin
+				e.log.Debug("allocator: greedy xfer selected %s %s/%s margin=%.2f fee=%.4f", adjustedChoice.symbol, adjustedChoice.longExchange, adjustedChoice.shortExchange, adjustedChoice.requiredMargin, adjustedChoice.xferFeeDeducted)
 				selected = append(selected, adjustedChoice)
 				remainingSlots--
 				break
@@ -503,6 +530,10 @@ func (e *Engine) greedyAllocatorSeed(candidates []allocatorCandidate, capacity m
 			needs[choice.shortExchange] += choice.requiredMargin
 			capacity[choice.longExchange] -= choice.requiredMargin
 			capacity[choice.shortExchange] -= choice.requiredMargin
+			e.log.Debug("allocator: greedy selected %s %s/%s margin=%.2f capAfter: %s=%.2f %s=%.2f",
+				choice.symbol, choice.longExchange, choice.shortExchange, choice.requiredMargin,
+				choice.longExchange, capacity[choice.longExchange],
+				choice.shortExchange, capacity[choice.shortExchange])
 			selected = append(selected, choice)
 			remainingSlots--
 			break
@@ -663,6 +694,7 @@ func estimateChoiceTransferFee(e *Engine, choice allocatorChoice, cap map[string
 	if cap[choice.longExchange] < choice.requiredMargin {
 		fee := cheapestTransferFee(e, choice.longExchange, balances, cap, feeCache)
 		if fee < 0 {
+			e.log.Debug("allocator: xferFee: no donor for long leg %s (%s)", choice.longExchange, choice.symbol)
 			return -1 // no viable donor
 		}
 		totalFee += fee
@@ -670,6 +702,7 @@ func estimateChoiceTransferFee(e *Engine, choice allocatorChoice, cap map[string
 	if cap[choice.shortExchange] < choice.requiredMargin {
 		fee := cheapestTransferFee(e, choice.shortExchange, balances, cap, feeCache)
 		if fee < 0 {
+			e.log.Debug("allocator: xferFee: no donor for short leg %s (%s)", choice.shortExchange, choice.symbol)
 			return -1 // no viable donor
 		}
 		totalFee += fee
@@ -684,6 +717,7 @@ func cheapestTransferFee(e *Engine, recipient string, balances map[string]rebala
 	addrs := e.cfg.ExchangeAddresses[recipient]
 	e.cfg.RUnlock()
 	if len(addrs) == 0 {
+		e.log.Debug("allocator: cheapestTransferFee: no addresses configured for %s", recipient)
 		return -1
 	}
 	var chain string
@@ -694,15 +728,19 @@ func cheapestTransferFee(e *Engine, recipient string, balances map[string]rebala
 		}
 	}
 	if chain == "" {
+		e.log.Debug("allocator: cheapestTransferFee: no supported chain for %s (have: %v)", recipient, addrs)
 		return -1
 	}
 
 	bestFee := -1.0
+	checkedCount := 0
 	for donor := range balances {
 		if donor == recipient {
 			continue
 		}
+		checkedCount++
 		if balances[donor].marginRatio >= e.cfg.MarginL3Threshold {
+			e.log.Debug("allocator: cheapestFee skip donor %s for %s: ratio=%.4f>=L3=%.4f", donor, recipient, balances[donor].marginRatio, e.cfg.MarginL3Threshold)
 			continue
 		}
 		cacheKey := donor + "|" + recipient + "|" + chain
@@ -733,6 +771,9 @@ func cheapestTransferFee(e *Engine, recipient string, balances map[string]rebala
 		if bestFee < 0 || fee < bestFee {
 			bestFee = fee
 		}
+	}
+	if bestFee < 0 {
+		e.log.Debug("allocator: cheapestTransferFee: no viable donor for %s (chain=%s, checked=%d)", recipient, chain, checkedCount)
 	}
 	return bestFee
 }
@@ -925,6 +966,7 @@ func (e *Engine) findAllocatorDonorWithCache(recipient string, donorGross map[st
 func (e *Engine) allocatorDonorGrossCapacity(name string, bal rebalanceBalanceInfo, localNeed float64) float64 {
 	totalSurplus := e.rebalanceAvailable(name, bal) - localNeed
 	if totalSurplus <= 0 {
+		e.log.Debug("allocator: donorGross %s surplus=%.2f<=0", name, totalSurplus)
 		return 0
 	}
 
@@ -1045,6 +1087,7 @@ func (e *Engine) simulateTransferPlan(choices []allocatorChoice, balances map[st
 		if !isUnified && sim[exch].spot > 0 {
 			b := sim[exch]
 			move := b.spot
+			e.log.Debug("allocator: simXfer spot→futures %s: %.2f", exch, move)
 			b.futures += move
 			b.spot = 0
 			b.futuresTotal += move
@@ -1120,10 +1163,12 @@ func (e *Engine) simulateTransferPlan(choices []allocatorChoice, balances map[st
 					}
 				}
 				if bestDonor == "" {
+					e.log.Debug("allocator: simXfer no donor for %s deficit=%.2f", exch, deficit)
 					return false, 0
 				}
 
 				move := math.Min(deficit, bestSurplus)
+				e.log.Debug("allocator: simXfer %s→%s move=%.2f", bestDonor, exch, move)
 				d := sim[bestDonor]
 				d.futures -= move
 				d.futuresTotal -= move
@@ -1343,6 +1388,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 	for i := range crossDeficits {
 		remaining := crossDeficits[i].amount
 		exchName := crossDeficits[i].exchange
+		e.log.Debug("rebalance: processing crossDeficit %s amount=%.2f", exchName, remaining)
 		if remaining < 1.0 {
 			e.log.Info("rebalance: %s deficit %.4f below minimum, skipping", exchName, remaining)
 			continue
@@ -1412,6 +1458,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 			if !e.exchanges[bestDonor].WithdrawFeeInclusive() && balances[bestDonor].hasPositions {
 				if contribution+fee > bestSurplus {
 					contribution = bestSurplus - fee
+					e.log.Debug("rebalance: net-fee cap %s: contribution=%.2f fee=%.2f surplus=%.2f", bestDonor, contribution, fee, bestSurplus)
 				}
 				if contribution <= 0 {
 					e.log.Warn("rebalance: %s contribution %.2f too low after fee %.4f deduction, skipping", bestDonor, contribution, fee)
@@ -1518,6 +1565,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 
 			if donorSpotBal.Available < grossRequired {
 				netAmount = donorSpotBal.Available - fee
+				e.log.Debug("rebalance: adjusted netAmount %s: spotAvail=%.2f gross=%.2f net=%.2f", bestDonor, donorSpotBal.Available, grossRequired, netAmount)
 			}
 			if netAmount <= 0 {
 				e.log.Warn("rebalance: %s spot balance too low to withdraw (netAmount=%.4f, fee=%.4f)", bestDonor, netAmount, fee)

@@ -36,3 +36,4 @@ paperclip*
 .agents/skills/*
 config.json.*
 *.db
+docs/*-plan.md

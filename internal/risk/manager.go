@@ -127,16 +127,22 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		return nil, fmt.Errorf("get active positions: %w", err)
 	}
 	if len(active) >= m.cfg.MaxPositions {
-		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("max positions reached (%d/%d)", len(active), m.cfg.MaxPositions)}, nil
+		reason := fmt.Sprintf("max positions reached (%d/%d)", len(active), m.cfg.MaxPositions)
+		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
+		return &models.RiskApproval{Approved: false, Reason: reason}, nil
 	}
 
 	longExch, ok := m.exchanges[opp.LongExchange]
 	if !ok {
-		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("long exchange %s not configured", opp.LongExchange)}, nil
+		reason := fmt.Sprintf("long exchange %s not configured", opp.LongExchange)
+		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
+		return &models.RiskApproval{Approved: false, Reason: reason}, nil
 	}
 	shortExch, ok := m.exchanges[opp.ShortExchange]
 	if !ok {
-		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("short exchange %s not configured", opp.ShortExchange)}, nil
+		reason := fmt.Sprintf("short exchange %s not configured", opp.ShortExchange)
+		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
+		return &models.RiskApproval{Approved: false, Reason: reason}, nil
 	}
 
 	// b. Capital check — get balances from both exchanges (use cache if available).
@@ -211,10 +217,19 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 			{opp.ShortExchange, shortExch, shortBal},
 		} {
 			bufferedNeed := needed * m.cfg.MarginSafetyMultiplier
-			if pair.bal.Available < bufferedNeed {
+			// For split-account exchanges, unconditionally add spot balance so
+			// dryRun sees the same avail as rebalanceAvailable (futures+spot).
+			// Same-exchange long+short is structurally impossible in perp-perp,
+			// so per-leg spot augmentation cannot double-count.
+			isUnified := false
+			if uc, ok := pair.exch.(interface{ IsUnified() bool }); ok && uc.IsUnified() {
+				isUnified = true
+			}
+			if !isUnified {
 				if spotBal, err := pair.exch.GetSpotBalance(); err == nil && spotBal.Available > 0 {
 					pair.bal.Available += spotBal.Available
 					pair.bal.Total += spotBal.Available
+					m.log.Debug("approval dryRun %s: added spot %.2f to %s (avail now=%.2f)", opp.Symbol, spotBal.Available, pair.name, pair.bal.Available)
 				}
 			}
 			// Add cross-exchange transferable surplus (allocator planning only).
@@ -310,6 +325,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		}
 	}
 	if len(longOB.Asks) == 0 || len(longOB.Bids) == 0 {
+		m.log.Debug("approval rejected %s: empty orderbook on %s", opp.Symbol, opp.LongExchange)
 		return &models.RiskApproval{Approved: false, Reason: "empty orderbook on long exchange"}, nil
 	}
 	midPrice := (longOB.Bids[0].Price + longOB.Asks[0].Price) / 2.0
@@ -317,6 +333,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	// Calculate position size (pass midPrice to avoid redundant orderbook fetch).
 	size := m.calculateSizeWithPrice(opp, balances, midPrice)
 	if size <= 0 {
+		m.log.Debug("approval rejected %s: insufficient capital for minimum position size (long=%s=%.2f short=%s=%.2f)", opp.Symbol, opp.LongExchange, effectiveLongAvail, opp.ShortExchange, effectiveShortAvail)
 		return &models.RiskApproval{Approved: false, Reason: "insufficient capital for minimum position size"}, nil
 	}
 
@@ -326,10 +343,14 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	safetyPct := (safetyMultiplier - 1) * 100
 	requiredWithBuffer := requiredMarginPerLeg * safetyMultiplier
 	if effectiveLongAvail < requiredWithBuffer {
-		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("insufficient margin buffer on %s: need %.2f (including %.0f%% safety buffer), have %.2f", opp.LongExchange, requiredWithBuffer, safetyPct, effectiveLongAvail)}, nil
+		reason := fmt.Sprintf("insufficient margin buffer on %s: need %.2f (including %.0f%% safety buffer), have %.2f", opp.LongExchange, requiredWithBuffer, safetyPct, effectiveLongAvail)
+		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
+		return &models.RiskApproval{Approved: false, Reason: reason}, nil
 	}
 	if effectiveShortAvail < requiredWithBuffer {
-		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("insufficient margin buffer on %s: need %.2f (including %.0f%% safety buffer), have %.2f", opp.ShortExchange, requiredWithBuffer, safetyPct, effectiveShortAvail)}, nil
+		reason := fmt.Sprintf("insufficient margin buffer on %s: need %.2f (including %.0f%% safety buffer), have %.2f", opp.ShortExchange, requiredWithBuffer, safetyPct, effectiveShortAvail)
+		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
+		return &models.RiskApproval{Approved: false, Reason: reason}, nil
 	}
 
 	// Post-trade margin ratio projection check (uses effective avail after batch reservations)
@@ -348,9 +369,9 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 			}
 			projectedRatio := 1 - projectedAvail/leg.bal.Total
 			if projectedRatio >= m.cfg.MarginL4Threshold {
-				return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf(
-					"post-trade margin ratio would reach %.2f on %s (L4 threshold: %.2f)",
-					projectedRatio, leg.exchange, m.cfg.MarginL4Threshold)}, nil
+				reason := fmt.Sprintf("post-trade margin ratio would reach %.2f on %s (L4 threshold: %.2f)", projectedRatio, leg.exchange, m.cfg.MarginL4Threshold)
+				m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
+				return &models.RiskApproval{Approved: false, Reason: reason}, nil
 			}
 		}
 	}
@@ -374,7 +395,9 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	}
 
 	if len(shortOB.Asks) == 0 || len(shortOB.Bids) == 0 {
-		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("empty orderbook on %s", opp.ShortExchange)}, nil
+		reason := fmt.Sprintf("empty orderbook on %s", opp.ShortExchange)
+		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
+		return &models.RiskApproval{Approved: false, Reason: reason}, nil
 	}
 
 	// Compute both mid prices for slippage estimation.
@@ -415,7 +438,9 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 				bottleneck = opp.ShortExchange
 				bps = shortSlippage
 			}
-			return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("slippage too high on %s: %.1f bps > %.1f bps limit", bottleneck, bps, m.cfg.SlippageBPS)}, nil
+			reason := fmt.Sprintf("slippage too high on %s: %.1f bps > %.1f bps limit", bottleneck, bps, m.cfg.SlippageBPS)
+			m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
+			return &models.RiskApproval{Approved: false, Reason: reason}, nil
 		}
 
 		// Min size = contract minimum from exchange
@@ -437,10 +462,10 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 				bottleneck = opp.ShortExchange
 				bottleneckBps = minShort
 			}
-			return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf(
-				"slippage %.1f bps at minimum size %.0f ($%.2f) on %s (limit=%.1f bps)",
-				bottleneckBps, adaptiveMinSize, adaptiveMinSize*midPrice/float64(leverage), bottleneck, m.cfg.SlippageBPS,
-			)}, nil
+			reason := fmt.Sprintf("slippage %.1f bps at minimum size %.0f ($%.2f) on %s (limit=%.1f bps)",
+				bottleneckBps, adaptiveMinSize, adaptiveMinSize*midPrice/float64(leverage), bottleneck, m.cfg.SlippageBPS)
+			m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
+			return &models.RiskApproval{Approved: false, Reason: reason}, nil
 		}
 
 		originalNotional := size * midPrice / float64(leverage)
@@ -460,7 +485,9 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 
 	// Reject if absolute gap is extreme (prices on different level = not comparable).
 	if absGapBps > m.cfg.MaxPriceGapBPS {
-		return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("price gap too high: %.1f bps > %.1f bps hard cap (long=%.6f short=%.6f)", absGapBps, m.cfg.MaxPriceGapBPS, longVWAP, shortVWAP)}, nil
+		reason := fmt.Sprintf("price gap too high: %.1f bps > %.1f bps hard cap (long=%.6f short=%.6f)", absGapBps, m.cfg.MaxPriceGapBPS, longVWAP, shortVWAP)
+		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
+		return &models.RiskApproval{Approved: false, Reason: reason}, nil
 	}
 
 	// For cost-based recovery check, only consider unfavorable gap (we pay more than receive).
@@ -472,7 +499,9 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	if gapBps > m.cfg.PriceGapFreeBPS {
 		// opp.Spread is already bps/h — recovery is simply gap / spread_per_hour
 		if opp.Spread <= 0 {
-			return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("price gap %.1f bps with zero funding spread", gapBps)}, nil
+			reason := fmt.Sprintf("price gap %.1f bps with zero funding spread", gapBps)
+			m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
+			return &models.RiskApproval{Approved: false, Reason: reason}, nil
 		}
 		recoveryHours := gapBps / opp.Spread
 		intervalHours := opp.IntervalHours
@@ -482,7 +511,9 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		maxRecoveryHours := m.cfg.MaxGapRecoveryIntervals * intervalHours
 		recoveryIntervals := recoveryHours / intervalHours
 		if recoveryHours > maxRecoveryHours {
-			return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("price gap %.1f bps, recovery %.1f intervals > %.1f limit (%.0fh interval)", gapBps, recoveryIntervals, m.cfg.MaxGapRecoveryIntervals, intervalHours)}, nil
+			reason := fmt.Sprintf("price gap %.1f bps, recovery %.1f intervals > %.1f limit (%.0fh interval)", gapBps, recoveryIntervals, m.cfg.MaxGapRecoveryIntervals, intervalHours)
+			m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
+			return &models.RiskApproval{Approved: false, Reason: reason}, nil
 		}
 		m.log.Info("price gap %.1f bps for %s, recovery %.1f intervals (within %.1f limit, %.0fh interval)", gapBps, opp.Symbol, recoveryIntervals, m.cfg.MaxGapRecoveryIntervals, intervalHours)
 	}
@@ -491,17 +522,22 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	if reason, err := m.spreadStability.Check(opp, reserved != nil); err != nil {
 		return nil, fmt.Errorf("spread stability check: %w", err)
 	} else if reason != "" {
+		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
 		return &models.RiskApproval{Approved: false, Reason: reason}, nil
 	}
 
 	if m.cfg.EnableExchangeHealthScoring && m.scorer != nil {
 		longSnapshot := m.scorer.Snapshot(opp.LongExchange)
 		if longSnapshot.Score < m.scorer.minScore() {
-			return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("exchange health too low on %s: %.2f < %.2f", opp.LongExchange, longSnapshot.Score, m.scorer.minScore())}, nil
+			reason := fmt.Sprintf("exchange health too low on %s: %.2f < %.2f", opp.LongExchange, longSnapshot.Score, m.scorer.minScore())
+			m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
+			return &models.RiskApproval{Approved: false, Reason: reason}, nil
 		}
 		shortSnapshot := m.scorer.Snapshot(opp.ShortExchange)
 		if shortSnapshot.Score < m.scorer.minScore() {
-			return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("exchange health too low on %s: %.2f < %.2f", opp.ShortExchange, shortSnapshot.Score, m.scorer.minScore())}, nil
+			reason := fmt.Sprintf("exchange health too low on %s: %.2f < %.2f", opp.ShortExchange, shortSnapshot.Score, m.scorer.minScore())
+			m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
+			return &models.RiskApproval{Approved: false, Reason: reason}, nil
 		}
 	}
 
@@ -533,10 +569,14 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 
 			maxExposure := MaxExposurePerExchange(totalCapital)
 			if longExposure > maxExposure {
-				return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("would exceed %.0f%% capital cap on %s: exposure=%.2f cap=%.2f", maxExposurePct*100, opp.LongExchange, longExposure, maxExposure)}, nil
+				reason := fmt.Sprintf("would exceed %.0f%% capital cap on %s: exposure=%.2f cap=%.2f", maxExposurePct*100, opp.LongExchange, longExposure, maxExposure)
+				m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
+				return &models.RiskApproval{Approved: false, Reason: reason}, nil
 			}
 			if shortExposure > maxExposure {
-				return &models.RiskApproval{Approved: false, Reason: fmt.Sprintf("would exceed %.0f%% capital cap on %s: exposure=%.2f cap=%.2f", maxExposurePct*100, opp.ShortExchange, shortExposure, maxExposure)}, nil
+				reason := fmt.Sprintf("would exceed %.0f%% capital cap on %s: exposure=%.2f cap=%.2f", maxExposurePct*100, opp.ShortExchange, shortExposure, maxExposure)
+				m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
+				return &models.RiskApproval{Approved: false, Reason: reason}, nil
 			}
 		}
 	}
@@ -597,8 +637,8 @@ func (m *Manager) CalculateSize(opp models.Opportunity, balances map[string]floa
 	if ecl > 0 {
 		// Fixed capital per leg — use configured (or derived) amount × leverage.
 		maxPositionValue = ecl * float64(leverage)
-		// Clamp to available capital so we never exceed what the exchange allows.
-		maxFromBalance := availableCapital * float64(leverage)
+		// Clamp to available capital (minus safety buffer) so margin check won't reject.
+		maxFromBalance := availableCapital * float64(leverage) / m.cfg.MarginSafetyMultiplier
 		if maxPositionValue > maxFromBalance {
 			maxPositionValue = maxFromBalance
 		}
@@ -705,13 +745,14 @@ func (m *Manager) calculateSizeWithPrice(opp models.Opportunity, balances map[st
 	var maxPositionValue float64
 	if ecl2 > 0 {
 		maxPositionValue = ecl2 * float64(leverage)
-		maxFromBalance := availableCapital * float64(leverage)
+		maxFromBalance := availableCapital * float64(leverage) / m.cfg.MarginSafetyMultiplier
 		if maxPositionValue > maxFromBalance {
 			maxPositionValue = maxFromBalance
 		}
 	} else {
 		maxPositionValue = (availableCapital * float64(leverage)) / (float64(remainingSlots) * 2.0)
 	}
+	m.log.Debug("[sizing] %s: ecl=%.2f maxPosVal=%.2f", opp.Symbol, ecl2, maxPositionValue)
 
 	currentPrice := refPrice
 	if currentPrice <= 0 {

@@ -716,6 +716,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			}
 		}
 		if needsTransfer {
+			e.log.Debug("rebalance: sequential skip %s: needsTransfer=true", opp.Symbol)
 			continue
 		}
 
