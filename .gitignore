@@ -37,3 +37,5 @@ paperclip*
 config.json.*
 *.db
 docs/*-plan.md
+graphify-out/memory/*
+.graphify_python
