@@ -15,7 +15,7 @@ interface ConfigProps {
 type Strategy = 'exchanges' | 'perp' | 'spot' | 'risk' | 'safety' | 'analytics' | 'allocation';
 type PerpTabId = 'fund' | 'schedule' | 'discovery' | 'persist' | 'entry' | 'exit';
 type SpotTabId = 'sf-general' | 'sf-sizing' | 'sf-discovery' | 'sf-exit';
-type RiskTabId = 'risk-margins' | 'risk-liq' | 'risk-alloc';
+type RiskTabId = 'risk-margins' | 'risk-liq';
 type TabId = PerpTabId | SpotTabId | RiskTabId;
 
 const PERP_TABS: { id: PerpTabId; labelKey: TranslationKey }[] = [
@@ -37,7 +37,6 @@ const SPOT_TABS: { id: SpotTabId; labelKey: TranslationKey }[] = [
 const RISK_TABS: { id: RiskTabId; labelKey: TranslationKey }[] = [
   { id: 'risk-margins', labelKey: 'cfg.risk.tabMargins' },
   { id: 'risk-liq', labelKey: 'cfg.risk.tabLiq' },
-  { id: 'risk-alloc', labelKey: 'cfg.risk.tabAllocator' },
 ];
 
 // Exchange metadata
@@ -1174,108 +1173,6 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
     );
   };
 
-  // =========================================================================
-  // Global Risk: Capital Allocator tab
-  // =========================================================================
-  const renderRiskAllocTab = () => {
-    const allocatorEnabled = getByPath(config, ['risk', 'enable_capital_allocator']) === true;
-    const exchangeHealthEnabled = getByPath(config, ['risk', 'enable_exchange_health_scoring']) === true;
-    const unifiedOn = getByPath(config, ['allocation', 'enable_unified_capital']) === true;
-    const badge = unifiedOn ? t('cfg.alloc.managedBadge' as TranslationKey) : undefined;
-    const managedDesc = unifiedOn ? t('cfg.alloc.managedDesc' as TranslationKey) : undefined;
-
-    return (
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-          <div className="flex items-center gap-2 mb-2">
-            <label className="text-sm font-medium">{t('cfg.field.enableCapitalAllocator')}</label>
-            <Tooltip text={t('cfg.desc.enableCapitalAllocator')} />
-          </div>
-          <div className="flex items-center gap-3">
-            <ToggleSwitch
-              on={allocatorEnabled}
-              onChange={(v) => handleBoolChange(['risk', 'enable_capital_allocator'], v)}
-            />
-            <span className={`text-sm font-semibold ${allocatorEnabled ? 'text-green-400' : 'text-red-400'}`}>
-              {allocatorEnabled ? 'ON' : 'OFF'}
-            </span>
-          </div>
-        </div>
-
-        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-          <div className="flex items-center gap-2 mb-2">
-            <label className="text-sm font-medium">{t('cfg.field.enableExchangeHealthScoring')}</label>
-            <Tooltip text={t('cfg.desc.enableExchangeHealthScoring')} />
-          </div>
-          <div className="flex items-center gap-3">
-            <ToggleSwitch
-              on={exchangeHealthEnabled}
-              onChange={(v) => handleBoolChange(['risk', 'enable_exchange_health_scoring'], v)}
-            />
-            <span className={`text-sm font-semibold ${exchangeHealthEnabled ? 'text-green-400' : 'text-red-400'}`}>
-              {exchangeHealthEnabled ? 'ON' : 'OFF'}
-            </span>
-          </div>
-        </div>
-
-        <NumberField
-          label={t('cfg.field.maxTotalExposureUSDT')}
-          desc={t('cfg.desc.maxTotalExposureUSDT')}
-          value={getByPath(config, ['risk', 'max_total_exposure_usdt'])}
-          unit="USDT"
-          onChange={(v) => handleChange(['risk', 'max_total_exposure_usdt'], v)}
-        />
-
-        {unifiedOn ? (
-          <ReadOnlyNumberField
-            label={t('cfg.field.maxPerpPerpPct')}
-            desc={managedDesc}
-            value={getByPath(config, ['risk', 'max_perp_perp_pct'])}
-            badge={badge}
-          />
-        ) : (
-          <NumberField
-            label={t('cfg.field.maxPerpPerpPct')}
-            desc={t('cfg.desc.maxPerpPerpPct')}
-            value={getByPath(config, ['risk', 'max_perp_perp_pct'])}
-            onChange={(v) => handleChange(['risk', 'max_perp_perp_pct'], v)}
-          />
-        )}
-
-        {unifiedOn ? (
-          <ReadOnlyNumberField
-            label={t('cfg.field.maxSpotFuturesPct')}
-            desc={managedDesc}
-            value={getByPath(config, ['risk', 'max_spot_futures_pct'])}
-            badge={badge}
-          />
-        ) : (
-          <NumberField
-            label={t('cfg.field.maxSpotFuturesPct')}
-            desc={t('cfg.desc.maxSpotFuturesPct')}
-            value={getByPath(config, ['risk', 'max_spot_futures_pct'])}
-            onChange={(v) => handleChange(['risk', 'max_spot_futures_pct'], v)}
-          />
-        )}
-
-        <NumberField
-          label={t('cfg.field.maxPerExchangePct')}
-          desc={t('cfg.desc.maxPerExchangePct')}
-          value={getByPath(config, ['risk', 'max_per_exchange_pct'])}
-          onChange={(v) => handleChange(['risk', 'max_per_exchange_pct'], v)}
-        />
-
-        <NumberField
-          label={t('cfg.field.reservationTTLSec')}
-          desc={t('cfg.desc.reservationTTLSec')}
-          value={getByPath(config, ['risk', 'reservation_ttl_sec'])}
-          unit="sec"
-          onChange={(v) => handleChange(['risk', 'reservation_ttl_sec'], v)}
-        />
-
-      </div>
-    );
-  };
 
   // =========================================================================
   // Tab: Spot-Futures General
@@ -1821,6 +1718,99 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
             unit={t('cfg.alloc.days')}
             onChange={(v) => handleChange(['allocation', 'allocation_lookback_days'], v)}
           />
+
+          {/* Exposure Limits (moved from Risk > Allocator) */}
+          <h4 className="text-sm font-semibold text-gray-400 border-t border-gray-800 pt-4">
+            {t('cfg.alloc.exposureLimits')}
+          </h4>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+              <div className="flex items-center gap-2 mb-2">
+                <label className="text-sm font-medium">{t('cfg.field.enableCapitalAllocator')}</label>
+                <Tooltip text={t('cfg.desc.enableCapitalAllocator')} />
+              </div>
+              <div className="flex items-center gap-3">
+                <ToggleSwitch
+                  on={getByPath(config, ['risk', 'enable_capital_allocator']) === true}
+                  onChange={(v) => handleBoolChange(['risk', 'enable_capital_allocator'], v)}
+                />
+                <span className={`text-sm font-semibold ${getByPath(config, ['risk', 'enable_capital_allocator']) === true ? 'text-green-400' : 'text-red-400'}`}>
+                  {getByPath(config, ['risk', 'enable_capital_allocator']) === true ? 'ON' : 'OFF'}
+                </span>
+              </div>
+            </div>
+
+            <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+              <div className="flex items-center gap-2 mb-2">
+                <label className="text-sm font-medium">{t('cfg.field.enableExchangeHealthScoring')}</label>
+                <Tooltip text={t('cfg.desc.enableExchangeHealthScoring')} />
+              </div>
+              <div className="flex items-center gap-3">
+                <ToggleSwitch
+                  on={getByPath(config, ['risk', 'enable_exchange_health_scoring']) === true}
+                  onChange={(v) => handleBoolChange(['risk', 'enable_exchange_health_scoring'], v)}
+                />
+                <span className={`text-sm font-semibold ${getByPath(config, ['risk', 'enable_exchange_health_scoring']) === true ? 'text-green-400' : 'text-red-400'}`}>
+                  {getByPath(config, ['risk', 'enable_exchange_health_scoring']) === true ? 'ON' : 'OFF'}
+                </span>
+              </div>
+            </div>
+
+            <NumberField
+              label={t('cfg.field.maxTotalExposureUSDT')}
+              desc={t('cfg.desc.maxTotalExposureUSDT')}
+              value={getByPath(config, ['risk', 'max_total_exposure_usdt'])}
+              unit="USDT"
+              onChange={(v) => handleChange(['risk', 'max_total_exposure_usdt'], v)}
+            />
+
+            {enabled ? (
+              <ReadOnlyNumberField
+                label={t('cfg.field.maxPerpPerpPct')}
+                desc={t('cfg.alloc.managedDesc' as TranslationKey)}
+                value={getByPath(config, ['risk', 'max_perp_perp_pct'])}
+                badge={t('cfg.alloc.managedBadge' as TranslationKey)}
+              />
+            ) : (
+              <NumberField
+                label={t('cfg.field.maxPerpPerpPct')}
+                desc={t('cfg.desc.maxPerpPerpPct')}
+                value={getByPath(config, ['risk', 'max_perp_perp_pct'])}
+                onChange={(v) => handleChange(['risk', 'max_perp_perp_pct'], v)}
+              />
+            )}
+
+            {enabled ? (
+              <ReadOnlyNumberField
+                label={t('cfg.field.maxSpotFuturesPct')}
+                desc={t('cfg.alloc.managedDesc' as TranslationKey)}
+                value={getByPath(config, ['risk', 'max_spot_futures_pct'])}
+                badge={t('cfg.alloc.managedBadge' as TranslationKey)}
+              />
+            ) : (
+              <NumberField
+                label={t('cfg.field.maxSpotFuturesPct')}
+                desc={t('cfg.desc.maxSpotFuturesPct')}
+                value={getByPath(config, ['risk', 'max_spot_futures_pct'])}
+                onChange={(v) => handleChange(['risk', 'max_spot_futures_pct'], v)}
+              />
+            )}
+
+            <NumberField
+              label={t('cfg.field.maxPerExchangePct')}
+              desc={t('cfg.desc.maxPerExchangePct')}
+              value={getByPath(config, ['risk', 'max_per_exchange_pct'])}
+              onChange={(v) => handleChange(['risk', 'max_per_exchange_pct'], v)}
+            />
+
+            <NumberField
+              label={t('cfg.field.reservationTTLSec')}
+              desc={t('cfg.desc.reservationTTLSec')}
+              value={getByPath(config, ['risk', 'reservation_ttl_sec'])}
+              unit="sec"
+              onChange={(v) => handleChange(['risk', 'reservation_ttl_sec'], v)}
+            />
+          </div>
         </div>
       </div>
     );
@@ -1909,7 +1899,6 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
       case 'exit': return renderExitTab();
       case 'risk-margins': return renderRiskMarginsTab();
       case 'risk-liq': return renderRiskLiqTab();
-      case 'risk-alloc': return renderRiskAllocTab();
       case 'sf-general': return renderSfGeneralTab();
       case 'sf-sizing': return renderSfSizingTab();
       case 'sf-discovery': return renderSfDiscoveryTab();

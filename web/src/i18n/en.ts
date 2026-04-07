@@ -452,6 +452,7 @@ const en = {
   'cfg.alloc.lookbackDays': 'Performance Lookback',
   'cfg.alloc.lookbackDaysDesc': 'Days of performance data used to weight allocation between strategies.',
   'cfg.alloc.days': 'days',
+  'cfg.alloc.exposureLimits': 'Exposure Limits',
   'cfg.alloc.managedBadge': 'Managed by Allocation',
   'cfg.alloc.managedDesc': 'This field is controlled by the Allocation profile. Change it in the Allocation tab.',
 
