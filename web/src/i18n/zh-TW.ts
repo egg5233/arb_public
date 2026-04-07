@@ -215,12 +215,12 @@ const zhTW: Record<TranslationKey, string> = {
 
   // Config - Tabs
   'cfg.tab.exchanges': '交易所',
-  'cfg.tab.fund': '資金管理',
+  'cfg.tab.fund': '資金配置',
   'cfg.tab.schedule': '排程',
   'cfg.tab.discovery': '選幣策略',
   'cfg.tab.persistence': '持久性篩選',
   'cfg.tab.entry': '進場設定',
-  'cfg.tab.exitRotation': '出場 & 輪替',
+  'cfg.tab.exitRotation': '出場',
   'cfg.tab.risk': '風控',
 
   // Config - Exchange
@@ -475,9 +475,9 @@ const zhTW: Record<TranslationKey, string> = {
 
   // Config - Spot-Futures Tabs
   'cfg.sf.tabGeneral': '一般',
-  'cfg.sf.tabSizing': '倉位大小',
+  'cfg.sf.tabSizing': '資金配置',
   'cfg.sf.tabDiscovery': '掃描',
-  'cfg.sf.tabExitRisk': '出場 & 風控',
+  'cfg.sf.tabExitRisk': '出場',
 
   // Config - Spot-Futures Fields
   'cfg.sf.enabled': '現貨-合約引擎',

@@ -213,12 +213,12 @@ const en = {
 
   // Config - Tabs
   'cfg.tab.exchanges': 'Exchanges',
-  'cfg.tab.fund': 'Fund Management',
+  'cfg.tab.fund': 'Capital',
   'cfg.tab.schedule': 'Schedule',
   'cfg.tab.discovery': 'Discovery',
   'cfg.tab.persistence': 'Persistence Filter',
   'cfg.tab.entry': 'Entry',
-  'cfg.tab.exitRotation': 'Exit & Rotation',
+  'cfg.tab.exitRotation': 'Exit',
   'cfg.tab.risk': 'Risk Control',
 
   // Config - Exchange
@@ -479,9 +479,9 @@ const en = {
 
   // Config - Spot-Futures Tabs
   'cfg.sf.tabGeneral': 'General',
-  'cfg.sf.tabSizing': 'Sizing',
+  'cfg.sf.tabSizing': 'Capital',
   'cfg.sf.tabDiscovery': 'Discovery',
-  'cfg.sf.tabExitRisk': 'Exit & Risk',
+  'cfg.sf.tabExitRisk': 'Exit',
 
   // Config - Spot-Futures Fields
   'cfg.sf.enabled': 'Spot-Futures Engine',
