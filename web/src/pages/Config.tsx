@@ -1740,22 +1740,6 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
               </div>
             </div>
 
-            <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-              <div className="flex items-center gap-2 mb-2">
-                <label className="text-sm font-medium">{t('cfg.field.enableExchangeHealthScoring')}</label>
-                <Tooltip text={t('cfg.desc.enableExchangeHealthScoring')} />
-              </div>
-              <div className="flex items-center gap-3">
-                <ToggleSwitch
-                  on={getByPath(config, ['risk', 'enable_exchange_health_scoring']) === true}
-                  onChange={(v) => handleBoolChange(['risk', 'enable_exchange_health_scoring'], v)}
-                />
-                <span className={`text-sm font-semibold ${getByPath(config, ['risk', 'enable_exchange_health_scoring']) === true ? 'text-green-400' : 'text-red-400'}`}>
-                  {getByPath(config, ['risk', 'enable_exchange_health_scoring']) === true ? 'ON' : 'OFF'}
-                </span>
-              </div>
-            </div>
-
             <NumberField
               label={t('cfg.field.maxTotalExposureUSDT')}
               desc={t('cfg.desc.maxTotalExposureUSDT')}
@@ -1862,6 +1846,24 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
           unit="sec"
           onChange={(v) => handleChange(['safety', 'telegram_cooldown_sec'], v)}
         />
+      </div>
+
+      {/* Exchange Health Scoring */}
+      <h4 className="text-sm font-semibold text-gray-400 border-t border-gray-800 pt-4">{t('cfg.field.enableExchangeHealthScoring')}</h4>
+      <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+        <div className="flex items-center gap-2 mb-2">
+          <label className="text-sm font-medium">{t('cfg.field.enableExchangeHealthScoring')}</label>
+          <Tooltip text={t('cfg.desc.enableExchangeHealthScoring')} />
+        </div>
+        <div className="flex items-center gap-3">
+          <ToggleSwitch
+            on={getByPath(config, ['risk', 'enable_exchange_health_scoring']) === true}
+            onChange={(v) => handleBoolChange(['risk', 'enable_exchange_health_scoring'], v)}
+          />
+          <span className={`text-sm font-semibold ${getByPath(config, ['risk', 'enable_exchange_health_scoring']) === true ? 'text-green-400' : 'text-red-400'}`}>
+            {getByPath(config, ['risk', 'enable_exchange_health_scoring']) === true ? 'ON' : 'OFF'}
+          </span>
+        </div>
       </div>
     </div>
   );
