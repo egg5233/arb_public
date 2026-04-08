@@ -633,6 +633,28 @@ func (c *Client) IsBlacklisted(symbol string) (bool, error) {
 	return c.rdb.SIsMember(context.Background(), keyPerpBlacklist, symbol).Result()
 }
 
+// keyDelistPrefix mirrors discovery.delistRedisPrefix; kept here verbatim
+// to avoid an import cycle (database is a leaf package). When the discovery
+// or contract refresh poller writes arb:delist:{SYMBOL}, both the perp-perp
+// engine (via Scanner.IsDelisted) and the spot-futures engine (via this
+// helper) read the same key.
+const keyDelistPrefix = "arb:delist:"
+
+// IsDelisted reports whether the given symbol has an active delist
+// blacklist entry written by the discovery layer (article scraper or the
+// new deliveryDate-based contract refresh poller). Used by the
+// spot-futures engine which has no Scanner reference.
+//
+// Fail-open semantics: any Redis error is treated as "not delisted" so a
+// transient Redis hiccup never blocks an entry. Pre-entry safety still
+// relies on the perp-perp scanner reading the same key with full logging.
+func (c *Client) IsDelisted(symbol string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	val, err := c.rdb.Get(ctx, keyDelistPrefix+symbol).Result()
+	return err == nil && val != ""
+}
+
 // ---------------------------------------------------------------------------
 // Loss event tracking (rolling window sorted set)
 // ---------------------------------------------------------------------------

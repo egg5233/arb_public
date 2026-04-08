@@ -89,6 +89,21 @@ func (e *SpotEngine) monitorTick() {
 		if pos.Status != models.SpotStatusActive {
 			continue
 		}
+
+		// Delist guard: if the futures symbol is on the shared
+		// arb:delist:{SYMBOL} blacklist (written by the discovery scraper
+		// and/or the deliveryDate contract refresh poller), force an
+		// emergency exit. Same key as the perp engine — single source of
+		// truth for delist signals across both engines.
+		if e.cfg.DelistFilterEnabled && e.db.IsDelisted(pos.Symbol) {
+			if !e.isExiting(pos.ID) {
+				e.log.Warn("monitor: %s on %s flagged for delist, triggering emergency exit (%s)",
+					pos.Symbol, pos.Exchange, pos.ID)
+				e.launchExit(pos, "delist_"+pos.Symbol, true)
+			}
+			continue
+		}
+
 		e.monitorPosition(pos)
 	}
 }
