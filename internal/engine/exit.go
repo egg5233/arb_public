@@ -255,6 +255,7 @@ func (e *Engine) spawnExitGoroutine(pos *models.ArbitragePosition, reason string
 		fresh.ExitReason = reason
 		return true
 	})
+	pos.ExitReason = reason
 	e.api.BroadcastPositionUpdate(pos)
 
 	go func() {
@@ -1440,6 +1441,7 @@ func (e *Engine) reducePosition(pos *models.ArbitragePosition, fraction float64)
 		if shortReducePrice > 0 {
 			pos.ShortExit = shortReducePrice
 		}
+		pos.ExitReason = "L4 margin reduce: fully flattened"
 		return e.closePositionEmergency(pos)
 	}
 

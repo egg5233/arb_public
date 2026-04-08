@@ -521,3 +521,8 @@ Rules:
   - Codex: `$graphify F:\AI\arb_public`
 - If only a fast local code-only refresh is needed, use `python3 -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('.'))"`
 - When delegating this repo to another agent, always pass the graphify read order explicitly; never assume the other agent will discover it on its own
+- **Mandatory self-check before first Grep/Read on any `.go`/`.ts`/`.tsx` file in a session:** "Have I read `graphify-out/AI_ROUTER.md` yet?" If no → STOP, read it first. No exceptions.
+- Once routed to the correct module via AI_ROUTER, reading specific functions via Read/Grep is fine — graphify is for routing, not replacing Read.
+- **Red flag thought:** "I know the keyword, Grep is faster than reading graphify." → This is a stop signal. Read AI_ROUTER.md first.
+- **Red flag thought:** "I already know which file to look at." → This is a stop signal. Read AI_ROUTER.md first.
+- **Red flag thought:** "Graphify is overkill for this." → This is a stop signal. Read AI_ROUTER.md first.

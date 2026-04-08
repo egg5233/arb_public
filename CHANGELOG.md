@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.31.1] - 2026-04-08
+
+### Fixed
+- **ExitReason missing in position history** — 5 close paths wrote `AddToHistory(pos)` without setting `pos.ExitReason`, causing empty "平倉原因" on dashboard. Fixed: `spawnExitGoroutine` (depth exit + fallback close), `markPositionClosed` (consolidator), `triggerEmergencyClose` (SL/liquidation), `checkDelistPositions` (Binance delist), `reducePosition` (L4 full-flatten).
+
 ## [0.31.0] - 2026-04-08
 
 ### Added

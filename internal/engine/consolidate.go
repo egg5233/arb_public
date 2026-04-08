@@ -592,6 +592,7 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 		se.CancelAllOrders(pos.Symbol)
 	}
 
+	pos.ExitReason = reason
 	if err := e.db.SavePosition(pos); err != nil {
 		e.log.Error("consolidate: failed to close %s: %v", pos.ID, err)
 	}

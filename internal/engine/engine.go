@@ -1290,6 +1290,7 @@ func (e *Engine) checkDelistPositions() {
 			"message": fmt.Sprintf("Delist detected for %s — emergency closing %s", pos.Symbol, pos.ID),
 		})
 
+		pos.ExitReason = fmt.Sprintf("delist: %s", pos.Symbol)
 		go e.closePositionEmergency(pos)
 	}
 }
@@ -1434,6 +1435,7 @@ func (e *Engine) triggerEmergencyClose(exchName, posID, leg string, upd exchange
 		e.telegram.NotifySLTriggered(pos, leg, exchName)
 	}
 
+	pos.ExitReason = fmt.Sprintf("SL/liquidation: %s leg on %s", leg, exchName)
 	go e.closePositionEmergency(pos)
 }
 
