@@ -104,7 +104,17 @@ func (e *SpotEngine) checkRiskGate(opp SpotArbOpportunity) RiskGateResult {
 		}
 	}
 
-	// 7. Dry-run: all real checks passed — log the would-be entry and skip execution.
+	// 7. Delist check: reject if the symbol is on the shared delist blacklist
+	//    (written by the discovery article scraper and/or the deliveryDate
+	//    contract refresh poller). Reuses arb:delist:{SYMBOL} so the spot
+	//    engine inherits the perp engine's delist coverage automatically.
+	//    Gated by DelistFilterEnabled to mirror the perp scanner's step-8
+	//    filter and to keep a single source of truth for the toggle.
+	if e.cfg.DelistFilterEnabled && e.db.IsDelisted(symbol) {
+		return RiskGateResult{Allowed: false, Reason: fmt.Sprintf("delist_%s", symbol)}
+	}
+
+	// 8. Dry-run: all real checks passed — log the would-be entry and skip execution.
 	if e.cfg.SpotFuturesDryRun {
 		e.log.Info("risk-gate: DRY RUN — would enter %s on %s (%s, net %.1f%% APR)",
 			symbol, exchName, opp.Direction, opp.NetAPR*100)

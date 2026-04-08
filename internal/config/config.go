@@ -115,6 +115,7 @@ type Config struct {
 	BacktestDays                    int     // days of historical funding to check (default 3, 0 = disabled)
 	BacktestMinProfit               float64 // minimum net profit to pass backtest filter (default 0)
 	DelistFilterEnabled             bool    // enable Binance delist monitoring & filtering (default true)
+	ContractRefreshInterval         time.Duration // cadence for the deliveryDate-based contract refresh poller (default 1h, 0 disables)
 
 	// Scan schedule
 	ScanMinutes      []int // minutes within each hour when scans fire (default [10,20,30,35,40,45,50])
@@ -402,6 +403,7 @@ type jsonDiscovery struct {
 	MaxIntervalHours        *float64         `json:"max_interval_hours"`
 	AllowMixedIntervals     *bool            `json:"allow_mixed_intervals"`
 	DelistFilter            *bool            `json:"delist_filter"`
+	ContractRefreshMin      *int             `json:"contract_refresh_min"` // minutes; 0 disables; default 60
 	Persistence             *jsonPersistence `json:"persistence"`
 }
 
@@ -561,6 +563,7 @@ func Load() *Config {
 		LossCooldownHours:                4.0,
 		BacktestDays:                     3,
 		DelistFilterEnabled:              true,
+		ContractRefreshInterval:          1 * time.Hour,
 		ScanMinutes:                      []int{10, 20, 30, 35, 40, 45, 50},
 		EntryScanMinute:                  40,
 		ExitScanMinute:                   30,
@@ -784,6 +787,13 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 			}
 			if d.DelistFilter != nil {
 				c.DelistFilterEnabled = *d.DelistFilter
+			}
+			if d.ContractRefreshMin != nil {
+				if *d.ContractRefreshMin > 0 {
+					c.ContractRefreshInterval = time.Duration(*d.ContractRefreshMin) * time.Minute
+				} else {
+					c.ContractRefreshInterval = 0 // explicit disable
+				}
 			}
 			if p := d.Persistence; p != nil {
 				if p.LookbackMin1h != nil && *p.LookbackMin1h > 0 {
@@ -1363,6 +1373,7 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	}
 	disc["allow_mixed_intervals"] = c.AllowMixedIntervals
 	disc["delist_filter"] = c.DelistFilterEnabled
+	disc["contract_refresh_min"] = int(c.ContractRefreshInterval.Minutes())
 
 	persist := getMap(disc, "persistence")
 	persist["lookback_min_1h"] = int(c.PersistLookback1h.Minutes())

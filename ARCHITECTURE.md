@@ -59,7 +59,10 @@ Funding intervals are **per-symbol per-exchange**, NOT static:
 8. **Symbol cooldown filter** (on entry scan only): Rejects if the symbol is in any cooldown. Two types: **Loss cooldown** (`LossCooldownHours`, default 4.0) — set after closing at a loss. **Re-enter cooldown** (`ReEnterCooldownHours`, default 0, disabled) — set after any close. Both persisted to Redis with TTL (`arb:lossCooldown:{symbol}`, `arb:reEnterCooldown:{symbol}`).
 9. **Funding window filter** (on entry scan only): Drop opportunities with `NextFunding > FundingWindowMin` (default 30min) away
 10. **Historical backtest filter** (on entry scan only): Fetches X days (default 3, `BacktestDays`) of historical funding settlement data from Loris API. Validates each leg independently against its own settlement schedule, sums cash flows, and rejects if `netProfit = shortSumY - longSumY <= BacktestMinProfit`. Results cached in Redis with 6h TTL.
-11. **Binance delist filter** (all scan types, configurable via `strategy.discovery.delist_filter`, default `true`): Background goroutine polls Binance delist announcements API every 6h, parses coin names from titles, stores blacklist in Redis (`arb:delist:{SYMBOL}`) with TTL until delist date + 7 days. Rejects any opportunity with a blacklisted symbol. Engine auto-exits active positions with Binance legs via emergency market close + dashboard alert. When disabled: delist monitor goroutine won't start, scanner won't filter delisting coins, and engine won't auto-close positions for delisting coins.
+11. **Delist filter** (all scan types, configurable via `strategy.discovery.delist_filter`, default `true`): Two complementary signal paths write to the same `arb:delist:{SYMBOL}` Redis key:
+    - **Article scraper** (`internal/discovery/delist.go`): polls Binance announcement API every 6h, parses coin names from delist announcement titles, stores blacklist with TTL until delist date + 7 days.
+    - **deliveryDate poller** (`internal/discovery/contract_refresh.go`, v0.31.0): `StartContractRefresh` runs a 1h-cadence background goroutine (interval configurable via `contract_refresh_min`, default 60, 0 disables) that calls `LoadAllContracts` for every configured exchange and writes any near-future `DeliveryDate`-flagged perpetual to the same Redis key. Currently populates `DeliveryDate` for Binance (`deliveryDate` field) and Bybit (`deliveryTime` field on LinearPerpetual contracts). Title-format-independent — catches batch delists using generic announcement titles.
+    - Both writes are idempotent; the key format is shared. Scanner rejects blacklisted symbols. Engine auto-exits active positions regardless of which leg's exchange is involved (generalized from Binance-only in v0.31.0) via emergency market close + dashboard alert. When disabled: neither goroutine starts, scanner won't filter, engine won't auto-close.
 
 **Profitability Filter**:
 ```
@@ -359,6 +362,7 @@ internal/
     verifier.go                    Exchange-native rate verification (direction, interval, magnitude, spread, caps)
     ranker.go                      Profitability filter, composite scoring, fee schedules
     ranker_test.go                 Ranking tests
+    contract_refresh.go            1h-cadence deliveryDate poller: writes near-expiry perpetuals to arb:delist:{SYMBOL}
   database/
     redis.go                       Redis client wrapper (DB 2)
     state.go                       Positions, history, funding snapshots, stats, transfers

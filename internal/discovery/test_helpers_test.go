@@ -15,6 +15,7 @@ type stubExchange struct{ name string }
 func (s stubExchange) Name() string                                         { return s.name }
 func (s stubExchange) PlaceOrder(exchange.PlaceOrderParams) (string, error) { return "", nil }
 func (s stubExchange) CancelOrder(string, string) error                     { return nil }
+func (s stubExchange) CancelAllOrders(string) error                          { return nil }
 func (s stubExchange) GetPendingOrders(string) ([]exchange.Order, error)    { return nil, nil }
 func (s stubExchange) GetOrderFilledQty(string, string) (float64, error)    { return 0, nil }
 func (s stubExchange) GetPosition(string) ([]exchange.Position, error)      { return nil, nil }

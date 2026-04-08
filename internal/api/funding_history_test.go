@@ -21,6 +21,7 @@ func (s fundingStubExchange) Name() string { return s.name }
 func (s fundingStubExchange) SetMetricsCallback(exchange.MetricsCallback) {}
 func (s fundingStubExchange) PlaceOrder(exchange.PlaceOrderParams) (string, error) { return "", nil }
 func (s fundingStubExchange) CancelOrder(string, string) error { return nil }
+func (s fundingStubExchange) CancelAllOrders(string) error { return nil }
 func (s fundingStubExchange) GetPendingOrders(string) ([]exchange.Order, error) { return nil, nil }
 func (s fundingStubExchange) GetOrderFilledQty(string, string) (float64, error) { return 0, nil }
 func (s fundingStubExchange) GetPosition(string) ([]exchange.Position, error) { return nil, nil }
