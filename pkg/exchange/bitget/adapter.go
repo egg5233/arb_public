@@ -923,14 +923,14 @@ func (a *Adapter) Withdraw(params exchange.WithdrawParams) (*exchange.WithdrawRe
 func (a *Adapter) WithdrawFeeInclusive() bool { return false }
 
 // GetWithdrawFee queries the Bitget API for the withdrawal fee of a coin on a given chain.
-func (a *Adapter) GetWithdrawFee(coin, chain string) (float64, error) {
+func (a *Adapter) GetWithdrawFee(coin, chain string) (fee float64, minWithdraw float64, err error) {
 	network := mapChainToBitgetNetwork(chain)
 	params := map[string]string{
 		"coin": coin,
 	}
-	raw, err := a.client.Get("/api/v2/spot/public/coins", params)
-	if err != nil {
-		return 0, fmt.Errorf("bitget GetWithdrawFee: %w", err)
+	raw, apiErr := a.client.Get("/api/v2/spot/public/coins", params)
+	if apiErr != nil {
+		return 0, 0, fmt.Errorf("bitget GetWithdrawFee: %w", apiErr)
 	}
 
 	var resp struct {
@@ -939,17 +939,18 @@ func (a *Adapter) GetWithdrawFee(coin, chain string) (float64, error) {
 		Data []struct {
 			Coin   string `json:"coin"`
 			Chains []struct {
-				Chain            string `json:"chain"`
-				WithdrawFee      string `json:"withdrawFee"`
-				ExtraWithdrawFee string `json:"extraWithdrawFee"`
+				Chain             string `json:"chain"`
+				WithdrawFee       string `json:"withdrawFee"`
+				ExtraWithdrawFee  string `json:"extraWithdrawFee"`
+				MinWithdrawAmount string `json:"minWithdrawAmount"`
 			} `json:"chains"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
-		return 0, fmt.Errorf("bitget GetWithdrawFee unmarshal: %w", err)
+		return 0, 0, fmt.Errorf("bitget GetWithdrawFee unmarshal: %w", err)
 	}
 	if resp.Code != "00000" {
-		return 0, fmt.Errorf("bitget GetWithdrawFee API error: code=%s msg=%s", resp.Code, resp.Msg)
+		return 0, 0, fmt.Errorf("bitget GetWithdrawFee API error: code=%s msg=%s", resp.Code, resp.Msg)
 	}
 
 	for _, c := range resp.Data {
@@ -958,17 +959,18 @@ func (a *Adapter) GetWithdrawFee(coin, chain string) (float64, error) {
 		}
 		for _, ch := range c.Chains {
 			if strings.EqualFold(ch.Chain, network) {
-				fee, err := strconv.ParseFloat(ch.WithdrawFee, 64)
+				parsedFee, err := strconv.ParseFloat(ch.WithdrawFee, 64)
 				if err != nil {
-					return 0, fmt.Errorf("bitget GetWithdrawFee parse fee: %w", err)
+					return 0, 0, fmt.Errorf("bitget GetWithdrawFee parse fee: %w", err)
 				}
 				extra, _ := strconv.ParseFloat(ch.ExtraWithdrawFee, 64)
-				return fee + extra, nil
+				minWd, _ := strconv.ParseFloat(ch.MinWithdrawAmount, 64)
+				return parsedFee + extra, minWd, nil
 			}
 		}
-		return 0, fmt.Errorf("bitget GetWithdrawFee: chain %s not found for %s", network, coin)
+		return 0, 0, fmt.Errorf("bitget GetWithdrawFee: chain %s not found for %s", network, coin)
 	}
-	return 0, fmt.Errorf("bitget GetWithdrawFee: coin %s not found", coin)
+	return 0, 0, fmt.Errorf("bitget GetWithdrawFee: coin %s not found", coin)
 }
 
 func mapChainToBitgetNetwork(chain string) string {

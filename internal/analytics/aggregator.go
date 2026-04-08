@@ -66,7 +66,10 @@ func ComputeExchangeMetrics(perps []*models.ArbitragePosition, spots []*models.S
 
 	for _, p := range perps {
 		halfPnL := p.RealizedPnL / 2.0
-		notional := math.Max(p.LongEntry*p.LongSize, p.ShortEntry*p.ShortSize)
+		notional := p.EntryNotional
+		if notional <= 0 {
+			notional = math.Max(p.LongEntry*p.LongSize, p.ShortEntry*p.ShortSize)
+		}
 		halfNotional := notional / 2.0
 		duration := p.UpdatedAt.Sub(p.CreatedAt)
 		isWin := p.RealizedPnL > 0
@@ -173,11 +176,20 @@ func ComputeStrategySummary(perps []*models.ArbitragePosition, spots []*models.S
 				s.LossCount++
 			}
 			s.FundingTotal += p.FundingCollected
-			s.FeesTotal += p.EntryFees + p.ExitFees
+			// Use HasReconciled flag to determine fee source.
+			// ExitFees may legitimately be 0 for zero-fee VIP accounts.
+			if p.HasReconciled {
+				s.FeesTotal += math.Abs(p.ExitFees) // reconciled: use actual fees (may be 0)
+			} else {
+				s.FeesTotal += p.EntryFees // pre-reconciliation estimate
+			}
 
 			dur := p.UpdatedAt.Sub(p.CreatedAt)
 			totalDuration += dur
-			notional := math.Max(p.LongEntry*p.LongSize, p.ShortEntry*p.ShortSize)
+			notional := p.EntryNotional
+			if notional <= 0 {
+				notional = math.Max(p.LongEntry*p.LongSize, p.ShortEntry*p.ShortSize)
+			}
 			totalNotional += notional
 		}
 

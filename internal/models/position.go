@@ -36,15 +36,51 @@ type ArbitragePosition struct {
 	ReversalCount    int       `json:"reversal_count,omitempty"`    // spread reversal occurrences (for tolerance)
 	ZeroSpreadCount  int       `json:"zero_spread_count,omitempty"` // consecutive zero-spread occurrences
 	EntryFees        float64   `json:"entry_fees,omitempty"`        // total entry trading fees (both legs)
-	ExitFees         float64   `json:"exit_fees,omitempty"`         // total exit trading fees (both legs)
+	ExitFees         float64   `json:"exit_fees,omitempty"`         // total trading fees both legs open+close (from reconciliation)
 	BasisGainLoss    float64   `json:"basis_gain_loss,omitempty"`   // price-based P/L excluding funding and fees
 	Slippage         float64   `json:"slippage,omitempty"`          // estimated slippage from BBO at order time
+	LongTotalFees    float64   `json:"long_total_fees,omitempty"`   // total trading fees for long leg (open+close)
+	ShortTotalFees   float64   `json:"short_total_fees,omitempty"`  // total trading fees for short leg (open+close)
+	LongFunding      float64   `json:"long_funding,omitempty"`      // funding collected on long leg
+	ShortFunding     float64   `json:"short_funding,omitempty"`     // funding collected on short leg
+	LongClosePnL     float64   `json:"long_close_pnl,omitempty"`   // price movement PnL on long leg (PricePnL)
+	ShortClosePnL    float64   `json:"short_close_pnl,omitempty"`  // price movement PnL on short leg (PricePnL)
+	EntryNotional    float64   `json:"entry_notional,omitempty"`    // max(long_entry*long_size, short_entry*short_size) at open
 	ExitReason         string           `json:"exit_reason,omitempty"`         // why the position was closed
 	FailureReason      string           `json:"failure_reason,omitempty"`      // why it failed (e.g. "circuit breaker", "insufficient balance", "depth timeout")
 	FailureStage       string           `json:"failure_stage,omitempty"`       // at what stage (e.g. "depth_subscribe", "depth_fill", "order_placement")
 	LongUnrealizedPnL  float64          `json:"long_unrealized_pnl,omitempty"`
 	ShortUnrealizedPnL float64          `json:"short_unrealized_pnl,omitempty"`
 	RotationHistory    []RotationRecord `json:"rotation_history,omitempty"`
+	HasReconciled      bool             `json:"has_reconciled,omitempty"`      // true once PnL reconciliation has run (exit or consolidate)
+	PartialReconcile   bool             `json:"partial_reconcile,omitempty"`   // true when closed with incomplete PnL data
+}
+
+// InferHasReconciled back-fills HasReconciled for legacy positions that were
+// closed before the field existed. Uses exit-reconciliation breakdown fields
+// as evidence — any non-zero value proves reconciliation ran.
+//
+// Field safety notes:
+// - LongFunding/ShortFunding are per-leg EXIT breakdown fields, only set by
+//   GetClosePnL during reconciliation. They are NOT the mid-life funding
+//   accumulator (FundingCollected). Safe to use as evidence.
+// - FundingCollected is updated during position lifetime by the funding
+//   tracker. It MUST NOT be used in this check — would cause false positives.
+// - EntryFees is set during entry. NOT used here — same reason.
+//
+// Ambiguous case: old positions where reconciliation returned all-zero diffs
+// remain HasReconciled=false. They use EntryFees as fallback — same as before.
+func (p *ArbitragePosition) InferHasReconciled() {
+	if p.HasReconciled || p.PartialReconcile {
+		return
+	}
+	if p.ExitFees != 0 ||
+		p.LongTotalFees != 0 || p.ShortTotalFees != 0 ||
+		p.BasisGainLoss != 0 ||
+		p.LongFunding != 0 || p.ShortFunding != 0 ||
+		p.LongClosePnL != 0 || p.ShortClosePnL != 0 {
+		p.HasReconciled = true
+	}
 }
 
 // RotationRecord captures a single leg rotation event for the position timeline.

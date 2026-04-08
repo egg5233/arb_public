@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -19,6 +20,8 @@ import (
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
+
+var errPartialEntry = errors.New("partial entry: consolidator will reconcile")
 
 // isAlreadySetError detects harmless "already set" responses from exchanges
 // when setting leverage or margin mode to the current value.
@@ -104,6 +107,10 @@ type Engine struct {
 	// reduce-only fills (exits, L4 reductions, rotation closes, consolidator trims).
 	ownOrders sync.Map // "exchange:orderID" → struct{}{}
 
+	// consolidateRetries tracks PnL query retry counts per position in markPositionClosed.
+	// key: posID → consecutive consolidation cycles where GetClosePnL failed.
+	consolidateRetries map[string]int
+
 	// allocOverrides stores the allocator's chosen exchange pairs from the most
 	// recent rebalance scan, keyed by symbol. The entry scan applies these to
 	// patch opportunities so the executed pair matches the rebalanced pair.
@@ -152,7 +159,8 @@ func NewEngine(
 		entryActive:     make(map[string]string),
 		slIndex:         make(map[string]slEntry),
 		slFillCh:        make(chan slFillEvent, 64),
-		apiErrCounts:    make(map[string]int),
+		apiErrCounts:       make(map[string]int),
+		consolidateRetries: make(map[string]int),
 	}
 	return e
 }
@@ -340,14 +348,27 @@ func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bo
 		symbol, longExchange, shortExchange, approval.Size, approval.Price)
 	go func() {
 		defer lock.Release()
-		if err := e.executeTradeV2WithPos(*opp, pendingPos, approval.Size, approval.Price, approval.GapBPS); err != nil {
+		err := e.executeTradeV2WithPos(*opp, pendingPos, approval.Size, approval.Price, approval.GapBPS)
+		if errors.Is(err, errPartialEntry) {
+			if cErr := e.commitPerpCapital(reservation, pendingPos.ID); cErr != nil {
+				e.log.Error("manual open: capital commit for partial %s: %v", symbol, cErr)
+				if e.allocator != nil && e.allocator.Enabled() {
+					_ = e.allocator.Reconcile()
+				}
+			}
+			return
+		}
+		if err != nil {
 			e.releasePerpReservation(reservation)
 			e.log.Error("manual open: trade execution failed for %s: %v", symbol, err)
 			e.removePendingPosition(pendingPos)
 			return
 		}
-		if err := e.commitPerpCapital(reservation, pendingPos.ID); err != nil {
-			e.log.Error("manual open: capital commit failed for %s: %v", symbol, err)
+		if cErr := e.commitPerpCapital(reservation, pendingPos.ID); cErr != nil {
+			e.log.Error("manual open: capital commit failed for %s: %v — triggering allocator reconcile", symbol, cErr)
+			if e.allocator != nil && e.allocator.Enabled() {
+				_ = e.allocator.Reconcile()
+			}
 		}
 	}()
 	return nil
@@ -521,7 +542,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			e.log.Warn("rebalance: pool allocator failed, falling back to sequential: %v", allocErr)
 		} else if allocSel != nil && allocSel.feasible {
 			e.log.Info("rebalance: pool allocator selected %d opps (value=%.4f, choices=%s)", len(allocSel.choices), allocSel.totalBaseValue, e.formatAllocatorSummary(allocSel))
-			e.executeRebalanceFundingPlan(allocSel.needs, balances)
+			e.executeRebalanceFundingPlan(allocSel.needs, balances, nil)
 
 			// Store allocator choices so the upcoming entry scan can patch
 			// opportunities to use the same exchange pairs that funds were rebalanced for.
@@ -778,15 +799,28 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			continue
 		}
 
-		shortfall := need - bal.futures
-		l4Extra := need/targetFreeRatio - bal.futuresTotal - shortfall
-		if l4Extra < 0 {
-			l4Extra = 0
+		marginDeficit := need - bal.futures
+		if marginDeficit < 0 {
+			marginDeficit = 0
 		}
-		if l4Extra > shortfall {
-			l4Extra = shortfall
+		actualMargin := need / e.cfg.MarginSafetyMultiplier
+		if actualMargin <= 0 {
+			actualMargin = need
 		}
-		transferAmt := shortfall + l4Extra
+		targetRatio := e.cfg.MarginL4Threshold - marginEpsilon
+		freeTarget := 1.0 - targetRatio
+		var ratioDeficit float64
+		if freeTarget > 0 && bal.futuresTotal > 0 {
+			ratioDeficit = (freeTarget*bal.futuresTotal - bal.futures + actualMargin) / targetRatio
+			if ratioDeficit < 0 {
+				ratioDeficit = 0
+			}
+		}
+		transferAmt := marginDeficit
+		if ratioDeficit > transferAmt {
+			transferAmt = ratioDeficit
+		}
+		e.log.Debug("rebalance: seq deficit %s: need=%.2f futures=%.2f marginDef=%.2f ratioDef=%.2f transferAmt=%.2f", name, need, bal.futures, marginDeficit, ratioDeficit, transferAmt)
 		if bal.spot > 0 {
 			actualTransfer := transferAmt
 			if actualTransfer > bal.spot {
@@ -825,6 +859,16 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 		return
 	}
 
+	// Convert seqDeficits to rebalanceDeficit and delegate to the existing
+	// cross-exchange executor (same path the pool allocator uses).
+	// Pass full 'needs' map so the lower-half can correctly calculate donor surplus.
+	precomputed := make([]rebalanceDeficit, len(crossDeficits))
+	for i, cd := range crossDeficits {
+		precomputed[i] = rebalanceDeficit{exchange: cd.exchange, amount: cd.amount}
+	}
+	e.log.Info("rebalance: %d exchanges need cross-exchange funding, delegating to allocator executor", len(precomputed))
+	e.executeRebalanceFundingPlan(needs, balances, precomputed)
+
 	e.log.Info("rebalance: complete")
 }
 
@@ -835,14 +879,14 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 // invalidate the allocator's capital plan.  When overrides are empty (allocator
 // didn't run, or TopPairsPerSymbol==1 with no alternatives), all opps pass
 // through unchanged for backwards compatibility.
-func (e *Engine) applyAllocatorOverrides(opps []models.Opportunity) []models.Opportunity {
+func (e *Engine) applyAllocatorOverrides(opps []models.Opportunity) ([]models.Opportunity, bool) {
 	e.allocOverrideMu.Lock()
 	overrides := e.allocOverrides
 	e.allocOverrides = nil
 	e.allocOverrideMu.Unlock()
 
 	if len(overrides) == 0 {
-		return opps // no allocator guidance, pass all through
+		return nil, false // no allocator guidance
 	}
 
 	// Filter to only allocator-selected symbols, and patch pairs.
@@ -902,69 +946,11 @@ func (e *Engine) applyAllocatorOverrides(opps []models.Opportunity) []models.Opp
 
 	if len(filtered) == 0 {
 		e.log.Warn("entry: all allocator overrides stale, no opps passed filter")
-		return nil // don't fall back to unfiltered opps
+		return nil, true // overrides existed but all stale
 	}
-	return filtered
+	return filtered, true
 }
 
-// buildOppsFromAllocatorChoices maps allocator choices back to scan opps,
-// patching LongExchange/ShortExchange where the allocator picked a different
-// pair. This is the same logic as applyAllocatorOverrides but operates on a
-// fresh allocatorSelection without storing anything for later scans.
-func (e *Engine) buildOppsFromAllocatorChoices(opps []models.Opportunity, sel *allocatorSelection) []models.Opportunity {
-	if sel == nil || len(sel.choices) == 0 {
-		return nil
-	}
-
-	// Index choices by symbol.
-	choiceMap := make(map[string]allocatorChoice, len(sel.choices))
-	for _, c := range sel.choices {
-		choiceMap[c.symbol] = c
-	}
-
-	var filtered []models.Opportunity
-	patched := 0
-	for _, opp := range opps {
-		choice, ok := choiceMap[opp.Symbol]
-		if !ok {
-			continue
-		}
-		o := opp
-		if choice.longExchange == o.LongExchange && choice.shortExchange == o.ShortExchange {
-			// Primary pair matches — use as-is.
-		} else {
-			found := false
-			for _, alt := range o.Alternatives {
-				if alt.LongExchange == choice.longExchange && alt.ShortExchange == choice.shortExchange {
-					e.log.Info("entry tier-1 patch %s: %s/%s → %s/%s (spread %.4f→%.4f bps/h)",
-						o.Symbol, o.LongExchange, o.ShortExchange,
-						choice.longExchange, choice.shortExchange,
-						o.Spread, alt.Spread)
-					o.LongExchange = alt.LongExchange
-					o.ShortExchange = alt.ShortExchange
-					o.LongRate = alt.LongRate
-					o.ShortRate = alt.ShortRate
-					o.Spread = alt.Spread
-					if alt.IntervalHours > 0 {
-						o.IntervalHours = alt.IntervalHours
-					}
-					found = true
-					patched++
-					break
-				}
-			}
-			if !found {
-				e.log.Warn("entry tier-1: allocator choice for %s pair %s/%s not in current scan, skipping",
-					o.Symbol, choice.longExchange, choice.shortExchange)
-				continue
-			}
-		}
-		filtered = append(filtered, o)
-	}
-
-	e.log.Info("entry tier-1: %d opps from allocator, %d patched", len(filtered), patched)
-	return filtered
-}
 
 // recordTransfer saves a transfer record to the database for dashboard display.
 func (e *Engine) recordTransfer(from, to, coin, chain, amount, fee, txID, status, reason string) {
@@ -1064,16 +1050,20 @@ func (e *Engine) run() {
 
 					// Tier 2: Fall back to :35 allocator overrides.
 					if len(entryOpps) == 0 {
-						patched := e.applyAllocatorOverrides(result.Opps)
+						patched, hadOverrides := e.applyAllocatorOverrides(result.Opps)
 						if len(patched) > 0 {
 							tier = "tier-2-rebalance-overrides"
 							e.log.Info("entry: %s using %d opps", tier, len(patched))
 							entryOpps = patched
+						} else if hadOverrides {
+							// Allocator ran but all overrides stale — block tier-3 fallback
+							tier = "blocked-stale-overrides"
+							e.log.Warn("entry: allocator ran but overrides stale, skipping tier-3 to avoid unfunded entries")
 						}
 					}
 
-					// Tier 3: Fall back to original rank-based entry.
-					if len(entryOpps) == 0 {
+					// Tier 3: rank-based — only if allocator did NOT run
+					if len(entryOpps) == 0 && tier == "none" {
 						tier = "tier-3-rank-based"
 						e.log.Info("entry: %s with %d opps", tier, len(result.Opps))
 						entryOpps = result.Opps
@@ -2147,14 +2137,27 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 			defer c.lock.Release()
 
 			e.log.Info("executing trade for %s: size=%.6f price=%.5f gapBPS=%.1f", c.opp.Symbol, c.size, c.price, c.gapBPS)
-			if err := e.executeTradeV2WithPos(c.opp, c.pos, c.size, c.price, c.gapBPS); err != nil {
+			err := e.executeTradeV2WithPos(c.opp, c.pos, c.size, c.price, c.gapBPS)
+			if errors.Is(err, errPartialEntry) {
+				if cErr := e.commitPerpCapital(c.reservation, c.pos.ID); cErr != nil {
+					e.log.Error("capital commit for partial %s: %v", c.opp.Symbol, cErr)
+					if e.allocator != nil && e.allocator.Enabled() {
+						_ = e.allocator.Reconcile()
+					}
+				}
+				return
+			}
+			if err != nil {
 				e.releasePerpReservation(c.reservation)
 				e.log.Error("trade execution failed for %s: %v", c.opp.Symbol, err)
 				e.cleanupFailedPosition(c.opp.Symbol, err.Error())
 				return
 			}
-			if err := e.commitPerpCapital(c.reservation, c.pos.ID); err != nil {
-				e.log.Error("capital commit failed for %s: %v", c.opp.Symbol, err)
+			if cErr := e.commitPerpCapital(c.reservation, c.pos.ID); cErr != nil {
+				e.log.Error("capital commit failed for %s: %v — triggering allocator reconcile", c.opp.Symbol, cErr)
+				if e.allocator != nil && e.allocator.Enabled() {
+					_ = e.allocator.Reconcile()
+				}
 			}
 		}(c)
 	}
@@ -2224,6 +2227,7 @@ func (e *Engine) mergeIntoPosition(existing, pending *models.ArbitragePosition,
 		}
 		fresh.LongSize = totalLong
 		fresh.ShortSize = totalShort
+		fresh.EntryNotional = math.Max(fresh.LongEntry*fresh.LongSize, fresh.ShortEntry*fresh.ShortSize)
 
 		// Weighted average entry spread (feeds exit logic)
 		if totalLong > 0 {
@@ -2325,6 +2329,8 @@ func (e *Engine) MergeExistingDuplicates() {
 				fresh.FundingCollected += p.FundingCollected
 				fresh.RotationPnL += p.RotationPnL
 				fresh.EntryFees += p.EntryFees
+				// Always recompute EntryNotional after merge since entry/size changed.
+				fresh.EntryNotional = math.Max(fresh.LongEntry*fresh.LongSize, fresh.ShortEntry*fresh.ShortSize)
 				if totalLong > 0 {
 					fresh.EntrySpread = (oldLong*fresh.EntrySpread + p.LongSize*p.EntrySpread) / totalLong
 				}
@@ -2714,8 +2720,35 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 	// ---------------------------------------------------------------
 	// Confirm fills (WS + REST fallback, 5s timeout)
 	// ---------------------------------------------------------------
-	longFilled, longAvg := e.confirmFill(longExch, longRes.orderID, opp.Symbol)
-	shortFilled, shortAvg := e.confirmFill(shortExch, shortRes.orderID, opp.Symbol)
+	longFilled, longAvg, longCFErr := e.confirmFillSafe(longExch, longRes.orderID, opp.Symbol)
+	shortFilled, shortAvg, shortCFErr := e.confirmFillSafe(shortExch, shortRes.orderID, opp.Symbol)
+	if longCFErr != nil {
+		e.log.Error("IOC fill state unknown for long %s: %v", longRes.orderID, longCFErr)
+	}
+	if shortCFErr != nil {
+		e.log.Error("IOC fill state unknown for short %s: %v", shortRes.orderID, shortCFErr)
+	}
+	// If one side filled but the other is unknown, we have orphan risk
+	if longFilled > 0 && shortCFErr != nil {
+		e.log.Error("ORPHAN WARNING: %s long filled %.6f but short fill unknown — saving as partial", posID, longFilled)
+		pos.LongSize = longFilled
+		pos.ShortSize = 0
+		pos.Status = models.StatusPartial
+		pos.FailureReason = "short_fill_unknown"
+		pos.UpdatedAt = time.Now().UTC()
+		_ = e.db.SavePosition(pos)
+		return errPartialEntry
+	}
+	if shortFilled > 0 && longCFErr != nil {
+		e.log.Error("ORPHAN WARNING: %s short filled %.6f but long fill unknown — saving as partial", posID, shortFilled)
+		pos.LongSize = 0
+		pos.ShortSize = shortFilled
+		pos.Status = models.StatusPartial
+		pos.FailureReason = "long_fill_unknown"
+		pos.UpdatedAt = time.Now().UTC()
+		_ = e.db.SavePosition(pos)
+		return errPartialEntry
+	}
 
 	e.log.Info("IOC fills for %s: long=%.6f@%.6f short=%.6f@%.6f",
 		opp.Symbol, longFilled, longAvg, shortFilled, shortAvg)
@@ -2793,6 +2826,7 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 		entrySlippage += shortBBO.Bid - pos.ShortEntry
 	}
 	pos.Slippage = entrySlippage
+	pos.EntryNotional = math.Max(pos.LongEntry*pos.LongSize, pos.ShortEntry*pos.ShortSize)
 
 	pos.Status = models.StatusActive
 	pos.UpdatedAt = time.Now().UTC()
@@ -3220,7 +3254,18 @@ fillLoop:
 				continue
 			}
 			e.recordAPISuccess(opp.ShortExchange)
-			shortFilled, shortAvg = e.confirmFill(shortExch, shortOID, opp.Symbol)
+			var shortCFErr error
+			shortFilled, shortAvg, shortCFErr = e.confirmFillSafe(shortExch, shortOID, opp.Symbol)
+			if shortCFErr != nil {
+				// First-leg fill state unknown — cancel and freeze this tick.
+				// Do NOT continue loop blindly; the order may have filled.
+				e.log.Error("depth tick: short fill state unknown for %s: %v — freezing tick", shortOID, shortCFErr)
+				_ = shortExch.CancelOrder(opp.Symbol, shortOID)
+				shortConsecFails++
+				// Break out of depth loop to trigger post-loop reconciliation
+				// which will use the force checkpoint to persist actual state.
+				break
+			}
 			if shortFilled == 0 {
 				shortConsecFails++
 				e.log.Info("depth tick: short leg got 0 fill (%d/%d)", shortConsecFails, maxConsecFails)
@@ -3261,7 +3306,21 @@ fillLoop:
 				}
 			} else {
 				e.recordAPISuccess(opp.LongExchange)
-				longFilled, longAvg = e.confirmFill(longExch, longOID, opp.Symbol)
+				var longCFErr error
+				longFilled, longAvg, longCFErr = e.confirmFillSafe(longExch, longOID, opp.Symbol)
+				if longCFErr != nil {
+					e.log.Error("ORPHAN WARNING: %s long fill unknown after short filled %.6f: %v", posID, shortFilled, longCFErr)
+					pos.LongSize = confirmedLong
+					pos.ShortSize = confirmedShort + shortFilled
+					pos.LongEntry = longVWAP
+					pos.ShortEntry = shortVWAP
+					pos.EntryNotional = math.Max(longVWAP*pos.LongSize, shortVWAP*pos.ShortSize)
+					pos.Status = models.StatusPartial
+					pos.FailureReason = "second_leg_fill_unknown"
+					pos.UpdatedAt = time.Now().UTC()
+					_ = e.db.SavePosition(pos)
+					return errPartialEntry
+				}
 				if longFilled == 0 {
 					e.log.Warn("depth tick: long confirmFill got 0 after short filled %.6f, retrying second leg", shortFilled)
 					retryFilled, retryAvg := e.retrySecondLeg(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, shortFilled, askPrice)
@@ -3314,7 +3373,14 @@ fillLoop:
 				continue
 			}
 			e.recordAPISuccess(opp.LongExchange)
-			longFilled, longAvg = e.confirmFill(longExch, longOID, opp.Symbol)
+			var longCFErr error
+			longFilled, longAvg, longCFErr = e.confirmFillSafe(longExch, longOID, opp.Symbol)
+			if longCFErr != nil {
+				e.log.Error("depth tick: long fill state unknown for %s: %v — freezing tick", longOID, longCFErr)
+				_ = longExch.CancelOrder(opp.Symbol, longOID)
+				longConsecFails++
+				break // freeze depth loop — post-loop reconciliation handles
+			}
 			if longFilled == 0 {
 				longConsecFails++
 				e.log.Info("depth tick: long leg got 0 fill (%d/%d)", longConsecFails, maxConsecFails)
@@ -3355,7 +3421,21 @@ fillLoop:
 				}
 			} else {
 				e.recordAPISuccess(opp.ShortExchange)
-				shortFilled, shortAvg = e.confirmFill(shortExch, shortOID, opp.Symbol)
+				var shortCFErr error
+				shortFilled, shortAvg, shortCFErr = e.confirmFillSafe(shortExch, shortOID, opp.Symbol)
+				if shortCFErr != nil {
+					e.log.Error("ORPHAN WARNING: %s short fill unknown after long filled %.6f: %v", posID, longFilled, shortCFErr)
+					pos.LongSize = confirmedLong + longFilled
+					pos.ShortSize = confirmedShort
+					pos.LongEntry = longVWAP
+					pos.ShortEntry = shortVWAP
+					pos.EntryNotional = math.Max(longVWAP*pos.LongSize, shortVWAP*pos.ShortSize)
+					pos.Status = models.StatusPartial
+					pos.FailureReason = "second_leg_fill_unknown"
+					pos.UpdatedAt = time.Now().UTC()
+					_ = e.db.SavePosition(pos)
+					return errPartialEntry
+				}
 				if shortFilled == 0 {
 					e.log.Warn("depth tick: short confirmFill got 0 after long filled %.6f, retrying second leg", longFilled)
 					retryFilled, retryAvg := e.retrySecondLeg(shortExch, opp.ShortExchange, opp.Symbol, exchange.SideSell, longFilled, bidPrice)
@@ -3455,22 +3535,85 @@ fillLoop:
 		return fmt.Errorf("%s", reason)
 	}
 
-	// Trim excess from the larger leg
+	// Force checkpoint before trim — ensures DB has current fill state
+	pos.LongSize = confirmedLong
+	pos.ShortSize = confirmedShort
+	pos.LongEntry = longVWAP
+	pos.ShortEntry = shortVWAP
+	pos.EntryNotional = math.Max(longVWAP*confirmedLong, shortVWAP*confirmedShort)
+	pos.Status = models.StatusPartial
+	pos.UpdatedAt = time.Now().UTC()
+	var ckErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		ckErr = e.db.SavePosition(pos)
+		if ckErr == nil {
+			break
+		}
+		e.log.Error("force checkpoint %s attempt %d/3: %v", posID, attempt, ckErr)
+		time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+	}
+	if ckErr != nil {
+		e.log.Error("CRITICAL: %s checkpoint failed, closing both legs to go flat", posID)
+		var longRem, shortRem float64
+		if confirmedLong > 0 {
+			longRem = e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, confirmedLong)
+		}
+		if confirmedShort > 0 {
+			shortRem = e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, confirmedShort)
+		}
+		if longRem > 0 || shortRem > 0 {
+			e.log.Error("ORPHAN EXPOSURE: %s checkpoint failed + close incomplete (longRem=%.6f shortRem=%.6f)", posID, longRem, shortRem)
+			pos.FailureReason = "checkpoint_failed_orphan"
+			_ = e.db.SavePosition(pos)
+			return errPartialEntry
+		}
+		pos.LongSize = 0
+		pos.ShortSize = 0
+		pos.Status = models.StatusClosed
+		pos.FailureReason = "checkpoint_failed_rollback"
+		pos.ExitReason = "entry_failed: DB unreachable, rolled back to flat"
+		pos.UpdatedAt = time.Now().UTC()
+		_ = e.db.SavePosition(pos)
+		_ = e.db.AddToHistory(pos)
+		e.api.BroadcastPositionUpdate(pos)
+		return fmt.Errorf("checkpoint save failed, rolled back to flat: %w", ckErr)
+	}
+
+	// Trim excess from the larger leg — track actual post-trim sizes
+	trimFailed := false
+	actualLong := confirmedLong
+	actualShort := confirmedShort
 	if confirmedLong > minFill {
 		excess := confirmedLong - minFill
 		e.log.Info("trimming long excess %.6f on %s", excess, opp.LongExchange)
 		rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, excess)
+		actualLong = minFill + rem // what's actually left on exchange
 		if rem > 0 {
-			e.log.Warn("trim incomplete: %s %s %.6f remaining on %s", opp.Symbol, exchange.SideSell, rem, longExch.Name())
+			e.log.Error("TRIM FAILED: %s long excess %.6f on %s", opp.Symbol, rem, opp.LongExchange)
+			trimFailed = true
 		}
 	}
 	if confirmedShort > minFill {
 		excess := confirmedShort - minFill
 		e.log.Info("trimming short excess %.6f on %s", excess, opp.ShortExchange)
 		rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, excess)
+		actualShort = minFill + rem // what's actually left on exchange
 		if rem > 0 {
-			e.log.Warn("trim incomplete: %s %s %.6f remaining on %s", opp.Symbol, exchange.SideBuy, rem, shortExch.Name())
+			e.log.Error("TRIM FAILED: %s short excess %.6f on %s", opp.Symbol, rem, opp.ShortExchange)
+			trimFailed = true
 		}
+	}
+
+	if trimFailed {
+		// Save actual post-trim sizes, not pre-trim values
+		pos.LongSize = actualLong
+		pos.ShortSize = actualShort
+		pos.FailureReason = "trim_incomplete"
+		pos.FailureStage = "post_fill_trim"
+		pos.UpdatedAt = time.Now().UTC()
+		_ = e.db.SavePosition(pos)
+		e.api.BroadcastPositionUpdate(pos)
+		return errPartialEntry
 	}
 
 	// Finalize entry prices
@@ -3490,6 +3633,7 @@ fillLoop:
 	pos.ShortSize = minFill
 	pos.LongEntry = finalLongEntry
 	pos.ShortEntry = finalShortEntry
+	pos.EntryNotional = math.Max(pos.LongEntry*pos.LongSize, pos.ShortEntry*pos.ShortSize)
 
 	// BBO slippage estimation (best-effort, non-blocking).
 	var slippageV2 float64
@@ -3503,8 +3647,18 @@ fillLoop:
 
 	pos.Status = models.StatusActive
 	pos.UpdatedAt = time.Now().UTC()
-	if err := e.db.SavePosition(pos); err != nil {
-		return fmt.Errorf("save active position: %w", err)
+	var saveErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		saveErr = e.db.SavePosition(pos)
+		if saveErr == nil {
+			break
+		}
+		e.log.Error("save active position %s attempt %d/3: %v", posID, attempt, saveErr)
+		time.Sleep(time.Duration(attempt) * time.Second)
+	}
+	if saveErr != nil {
+		e.log.Error("CRITICAL: %s filled but save failed after 3 attempts — left as StatusPartial", posID)
+		return errPartialEntry
 	}
 	e.api.BroadcastPositionUpdate(pos)
 
@@ -3587,6 +3741,24 @@ func (e *Engine) confirmFill(exch exchange.Exchange, orderID, symbol string) (fi
 			return 0, 0
 		}
 	}
+}
+
+// confirmFillSafe wraps confirmFill with error awareness for the entry path.
+// Returns an error when fill state is unknown (REST query failed), so callers
+// can distinguish "confirmed zero" from "unknown".
+func (e *Engine) confirmFillSafe(exch exchange.Exchange, orderID, symbol string) (float64, float64, error) {
+	filled, avg := e.confirmFill(exch, orderID, symbol)
+	if filled == 0 && avg == 0 {
+		restFilled, restErr := exch.GetOrderFilledQty(orderID, symbol)
+		if restErr != nil {
+			return 0, 0, fmt.Errorf("fill state unknown for %s on %s: %w", orderID, exch.Name(), restErr)
+		}
+		if restFilled > 0 {
+			return restFilled, 0, nil
+		}
+		return 0, 0, nil
+	}
+	return filled, avg, nil
 }
 
 // closeLeg places a reduce-only market IOC order to close or trim a position leg.

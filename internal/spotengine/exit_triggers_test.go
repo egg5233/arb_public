@@ -1,7 +1,6 @@
 package spotengine
 
 import (
-	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -74,8 +73,8 @@ func (s priceStubExchange) GetClosePnL(string, time.Time) ([]exchange.ClosePnL, 
 	return nil, nil
 }
 func (s priceStubExchange) WithdrawFeeInclusive() bool { return false }
-func (s priceStubExchange) GetWithdrawFee(string, string) (float64, error) {
-	return 0, fmt.Errorf("not implemented")
+func (s priceStubExchange) GetWithdrawFee(string, string) (float64, float64, error) {
+	return 0, 0, nil
 }
 func (s priceStubExchange) EnsureOneWayMode() error  { return nil }
 func (s priceStubExchange) CancelAllOrders(string) error { return nil }

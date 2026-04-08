@@ -1,6 +1,7 @@
 package analytics
 
 import (
+	"math"
 	"sort"
 	"time"
 
@@ -82,13 +83,19 @@ func (sw *SnapshotWriter) run() {
 // RecordPerpClose sends a perp-perp position close event to the snapshot channel.
 // Non-blocking: if the channel is full, the event is dropped with a warning log.
 func (sw *SnapshotWriter) RecordPerpClose(pos *models.ArbitragePosition) {
+	var perpFees float64
+	if pos.HasReconciled {
+		perpFees = math.Abs(pos.ExitFees) // reconciled: use actual fees (may be 0)
+	} else {
+		perpFees = pos.EntryFees // pre-reconciliation estimate
+	}
 	ev := snapshotEvent{
 		Strategy:     "perp",
 		Exchange:     "", // perp spans two exchanges — aggregate
 		PnL:          pos.RealizedPnL,
 		IsWin:        pos.RealizedPnL > 0,
 		FundingTotal: pos.FundingCollected,
-		FeesTotal:    pos.EntryFees + pos.ExitFees,
+		FeesTotal:    perpFees,
 	}
 	select {
 	case sw.ch <- ev:
@@ -154,7 +161,10 @@ func BackfillFromHistory(store *Store, perps []*models.ArbitragePosition, spots 
 			pnl:      p.RealizedPnL,
 			isWin:    p.RealizedPnL > 0,
 			funding:  p.FundingCollected,
-			fees:     p.EntryFees + p.ExitFees,
+			fees: func() float64 {
+				if p.HasReconciled { return math.Abs(p.ExitFees) }
+				return p.EntryFees
+			}(),
 		})
 	}
 	for _, s := range spots {

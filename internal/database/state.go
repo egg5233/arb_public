@@ -154,6 +154,7 @@ func (c *Client) GetPosition(id string) (*models.ArbitragePosition, error) {
 	if err := json.Unmarshal(data, &pos); err != nil {
 		return nil, fmt.Errorf("unmarshal position: %w", err)
 	}
+	pos.InferHasReconciled()
 	return &pos, nil
 }
 
@@ -187,6 +188,7 @@ func (c *Client) GetActivePositions() ([]*models.ArbitragePosition, error) {
 		if err := json.Unmarshal([]byte(s), &pos); err != nil {
 			continue
 		}
+		pos.InferHasReconciled()
 		positions = append(positions, &pos)
 	}
 	return positions, nil
@@ -293,6 +295,7 @@ func (c *Client) GetHistory(limit int) ([]*models.ArbitragePosition, error) {
 		if err := json.Unmarshal([]byte(v), &pos); err != nil {
 			continue
 		}
+		pos.InferHasReconciled()
 		positions = append(positions, &pos)
 	}
 	return positions, nil
@@ -410,6 +413,25 @@ func (c *Client) UpdateStats(pnl float64, won bool) error {
 		pipe.HIncrBy(ctx, keyStats, "win_count", 1)
 	} else {
 		pipe.HIncrBy(ctx, keyStats, "loss_count", 1)
+	}
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+// AdjustWinLoss swaps one win/loss count when reconciliation changes PnL sign.
+// Uses pipeline + Exec() to mirror UpdateStats pattern and surface errors.
+func (c *Client) AdjustWinLoss(oldWon, newWon bool) error {
+	if oldWon == newWon {
+		return nil
+	}
+	ctx := context.Background()
+	pipe := c.rdb.Pipeline()
+	if oldWon && !newWon {
+		pipe.HIncrBy(ctx, keyStats, "win_count", -1)
+		pipe.HIncrBy(ctx, keyStats, "loss_count", 1)
+	} else {
+		pipe.HIncrBy(ctx, keyStats, "loss_count", -1)
+		pipe.HIncrBy(ctx, keyStats, "win_count", 1)
 	}
 	_, err := pipe.Exec(ctx)
 	return err

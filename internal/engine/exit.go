@@ -908,22 +908,57 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 	needsExitUpdate := (reconciledLongExit > 0 && reconciledLongExit != pos.LongExit) ||
 		(reconciledShortExit > 0 && reconciledShortExit != pos.ShortExit)
 
-	if !needsPnLUpdate && !needsFundingUpdate && !needsExitUpdate {
+	// Check if per-leg breakdown fields need update.
+	// Per-field comparison: any field differs from its agg counterpart triggers update.
+	needsBreakdownUpdate := pos.LongTotalFees != longAgg.Fees ||
+		pos.ShortTotalFees != shortAgg.Fees ||
+		pos.LongFunding != longAgg.Funding ||
+		pos.ShortFunding != shortAgg.Funding ||
+		pos.LongClosePnL != longAgg.PricePnL ||
+		pos.ShortClosePnL != shortAgg.PricePnL
+
+	if !needsPnLUpdate && !needsFundingUpdate && !needsExitUpdate && !needsBreakdownUpdate {
+		// Even when numbers didn't change, mark reconciliation as done so
+		// analytics can trust this position's PnL figures.
+		if !pos.HasReconciled {
+			_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+				fresh.HasReconciled = true
+				fresh.PartialReconcile = false
+				return true
+			})
+			// Update history entry too — use UpdateHistoryEntry (NOT AddToHistory which is LPush append)
+			pos.HasReconciled = true
+			pos.PartialReconcile = false
+			if err := e.db.UpdateHistoryEntry(pos); err != nil {
+				e.log.Warn("reconcile %s: failed to update history HasReconciled: %v", pos.ID, err)
+			}
+		}
 		return true
 	}
 
 	if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
 		if needsPnLUpdate {
 			fresh.RealizedPnL = reconciledPnL
-			// Persist PnL decomposition fields alongside the reconciled total.
-			fresh.ExitFees = totalFees
-			// BasisGainLoss isolates price-movement P/L: net_pnl - funding - rotation + fees
-			// (adding fees back because they are costs subtracted from net PnL but not part of price movement)
-			fresh.BasisGainLoss = reconciledPnL - reconciledFunding - pos.RotationPnL + totalFees
 		}
 		if needsFundingUpdate {
 			fresh.FundingCollected = reconciledFunding
 		}
+		// Per-leg breakdown + decomposition: populate whenever PnL, funding, or breakdown needs update.
+		if needsBreakdownUpdate || needsPnLUpdate || needsFundingUpdate {
+			fresh.ExitFees = totalFees
+			// BasisGainLoss = current-leg price movement only (no fees, no funding).
+			// RotationPnL is NOT subtracted: it's NetPnL (includes rotation fees+funding),
+			// not PricePnL, and is tracked separately in its own field.
+			fresh.BasisGainLoss = longAgg.PricePnL + shortAgg.PricePnL
+			fresh.LongTotalFees = longAgg.Fees
+			fresh.ShortTotalFees = shortAgg.Fees
+			fresh.LongFunding = longAgg.Funding
+			fresh.ShortFunding = shortAgg.Funding
+			fresh.LongClosePnL = longAgg.PricePnL
+			fresh.ShortClosePnL = shortAgg.PricePnL
+		}
+		fresh.HasReconciled = true
+		fresh.PartialReconcile = false
 		if reconciledLongExit > 0 {
 			fresh.LongExit = reconciledLongExit
 		}
@@ -945,13 +980,24 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 			e.log.Info("reconcile %s: corrected PnL %.4f → %.4f (stats adjusted by %.4f)",
 				pos.ID, oldPnL, reconciledPnL, statsDiff)
 		}
+
+		// Correct win/loss counts if partial close PnL sign changed after reconciliation.
+		if pos.PartialReconcile {
+			oldWon := pos.RealizedPnL > 0
+			newWon := reconciledPnL > 0
+			if oldWon != newWon {
+				if err := e.db.AdjustWinLoss(oldWon, newWon); err != nil {
+					e.log.Error("reconcile %s: AdjustWinLoss failed: %v", pos.ID, err)
+				}
+			}
+		}
 	}
 	if needsFundingUpdate {
 		e.log.Info("reconcile %s: corrected FundingCollected %.4f → %.4f", pos.ID, pos.FundingCollected, reconciledFunding)
 	}
 
-	// Update the history entry so the dashboard shows corrected PnL.
-	if needsPnLUpdate || needsFundingUpdate {
+	// Update the history entry so the dashboard shows corrected PnL / per-leg breakdown.
+	if needsPnLUpdate || needsFundingUpdate || needsExitUpdate || needsBreakdownUpdate {
 		updated, err := e.db.GetPosition(pos.ID)
 		if err == nil && updated != nil {
 			if err := e.db.UpdateHistoryEntry(updated); err != nil {

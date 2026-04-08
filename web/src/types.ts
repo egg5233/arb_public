@@ -48,6 +48,14 @@ export interface Position {
   failure_reason?: string;
   long_unrealized_pnl?: number;
   short_unrealized_pnl?: number;
+  long_total_fees?: number;
+  short_total_fees?: number;
+  long_funding?: number;
+  short_funding?: number;
+  long_close_pnl?: number;
+  short_close_pnl?: number;
+  entry_notional?: number;
+  partial_reconcile?: boolean;
   rotation_history?: RotationRecord[];
 }
 

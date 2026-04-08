@@ -35,7 +35,7 @@ func (s fundingStubExchange) GetFuturesBalance() (*exchange.Balance, error) { re
 func (s fundingStubExchange) GetSpotBalance() (*exchange.Balance, error) { return nil, nil }
 func (s fundingStubExchange) Withdraw(exchange.WithdrawParams) (*exchange.WithdrawResult, error) { return nil, nil }
 func (s fundingStubExchange) WithdrawFeeInclusive() bool { return false }
-func (s fundingStubExchange) GetWithdrawFee(string, string) (float64, error) { return 0, nil }
+func (s fundingStubExchange) GetWithdrawFee(string, string) (float64, float64, error) { return 0, 0, nil }
 func (s fundingStubExchange) TransferToSpot(string, string) error { return nil }
 func (s fundingStubExchange) TransferToFutures(string, string) error { return nil }
 func (s fundingStubExchange) GetOrderbook(string, int) (*exchange.Orderbook, error) { return nil, nil }

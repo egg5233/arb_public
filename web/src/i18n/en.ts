@@ -710,6 +710,13 @@ const en = {
   'hist.netPnl': 'Net PnL',
   'hist.positionApr': 'APR',
   'hist.dataUnavailable': 'Detailed breakdown available for positions closed after v0.27.0',
+  'hist.tradingFee': 'Trading Fee',
+  'hist.closePnl': 'Close P/L',
+  'hist.longSide': 'Long',
+  'hist.shortSide': 'Short',
+  'hist.subtotal': 'Subtotal',
+  'hist.rotationPnl': 'Rotation P/L',
+  'hist.totalPnl': 'Total P/L',
 
   // Config - Analytics
   'cfg.tab.analytics': 'Analytics',
