@@ -109,6 +109,13 @@ type ContractInfo struct {
 	PriceStep       float64
 	PriceDecimals   int
 	MaintenanceRate float64 // tier-1 maintenance margin rate as decimal (0.005 = 0.5%). 0 = unknown.
+	// DeliveryDate marks a scheduled delist/expiry for the contract. Zero value
+	// means a normal perpetual (no scheduled delivery). A non-zero value is the
+	// exchange-advertised delisting timestamp (populated by the adapter from
+	// fields like Binance's fapi deliveryDate or Bybit's deliveryTime). Only
+	// populated for true perpetuals — dated quarterlies are intentionally
+	// excluded so this field unambiguously flags "perpetual being delisted".
+	DeliveryDate time.Time
 }
 
 // FundingRate holds the current funding rate from an exchange.

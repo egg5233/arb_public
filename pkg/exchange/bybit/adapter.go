@@ -467,6 +467,8 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 		List []struct {
 			Symbol        string `json:"symbol"`
 			Status        string `json:"status"`
+			ContractType  string `json:"contractType"`
+			DeliveryTime  string `json:"deliveryTime"` // ms since epoch as a string ("0" for LinearPerpetual normally)
 			LotSizeFilter struct {
 				MinOrderQty string `json:"minOrderQty"`
 				MaxOrderQty string `json:"maxOrderQty"`
@@ -482,6 +484,10 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 		return nil, fmt.Errorf("bybit LoadAllContracts parse: %w", err)
 	}
 
+	// Year-2099 cutoff (ms since epoch): any deliveryTime at or beyond this
+	// is treated as a "no scheduled delivery" sentinel.
+	const deliveryDateSentinelCutoffMs int64 = 4102444800000 // 2099-12-31 UTC
+
 	contracts := make(map[string]exchange.ContractInfo, len(resp.List))
 	for _, inst := range resp.List {
 		if inst.Status != "Trading" {
@@ -493,7 +499,7 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 		stepSize, _ := strconv.ParseFloat(inst.LotSizeFilter.QtyStep, 64)
 		priceStep, _ := strconv.ParseFloat(inst.PriceFilter.TickSize, 64)
 
-		contracts[inst.Symbol] = exchange.ContractInfo{
+		ci := exchange.ContractInfo{
 			Symbol:        inst.Symbol,
 			MinSize:       minSize,
 			StepSize:      stepSize,
@@ -502,6 +508,18 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 			PriceStep:     priceStep,
 			PriceDecimals: countDecimals(priceStep),
 		}
+
+		// Flag scheduled delist via deliveryTime ONLY for LinearPerpetual.
+		// Dated quarterlies (LinearFutures) are skipped so DeliveryDate means
+		// "perpetual with scheduled delist".
+		if inst.ContractType == "LinearPerpetual" && inst.DeliveryTime != "" && inst.DeliveryTime != "0" {
+			if deliveryMs, err := strconv.ParseInt(inst.DeliveryTime, 10, 64); err == nil &&
+				deliveryMs > 0 && deliveryMs < deliveryDateSentinelCutoffMs {
+				ci.DeliveryDate = time.UnixMilli(deliveryMs).UTC()
+			}
+		}
+
+		contracts[inst.Symbol] = ci
 	}
 
 	// Load tier-1 maintenance rates from risk-limit endpoint

@@ -403,9 +403,11 @@ func (b *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 
 	var resp struct {
 		Symbols []struct {
-			Symbol  string `json:"symbol"`
-			Status  string `json:"status"`
-			Filters []struct {
+			Symbol       string `json:"symbol"`
+			Status       string `json:"status"`
+			ContractType string `json:"contractType"`
+			DeliveryDate int64  `json:"deliveryDate"`
+			Filters      []struct {
 				FilterType string `json:"filterType"`
 				MinQty     string `json:"minQty"`
 				MaxQty     string `json:"maxQty"`
@@ -418,12 +420,25 @@ func (b *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 		return nil, fmt.Errorf("LoadAllContracts unmarshal: %w", err)
 	}
 
+	// Year-2099 cutoff (ms since epoch): Binance uses 4133404800000
+	// (2100-01-01) as the "no scheduled delivery" sentinel for live perpetuals.
+	// Anything below this cutoff is treated as a real scheduled delist.
+	const deliveryDateSentinelCutoffMs int64 = 4102444800000 // 2099-12-31 UTC
+
 	result := make(map[string]exchange.ContractInfo, len(resp.Symbols))
 	for _, sym := range resp.Symbols {
 		if sym.Status != "TRADING" {
 			continue
 		}
 		ci := exchange.ContractInfo{Symbol: sym.Symbol}
+		// Flag scheduled delist via deliveryDate ONLY for true perpetuals.
+		// Dated quarterlies have contractType like "CURRENT_QUARTER" — skip
+		// them so this field means "perpetual with scheduled delist".
+		if sym.ContractType == "PERPETUAL" &&
+			sym.DeliveryDate > 0 &&
+			sym.DeliveryDate < deliveryDateSentinelCutoffMs {
+			ci.DeliveryDate = time.UnixMilli(sym.DeliveryDate).UTC()
+		}
 		for _, f := range sym.Filters {
 			switch f.FilterType {
 			case "LOT_SIZE":

@@ -206,3 +206,111 @@ func TestGetMaintenanceRate_Binance_TierMatching(t *testing.T) {
 		t.Errorf("notional=0 rate = %v, want 0.0065 (bracket 1)", rate0)
 	}
 }
+
+// TestLoadAllContracts_Binance_DeliveryDateParsing verifies that
+// LoadAllContracts populates ContractInfo.DeliveryDate from the
+// fapi/v1/exchangeInfo deliveryDate field for true perpetuals being delisted,
+// while leaving live perpetuals (year-2100 sentinel) with a zero DeliveryDate.
+//
+// Regression: 2026-04-08 batch delist (RLSUSDT, OLUSDT, HIPPOUSDT, PUFFERUSDT)
+// — the article-scraper missed the announcement, but Binance had populated
+// deliveryDate at announcement time. This test pins that signal.
+func TestLoadAllContracts_Binance_DeliveryDateParsing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/fapi/v1/exchangeInfo":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"symbols": []map[string]interface{}{
+					{
+						// Normal live perpetual: year-2100 sentinel.
+						"symbol":       "BTCUSDT",
+						"status":       "TRADING",
+						"contractType": "PERPETUAL",
+						"deliveryDate": int64(4133404800000), // 2100-12-25 sentinel
+						"filters": []map[string]interface{}{
+							{"filterType": "LOT_SIZE", "minQty": "0.001", "maxQty": "1000", "stepSize": "0.001"},
+							{"filterType": "PRICE_FILTER", "tickSize": "0.10"},
+						},
+					},
+					{
+						// Delisting perpetual still in TRADING (the critical case).
+						// 1775725200000 = 2026-04-09T09:00:00Z
+						"symbol":       "WIFUSDT",
+						"status":       "TRADING",
+						"contractType": "PERPETUAL",
+						"deliveryDate": int64(1775725200000),
+						"filters": []map[string]interface{}{
+							{"filterType": "LOT_SIZE", "minQty": "1", "maxQty": "1000000", "stepSize": "1"},
+							{"filterType": "PRICE_FILTER", "tickSize": "0.0001"},
+						},
+					},
+					{
+						// Dated quarterly: contractType != PERPETUAL → must NOT
+						// be flagged as a delist even with a real deliveryDate.
+						"symbol":       "BTCUSDT_240329",
+						"status":       "TRADING",
+						"contractType": "CURRENT_QUARTER",
+						"deliveryDate": int64(1711699200000), // 2024-03-29
+						"filters": []map[string]interface{}{
+							{"filterType": "LOT_SIZE", "minQty": "0.001", "maxQty": "1000", "stepSize": "0.001"},
+							{"filterType": "PRICE_FILTER", "tickSize": "0.10"},
+						},
+					},
+				},
+			})
+		case "/fapi/v1/leverageBracket":
+			// Auth-protected endpoint; we don't care about it for this test —
+			// loadMaintenanceRates will swallow the error and continue.
+			w.WriteHeader(401)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"code": -2015,
+				"msg":  "Invalid API-key.",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	adapter := &Adapter{
+		client:    NewClient("testkey", "testsecret").WithBaseURL(srv.URL),
+		apiKey:    "testkey",
+		secretKey: "testsecret",
+		priceSyms: make(map[string]bool),
+		depthSyms: make(map[string]bool),
+	}
+
+	contracts, err := adapter.LoadAllContracts()
+	if err != nil {
+		t.Fatalf("LoadAllContracts: %v", err)
+	}
+
+	btc, ok := contracts["BTCUSDT"]
+	if !ok {
+		t.Fatal("BTCUSDT not found")
+	}
+	if !btc.DeliveryDate.IsZero() {
+		t.Errorf("BTCUSDT (live perpetual) DeliveryDate = %v, want zero (year-2100 sentinel must be ignored)", btc.DeliveryDate)
+	}
+
+	wif, ok := contracts["WIFUSDT"]
+	if !ok {
+		t.Fatal("WIFUSDT not found")
+	}
+	if wif.DeliveryDate.IsZero() {
+		t.Error("WIFUSDT (delisting perpetual) DeliveryDate is zero, want populated")
+	}
+	// Sanity-check the parsed time matches the millisecond input.
+	wantUnixMs := int64(1775725200000)
+	if got := wif.DeliveryDate.UnixMilli(); got != wantUnixMs {
+		t.Errorf("WIFUSDT DeliveryDate = %d ms, want %d ms", got, wantUnixMs)
+	}
+
+	quarterly, ok := contracts["BTCUSDT_240329"]
+	if !ok {
+		t.Fatal("BTCUSDT_240329 not found")
+	}
+	if !quarterly.DeliveryDate.IsZero() {
+		t.Errorf("BTCUSDT_240329 (quarterly) DeliveryDate = %v, want zero (only PERPETUAL contracts should be flagged)", quarterly.DeliveryDate)
+	}
+}
