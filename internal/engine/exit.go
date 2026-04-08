@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"arb/internal/models"
+	"arb/internal/risk"
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
@@ -1868,6 +1869,21 @@ func (e *Engine) checkRotations() {
 		if pos.Status != models.StatusActive {
 			continue
 		}
+		// Skip if exit goroutine is running.
+		e.exitMu.Lock()
+		running := e.exitActive[pos.ID]
+		e.exitMu.Unlock()
+		if running {
+			continue
+		}
+		// Skip if entry is in progress on either exchange.
+		e.entryMu.Lock()
+		longBusy := e.entryActive[pos.LongExchange+":"+pos.Symbol]
+		shortBusy := e.entryActive[pos.ShortExchange+":"+pos.Symbol]
+		e.entryMu.Unlock()
+		if longBusy != "" || shortBusy != "" {
+			continue
+		}
 		// Cooldown check.
 		if !pos.LastRotatedAt.IsZero() && time.Since(pos.LastRotatedAt) < cooldown {
 			continue
@@ -1887,7 +1903,11 @@ func (e *Engine) checkRotations() {
 		}
 
 		// Scan ALL opportunities for the same symbol, pick the best one.
-		currentSpread := e.computeLiveSpread(pos)
+		currentSpread, ok := e.computeLiveSpread(pos)
+		if !ok {
+			e.log.Debug("rotation: skipping %s — live spread unavailable", pos.ID)
+			continue
+		}
 
 		var bestOpp *models.Opportunity
 		var bestSharedLeg, bestOldExch, bestNewExch, bestLegSide string
@@ -1961,23 +1981,23 @@ func classifyRotation(pos *models.ArbitragePosition, opp *models.Opportunity) (s
 }
 
 // computeLiveSpread fetches current funding rates and returns live spread in bps/h.
-func (e *Engine) computeLiveSpread(pos *models.ArbitragePosition) float64 {
+func (e *Engine) computeLiveSpread(pos *models.ArbitragePosition) (float64, bool) {
 	longExch, ok := e.exchanges[pos.LongExchange]
 	if !ok {
-		return 0
+		return 0, false
 	}
 	shortExch, ok := e.exchanges[pos.ShortExchange]
 	if !ok {
-		return 0
+		return 0, false
 	}
 
 	longRate, err := longExch.GetFundingRate(pos.Symbol)
 	if err != nil {
-		return 0
+		return 0, false
 	}
 	shortRate, err := shortExch.GetFundingRate(pos.Symbol)
 	if err != nil {
-		return 0
+		return 0, false
 	}
 
 	longIntervalH := longRate.Interval.Hours()
@@ -1991,7 +2011,7 @@ func (e *Engine) computeLiveSpread(pos *models.ArbitragePosition) float64 {
 
 	longBpsH := longRate.Rate * 10000 / longIntervalH
 	shortBpsH := shortRate.Rate * 10000 / shortIntervalH
-	return shortBpsH - longBpsH
+	return shortBpsH - longBpsH, true
 }
 
 // settlementFrequencyPenalty computes the bps/h cost of moving a leg to a
@@ -2065,6 +2085,22 @@ func (e *Engine) settlementFrequencyPenalty(
 //
 // Sets LastRotatedAt on ALL outcomes (success or failure) to enforce cooldown.
 func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity, legSide, oldExchName, newExchName string) {
+	// Claim busy state to prevent normal exit/SL/consolidator from racing.
+	// L5/delist emergency close does NOT check exitActive — intentional.
+	e.exitMu.Lock()
+	if e.exitActive[pos.ID] {
+		e.exitMu.Unlock()
+		e.log.Info("rotation: %s already has active exit, skipping", pos.ID)
+		return
+	}
+	e.exitActive[pos.ID] = true
+	e.exitMu.Unlock()
+	defer func() {
+		e.exitMu.Lock()
+		delete(e.exitActive, pos.ID)
+		e.exitMu.Unlock()
+	}()
+
 	// Always set cooldown timestamp, even on failure, to prevent rapid retries.
 	defer func() {
 		_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
@@ -2133,15 +2169,20 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 	}
 
 	// Ensure new exchange has enough margin (auto-transfer from spot if needed).
+	// Use buffered margin (with clamped leverage + safety multiplier) for transfer trigger.
 	refPrice := (newBBO.Bid + newBBO.Ask) / 2
-	requiredMargin := (closeSize * refPrice) / float64(e.cfg.Leverage)
+	rotLev := e.cfg.Leverage
+	if rotLev > risk.MaxLeverage() {
+		rotLev = risk.MaxLeverage()
+	}
+	bufferedMargin := (closeSize * refPrice) / float64(rotLev) * e.cfg.MarginSafetyMultiplier
 	newBal, err := newExch.GetFuturesBalance()
 	if err != nil {
 		e.log.Error("rotation: failed to get balance on %s: %v", newExchName, err)
 		return
 	}
-	if newBal.Available < requiredMargin {
-		deficit := requiredMargin - newBal.Available
+	if newBal.Available < bufferedMargin {
+		deficit := bufferedMargin - newBal.Available
 		spotBal, err := newExch.GetSpotBalance()
 		if err == nil && spotBal.Available > 0 {
 			transferAmt := deficit
@@ -2150,19 +2191,24 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 			}
 			amtStr := fmt.Sprintf("%.4f", transferAmt)
 			e.log.Info("rotation: auto-transfer %s USDT spot→futures on %s (futures=%.2f, needed=%.2f)",
-				amtStr, newExchName, newBal.Available, requiredMargin)
+				amtStr, newExchName, newBal.Available, bufferedMargin)
 			if err := newExch.TransferToFutures("USDT", amtStr); err != nil {
 				e.log.Error("rotation: auto-transfer on %s failed: %v", newExchName, err)
 			} else {
 				e.recordTransfer(newExchName+" spot", newExchName, "USDT", "internal", amtStr, "0", "", "completed", "rotation")
 			}
-			newBal, _ = newExch.GetFuturesBalance()
+			newBal, err = newExch.GetFuturesBalance()
+			if err != nil {
+				e.log.Error("rotation: refresh balance on %s after transfer failed: %v", newExchName, err)
+				return
+			}
 		}
-		if newBal.Available < requiredMargin {
-			e.log.Warn("rotation: insufficient margin on %s (have=%.2f need=%.2f), skipping",
-				newExchName, newBal.Available, requiredMargin)
-			return
-		}
+	}
+
+	// Risk-manager rotation approval (margin + health + exposure checks with fresh balance).
+	if approved, reason := e.risk.ApproveRotation(newExchName, pos.Symbol, closeSize, refPrice); !approved {
+		e.log.Warn("rotation: risk rejected %s on %s: %s", pos.Symbol, newExchName, reason)
+		return
 	}
 
 	slippage := e.cfg.SlippageBPS / 10000.0

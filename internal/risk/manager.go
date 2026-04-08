@@ -117,6 +117,88 @@ func (m *Manager) SimulateApprovalForPair(opp models.Opportunity, longExch, shor
 	return m.approveInternal(pairOpp, reserved, true, cache)
 }
 
+// ApproveRotation performs margin, health, and exposure checks for a rotation.
+// It skips position-count and spread checks (rotation doesn't add positions
+// and has its own threshold logic).
+func (m *Manager) ApproveRotation(exchName string, symbol string, size float64, refPrice float64) (bool, string) {
+	exch, ok := m.exchanges[exchName]
+	if !ok {
+		return false, fmt.Sprintf("exchange %s not configured", exchName)
+	}
+
+	bal, err := exch.GetFuturesBalance()
+	if err != nil {
+		return false, fmt.Sprintf("get balance on %s: %v", exchName, err)
+	}
+
+	// Leverage clamp (same as approveInternal)
+	leverage := m.cfg.Leverage
+	if leverage > MaxLeverage() {
+		leverage = MaxLeverage()
+	}
+
+	requiredMargin := (size * refPrice) / float64(leverage)
+	safetyMultiplier := m.cfg.MarginSafetyMultiplier
+	buffered := requiredMargin * safetyMultiplier
+
+	if bal.Available < buffered {
+		return false, fmt.Sprintf("insufficient margin on %s: need %.2f (%.0f%% buffer), have %.2f",
+			exchName, buffered, (safetyMultiplier-1)*100, bal.Available)
+	}
+
+	// Projected margin ratio (with bal.Total > 0 guard)
+	if bal.Total > 0 {
+		projectedAvail := bal.Available - requiredMargin
+		if projectedAvail < 0 {
+			projectedAvail = 0
+		}
+		projectedRatio := 1 - projectedAvail/bal.Total
+		if projectedRatio >= m.cfg.MarginL4Threshold {
+			return false, fmt.Sprintf("post-rotation margin ratio %.2f on %s would reach L4 (%.2f)",
+				projectedRatio, exchName, m.cfg.MarginL4Threshold)
+		}
+	}
+
+	// Exchange health scoring
+	if m.cfg.EnableExchangeHealthScoring && m.scorer != nil {
+		snapshot := m.scorer.Snapshot(exchName)
+		if snapshot.Score < m.scorer.minScore() {
+			return false, fmt.Sprintf("exchange health too low on %s: %.2f < %.2f",
+				exchName, snapshot.Score, m.scorer.minScore())
+		}
+	}
+
+	// Per-exchange exposure cap (rotation is open-first, so target temporarily holds both)
+	if m.allocator == nil || !m.allocator.Enabled() {
+		active, err := m.db.GetActivePositions()
+		if err != nil {
+			return false, fmt.Sprintf("get active positions for exposure check: %v", err)
+		}
+		{
+			totalCapital := bal.Total
+			// Sum existing exposure on target exchange from all active positions
+			exposure := requiredMargin // the new rotation leg
+			for _, pos := range active {
+				if pos.LongExchange == exchName {
+					exposure += (pos.LongSize * pos.LongEntry) / float64(leverage)
+				}
+				if pos.ShortExchange == exchName {
+					exposure += (pos.ShortSize * pos.ShortEntry) / float64(leverage)
+				}
+			}
+			if totalCapital > 0 {
+				maxExposure := MaxExposurePerExchange(totalCapital)
+				if exposure > maxExposure {
+					return false, fmt.Sprintf("rotation would exceed exposure cap on %s: %.2f > %.2f",
+						exchName, exposure, maxExposure)
+				}
+			}
+		}
+	}
+
+	return true, ""
+}
+
 // approveInternal is the shared implementation for Approve and ApproveWithReserved.
 // When cache is non-nil, pre-fetched balances and orderbooks are used instead of
 // live API calls. Cache misses fall back to live calls transparently.

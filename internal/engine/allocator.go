@@ -589,6 +589,7 @@ func (e *Engine) isAllocatorFundingFeasible(needs map[string]float64, balances m
 		return true
 	}
 
+	feeCache := map[string]feeEntry{}
 	for exchName, deficit := range deficits {
 		remaining := deficit
 		for remaining > 0 {
@@ -597,25 +598,27 @@ func (e *Engine) isAllocatorFundingFeasible(needs map[string]float64, balances m
 				return false
 			}
 
-			// Floor deficit to donor's minWithdraw (replaces hardcoded 10.0).
-			// findAllocatorDonor already used GetWithdrawFee internally to get `fee`,
-			// so we need the chain to query minWd. Use same chain selection logic.
-			if remaining < 10.0 {
-				// Only bother looking up minWd when we'd hit the old floor.
-				e.cfg.RLock()
-				addrs := e.cfg.ExchangeAddresses[exchName]
-				e.cfg.RUnlock()
-				var chain string
-				for _, c := range []string{"APT", "BEP20"} {
-					if addrs[c] != "" {
-						chain = c
-						break
-					}
+			// Always floor deficit to donor's minWithdraw (cached).
+			e.cfg.RLock()
+			addrs := e.cfg.ExchangeAddresses[exchName]
+			e.cfg.RUnlock()
+			var chain string
+			for _, c := range []string{"APT", "BEP20"} {
+				if addrs[c] != "" {
+					chain = c
+					break
 				}
-				if chain != "" {
-					if _, minWd, err := e.exchanges[donor].GetWithdrawFee("USDT", chain); err == nil && remaining < minWd {
-						remaining = minWd
-					}
+			}
+			if chain != "" {
+				cacheKey := donor + ":" + chain
+				entry, cached := feeCache[cacheKey]
+				if !cached {
+					_, minWd, err := e.exchanges[donor].GetWithdrawFee("USDT", chain)
+					entry = feeEntry{minWd: minWd, valid: err == nil}
+					feeCache[cacheKey] = entry
+				}
+				if entry.valid && remaining < entry.minWd {
+					remaining = entry.minWd
 				}
 			}
 
