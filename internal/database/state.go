@@ -154,6 +154,7 @@ func (c *Client) GetPosition(id string) (*models.ArbitragePosition, error) {
 	if err := json.Unmarshal(data, &pos); err != nil {
 		return nil, fmt.Errorf("unmarshal position: %w", err)
 	}
+	pos.InferHasReconciled()
 	return &pos, nil
 }
 
@@ -187,6 +188,7 @@ func (c *Client) GetActivePositions() ([]*models.ArbitragePosition, error) {
 		if err := json.Unmarshal([]byte(s), &pos); err != nil {
 			continue
 		}
+		pos.InferHasReconciled()
 		positions = append(positions, &pos)
 	}
 	return positions, nil
@@ -293,6 +295,7 @@ func (c *Client) GetHistory(limit int) ([]*models.ArbitragePosition, error) {
 		if err := json.Unmarshal([]byte(v), &pos); err != nil {
 			continue
 		}
+		pos.InferHasReconciled()
 		positions = append(positions, &pos)
 	}
 	return positions, nil

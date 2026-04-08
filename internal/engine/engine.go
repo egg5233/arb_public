@@ -104,6 +104,10 @@ type Engine struct {
 	// reduce-only fills (exits, L4 reductions, rotation closes, consolidator trims).
 	ownOrders sync.Map // "exchange:orderID" → struct{}{}
 
+	// consolidateRetries tracks PnL query retry counts per position in markPositionClosed.
+	// key: posID → consecutive consolidation cycles where GetClosePnL failed.
+	consolidateRetries map[string]int
+
 	// allocOverrides stores the allocator's chosen exchange pairs from the most
 	// recent rebalance scan, keyed by symbol. The entry scan applies these to
 	// patch opportunities so the executed pair matches the rebalanced pair.
@@ -152,7 +156,8 @@ func NewEngine(
 		entryActive:     make(map[string]string),
 		slIndex:         make(map[string]slEntry),
 		slFillCh:        make(chan slFillEvent, 64),
-		apiErrCounts:    make(map[string]int),
+		apiErrCounts:       make(map[string]int),
+		consolidateRetries: make(map[string]int),
 	}
 	return e
 }
@@ -778,15 +783,28 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			continue
 		}
 
-		shortfall := need - bal.futures
-		l4Extra := need/targetFreeRatio - bal.futuresTotal - shortfall
-		if l4Extra < 0 {
-			l4Extra = 0
+		marginDeficit := need - bal.futures
+		if marginDeficit < 0 {
+			marginDeficit = 0
 		}
-		if l4Extra > shortfall {
-			l4Extra = shortfall
+		actualMargin := need / e.cfg.MarginSafetyMultiplier
+		if actualMargin <= 0 {
+			actualMargin = need
 		}
-		transferAmt := shortfall + l4Extra
+		targetRatio := e.cfg.MarginL4Threshold - marginEpsilon
+		freeTarget := 1.0 - targetRatio
+		var ratioDeficit float64
+		if freeTarget > 0 && bal.futuresTotal > 0 {
+			ratioDeficit = (freeTarget*bal.futuresTotal - bal.futures + actualMargin) / targetRatio
+			if ratioDeficit < 0 {
+				ratioDeficit = 0
+			}
+		}
+		transferAmt := marginDeficit
+		if ratioDeficit > transferAmt {
+			transferAmt = ratioDeficit
+		}
+		e.log.Debug("rebalance: seq deficit %s: need=%.2f futures=%.2f marginDef=%.2f ratioDef=%.2f transferAmt=%.2f", name, need, bal.futures, marginDeficit, ratioDeficit, transferAmt)
 		if bal.spot > 0 {
 			actualTransfer := transferAmt
 			if actualTransfer > bal.spot {
@@ -824,6 +842,15 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 		e.log.Info("rebalance: all exchanges funded, no cross-exchange transfers needed")
 		return
 	}
+
+	// Convert crossDeficits to needs format and delegate to the existing
+	// cross-exchange executor (same path the pool allocator uses).
+	crossNeeds := make(map[string]float64, len(crossDeficits))
+	for _, cd := range crossDeficits {
+		crossNeeds[cd.exchange] = cd.amount
+	}
+	e.log.Info("rebalance: %d exchanges need cross-exchange funding, delegating to allocator executor", len(crossNeeds))
+	e.executeRebalanceFundingPlan(crossNeeds, balances)
 
 	e.log.Info("rebalance: complete")
 }
@@ -2225,6 +2252,7 @@ func (e *Engine) mergeIntoPosition(existing, pending *models.ArbitragePosition,
 		}
 		fresh.LongSize = totalLong
 		fresh.ShortSize = totalShort
+		fresh.EntryNotional = math.Max(fresh.LongEntry*fresh.LongSize, fresh.ShortEntry*fresh.ShortSize)
 
 		// Weighted average entry spread (feeds exit logic)
 		if totalLong > 0 {
@@ -2326,6 +2354,8 @@ func (e *Engine) MergeExistingDuplicates() {
 				fresh.FundingCollected += p.FundingCollected
 				fresh.RotationPnL += p.RotationPnL
 				fresh.EntryFees += p.EntryFees
+				// Always recompute EntryNotional after merge since entry/size changed.
+				fresh.EntryNotional = math.Max(fresh.LongEntry*fresh.LongSize, fresh.ShortEntry*fresh.ShortSize)
 				if totalLong > 0 {
 					fresh.EntrySpread = (oldLong*fresh.EntrySpread + p.LongSize*p.EntrySpread) / totalLong
 				}
@@ -2794,6 +2824,7 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 		entrySlippage += shortBBO.Bid - pos.ShortEntry
 	}
 	pos.Slippage = entrySlippage
+	pos.EntryNotional = math.Max(pos.LongEntry*pos.LongSize, pos.ShortEntry*pos.ShortSize)
 
 	pos.Status = models.StatusActive
 	pos.UpdatedAt = time.Now().UTC()
@@ -3491,6 +3522,7 @@ fillLoop:
 	pos.ShortSize = minFill
 	pos.LongEntry = finalLongEntry
 	pos.ShortEntry = finalShortEntry
+	pos.EntryNotional = math.Max(pos.LongEntry*pos.LongSize, pos.ShortEntry*pos.ShortSize)
 
 	// BBO slippage estimation (best-effort, non-blocking).
 	var slippageV2 float64

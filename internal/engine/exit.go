@@ -918,6 +918,14 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 		pos.ShortClosePnL != shortAgg.PricePnL
 
 	if !needsPnLUpdate && !needsFundingUpdate && !needsExitUpdate && !needsBreakdownUpdate {
+		// Even when numbers didn't change, mark reconciliation as done so
+		// analytics can trust this position's PnL figures.
+		if !pos.HasReconciled {
+			_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+				fresh.HasReconciled = true
+				return true
+			})
+		}
 		return true
 	}
 
@@ -942,6 +950,7 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 			fresh.LongClosePnL = longAgg.PricePnL
 			fresh.ShortClosePnL = shortAgg.PricePnL
 		}
+		fresh.HasReconciled = true
 		if reconciledLongExit > 0 {
 			fresh.LongExit = reconciledLongExit
 		}

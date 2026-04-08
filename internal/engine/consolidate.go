@@ -299,6 +299,30 @@ func (e *Engine) consolidatePosition(pos *models.ArbitragePosition, siblingTotal
 		return // skip per-position sync for shared legs
 	}
 
+	// Detect exchange-flat positions: both exchange sizes are 0 but status Active.
+	// This catches positions where exit reduced both legs but consolidator
+	// didn't mark them closed before sizes were zeroed.
+	if longSize == 0 && shortSize == 0 && pos.Status == models.StatusActive {
+		// Guard: skip if position was updated very recently (within 60s).
+		// Protects against recent consolidator size syncs (L372 sets UpdatedAt)
+		// and recent entry/exit activity. Note: reducePosition does NOT set
+		// UpdatedAt, so this guard does not cover the L4 reduce window directly.
+		// That window is milliseconds in practice and not a practical concern.
+		if time.Since(pos.UpdatedAt) < 60*time.Second {
+			e.log.Debug("consolidate: %s exchange-flat but recently updated (%.0fs ago), skipping",
+				pos.ID, time.Since(pos.UpdatedAt).Seconds())
+			return
+		}
+
+		e.log.Warn("consolidate: %s exchange-flat (both sizes=0) but Active for %.0fs, attempting close",
+			pos.ID, time.Since(pos.UpdatedAt).Seconds())
+		// Set local sizes to 0 so markPositionClosed skips close orders (legs already flat).
+		pos.LongSize = 0
+		pos.ShortSize = 0
+		e.markPositionClosed(pos, "exchange-flat detected by consolidator")
+		return
+	}
+
 	// Tolerance: 1% or $1 notional, whichever is larger.
 	longDiff := abs(longSize - pos.LongSize)
 	shortDiff := abs(shortSize - pos.ShortSize)
@@ -475,13 +499,36 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 		}
 	}
 
+	const maxConsolidateRetries = 6 // 6 × 5 min = 30 min
+
 	longAgg, longOK := aggregateClosePnLBySide(longPnLs, "long")
 	shortAgg, shortOK := aggregateClosePnLBySide(shortPnLs, "short")
 
 	if !longOK || !shortOK {
-		e.log.Warn("consolidate: %s missing PnL (long=%v short=%v), keeping existing PnL=%.4f funding=%.4f",
-			pos.ID, longOK, shortOK, pos.RealizedPnL, pos.FundingCollected)
-		return
+		e.consolidateRetries[pos.ID]++
+		retries := e.consolidateRetries[pos.ID]
+
+		if retries <= maxConsolidateRetries {
+			e.log.Warn("consolidate: %s missing PnL (long=%v short=%v) attempt %d/%d, keeping existing PnL=%.4f funding=%.4f",
+				pos.ID, longOK, shortOK, retries, maxConsolidateRetries, pos.RealizedPnL, pos.FundingCollected)
+			return
+		}
+
+		// Max retries exceeded — use partial data, fall through to full close path.
+		e.log.Warn("consolidate: %s max retries (%d) exceeded, force-closing with partial PnL",
+			pos.ID, maxConsolidateRetries)
+		delete(e.consolidateRetries, pos.ID)
+
+		if !longOK {
+			longAgg = exchange.ClosePnL{}
+		}
+		if !shortOK {
+			shortAgg = exchange.ClosePnL{}
+		}
+		// Fall through to splitSharedPnL → reconciledPnL → full close bookkeeping
+	} else {
+		// Both sides OK — clear any retry counter.
+		delete(e.consolidateRetries, pos.ID)
 	}
 
 	longAgg = e.splitSharedPnL(longAgg, pos, "long")
@@ -512,6 +559,7 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 	pos.LongSize = 0
 	pos.ShortSize = 0
 	pos.Status = models.StatusClosed
+	pos.HasReconciled = true
 	pos.UpdatedAt = time.Now().UTC()
 
 	// Cancel orphan TP/SL/algo orders BEFORE SavePosition — prevents race
