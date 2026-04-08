@@ -460,34 +460,55 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 		return
 	}
 
-	// Query close PnL from both exchanges to populate exit prices and realized PnL.
-	var longClosePrice, shortClosePrice, longPnL, shortPnL float64
+	// Query close PnL from both exchanges and aggregate per-leg breakdown.
+	var longPnLs, shortPnLs []exchange.ClosePnL
 	if longExch, ok := e.exchanges[pos.LongExchange]; ok {
 		pnls, err := longExch.GetClosePnL(pos.Symbol, pos.CreatedAt)
-		if err == nil && len(pnls) > 0 {
-			// Use the most recent close record.
-			latest := pnls[len(pnls)-1]
-			longClosePrice = latest.ExitPrice
-			longPnL = latest.NetPnL
-			e.log.Info("consolidate: %s long close from %s: price=%.8f pnl=%.4f",
-				pos.ID, pos.LongExchange, longClosePrice, longPnL)
+		if err == nil {
+			longPnLs = pnls
 		}
 	}
 	if shortExch, ok := e.exchanges[pos.ShortExchange]; ok {
 		pnls, err := shortExch.GetClosePnL(pos.Symbol, pos.CreatedAt)
-		if err == nil && len(pnls) > 0 {
-			latest := pnls[len(pnls)-1]
-			shortClosePrice = latest.ExitPrice
-			shortPnL = latest.NetPnL
-			e.log.Info("consolidate: %s short close from %s: price=%.8f pnl=%.4f",
-				pos.ID, pos.ShortExchange, shortClosePrice, shortPnL)
+		if err == nil {
+			shortPnLs = pnls
 		}
 	}
 
-	realizedPnL := longPnL + shortPnL + pos.FundingCollected
-	pos.RealizedPnL = realizedPnL
-	pos.LongExit = longClosePrice
-	pos.ShortExit = shortClosePrice
+	longAgg, longOK := aggregateClosePnLBySide(longPnLs, "long")
+	shortAgg, shortOK := aggregateClosePnLBySide(shortPnLs, "short")
+
+	if !longOK || !shortOK {
+		e.log.Warn("consolidate: %s missing PnL (long=%v short=%v), keeping existing PnL=%.4f funding=%.4f",
+			pos.ID, longOK, shortOK, pos.RealizedPnL, pos.FundingCollected)
+		return
+	}
+
+	longAgg = e.splitSharedPnL(longAgg, pos, "long")
+	shortAgg = e.splitSharedPnL(shortAgg, pos, "short")
+
+	reconciledPnL := longAgg.NetPnL + shortAgg.NetPnL + pos.RotationPnL
+	reconciledFunding := longAgg.Funding + shortAgg.Funding
+	totalFees := longAgg.Fees + shortAgg.Fees
+
+	e.log.Info("consolidate: %s reconciled: long=%.4f short=%.4f rotation=%.4f total=%.4f funding=%.4f fees=%.4f",
+		pos.ID, longAgg.NetPnL, shortAgg.NetPnL, pos.RotationPnL, reconciledPnL, reconciledFunding, totalFees)
+
+	pos.RealizedPnL = reconciledPnL
+	pos.FundingCollected = reconciledFunding
+	pos.ExitFees = totalFees
+	// BasisGainLoss = current-leg price movement only (no fees, no funding).
+	// RotationPnL is NOT subtracted: it's NetPnL (includes rotation fees+funding),
+	// not PricePnL, and is tracked separately in its own field.
+	pos.BasisGainLoss = longAgg.PricePnL + shortAgg.PricePnL
+	pos.LongTotalFees = longAgg.Fees
+	pos.ShortTotalFees = shortAgg.Fees
+	pos.LongFunding = longAgg.Funding
+	pos.ShortFunding = shortAgg.Funding
+	pos.LongClosePnL = longAgg.PricePnL
+	pos.ShortClosePnL = shortAgg.PricePnL
+	pos.LongExit = longAgg.ExitPrice
+	pos.ShortExit = shortAgg.ExitPrice
 	pos.LongSize = 0
 	pos.ShortSize = 0
 	pos.Status = models.StatusClosed
@@ -508,14 +529,14 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 	if err := e.db.AddToHistory(pos); err != nil {
 		e.log.Error("consolidate: failed to add %s to history: %v", pos.ID, err)
 	}
-	won := realizedPnL > 0
-	if err := e.db.UpdateStats(realizedPnL, won); err != nil {
+	won := reconciledPnL > 0
+	if err := e.db.UpdateStats(reconciledPnL, won); err != nil {
 		e.log.Error("consolidate: failed to update stats for %s: %v", pos.ID, err)
 	}
 	e.releasePerpPosition(pos.ID)
 	e.api.BroadcastPositionUpdate(pos)
-	e.log.Info("consolidate: closed %s (%s) pnl=%.4f (long=%.4f short=%.4f funding=%.4f)",
-		pos.ID, reason, realizedPnL, longPnL, shortPnL, pos.FundingCollected)
+	e.log.Info("consolidate: closed %s (%s) pnl=%.4f (long=%.4f short=%.4f funding=%.4f rotation=%.4f)",
+		pos.ID, reason, reconciledPnL, longAgg.NetPnL, shortAgg.NetPnL, reconciledFunding, pos.RotationPnL)
 }
 
 // enforceBalance trims the excess side when long and short sizes are
