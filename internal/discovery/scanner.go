@@ -57,10 +57,15 @@ type scanRecord struct {
 type Scanner struct {
 	exchanges map[string]exchange.Exchange
 	contracts map[string]map[string]exchange.ContractInfo // exchange → symbol → info
-	db        *database.Client
-	cfg       *config.Config
-	log       *utils.Logger
-	client    *http.Client
+	// contractsMu guards `contracts` map access. Initially the contracts map
+	// was set once at startup and read concurrently without a lock; the
+	// periodic contract refresh poller (contract_refresh.go) introduces
+	// concurrent writes, so all reads/writes now go through this lock.
+	contractsMu sync.RWMutex
+	db          *database.Client
+	cfg         *config.Config
+	log         *utils.Logger
+	client      *http.Client
 
 	mu            sync.RWMutex
 	opportunities []models.Opportunity
@@ -126,6 +131,8 @@ func (s *Scanner) SetRejectionStore(store *models.RejectionStore) {
 
 // SetContracts stores loaded contract maps for symbol validation.
 func (s *Scanner) SetContracts(contracts map[string]map[string]exchange.ContractInfo) {
+	s.contractsMu.Lock()
+	defer s.contractsMu.Unlock()
 	s.contracts = contracts
 }
 
@@ -192,6 +199,8 @@ func (s *Scanner) hasExchange(name string) bool {
 
 // hasContract checks if a symbol exists on a given exchange.
 func (s *Scanner) hasContract(exchName, symbol string) bool {
+	s.contractsMu.RLock()
+	defer s.contractsMu.RUnlock()
 	if s.contracts == nil {
 		return true // no contract data loaded, skip check
 	}

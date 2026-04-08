@@ -383,6 +383,17 @@ func main() {
 	if cfg.DelistFilterEnabled {
 		scanner.StartDelistMonitor()
 		log.Info("Binance delist monitor enabled")
+		// New deliveryDate-based contract refresh poller. Reuses
+		// DelistFilterEnabled — same blacklist key (arb:delist:{SYMBOL})
+		// and same buffer days as the article scraper. Acts as the
+		// primary delist signal; the article scraper at delist.go is
+		// retained as belt-and-suspenders.
+		if cfg.ContractRefreshInterval > 0 {
+			scanner.StartContractRefresh()
+			log.Info("Contract refresh poller started (interval: %s)", cfg.ContractRefreshInterval)
+		} else {
+			log.Info("Contract refresh poller disabled (contract_refresh_min=0)")
+		}
 	} else {
 		log.Info("Binance delist monitor disabled by config")
 	}
