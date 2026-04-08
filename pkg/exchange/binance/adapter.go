@@ -884,11 +884,11 @@ func (b *Adapter) getSpotAvailable(asset string) float64 {
 func (b *Adapter) WithdrawFeeInclusive() bool { return true }
 
 // GetWithdrawFee queries the Binance API for the withdrawal fee of a coin on a given chain.
-func (b *Adapter) GetWithdrawFee(coin, chain string) (float64, error) {
+func (b *Adapter) GetWithdrawFee(coin, chain string) (fee float64, minWithdraw float64, err error) {
 	spotClient := b.client.WithBaseURL("https://api.binance.com")
-	data, err := spotClient.Get("/sapi/v1/capital/config/getall", nil)
-	if err != nil {
-		return 0, fmt.Errorf("GetWithdrawFee: %w", err)
+	data, apiErr := spotClient.Get("/sapi/v1/capital/config/getall", nil)
+	if apiErr != nil {
+		return 0, 0, fmt.Errorf("GetWithdrawFee: %w", apiErr)
 	}
 
 	network := mapChainToBinanceNetwork(chain)
@@ -898,10 +898,11 @@ func (b *Adapter) GetWithdrawFee(coin, chain string) (float64, error) {
 		NetworkList []struct {
 			Network     string `json:"network"`
 			WithdrawFee string `json:"withdrawFee"`
+			WithdrawMin string `json:"withdrawMin"`
 		} `json:"networkList"`
 	}
 	if err := json.Unmarshal(data, &coins); err != nil {
-		return 0, fmt.Errorf("GetWithdrawFee unmarshal: %w", err)
+		return 0, 0, fmt.Errorf("GetWithdrawFee unmarshal: %w", err)
 	}
 
 	for _, c := range coins {
@@ -910,16 +911,17 @@ func (b *Adapter) GetWithdrawFee(coin, chain string) (float64, error) {
 		}
 		for _, n := range c.NetworkList {
 			if strings.EqualFold(n.Network, network) {
-				fee, err := strconv.ParseFloat(n.WithdrawFee, 64)
+				parsedFee, err := strconv.ParseFloat(n.WithdrawFee, 64)
 				if err != nil {
-					return 0, fmt.Errorf("GetWithdrawFee parse fee: %w", err)
+					return 0, 0, fmt.Errorf("GetWithdrawFee parse fee: %w", err)
 				}
-				return fee, nil
+				minWd, _ := strconv.ParseFloat(n.WithdrawMin, 64)
+				return parsedFee, minWd, nil
 			}
 		}
-		return 0, fmt.Errorf("GetWithdrawFee: network %s not found for %s", network, coin)
+		return 0, 0, fmt.Errorf("GetWithdrawFee: network %s not found for %s", network, coin)
 	}
-	return 0, fmt.Errorf("GetWithdrawFee: coin %s not found", coin)
+	return 0, 0, fmt.Errorf("GetWithdrawFee: coin %s not found", coin)
 }
 
 func mapChainToBinanceNetwork(chain string) string {

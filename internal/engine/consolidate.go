@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 
@@ -132,6 +133,17 @@ func (e *Engine) consolidatePositions(missCount map[string]int, dustIgnore map[s
 			continue
 		}
 		e.consolidatePosition(pos, siblingTotals, missCount)
+	}
+
+	// Reconcile stranded partial positions (Fix B)
+	for _, pos := range positions {
+		if pos.Status != models.StatusPartial {
+			continue
+		}
+		if busySymbols[pos.LongExchange+":"+pos.Symbol] || busySymbols[pos.ShortExchange+":"+pos.Symbol] {
+			continue
+		}
+		e.reconcilePartialPosition(pos)
 	}
 
 	// Build exclusion set from active spot-futures positions so the perp-perp
@@ -504,6 +516,7 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 	longAgg, longOK := aggregateClosePnLBySide(longPnLs, "long")
 	shortAgg, shortOK := aggregateClosePnLBySide(shortPnLs, "short")
 
+	partialClose := false
 	if !longOK || !shortOK {
 		e.consolidateRetries[pos.ID]++
 		retries := e.consolidateRetries[pos.ID]
@@ -521,9 +534,11 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 
 		if !longOK {
 			longAgg = exchange.ClosePnL{}
+			partialClose = true
 		}
 		if !shortOK {
 			shortAgg = exchange.ClosePnL{}
+			partialClose = true
 		}
 		// Fall through to splitSharedPnL → reconciledPnL → full close bookkeeping
 	} else {
@@ -559,7 +574,13 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 	pos.LongSize = 0
 	pos.ShortSize = 0
 	pos.Status = models.StatusClosed
-	pos.HasReconciled = true
+	if partialClose {
+		pos.HasReconciled = false
+		pos.PartialReconcile = true
+		e.log.Warn("consolidate: %s PARTIAL close (long=%v short=%v), queuing async reconcile", pos.ID, longOK, shortOK)
+	} else {
+		pos.HasReconciled = true
+	}
 	pos.UpdatedAt = time.Now().UTC()
 
 	// Cancel orphan TP/SL/algo orders BEFORE SavePosition — prevents race
@@ -585,6 +606,11 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 	e.api.BroadcastPositionUpdate(pos)
 	e.log.Info("consolidate: closed %s (%s) pnl=%.4f (long=%.4f short=%.4f funding=%.4f rotation=%.4f)",
 		pos.ID, reason, reconciledPnL, longAgg.NetPnL, shortAgg.NetPnL, reconciledFunding, pos.RotationPnL)
+
+	if partialClose {
+		posCopy := *pos
+		go e.reconcilePnL(&posCopy)
+	}
 }
 
 // enforceBalance trims the excess side when long and short sizes are
@@ -693,4 +719,123 @@ func (e *Engine) enforceBalance(pos *models.ArbitragePosition, longSize, shortSi
 	}
 	e.attachStopLosses(updated)
 	e.api.BroadcastPositionUpdate(updated)
+}
+
+// reconcilePartialPosition checks a StatusPartial position against the exchange
+// and either promotes it to StatusActive (both legs present), closes one-sided
+// exposure, or marks it closed (both legs flat).
+func (e *Engine) reconcilePartialPosition(pos *models.ArbitragePosition) {
+	longExch, lok := e.exchanges[pos.LongExchange]
+	shortExch, sok := e.exchanges[pos.ShortExchange]
+	if !lok || !sok {
+		return
+	}
+
+	longActual, longErr := getExchangePositionSize(longExch, pos.Symbol, "long")
+	shortActual, shortErr := getExchangePositionSize(shortExch, pos.Symbol, "short")
+	if longErr != nil || shortErr != nil {
+		e.log.Warn("reconcilePartial %s: query failed (long=%v short=%v)", pos.ID, longErr, shortErr)
+		return
+	}
+
+	if longActual == 0 && shortActual == 0 {
+		e.log.Info("reconcilePartial %s: both sides zero, closing as failed", pos.ID)
+		e.markPartialClosed(pos, "partial_zero_on_reconcile", "entry_failed: no fills on reconcile")
+		return
+	}
+
+	if longActual == 0 || shortActual == 0 {
+		e.log.Warn("reconcilePartial %s: one-sided (long=%.6f short=%.6f)", pos.ID, longActual, shortActual)
+		if longActual > 0 {
+			rem := e.closeFullyWithRetry(longExch, pos.Symbol, exchange.SideSell, longActual)
+			if rem > 0 {
+				e.log.Error("ORPHAN: %s long %.6f on %s after partial close", pos.Symbol, rem, pos.LongExchange)
+				return
+			}
+		}
+		if shortActual > 0 {
+			rem := e.closeFullyWithRetry(shortExch, pos.Symbol, exchange.SideBuy, shortActual)
+			if rem > 0 {
+				e.log.Error("ORPHAN: %s short %.6f on %s after partial close", pos.Symbol, rem, pos.ShortExchange)
+				return
+			}
+		}
+		e.markPartialClosed(pos, "partial_one_sided", "entry_failed: one-sided partial")
+		return
+	}
+
+	minFill := math.Min(longActual, shortActual)
+	trimOK := true
+	postLong := longActual
+	postShort := shortActual
+	if longActual > minFill {
+		excess := longActual - minFill
+		rem := e.closeFullyWithRetry(longExch, pos.Symbol, exchange.SideSell, excess)
+		postLong = minFill + rem // actual size left on exchange
+		if rem > 0 {
+			e.log.Error("reconcilePartial %s: long trim incomplete, %.6f remaining", pos.ID, rem)
+			trimOK = false
+		}
+	}
+	if shortActual > minFill {
+		excess := shortActual - minFill
+		rem := e.closeFullyWithRetry(shortExch, pos.Symbol, exchange.SideBuy, excess)
+		postShort = minFill + rem // actual size left on exchange
+		if rem > 0 {
+			e.log.Error("reconcilePartial %s: short trim incomplete, %.6f remaining", pos.ID, rem)
+			trimOK = false
+		}
+	}
+
+	if !trimOK {
+		// Save actual post-trim sizes, not stale pre-trim values
+		pos.LongSize = postLong
+		pos.ShortSize = postShort
+		pos.UpdatedAt = time.Now().UTC()
+		_ = e.db.SavePosition(pos)
+		return
+	}
+
+	pos.LongSize = minFill
+	pos.ShortSize = minFill
+	pos.Status = models.StatusActive
+	pos.FailureReason = ""
+	pos.FailureStage = ""
+
+	if pos.LongEntry <= 0 {
+		if bbo, ok := longExch.GetBBO(pos.Symbol); ok && bbo.Ask > 0 {
+			pos.LongEntry = bbo.Ask
+		}
+	}
+	if pos.ShortEntry <= 0 {
+		if bbo, ok := shortExch.GetBBO(pos.Symbol); ok && bbo.Bid > 0 {
+			pos.ShortEntry = bbo.Bid
+		}
+	}
+	pos.EntryNotional = math.Max(pos.LongEntry*pos.LongSize, pos.ShortEntry*pos.ShortSize)
+	pos.UpdatedAt = time.Now().UTC()
+	_ = e.db.SavePosition(pos)
+	e.api.BroadcastPositionUpdate(pos)
+
+	if pos.LongEntry > 0 && pos.ShortEntry > 0 {
+		e.attachStopLosses(pos)
+	} else {
+		e.log.Warn("reconcilePartial %s: promoted but no entry prices, SL skipped", pos.ID)
+	}
+	e.log.Info("reconcilePartial %s: promoted to active (size=%.6f)", pos.ID, minFill)
+}
+
+// markPartialClosed handles close bookkeeping for a failed partial position.
+// Uses same pattern as markPositionClosed but without PnL reconciliation.
+func (e *Engine) markPartialClosed(pos *models.ArbitragePosition, reason, exitReason string) {
+	pos.LongSize = 0
+	pos.ShortSize = 0
+	pos.Status = models.StatusClosed
+	pos.FailureReason = reason
+	pos.ExitReason = exitReason
+	pos.UpdatedAt = time.Now().UTC()
+	_ = e.db.SavePosition(pos)
+	_ = e.db.AddToHistory(pos)
+	e.releasePerpPosition(pos.ID)
+	e.api.BroadcastPositionUpdate(pos)
 }

@@ -33,7 +33,8 @@ const PnLBreakdown: FC<PnLBreakdownProps> = ({ position: p }) => {
     hasPerLeg ||
     (p.exit_fees != null && p.exit_fees !== 0) ||
     (p.basis_gain_loss != null && p.basis_gain_loss !== 0) ||
-    (p.slippage != null && p.slippage !== 0);
+    (p.slippage != null && p.slippage !== 0) ||
+    (p.rotation_pnl != null && p.rotation_pnl !== 0);
 
   if (!hasDecomposition) {
     return (

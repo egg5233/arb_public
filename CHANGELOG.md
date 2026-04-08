@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.30.0] - 2026-04-08
+
+### Fixed
+- **CRITICAL: Consolidator force-close writes partial PnL as reconciled** — added PartialReconcile field; InferHasReconciled skips inference for partial data; async reconcilePnL retries after force-close; AdjustWinLoss corrects win/loss counts on PnL sign change
+- **CRITICAL: Trim-back failure activates position with unmatched exposure** — sentinel errPartialEntry pattern; force checkpoint before trim; post-trim sizes tracked accurately; caller skips cleanup on partial success
+- **HIGH: Sequential rebalance passes deficits as needs** — promoted rebalanceDeficit to package-level type; added precomputedDeficits parameter to skip upper-half recalculation while preserving donor surplus math
+- **HIGH: StatusPartial positions stranded after crash** — consolidator now reconciles StatusPartial: query exchange, trim to matched, promote or close; markPartialClosed zeros sizes
+- **HIGH: Post-fill SavePosition failure leaves orphan fills** — 3-retry save; falls back to errPartialEntry with valid StatusPartial checkpoint in DB
+- **HIGH: confirmFill treats unknown as zero-fill** — confirmFillSafe wrapper distinguishes REST failure from confirmed zero; first-leg unknown freezes depth loop; second-leg unknown saves partial with entry prices
+- **HIGH: Allocator override stale falls through to unfunded tier-3** — applyAllocatorOverrides returns (filtered, hadOverrides); tier-3 blocked when allocator ran but all overrides stale
+- **MEDIUM: No-diff reconciliation doesn't update history entry** — UpdateHistoryEntry (not AddToHistory) in no-diff branch; clears PartialReconcile
+- **MEDIUM: Allocator commit failure not handled** — triggers allocator.Reconcile() on persistent commit failure
+- **LOW: PnLBreakdown rotation_pnl not in hasDecomposition gate** — rotation-only positions now render breakdown instead of "data unavailable"
+
+### Added
+- `PartialReconcile` field on ArbitragePosition (partial data marker)
+- `AdjustWinLoss()` in database/state.go (pipelined win/loss count correction)
+- `confirmFillSafe()` entry-only wrapper with error awareness
+- `reconcilePartialPosition()` + `markPartialClosed()` in consolidator
+- `rebalanceDeficit` package-level type in allocator
+- `errPartialEntry` sentinel error for partial entry success
+- Aggregator test coverage for HasReconciled flag (3 new test cases)
+- `partial_reconcile` field in frontend Position type
+
+### Changed
+- `executeRebalanceFundingPlan` accepts optional precomputedDeficits parameter
+- `applyAllocatorOverrides` returns ([]Opportunity, bool) tuple
+- `GetWithdrawFee` exchange interface returns (fee, minWd, error) — all adapters updated
+
+### Removed
+- `buildOppsFromAllocatorChoices` dead code function
+
 ## [0.29.3] - 2026-04-07
 
 ### Fixed

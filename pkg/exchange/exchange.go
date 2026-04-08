@@ -44,7 +44,8 @@ type Exchange interface {
 	// (fee NOT inclusive: recipient gets the full amount, fee deducted separately).
 	WithdrawFeeInclusive() bool
 	// GetWithdrawFee queries the exchange API for the withdrawal fee of a coin on a given chain.
-	GetWithdrawFee(coin, chain string) (float64, error)
+	// Returns fee, minWithdraw, and error. minWithdraw is 0 if the exchange does not expose a minimum.
+	GetWithdrawFee(coin, chain string) (fee float64, minWithdraw float64, err error)
 	// TransferToSpot moves funds from the trading/futures account to the
 	// spot/funding account so they can be withdrawn. No-op on exchanges
 	// where withdrawals already come from the main balance (e.g. Binance, Gate.io).

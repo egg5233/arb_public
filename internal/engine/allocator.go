@@ -14,6 +14,14 @@ import (
 
 const marginEpsilon = 0.005 // margin buffer to avoid hitting L4 boundary exactly
 
+// feeEntry caches a single GetWithdrawFee result (fee + minWithdraw).
+// valid=false means the lookup failed or was not yet attempted.
+type feeEntry struct {
+	fee   float64
+	minWd float64
+	valid bool // replaces -1 sentinel
+}
+
 type allocatorFeeSchedule struct {
 	Taker float64
 }
@@ -34,6 +42,14 @@ type rebalanceBalanceInfo struct {
 	marginRatio    float64
 	maxTransferOut float64
 	hasPositions   bool // true if this exchange has active perp-perp legs
+}
+
+// rebalanceDeficit records that an exchange needs additional funding from
+// a cross-exchange transfer. Used both internally by executeRebalanceFundingPlan
+// and by the sequential rebalance path in rebalanceFunds.
+type rebalanceDeficit struct {
+	exchange string
+	amount   float64
 }
 
 type allocatorChoice struct {
@@ -390,7 +406,7 @@ func (e *Engine) solveAllocator(candidates []allocatorCandidate, capacity map[st
 	start := time.Now()
 	bestValue := -1.0
 	var bestChoices []allocatorChoice
-	feeCache := map[string]float64{}
+	feeCache := map[string]feeEntry{}
 
 	incumbent := e.greedyAllocatorSeed(candidates, cloneFloatMap(capacity), balances, feeCache, remainingSlots, xferBudget)
 	bestValue = e.allocatorChoiceValue(incumbent, balances, feeCache)
@@ -480,7 +496,7 @@ func (e *Engine) solveAllocator(candidates []allocatorCandidate, capacity map[st
 	return bestChoices
 }
 
-func (e *Engine) greedyAllocatorSeed(candidates []allocatorCandidate, capacity map[string]float64, balances map[string]rebalanceBalanceInfo, feeCache map[string]float64, remainingSlots int, xferBudget float64) []allocatorChoice {
+func (e *Engine) greedyAllocatorSeed(candidates []allocatorCandidate, capacity map[string]float64, balances map[string]rebalanceBalanceInfo, feeCache map[string]feeEntry, remainingSlots int, xferBudget float64) []allocatorChoice {
 	selected := make([]allocatorChoice, 0, remainingSlots)
 	needs := exchNeedsMap{}
 	for _, candidate := range candidates {
@@ -580,6 +596,29 @@ func (e *Engine) isAllocatorFundingFeasible(needs map[string]float64, balances m
 			if !ok {
 				return false
 			}
+
+			// Floor deficit to donor's minWithdraw (replaces hardcoded 10.0).
+			// findAllocatorDonor already used GetWithdrawFee internally to get `fee`,
+			// so we need the chain to query minWd. Use same chain selection logic.
+			if remaining < 10.0 {
+				// Only bother looking up minWd when we'd hit the old floor.
+				e.cfg.RLock()
+				addrs := e.cfg.ExchangeAddresses[exchName]
+				e.cfg.RUnlock()
+				var chain string
+				for _, c := range []string{"APT", "BEP20"} {
+					if addrs[c] != "" {
+						chain = c
+						break
+					}
+				}
+				if chain != "" {
+					if _, minWd, err := e.exchanges[donor].GetWithdrawFee("USDT", chain); err == nil && remaining < minWd {
+						remaining = minWd
+					}
+				}
+			}
+
 			netPossible := available - fee
 			if netPossible <= 0 {
 				donorGross[donor] = 0
@@ -622,9 +661,24 @@ func (e *Engine) findAllocatorDonor(recipient string, donorGross map[string]floa
 			e.log.Info("rebalance: donor %s skipped for %s: marginRatio %.4f >= L3 %.4f", donor, recipient, balances[donor].marginRatio, e.cfg.MarginL3Threshold)
 			continue
 		}
-		fee, err := e.exchanges[donor].GetWithdrawFee("USDT", chain)
+		fee, minWd, err := e.exchanges[donor].GetWithdrawFee("USDT", chain)
 		if err != nil {
 			continue
+		}
+		// FIX 3: fee-mode aware donor filter
+		if minWd > 0 {
+			isGross := e.exchanges[donor].WithdrawFeeInclusive()
+			if isGross {
+				if avail < minWd {
+					e.log.Debug("rebalance: donor %s skipped: avail %.2f < minWd %.2f (gross)", donor, avail, minWd)
+					continue
+				}
+			} else {
+				if avail < minWd+fee {
+					e.log.Debug("rebalance: donor %s skipped: avail %.2f < minWd+fee %.2f (net)", donor, avail, minWd+fee)
+					continue
+				}
+			}
 		}
 		usable := avail - fee
 		if usable <= 0 {
@@ -689,7 +743,7 @@ func firstSettlementProfit(spreadBpsH, intervalHours, notional float64) float64 
 
 // estimateChoiceTransferFee computes the cheapest withdraw fee needed to fund
 // each leg of the choice that exceeds local capacity.
-func estimateChoiceTransferFee(e *Engine, choice allocatorChoice, cap map[string]float64, balances map[string]rebalanceBalanceInfo, feeCache map[string]float64) float64 {
+func estimateChoiceTransferFee(e *Engine, choice allocatorChoice, cap map[string]float64, balances map[string]rebalanceBalanceInfo, feeCache map[string]feeEntry) float64 {
 	totalFee := 0.0
 	if cap[choice.longExchange] < choice.requiredMargin {
 		fee := cheapestTransferFee(e, choice.longExchange, balances, cap, feeCache)
@@ -712,7 +766,7 @@ func estimateChoiceTransferFee(e *Engine, choice allocatorChoice, cap map[string
 
 // cheapestTransferFee finds the cheapest withdraw fee from any donor to the
 // recipient exchange. Returns -1 if no viable donor exists.
-func cheapestTransferFee(e *Engine, recipient string, balances map[string]rebalanceBalanceInfo, cap map[string]float64, feeCache map[string]float64) float64 {
+func cheapestTransferFee(e *Engine, recipient string, balances map[string]rebalanceBalanceInfo, cap map[string]float64, feeCache map[string]feeEntry) float64 {
 	e.cfg.RLock()
 	addrs := e.cfg.ExchangeAddresses[recipient]
 	e.cfg.RUnlock()
@@ -744,18 +798,38 @@ func cheapestTransferFee(e *Engine, recipient string, balances map[string]rebala
 			continue
 		}
 		cacheKey := donor + "|" + recipient + "|" + chain
-		fee, ok := feeCache[cacheKey]
+		entry, ok := feeCache[cacheKey]
 		if !ok {
 			var err error
-			fee, err = e.exchanges[donor].GetWithdrawFee("USDT", chain)
+			var minWd float64
+			entry.fee, minWd, err = e.exchanges[donor].GetWithdrawFee("USDT", chain)
 			if err != nil {
-				feeCache[cacheKey] = -1
+				feeCache[cacheKey] = feeEntry{valid: false}
 				continue
 			}
-			feeCache[cacheKey] = fee
+			entry.minWd = minWd
+			entry.valid = true
+			feeCache[cacheKey] = entry
 		}
-		if fee < 0 {
+		if !entry.valid {
 			continue
+		}
+		fee := entry.fee
+		minWd := entry.minWd
+		// FIX 3: fee-mode aware donor filter
+		if minWd > 0 {
+			isGross := e.exchanges[donor].WithdrawFeeInclusive()
+			if isGross {
+				if cap[donor] < minWd {
+					e.log.Debug("allocator: cheapestFee donor %s skipped: cap %.2f < minWd %.2f (gross)", donor, cap[donor], minWd)
+					continue
+				}
+			} else {
+				if cap[donor] < minWd+fee {
+					e.log.Debug("allocator: cheapestFee donor %s skipped: cap %.2f < minWd+fee %.2f (net)", donor, cap[donor], minWd+fee)
+					continue
+				}
+			}
 		}
 		// Check donor actually has surplus after its own allocator commitments.
 		donorSurplus := cap[donor] // already reduced by prior choices in this solver round
@@ -778,7 +852,7 @@ func cheapestTransferFee(e *Engine, recipient string, balances map[string]rebala
 	return bestFee
 }
 
-func (e *Engine) allocatorChoiceValue(choices []allocatorChoice, balances map[string]rebalanceBalanceInfo, feeCache map[string]float64) float64 {
+func (e *Engine) allocatorChoiceValue(choices []allocatorChoice, balances map[string]rebalanceBalanceInfo, feeCache map[string]feeEntry) float64 {
 	sum := 0.0
 	alreadyDeducted := 0.0
 	for _, choice := range choices {
@@ -804,7 +878,7 @@ func (e *Engine) allocatorChoiceValue(choices []allocatorChoice, balances map[st
 	return sum - netTransferCost
 }
 
-func (e *Engine) estimateAllocatorTransferCost(needs map[string]float64, balances map[string]rebalanceBalanceInfo, feeCache map[string]float64) float64 {
+func (e *Engine) estimateAllocatorTransferCost(needs map[string]float64, balances map[string]rebalanceBalanceInfo, feeCache map[string]feeEntry) float64 {
 	if len(needs) == 0 {
 		return 0
 	}
@@ -829,15 +903,28 @@ func (e *Engine) estimateAllocatorTransferCost(needs map[string]float64, balance
 			continue
 		}
 
-		shortfall := need - bal.futures
-		l4Extra := need/targetFreeRatio - bal.futuresTotal - shortfall
-		if l4Extra < 0 {
-			l4Extra = 0
+		marginDeficit := need - bal.futures
+		if marginDeficit < 0 {
+			marginDeficit = 0
 		}
-		if l4Extra > shortfall {
-			l4Extra = shortfall
+		actualMargin := need / e.cfg.MarginSafetyMultiplier
+		if actualMargin <= 0 {
+			actualMargin = need
 		}
-		transferAmt := shortfall + l4Extra
+		targetRatio := e.cfg.MarginL4Threshold - marginEpsilon
+		freeTarget := 1.0 - targetRatio
+		var ratioDeficit float64
+		if freeTarget > 0 && bal.futuresTotal > 0 {
+			ratioDeficit = (freeTarget*bal.futuresTotal - bal.futures + actualMargin) / targetRatio
+			if ratioDeficit < 0 {
+				ratioDeficit = 0
+			}
+		}
+		transferAmt := marginDeficit
+		if ratioDeficit > transferAmt {
+			transferAmt = ratioDeficit
+		}
+		e.log.Debug("allocator: transferCost deficit %s: need=%.2f futures=%.2f marginDef=%.2f ratioDef=%.2f transferAmt=%.2f", name, need, bal.futures, marginDeficit, ratioDeficit, transferAmt)
 		if bal.spot > 0 {
 			actualTransfer := transferAmt
 			if actualTransfer > bal.spot {
@@ -863,9 +950,9 @@ func (e *Engine) estimateAllocatorTransferCost(needs map[string]float64, balance
 				// if no valid fees cached.
 				var feeSum float64
 				var feeCount int
-				for _, f := range feeCache {
-					if f >= 0 {
-						feeSum += f
+				for _, ent := range feeCache {
+					if ent.valid {
+						feeSum += ent.fee
 						feeCount++
 					}
 				}
@@ -900,7 +987,7 @@ func cloneFloatMap(src map[string]float64) map[string]float64 {
 	return dst
 }
 
-func (e *Engine) findAllocatorDonorWithCache(recipient string, donorGross map[string]float64, balances map[string]rebalanceBalanceInfo, feeCache map[string]float64) (string, float64, float64, bool) {
+func (e *Engine) findAllocatorDonorWithCache(recipient string, donorGross map[string]float64, balances map[string]rebalanceBalanceInfo, feeCache map[string]feeEntry) (string, float64, float64, bool) {
 	e.cfg.RLock()
 	addrs := e.cfg.ExchangeAddresses[recipient]
 	e.cfg.RUnlock()
@@ -931,18 +1018,36 @@ func (e *Engine) findAllocatorDonorWithCache(recipient string, donorGross map[st
 		}
 
 		cacheKey := donor + "|" + recipient + "|" + chain
-		fee, ok := feeCache[cacheKey]
+		entry, ok := feeCache[cacheKey]
 		if !ok {
 			var err error
-			fee, err = e.exchanges[donor].GetWithdrawFee("USDT", chain)
+			var minWd float64
+			entry.fee, minWd, err = e.exchanges[donor].GetWithdrawFee("USDT", chain)
 			if err != nil {
-				feeCache[cacheKey] = -1
+				feeCache[cacheKey] = feeEntry{valid: false}
 				continue
 			}
-			feeCache[cacheKey] = fee
+			entry.minWd = minWd
+			entry.valid = true
+			feeCache[cacheKey] = entry
 		}
-		if fee < 0 {
+		if !entry.valid {
 			continue
+		}
+		fee := entry.fee
+		minWd := entry.minWd
+		// FIX 3: fee-mode aware donor filter
+		if minWd > 0 {
+			isGross := e.exchanges[donor].WithdrawFeeInclusive()
+			if isGross {
+				if avail < minWd {
+					continue
+				}
+			} else {
+				if avail < minWd+fee {
+					continue
+				}
+			}
 		}
 
 		usable := avail - fee
@@ -964,72 +1069,63 @@ func (e *Engine) findAllocatorDonorWithCache(recipient string, donorGross map[st
 }
 
 func (e *Engine) allocatorDonorGrossCapacity(name string, bal rebalanceBalanceInfo, localNeed float64) float64 {
-	totalSurplus := e.rebalanceAvailable(name, bal) - localNeed
-	if totalSurplus <= 0 {
-		e.log.Debug("allocator: donorGross %s surplus=%.2f<=0", name, totalSurplus)
-		return 0
-	}
-
-	if e.allocatorWithdrawalUsesMainBalance(name) {
-		if bal.hasPositions {
-			healthCap := e.capByMarginHealth(bal)
-			if healthCap < totalSurplus {
-				totalSurplus = healthCap
-			}
-		}
-		if totalSurplus < 0 {
-			return 0
-		}
-		return totalSurplus
-	}
-
-	movable := bal.maxTransferOut
-	if movable <= 0 {
-		movable = bal.futures
-		if bal.marginRatio > 0 && bal.futuresTotal > 0 && e.cfg.MarginL4Threshold > 0 {
-			safeMax := bal.futuresTotal * (1.0 - bal.marginRatio/e.cfg.MarginL4Threshold)
-			if safeMax < movable {
-				movable = safeMax
-			}
-		}
-	}
-
-	// For exchanges with active positions, cap transfer to keep margin ratio
-	// below L3 threshold. Without this, maxTransferOut from the exchange API
-	// may allow draining enough margin to trigger L4/L5 emergency actions.
-	healthCap := e.capByMarginHealth(bal)
-	if healthCap < movable {
-		movable = healthCap
-	}
-
-	movable -= localNeed
-	if movable < 0 {
-		movable = 0
-	}
-
-	grossCapacity := bal.spot + movable
-	if grossCapacity > totalSurplus {
-		grossCapacity = totalSurplus
-	}
-	if grossCapacity < 0 {
-		return 0
-	}
-
-	e.log.Info("rebalance: donor %s capacity: futures=%.2f total=%.2f marginRatio=%.4f maxTransferOut=%.2f healthCap=%.2f movable=%.2f gross=%.2f hasPos=%v",
-		name, bal.futures, bal.futuresTotal, bal.marginRatio, bal.maxTransferOut, healthCap, movable, grossCapacity, bal.hasPositions)
-
-	return grossCapacity
-}
-
-func (e *Engine) allocatorWithdrawalUsesMainBalance(name string) bool {
-	if name == "binance" || name == "gateio" {
-		return true
-	}
+	// Determine if this exchange uses a unified account (futures pool = main balance).
+	// For unified accounts, rebalanceAvailable returns futures only — spot is already
+	// included in the futures pool and must not be double-counted.
+	isUnified := false
 	type unifiedChecker interface{ IsUnified() bool }
 	if uc, ok := e.exchanges[name].(unifiedChecker); ok && uc.IsUnified() {
-		return true
+		isUnified = true
 	}
-	return false
+
+	// Compute transferable futures capacity.
+	// Unified: the entire futures balance is the transferable pool.
+	// Split: use maxTransferOut (from exchange API); fall back to futures with
+	//        a margin-ratio safety cap if maxTransferOut is unavailable.
+	var futuresAvail float64
+	if isUnified {
+		futuresAvail = bal.futures
+	} else {
+		futuresAvail = bal.maxTransferOut
+		if futuresAvail <= 0 {
+			futuresAvail = bal.futures
+			if bal.marginRatio > 0 && bal.futuresTotal > 0 && e.cfg.MarginL4Threshold > 0 {
+				safeMax := bal.futuresTotal * (1.0 - bal.marginRatio/e.cfg.MarginL4Threshold)
+				if safeMax < futuresAvail {
+					futuresAvail = safeMax
+				}
+			}
+		}
+	}
+
+	// Gross surplus = transferable futures + spot (split only) - own need.
+	var surplus float64
+	if isUnified {
+		// spot is part of the futures pool — don't add separately
+		surplus = futuresAvail - localNeed
+	} else {
+		surplus = futuresAvail + bal.spot - localNeed
+	}
+	if surplus <= 0 {
+		e.log.Debug("allocator: donorGross %s surplus=%.2f<=0", name, surplus)
+		return 0
+	}
+
+	// Cap by margin health to avoid draining past L3/L4.
+	if bal.hasPositions {
+		healthCap := e.capByMarginHealth(bal)
+		if healthCap < surplus {
+			surplus = healthCap
+		}
+	}
+	if surplus < 0 {
+		return 0
+	}
+
+	e.log.Info("rebalance: donor %s capacity: futures=%.2f total=%.2f marginRatio=%.4f maxTransferOut=%.2f futuresAvail=%.2f surplus=%.2f unified=%v hasPos=%v",
+		name, bal.futures, bal.futuresTotal, bal.marginRatio, bal.maxTransferOut, futuresAvail, surplus, isUnified, bal.hasPositions)
+
+	return surplus
 }
 
 // capByMarginHealth returns the maximum amount that can be transferred out
@@ -1168,6 +1264,32 @@ func (e *Engine) simulateTransferPlan(choices []allocatorChoice, balances map[st
 				}
 
 				move := math.Min(deficit, bestSurplus)
+
+				// Floor to donor's minWithdraw (replaces hardcoded 10.0).
+				e.cfg.RLock()
+				addrs := e.cfg.ExchangeAddresses[exch]
+				e.cfg.RUnlock()
+				var simChain string
+				for _, c := range []string{"APT", "BEP20"} {
+					if addrs[c] != "" {
+						simChain = c
+						break
+					}
+				}
+				minWd := 10.0 // fallback
+				if simChain != "" {
+					if _, mw, err := e.exchanges[bestDonor].GetWithdrawFee("USDT", simChain); err == nil {
+						minWd = mw
+					}
+				}
+				if move < minWd {
+					if bestSurplus < minWd {
+						e.log.Debug("allocator: simXfer %s→%s bestSurplus=%.2f < minWd=%.2f, infeasible", bestDonor, exch, bestSurplus, minWd)
+						return false, 0
+					}
+					move = minWd
+				}
+
 				e.log.Debug("allocator: simXfer %s→%s move=%.2f", bestDonor, exch, move)
 				d := sim[bestDonor]
 				d.futures -= move
@@ -1246,13 +1368,13 @@ func (e *Engine) formatAllocatorSummary(sel *allocatorSelection) string {
 	return strings.Join(names, ", ")
 }
 
-func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances map[string]rebalanceBalanceInfo) {
-	type deficit struct {
-		exchange string
-		amount   float64
-	}
+func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances map[string]rebalanceBalanceInfo, precomputedDeficits []rebalanceDeficit) {
+	var crossDeficits []rebalanceDeficit
 
-	var crossDeficits []deficit
+	if precomputedDeficits != nil {
+		// Sequential rebalance: deficits already computed, skip spot→futures phase.
+		crossDeficits = precomputedDeficits
+	} else {
 	for name, need := range needs {
 		bal := balances[name]
 		targetFreeRatio := 1 - e.cfg.MarginL4Threshold
@@ -1317,22 +1439,35 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 					if ratioDeficit > 0 {
 						e.log.Info("rebalance: %s post-trade ratio=%.4f >= L4=%.4f, queueing cross-exchange deficit=%.2f",
 							name, projectedRatio, e.cfg.MarginL4Threshold, ratioDeficit)
-						crossDeficits = append(crossDeficits, deficit{name, ratioDeficit})
+						crossDeficits = append(crossDeficits, rebalanceDeficit{name, ratioDeficit})
 					}
 				}
 			}
 			continue
 		}
 
-		shortfall := need - bal.futures
-		l4Extra := need/targetFreeRatio - bal.futuresTotal - shortfall
-		if l4Extra < 0 {
-			l4Extra = 0
+		marginDeficit := need - bal.futures
+		if marginDeficit < 0 {
+			marginDeficit = 0
 		}
-		if l4Extra > shortfall {
-			l4Extra = shortfall
+		actualMargin := need / e.cfg.MarginSafetyMultiplier
+		if actualMargin <= 0 {
+			actualMargin = need
 		}
-		transferAmt := shortfall + l4Extra
+		targetRatio := e.cfg.MarginL4Threshold - marginEpsilon
+		freeTarget := 1.0 - targetRatio
+		var ratioDeficit float64
+		if freeTarget > 0 && bal.futuresTotal > 0 {
+			ratioDeficit = (freeTarget*bal.futuresTotal - bal.futures + actualMargin) / targetRatio
+			if ratioDeficit < 0 {
+				ratioDeficit = 0
+			}
+		}
+		transferAmt := marginDeficit
+		if ratioDeficit > transferAmt {
+			transferAmt = ratioDeficit
+		}
+		e.log.Debug("rebalance: deficit %s: need=%.2f futures=%.2f marginDef=%.2f ratioDef=%.2f transferAmt=%.2f", name, need, bal.futures, marginDeficit, ratioDeficit, transferAmt)
 		if bal.spot > 0 {
 			actualTransfer := transferAmt
 			if actualTransfer > bal.spot {
@@ -1341,7 +1476,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 			if actualTransfer < 1.0 {
 				e.log.Debug("rebalance: %s spot->futures skip (%.4f USDT below minimum)", name, actualTransfer)
 				if transferAmt > 0 {
-					crossDeficits = append(crossDeficits, deficit{name, transferAmt})
+					crossDeficits = append(crossDeficits, rebalanceDeficit{name, transferAmt})
 				}
 				continue
 			}
@@ -1362,9 +1497,10 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 			}
 		}
 		if transferAmt > 0 {
-			crossDeficits = append(crossDeficits, deficit{name, transferAmt})
+			crossDeficits = append(crossDeficits, rebalanceDeficit{name, transferAmt})
 		}
 	}
+	} // end else (precomputedDeficits == nil)
 
 	if len(crossDeficits) == 0 {
 		e.log.Info("rebalance: all exchanges funded, no cross-exchange transfers needed")
@@ -1373,14 +1509,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 
 	surplus := map[string]float64{}
 	for name := range e.exchanges {
-		surplus[name] = e.rebalanceAvailable(name, balances[name]) - needs[name]
-		// Cap by health if exchange has positions
-		if balances[name].hasPositions {
-			healthCap := e.capByMarginHealth(balances[name])
-			if surplus[name] > healthCap {
-				surplus[name] = healthCap
-			}
-		}
+		surplus[name] = e.allocatorDonorGrossCapacity(name, balances[name], needs[name])
 	}
 
 	pendingDeposits := map[string]float64{}
@@ -1389,10 +1518,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 		remaining := crossDeficits[i].amount
 		exchName := crossDeficits[i].exchange
 		e.log.Debug("rebalance: processing crossDeficit %s amount=%.2f", exchName, remaining)
-		if remaining < 1.0 {
-			e.log.Info("rebalance: %s deficit %.4f below minimum, skipping", exchName, remaining)
-			continue
-		}
+		// FIX 9: removed remaining < 1.0 skip — intentional over-transfer when deficit < minWd
 		for remaining > 0 {
 			var bestDonor string
 			var bestSurplus float64
@@ -1445,25 +1571,57 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				continue
 			}
 
-			fee, feeErr := e.exchanges[bestDonor].GetWithdrawFee("USDT", chain)
+			fee, minWd, feeErr := e.exchanges[bestDonor].GetWithdrawFee("USDT", chain)
 			if feeErr != nil {
 				e.log.Warn("rebalance: %s GetWithdrawFee failed: %v, skipping donor", bestDonor, feeErr)
 				surplus[bestDonor] = 0
 				continue
 			}
-			e.log.Info("rebalance: %s withdraw fee=%.4f USDT via %s", bestDonor, fee, chain)
+			e.log.Info("rebalance: %s withdraw fee=%.4f minWd=%.4f USDT via %s", bestDonor, fee, minWd, chain)
 
-			// For net-fee exchanges (OKX, Bitget, Bybit), actual debit = contribution + fee.
-			// Subtract actual fee from contribution so total debit stays within health cap.
-			if !e.exchanges[bestDonor].WithdrawFeeInclusive() && balances[bestDonor].hasPositions {
+			// FIX 6a: fee-mode aware cap — keep existing net-fee path, add fee-inclusive path.
+			isGross := e.exchanges[bestDonor].WithdrawFeeInclusive()
+			if !isGross && balances[bestDonor].hasPositions {
+				// net-fee: actual debit = contribution + fee; cap so total stays within surplus
 				if contribution+fee > bestSurplus {
 					contribution = bestSurplus - fee
 					e.log.Debug("rebalance: net-fee cap %s: contribution=%.2f fee=%.2f surplus=%.2f", bestDonor, contribution, fee, bestSurplus)
 				}
-				if contribution <= 0 {
-					e.log.Warn("rebalance: %s contribution %.2f too low after fee %.4f deduction, skipping", bestDonor, contribution, fee)
-					surplus[bestDonor] = 0
-					continue
+			} else if isGross && balances[bestDonor].hasPositions {
+				// fee-inclusive: withdrawAmtForAPI = contribution + fee, actual debit = contribution + fee
+				if contribution+fee > bestSurplus {
+					contribution = bestSurplus - fee
+					e.log.Debug("rebalance: gross-fee cap %s: contribution=%.2f fee=%.2f surplus=%.2f", bestDonor, contribution, fee, bestSurplus)
+				}
+			}
+			if contribution <= 0 {
+				e.log.Warn("rebalance: %s contribution %.2f too low after fee %.4f deduction, skipping", bestDonor, contribution, fee)
+				surplus[bestDonor] = 0
+				continue
+			}
+
+			// FIX 8: minWd early bump — bump contribution up to netFloor if too small
+			// fee-inclusive: withdrawAmtForAPI = contribution + fee, so need contribution >= minWd - fee
+			// net-fee: withdrawAmtForAPI = contribution, so need contribution >= minWd
+			if minWd > 0 {
+				var netFloor float64
+				if isGross {
+					netFloor = minWd - fee
+				} else {
+					netFloor = minWd
+				}
+				if netFloor < 0 {
+					netFloor = 0
+				}
+				if contribution < netFloor {
+					cappedFloor := math.Min(netFloor, bestSurplus-fee)
+					if cappedFloor <= 0 {
+						e.log.Debug("rebalance: %s contribution %.2f below minWd net floor %.2f and no room to bump, skipping", bestDonor, contribution, netFloor)
+						surplus[bestDonor] = 0
+						continue
+					}
+					e.log.Info("rebalance: %s bumping contribution %.2f -> %.2f to meet minWd net floor %.2f", bestDonor, contribution, cappedFloor, netFloor)
+					contribution = cappedFloor
 				}
 			}
 
@@ -1548,7 +1706,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 			}
 
 			grossRequired := netAmount + fee
-			isGross := e.exchanges[bestDonor].WithdrawFeeInclusive()
+			// isGross was already declared above in FIX 6a block; reuse it here.
 
 			// For net-fee exchanges, actual debit = netAmount + fee.
 			// Cap so total debit doesn't exceed the margin health limit.
@@ -1576,6 +1734,13 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 			withdrawAmtForAPI := netAmount
 			if isGross {
 				withdrawAmtForAPI = netAmount + fee
+			}
+
+			// FIX 8: final guard — skip if withdrawal amount is below exchange minimum
+			if minWd > 0 && withdrawAmtForAPI < minWd {
+				e.log.Info("rebalance: %s withdraw %.4f below min %.2f after late caps, skipping", bestDonor, withdrawAmtForAPI, minWd)
+				surplus[bestDonor] = 0
+				continue
 			}
 			amtStr := fmt.Sprintf("%.4f", withdrawAmtForAPI)
 			result, err := e.exchanges[bestDonor].Withdraw(exchange.WithdrawParams{

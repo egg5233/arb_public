@@ -712,6 +712,13 @@ const zhTW: Record<TranslationKey, string> = {
   'hist.netPnl': '淨損益',
   'hist.positionApr': '年化報酬率',
   'hist.dataUnavailable': '詳細分解僅適用於 v0.27.0 之後平倉的部位',
+  'hist.tradingFee': '交易手續費',
+  'hist.closePnl': '平倉收益',
+  'hist.longSide': '多方',
+  'hist.shortSide': '空方',
+  'hist.subtotal': '小計',
+  'hist.rotationPnl': '輪換損益',
+  'hist.totalPnl': '總損益',
 
   // Config - Analytics
   'cfg.tab.analytics': '分析',

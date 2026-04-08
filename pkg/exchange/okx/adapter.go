@@ -1060,34 +1060,36 @@ func (a *Adapter) Withdraw(params exchange.WithdrawParams) (*exchange.WithdrawRe
 func (a *Adapter) WithdrawFeeInclusive() bool { return false }
 
 // GetWithdrawFee queries the OKX API for the withdrawal fee of a coin on a given chain.
-func (a *Adapter) GetWithdrawFee(coin, chain string) (float64, error) {
+func (a *Adapter) GetWithdrawFee(coin, chain string) (fee float64, minWithdraw float64, err error) {
 	chainID := mapChainToOKXNetwork(coin, chain)
 	params := map[string]string{
 		"ccy": coin,
 	}
-	data, err := a.client.Get("/api/v5/asset/currencies", params)
-	if err != nil {
-		return 0, fmt.Errorf("okx GetWithdrawFee: %w", err)
+	data, apiErr := a.client.Get("/api/v5/asset/currencies", params)
+	if apiErr != nil {
+		return 0, 0, fmt.Errorf("okx GetWithdrawFee: %w", apiErr)
 	}
 
 	var items []struct {
 		Chain string `json:"chain"`
 		Fee   string `json:"fee"`
+		MinWd string `json:"minWd"`
 	}
 	if err := json.Unmarshal(data, &items); err != nil {
-		return 0, fmt.Errorf("okx GetWithdrawFee unmarshal: %w", err)
+		return 0, 0, fmt.Errorf("okx GetWithdrawFee unmarshal: %w", err)
 	}
 
 	for _, item := range items {
 		if strings.EqualFold(item.Chain, chainID) {
-			fee, err := strconv.ParseFloat(item.Fee, 64)
+			parsedFee, err := strconv.ParseFloat(item.Fee, 64)
 			if err != nil {
-				return 0, fmt.Errorf("okx GetWithdrawFee parse fee: %w", err)
+				return 0, 0, fmt.Errorf("okx GetWithdrawFee parse fee: %w", err)
 			}
-			return fee, nil
+			minWd, _ := strconv.ParseFloat(item.MinWd, 64)
+			return parsedFee, minWd, nil
 		}
 	}
-	return 0, fmt.Errorf("okx GetWithdrawFee: chain %s not found for %s", chainID, coin)
+	return 0, 0, fmt.Errorf("okx GetWithdrawFee: chain %s not found for %s", chainID, coin)
 }
 
 func mapChainToOKXNetwork(coin, chain string) string {

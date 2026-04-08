@@ -923,8 +923,15 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 		if !pos.HasReconciled {
 			_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
 				fresh.HasReconciled = true
+				fresh.PartialReconcile = false
 				return true
 			})
+			// Update history entry too — use UpdateHistoryEntry (NOT AddToHistory which is LPush append)
+			pos.HasReconciled = true
+			pos.PartialReconcile = false
+			if err := e.db.UpdateHistoryEntry(pos); err != nil {
+				e.log.Warn("reconcile %s: failed to update history HasReconciled: %v", pos.ID, err)
+			}
 		}
 		return true
 	}
@@ -951,6 +958,7 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 			fresh.ShortClosePnL = shortAgg.PricePnL
 		}
 		fresh.HasReconciled = true
+		fresh.PartialReconcile = false
 		if reconciledLongExit > 0 {
 			fresh.LongExit = reconciledLongExit
 		}
@@ -971,6 +979,17 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 		} else {
 			e.log.Info("reconcile %s: corrected PnL %.4f → %.4f (stats adjusted by %.4f)",
 				pos.ID, oldPnL, reconciledPnL, statsDiff)
+		}
+
+		// Correct win/loss counts if partial close PnL sign changed after reconciliation.
+		if pos.PartialReconcile {
+			oldWon := pos.RealizedPnL > 0
+			newWon := reconciledPnL > 0
+			if oldWon != newWon {
+				if err := e.db.AdjustWinLoss(oldWon, newWon); err != nil {
+					e.log.Error("reconcile %s: AdjustWinLoss failed: %v", pos.ID, err)
+				}
+			}
 		}
 	}
 	if needsFundingUpdate {

@@ -1024,27 +1024,28 @@ func (a *Adapter) Withdraw(params exchange.WithdrawParams) (*exchange.WithdrawRe
 func (a *Adapter) WithdrawFeeInclusive() bool { return true }
 
 // GetWithdrawFee queries the Gate.io API for the withdrawal fee of a coin on a given chain.
-func (a *Adapter) GetWithdrawFee(coin, chain string) (float64, error) {
+func (a *Adapter) GetWithdrawFee(coin, chain string) (fee float64, minWithdraw float64, err error) {
 	network := mapChainToGateNetwork(chain)
 	params := map[string]string{
 		"currency": coin,
 	}
-	data, err := a.client.Get("/wallet/withdraw_status", params)
-	if err != nil {
-		return 0, fmt.Errorf("gateio GetWithdrawFee: %w", err)
+	data, apiErr := a.client.Get("/wallet/withdraw_status", params)
+	if apiErr != nil {
+		return 0, 0, fmt.Errorf("gateio GetWithdrawFee: %w", apiErr)
 	}
 
 	var resp []struct {
 		Currency            string            `json:"currency"`
 		WithdrawFixOnChains map[string]string `json:"withdraw_fix_on_chains"`
 		WithdrawPercent     string            `json:"withdraw_percent"`
+		WithdrawAmountMini  string            `json:"withdraw_amount_mini"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
-		return 0, fmt.Errorf("gateio GetWithdrawFee unmarshal: %w", err)
+		return 0, 0, fmt.Errorf("gateio GetWithdrawFee unmarshal: %w", err)
 	}
 
 	if len(resp) == 0 {
-		return 0, fmt.Errorf("gateio GetWithdrawFee: coin %s not found", coin)
+		return 0, 0, fmt.Errorf("gateio GetWithdrawFee: coin %s not found", coin)
 	}
 
 	item := resp[0]
@@ -1053,19 +1054,26 @@ func (a *Adapter) GetWithdrawFee(coin, chain string) (float64, error) {
 	if item.WithdrawPercent != "" && item.WithdrawPercent != "0" {
 		pct, err := strconv.ParseFloat(item.WithdrawPercent, 64)
 		if err == nil && pct > 0 {
-			return 0, fmt.Errorf("gateio GetWithdrawFee: percentage-based fee not supported (coin=%s, pct=%s)", coin, item.WithdrawPercent)
+			return 0, 0, fmt.Errorf("gateio GetWithdrawFee: percentage-based fee not supported (coin=%s, pct=%s)", coin, item.WithdrawPercent)
 		}
 	}
 
 	feeStr, ok := item.WithdrawFixOnChains[network]
 	if !ok {
-		return 0, fmt.Errorf("gateio GetWithdrawFee: chain %s not found for %s", network, coin)
+		return 0, 0, fmt.Errorf("gateio GetWithdrawFee: chain %s not found for %s", network, coin)
 	}
-	fee, err := strconv.ParseFloat(feeStr, 64)
+	parsedFee, err := strconv.ParseFloat(feeStr, 64)
 	if err != nil {
-		return 0, fmt.Errorf("gateio GetWithdrawFee parse fee: %w", err)
+		return 0, 0, fmt.Errorf("gateio GetWithdrawFee parse fee: %w", err)
 	}
-	return fee, nil
+
+	var minWd float64
+	if item.WithdrawAmountMini == "" {
+		// withdraw_amount_mini may be absent from Gate.io API — return minWd=0 (no minimum)
+	} else {
+		minWd, _ = strconv.ParseFloat(item.WithdrawAmountMini, 64)
+	}
+	return parsedFee, minWd, nil
 }
 
 func mapChainToGateNetwork(chain string) string {

@@ -149,14 +149,17 @@ func TestComputeStrategySummary(t *testing.T) {
 
 	perps := []*models.ArbitragePosition{
 		{
+			// ExitFees is negative (cost) and represents total fees (open+close) after reconciliation.
+			// EntryFees=1 is the pre-reconciliation entry fee; ExitFees=-2 overrides it after close.
 			ID: "p1", LongExchange: "Binance", ShortExchange: "Bybit",
-			RealizedPnL: 10, FundingCollected: 8, EntryFees: 1, ExitFees: 1, Status: "closed",
+			RealizedPnL: 10, FundingCollected: 8, EntryFees: 1, ExitFees: -2, HasReconciled: true, Status: "closed",
 			LongEntry: 50000, LongSize: 0.01, ShortEntry: 50000, ShortSize: 0.01,
 			CreatedAt: now.Add(-48 * time.Hour), UpdatedAt: now,
 		},
 		{
+			// ExitFees=-1 is negative (cost) total fees after reconciliation.
 			ID: "p2", LongExchange: "Binance", ShortExchange: "Bybit",
-			RealizedPnL: -3, FundingCollected: 2, EntryFees: 0.5, ExitFees: 0.5, Status: "closed",
+			RealizedPnL: -3, FundingCollected: 2, EntryFees: 0.5, ExitFees: -1, HasReconciled: true, Status: "closed",
 			LongEntry: 50000, LongSize: 0.01, ShortEntry: 50000, ShortSize: 0.01,
 			CreatedAt: now.Add(-24 * time.Hour), UpdatedAt: now,
 		},
@@ -195,6 +198,52 @@ func TestComputeStrategySummary(t *testing.T) {
 	if math.Abs(perp.FeesTotal-3.0) > 0.01 {
 		t.Errorf("perp fees total: expected 3.0, got %f", perp.FeesTotal)
 	}
+
+	// HasReconciled=false → falls back to EntryFees as fee estimate.
+	t.Run("fallback_to_entry_fees_when_not_reconciled", func(t *testing.T) {
+		unreconciled := []*models.ArbitragePosition{
+			{
+				ID: "u1", LongExchange: "Binance", ShortExchange: "Bybit",
+				RealizedPnL: 5, FundingCollected: 3, EntryFees: 2.0, ExitFees: -4, HasReconciled: false, Status: "closed",
+				LongEntry: 50000, LongSize: 0.01, ShortEntry: 50000, ShortSize: 0.01,
+				CreatedAt: now.Add(-24 * time.Hour), UpdatedAt: now,
+			},
+		}
+		sums := ComputeStrategySummary(unreconciled, nil)
+		var found StrategySummary
+		for _, s := range sums {
+			if s.Strategy == "perp" {
+				found = s
+			}
+		}
+		// HasReconciled=false: fees come from EntryFees (2.0), not abs(ExitFees)=4.
+		if math.Abs(found.FeesTotal-2.0) > 0.01 {
+			t.Errorf("expected FeesTotal=2.0 (EntryFees fallback), got %f", found.FeesTotal)
+		}
+	})
+
+	// HasReconciled=true, ExitFees=0 → zero-fee VIP; FeesTotal must be 0, not EntryFees.
+	t.Run("zero_fees_vip_when_reconciled_and_exit_fees_zero", func(t *testing.T) {
+		vip := []*models.ArbitragePosition{
+			{
+				ID: "v1", LongExchange: "Binance", ShortExchange: "Bybit",
+				RealizedPnL: 8, FundingCollected: 5, EntryFees: 1.5, ExitFees: 0, HasReconciled: true, Status: "closed",
+				LongEntry: 50000, LongSize: 0.01, ShortEntry: 50000, ShortSize: 0.01,
+				CreatedAt: now.Add(-24 * time.Hour), UpdatedAt: now,
+			},
+		}
+		sums := ComputeStrategySummary(vip, nil)
+		var found StrategySummary
+		for _, s := range sums {
+			if s.Strategy == "perp" {
+				found = s
+			}
+		}
+		// HasReconciled=true, ExitFees=0: reconciled zero-fee VIP — FeesTotal must be 0.
+		if math.Abs(found.FeesTotal-0.0) > 0.001 {
+			t.Errorf("expected FeesTotal=0.0 (VIP zero-fee), got %f", found.FeesTotal)
+		}
+	})
 
 	spot := summaryMap["spot"]
 	if spot.TradeCount != 1 {

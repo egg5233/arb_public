@@ -418,6 +418,25 @@ func (c *Client) UpdateStats(pnl float64, won bool) error {
 	return err
 }
 
+// AdjustWinLoss swaps one win/loss count when reconciliation changes PnL sign.
+// Uses pipeline + Exec() to mirror UpdateStats pattern and surface errors.
+func (c *Client) AdjustWinLoss(oldWon, newWon bool) error {
+	if oldWon == newWon {
+		return nil
+	}
+	ctx := context.Background()
+	pipe := c.rdb.Pipeline()
+	if oldWon && !newWon {
+		pipe.HIncrBy(ctx, keyStats, "win_count", -1)
+		pipe.HIncrBy(ctx, keyStats, "loss_count", 1)
+	} else {
+		pipe.HIncrBy(ctx, keyStats, "loss_count", -1)
+		pipe.HIncrBy(ctx, keyStats, "win_count", 1)
+	}
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
 // AdjustPnL adjusts total_pnl without incrementing trade/win/loss counts.
 // Used for reconciliation corrections.
 func (c *Client) AdjustPnL(diff float64) error {

@@ -1,7 +1,6 @@
 package discovery
 
 import (
-	"fmt"
 	"sync"
 	"time"
 
@@ -64,8 +63,8 @@ func (s stubExchange) GetClosePnL(string, time.Time) ([]exchange.ClosePnL, error
 	return nil, nil
 }
 func (s stubExchange) WithdrawFeeInclusive() bool                     { return false }
-func (s stubExchange) GetWithdrawFee(string, string) (float64, error) {
-	return 0, fmt.Errorf("not implemented")
+func (s stubExchange) GetWithdrawFee(string, string) (float64, float64, error) {
+	return 0, 0, nil
 }
 
 // makeNilExchangeMap builds a map[string]exchange.Exchange with stub implementations.

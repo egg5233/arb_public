@@ -52,7 +52,8 @@ type ArbitragePosition struct {
 	LongUnrealizedPnL  float64          `json:"long_unrealized_pnl,omitempty"`
 	ShortUnrealizedPnL float64          `json:"short_unrealized_pnl,omitempty"`
 	RotationHistory    []RotationRecord `json:"rotation_history,omitempty"`
-	HasReconciled      bool             `json:"has_reconciled,omitempty"` // true once PnL reconciliation has run (exit or consolidate)
+	HasReconciled      bool             `json:"has_reconciled,omitempty"`      // true once PnL reconciliation has run (exit or consolidate)
+	PartialReconcile   bool             `json:"partial_reconcile,omitempty"`   // true when closed with incomplete PnL data
 }
 
 // InferHasReconciled back-fills HasReconciled for legacy positions that were
@@ -70,7 +71,7 @@ type ArbitragePosition struct {
 // Ambiguous case: old positions where reconciliation returned all-zero diffs
 // remain HasReconciled=false. They use EntryFees as fallback — same as before.
 func (p *ArbitragePosition) InferHasReconciled() {
-	if p.HasReconciled {
+	if p.HasReconciled || p.PartialReconcile {
 		return
 	}
 	if p.ExitFees != 0 ||
