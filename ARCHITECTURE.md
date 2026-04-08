@@ -84,7 +84,7 @@ PASS if cost_ratio < VALUE_OF_RATIO (default: 0.50)
 
 ### 1.3 Execution Timeline
 
-**Scan-driven execution**: The scanner fires at configurable minutes (default :00, :10, :20, :30, :35, :40, :50) each hour. Each scan has a type: **NormalScan** (builds persistence history, feeds dashboard), **RebalanceScan** (:20 — fund rebalancing), **ExitScan** (:30 — exit checks), **EntryScan** (:40 — trade execution), or **RotateScan** (:35 — rotation checks). Schedule is configurable via `scan_minutes`, `rebalance_scan_minute`, `entry_scan_minute`, `exit_scan_minute`, `rotate_scan_minute`.
+**Scan-driven execution**: The scanner fires at configurable minutes (default :10, :20, :30, :35, :40, :45, :50) each hour. Each scan has a type: **NormalScan** (builds persistence history, feeds dashboard), **RebalanceScan** (default :10, production overrides to :20 — fund rebalancing), **ExitScan** (:30 — exit checks), **RotateScan** (:35 — rotation checks), or **EntryScan** (:40 — trade execution). Schedule is configurable via `scan_minutes`, `rebalance_scan_minute`, `entry_scan_minute`, `exit_scan_minute`, `rotate_scan_minute`.
 
 All actions (rebalance, exit, entry, rotate) are triggered by scan types in the main engine loop — no separate scheduler needed.
 
@@ -98,7 +98,7 @@ Continuous  Scanner fires at configured minutes each hour
                  b. Apply funding window filter (NextFunding <= 30min)
                  c. Send ScanResult{Type: EntryScan} to engine
 
-:20 scan   RebalanceScan → rebalanceFunds()
+:20 scan   RebalanceScan → rebalanceFunds()  (code default :10, production override :20)
              1. Analyze capital needs per exchange (capped to max_positions × capital_per_leg)
              2. Same-exchange spot→futures transfers (instant)
              3. Cross-exchange withdrawals for remaining deficits (APT/BEP20)
@@ -160,7 +160,7 @@ T+?        EXIT (per exit mode, see §1.5)
 
 After sizing: round to contract step size, enforce min size, enforce 10 USDT minimum margin per leg.
 
-**Pre-Execution Fund Rebalancing**: On the rebalance scan (default :20), `rebalanceFunds()` analyzes capital needs across all discovered opportunities and ensures each exchange has sufficient margin:
+**Pre-Execution Fund Rebalancing**: On the rebalance scan (code default :10, production :20), `rebalanceFunds()` analyzes capital needs across all discovered opportunities and ensures each exchange has sufficient margin:
 1. Same-exchange spot→futures transfers (instant, free)
 2. Cross-exchange withdrawals via APT (preferred) or BEP20 for remaining deficits
 3. Only withdraws from L0/L1/L2 exchanges (margin ratio below L3 threshold)
@@ -194,7 +194,7 @@ After sizing: round to contract step size, enforce min size, enforce 10 USDT min
 
 ### 1.5 Exit Strategy
 
-**Scan-aligned evaluation**: Exit checks run on ExitScan (:25) and EntryScan (:35) only. No timer-based polling.
+**Scan-aligned evaluation**: Exit checks run on ExitScan (:30) and EntryScan (:40) only. No timer-based polling.
 
 **Decision flow per position**:
 
@@ -320,11 +320,11 @@ Parameters marked with (env) have env var overrides; others are JSON/dashboard o
 | `LossCooldownHours` | 4.0 | Hours to blacklist symbol after loss close (Redis TTL) |
 | `ReEnterCooldownHours` | 0 | Hours to block re-entry on same symbol after any close (0=disabled, Redis TTL) |
 | `SpreadReversalTolerance` | 0 | Allow N spread reversals before triggering exit (0=immediate) |
-| `ScanMinutes` | [5,15,25,35,45,55] | Minutes within each hour when scans fire (auto-includes special minutes) |
-| `REBALANCE_SCAN_MINUTE` (env) | 20 | Minute mark that triggers fund rebalancing |
-| `EntryScanMinute` | 35 | Minute mark that triggers trade execution |
-| `ExitScanMinute` | 25 | Minute mark that triggers exit checks |
-| `RotateScanMinute` | 45 | Minute mark that triggers rotation checks |
+| `ScanMinutes` | [10,20,30,35,40,45,50] | Minutes within each hour when scans fire (auto-includes special minutes) |
+| `REBALANCE_SCAN_MINUTE` (env) | 10 | Minute mark that triggers fund rebalancing (production config overrides to 20) |
+| `EntryScanMinute` | 40 | Minute mark that triggers trade execution |
+| `ExitScanMinute` | 30 | Minute mark that triggers exit checks |
+| `RotateScanMinute` | 35 | Minute mark that triggers rotation checks |
 
 Config loading priority: defaults → `config.json` → environment variables → `EnsureScanMinutes()` auto-adds special minutes.
 
@@ -427,7 +427,7 @@ pkg/
               │                 │
        ┌──────▼──────┐  ┌──────▼──────┐
        │  Dashboard  │  │   Engine    │ Dispatches by scan type:
-       │ (broadcast) │  │  (main loop)│ :20 rebalance, :30 exit, :35 rotate, :40 entry
+       │ (broadcast) │  │  (main loop)│ :10/:20 rebalance, :30 exit, :35 rotate, :40 entry
        └─────────────┘  └──────┬──────┘
                                │
                         ┌──────▼──────┐  RebalanceScan: rebalanceFunds()

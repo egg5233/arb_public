@@ -36,7 +36,7 @@ const (
 	ExitScan      ScanType = "exitScan"      // triggers exit checks (:30 scan)
 	RotateScan    ScanType = "rotateScan"    // triggers rotation checks (:35 scan)
 	EntryScan     ScanType = "entryScan"     // triggers trade execution (:40 scan)
-	RebalanceScan ScanType = "rebalanceScan" // triggers fund rebalancing (:20 scan)
+	RebalanceScan ScanType = "rebalanceScan" // triggers fund rebalancing (default :10, production :20)
 )
 
 // ScanResult carries opportunities from a scan cycle along with metadata
@@ -542,6 +542,8 @@ func oppKey(opp models.Opportunity) string {
 }
 
 // recordScanHistory records that each opportunity was seen in this scan cycle.
+// Verified alternatives are also recorded so that CheckPairFilters() can gate
+// on their persistence and spread-stability history.
 func (s *Scanner) recordScanHistory(opps []models.Opportunity) {
 	now := time.Now()
 
@@ -549,6 +551,14 @@ func (s *Scanner) recordScanHistory(opps []models.Opportunity) {
 	for _, opp := range opps {
 		key := oppKey(opp)
 		s.scanHistory[key] = append(s.scanHistory[key], scanRecord{Time: now, Spread: opp.Spread})
+		// Also record verified alternatives under their own oppKey.
+		for _, alt := range opp.Alternatives {
+			if !alt.Verified {
+				continue
+			}
+			altKey := opp.Symbol + "|" + alt.LongExchange + "|" + alt.ShortExchange
+			s.scanHistory[altKey] = append(s.scanHistory[altKey], scanRecord{Time: now, Spread: alt.Spread})
+		}
 	}
 
 	// Prune entries older than max lookback (8h tier)
@@ -568,7 +578,25 @@ func (s *Scanner) recordScanHistory(opps []models.Opportunity) {
 	s.scanHistoryMu.Unlock()
 
 	if s.db != nil {
-		if err := s.db.AddSpreadHistoryBatch(opps, now); err != nil {
+		// Build expanded list including verified alternatives as synthetic Opportunity
+		// objects so Redis spread history is also populated for alt pairs.
+		allOpps := make([]models.Opportunity, 0, len(opps))
+		allOpps = append(allOpps, opps...)
+		for _, opp := range opps {
+			for _, alt := range opp.Alternatives {
+				if !alt.Verified {
+					continue
+				}
+				allOpps = append(allOpps, models.Opportunity{
+					Symbol:        opp.Symbol,
+					LongExchange:  alt.LongExchange,
+					ShortExchange: alt.ShortExchange,
+					Spread:        alt.Spread,
+					IntervalHours: alt.IntervalHours,
+				})
+			}
+		}
+		if err := s.db.AddSpreadHistoryBatch(allOpps, now); err != nil {
 			s.log.Error("failed to persist spread history: %v", err)
 		}
 	}
@@ -732,6 +760,36 @@ func (s *Scanner) isSpreadVolatile(opp models.Opportunity) string {
 
 	if cv > maxCV {
 		return fmt.Sprintf("spread volatile (CV=%.2f > %.2f, n=%d)", cv, maxCV, len(spreads))
+	}
+	return ""
+}
+
+// CheckPairFilters runs pair-keyed filters (persistence, spread volatility, backtest,
+// max interval, funding window) on a single opportunity. Returns empty string if the
+// pair passes all filters, or a rejection reason. Intended for use by the engine's
+// allocator override path to validate alternatives that were verified by the scanner.
+func (s *Scanner) CheckPairFilters(opp models.Opportunity) string {
+	if reason := s.isPersistent(opp); reason != "" {
+		return reason
+	}
+	if reason := s.isSpreadVolatile(opp); reason != "" {
+		return reason
+	}
+	// Max interval hours filter.
+	if s.cfg.MaxIntervalHours > 0 && opp.IntervalHours > 0 && opp.IntervalHours > s.cfg.MaxIntervalHours {
+		return fmt.Sprintf("interval %.0fh exceeds max %.0fh", opp.IntervalHours, s.cfg.MaxIntervalHours)
+	}
+	// Funding window filter.
+	if !opp.NextFunding.IsZero() {
+		maxWindow := time.Duration(s.cfg.FundingWindowMin) * time.Minute
+		if maxWindow > 0 && time.Until(opp.NextFunding) > maxWindow {
+			return fmt.Sprintf("next funding %.0fmin away (>%v)", time.Until(opp.NextFunding).Minutes(), maxWindow)
+		}
+	}
+	if s.cfg.BacktestDays > 0 {
+		if pass, reason := s.backtestFundingHistoryRequireCached(opp, true); !pass {
+			return reason
+		}
 	}
 	return ""
 }
@@ -978,8 +1036,30 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 	s.mu.Unlock()
 
 	// Pre-fetch backtest data for non-entry scans to warm cache.
+	// Include verified alternatives as synthetic Opportunity objects so their
+	// backtest cache is also warmed before the engine may select them via override.
 	if scanType != EntryScan && s.cfg.BacktestDays > 0 && len(verified) > 0 {
-		go s.prefetchBacktestData(verified)
+		expanded := make([]models.Opportunity, 0, len(verified))
+		expanded = append(expanded, verified...)
+		for _, opp := range verified {
+			for _, alt := range opp.Alternatives {
+				if !alt.Verified {
+					continue
+				}
+				expanded = append(expanded, models.Opportunity{
+					Symbol:        opp.Symbol,
+					LongExchange:  alt.LongExchange,
+					ShortExchange: alt.ShortExchange,
+					LongRate:      alt.LongRate,
+					ShortRate:     alt.ShortRate,
+					Spread:        alt.Spread,
+					IntervalHours: alt.IntervalHours,
+					OIRank:        opp.OIRank,
+					Source:        opp.Source,
+				})
+			}
+		}
+		go s.prefetchBacktestData(expanded)
 	}
 
 	// Send scan result to engine, blocking until consumed or scanner stopped.

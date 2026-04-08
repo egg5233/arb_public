@@ -11,6 +11,13 @@ import (
 )
 
 func (e *Engine) createPendingPosition(opp models.Opportunity) *models.ArbitragePosition {
+	// Use verifier-enriched NextFunding (collecting-side semantics) when available.
+	// Falls back to computeNextFunding (earliest-of-both-legs) for manual open
+	// and other paths where the verifier didn't run.
+	nf := opp.NextFunding
+	if nf.IsZero() {
+		nf = e.computeNextFunding(opp.Symbol, opp.LongExchange, opp.ShortExchange)
+	}
 	now := time.Now().UTC()
 	return &models.ArbitragePosition{
 		ID:            utils.GenerateID(opp.Symbol, now.UnixMilli()),
@@ -20,20 +27,24 @@ func (e *Engine) createPendingPosition(opp models.Opportunity) *models.Arbitrage
 		Status:        models.StatusPending,
 		EntrySpread:   opp.Spread,
 		AllExchanges:  []string{opp.LongExchange, opp.ShortExchange},
-		NextFunding:   e.computeNextFunding(opp.Symbol, opp.LongExchange, opp.ShortExchange),
+		NextFunding:   nf,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
 }
 
-func (e *Engine) reservePerpCapital(opp models.Opportunity, approval *models.RiskApproval) (*risk.CapitalReservation, error) {
+func (e *Engine) reservePerpCapital(opp models.Opportunity, approval *models.RiskApproval, dynamicCap float64) (*risk.CapitalReservation, error) {
 	if e.allocator == nil || !e.allocator.Enabled() {
 		return nil, nil
 	}
-	return e.allocator.Reserve(risk.StrategyPerpPerp, map[string]float64{
+	exposures := map[string]float64{
 		opp.LongExchange:  approval.RequiredMargin,
 		opp.ShortExchange: approval.RequiredMargin,
-	})
+	}
+	if dynamicCap > 0 {
+		return e.allocator.ReserveWithCap(risk.StrategyPerpPerp, exposures, dynamicCap)
+	}
+	return e.allocator.Reserve(risk.StrategyPerpPerp, exposures)
 }
 
 func (e *Engine) commitPerpCapital(res *risk.CapitalReservation, posID string) error {

@@ -321,7 +321,7 @@ func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bo
 		return fmt.Errorf("dry run mode — trade not executed")
 	}
 
-	reservation, err := e.reservePerpCapital(*opp, approval)
+	reservation, err := e.reservePerpCapital(*opp, approval, 0)
 	if err != nil {
 		e.capacityMu.Unlock()
 		lock.Release()
@@ -911,8 +911,34 @@ func (e *Engine) applyAllocatorOverrides(opps []models.Opportunity) ([]models.Op
 			// Override wants a different pair — validate it still exists in
 			// the current scan's alternatives so we never apply stale data.
 			found := false
+			rejected := false
 			for _, alt := range o.Alternatives {
 				if alt.LongExchange == choice.longExchange && alt.ShortExchange == choice.shortExchange {
+					// Reject unverified alternatives — they never passed exchange API checks.
+					if !alt.Verified {
+						e.log.Warn("entry: override %s alt %s/%s not verified, skipping",
+							o.Symbol, alt.LongExchange, alt.ShortExchange)
+						stale++
+						rejected = true
+						break
+					}
+					// Run pair-level filter checks (persistence, volatility, backtest, interval, funding window).
+					altOpp := models.Opportunity{
+						Symbol:        o.Symbol,
+						LongExchange:  alt.LongExchange,
+						ShortExchange: alt.ShortExchange,
+						Spread:        alt.Spread,
+						IntervalHours: alt.IntervalHours,
+						NextFunding:   alt.NextFunding,
+						OIRank:        o.OIRank, // inherit for isPersistent() low-OI gate
+					}
+					if reason := e.discovery.CheckPairFilters(altOpp); reason != "" {
+						e.log.Warn("entry: override %s alt %s/%s rejected by pair filter: %s",
+							o.Symbol, alt.LongExchange, alt.ShortExchange, reason)
+						stale++
+						rejected = true
+						break
+					}
 					e.log.Info("allocator override %s: %s/%s → %s/%s (spread %.4f→%.4f bps/h)",
 						o.Symbol, o.LongExchange, o.ShortExchange,
 						choice.longExchange, choice.shortExchange,
@@ -926,10 +952,17 @@ func (e *Engine) applyAllocatorOverrides(opps []models.Opportunity) ([]models.Op
 					if alt.IntervalHours > 0 {
 						o.IntervalHours = alt.IntervalHours
 					}
+					// Patch NextFunding from verified alt.
+					if !alt.NextFunding.IsZero() {
+						o.NextFunding = alt.NextFunding
+					}
 					found = true
 					patched++
 					break
 				}
+			}
+			if rejected {
+				continue // already counted in stale
 			}
 			if !found {
 				e.log.Warn("entry: allocator override for %s pair %s/%s no longer in current scan, skipping",
@@ -986,7 +1019,7 @@ func (e *Engine) Stop() {
 
 // run is the main event loop. It listens for new opportunity batches from
 // discovery and dispatches actions based on scan type:
-//   - RebalanceScan (:20) → rebalance funds across exchanges
+//   - RebalanceScan (:10 default, production :20) → rebalance funds across exchanges
 //   - ExitScan      (:30) → check exit conditions
 //   - RotateScan    (:35) → check leg rotations
 //   - EntryScan     (:40) → execute new arb positions
@@ -1036,7 +1069,21 @@ func (e *Engine) run() {
 
 				// Determine opportunity presence for dynamic shifting.
 				perpHasOpps := len(result.Opps) > 0
-				spotHasOpps := e.cfg.SpotFuturesEnabled // conservative: assume spot has opps if engine is enabled
+				spotHasOpps := e.cfg.SpotFuturesEnabled // conservative default: assume spot has opps if engine is enabled
+				if e.cfg.SpotFuturesEnabled {
+					scanInterval := time.Duration(e.cfg.SpotFuturesScanIntervalMin) * time.Minute
+					if scanInterval < time.Minute {
+						scanInterval = 10 * time.Minute
+					}
+					maxAge := 2 * scanInterval
+					count, err := e.db.GetSpotEntryableOppsCount(maxAge)
+					if err == nil && count >= 0 {
+						// Fresh cache: count == 0 means confirmed no opps → free cap for perp.
+						// count > 0 means spot has opps → keep cap reserved.
+						spotHasOpps = count > 0
+					}
+					// else: cache missing/stale/error → keep conservative default (spotHasOpps=true)
+				}
 				perpCap := e.dynamicStrategyPct(risk.StrategyPerpPerp, perpHasOpps, spotHasOpps)
 				if perpCap > 0 {
 					e.log.Info("dynamic strategy cap: perp=%.1f%% (perpOpps=%v, spotOpps=%v)", perpCap*100, perpHasOpps, spotHasOpps)
@@ -1069,7 +1116,7 @@ func (e *Engine) run() {
 						entryOpps = result.Opps
 					}
 
-					e.executeArbitrage(entryOpps)
+					e.executeArbitrage(entryOpps, perpCap)
 					e.log.Info("run loop: entryScan handler done (via %s)", tier)
 				}
 			}
@@ -1830,7 +1877,8 @@ func (e *Engine) SimExecuteTradeV2(opp models.Opportunity, size, price, gapBPS f
 // executeArbitrage attempts to open arbitrage positions for a batch of
 // opportunities. Phase 1 sequentially filters and approves candidates,
 // Phase 2 executes approved trades in parallel goroutines.
-func (e *Engine) executeArbitrage(opps []models.Opportunity) {
+// dynamicCap, when > 0, overrides the strategy cap for capital reservations (CA-04).
+func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64) {
 	e.log.Info("executeArbitrage: acquiring capacity lock...")
 	e.capacityMu.Lock()
 	e.log.Info("executeArbitrage: capacity lock acquired")
@@ -2084,7 +2132,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity) {
 			continue
 		}
 
-		reservation, err := e.reservePerpCapital(opp, approval)
+		reservation, err := e.reservePerpCapital(opp, approval, dynamicCap)
 		if err != nil {
 			e.log.Info("capital allocator rejected %s: %v", opp.Symbol, err)
 			if e.rejStore != nil {
@@ -2565,8 +2613,11 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 	now := time.Now().UTC()
 	posID := utils.GenerateID(opp.Symbol, now.UnixMilli())
 
-	// Compute NextFunding from exchange APIs before creating the position.
-	nextFunding := e.computeNextFunding(opp.Symbol, opp.LongExchange, opp.ShortExchange)
+	// Use verifier-enriched NextFunding when available, otherwise compute from exchange APIs.
+	nextFunding := opp.NextFunding
+	if nextFunding.IsZero() {
+		nextFunding = e.computeNextFunding(opp.Symbol, opp.LongExchange, opp.ShortExchange)
+	}
 
 	pos := &models.ArbitragePosition{
 		ID:            posID,
@@ -2868,7 +2919,11 @@ func (e *Engine) formatSize(exchName, symbol string, size float64) string {
 func (e *Engine) executeTradeV2(opp models.Opportunity, targetSize float64, price float64, gapBPS float64) error {
 	now := time.Now().UTC()
 	posID := utils.GenerateID(opp.Symbol, now.UnixMilli())
-	nextFunding := e.computeNextFunding(opp.Symbol, opp.LongExchange, opp.ShortExchange)
+	// Use verifier-enriched NextFunding when available, otherwise compute from exchange APIs.
+	nextFunding := opp.NextFunding
+	if nextFunding.IsZero() {
+		nextFunding = e.computeNextFunding(opp.Symbol, opp.LongExchange, opp.ShortExchange)
+	}
 
 	pos := &models.ArbitragePosition{
 		ID:            posID,

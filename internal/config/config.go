@@ -33,7 +33,7 @@ type Config struct {
 	MaxPositions            int           // max concurrent arb positions (default 1)
 	Leverage                int           // default leverage (default 3)
 	SlippageBPS             float64       // max acceptable orderbook slippage in bps (default 5)
-	RebalanceScanMinute     int           // minute mark that triggers rebalance (default 20)
+	RebalanceScanMinute     int           // minute mark that triggers rebalance (default 10)
 	TopOpportunities        int           // max opportunities to return from scanner (default 5)
 	CapitalPerLeg           float64       // fixed USDT per leg; 0 = auto from balance (default 0)
 	PriceGapFreeBPS         float64       // below this gap, no check (default 40)
@@ -117,10 +117,10 @@ type Config struct {
 	DelistFilterEnabled             bool    // enable Binance delist monitoring & filtering (default true)
 
 	// Scan schedule
-	ScanMinutes      []int // minutes within each hour when scans fire (default [5,15,25,35,45,55])
-	EntryScanMinute  int   // minute mark that triggers trade execution (default 35)
-	ExitScanMinute   int   // minute mark that triggers exit checks (default 25)
-	RotateScanMinute int   // minute mark that triggers rotation checks (default 45)
+	ScanMinutes      []int // minutes within each hour when scans fire (default [10,20,30,35,40,45,50])
+	EntryScanMinute  int   // minute mark that triggers trade execution (default 40)
+	ExitScanMinute   int   // minute mark that triggers exit checks (default 30)
+	RotateScanMinute int   // minute mark that triggers rotation checks (default 35)
 
 	// Rebalance scheduling
 	EnablePoolAllocator    bool

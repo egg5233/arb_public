@@ -307,3 +307,51 @@ func (c *Client) ListSpotPersistenceSymbols() ([]string, error) {
 	}
 	return symbols, nil
 }
+
+// ---------------------------------------------------------------------------
+// Spot opportunity cache (for CA-04 dynamic shifting)
+// ---------------------------------------------------------------------------
+
+// spotOppsCacheTTL must match the TTL used by spotengine when writing "spot:opps:cache".
+const spotOppsCacheTTL = 30 * time.Minute
+
+// GetSpotEntryableOppsCount returns the number of entryable spot opportunities
+// in the "spot:opps:cache" Redis key.
+//
+// Returns (count, nil) when the cache exists and is fresh — count may be 0
+// (confirmed no opportunities) or > 0 (opportunities present).
+// Returns (-1, err) when the cache is missing, expired, or stale — callers
+// should treat this as "unknown" and keep conservative defaults.
+//
+// maxAge controls the staleness cutoff. If the key's age (30min − remaining TTL)
+// exceeds maxAge, the cache is considered stale. Pass 0 to skip the age check.
+func (c *Client) GetSpotEntryableOppsCount(maxAge time.Duration) (int, error) {
+	ctx := context.Background()
+	ttl, err := c.rdb.TTL(ctx, "spot:opps:cache").Result()
+	if err != nil || ttl <= 0 {
+		return -1, fmt.Errorf("spot cache missing or expired")
+	}
+	if maxAge > 0 {
+		age := spotOppsCacheTTL - ttl
+		if age > maxAge {
+			return -1, fmt.Errorf("spot cache stale (age=%v > max=%v)", age, maxAge)
+		}
+	}
+	raw, err := c.rdb.Get(ctx, "spot:opps:cache").Result()
+	if err != nil {
+		return -1, err
+	}
+	var opps []struct {
+		FilterStatus string `json:"filter_status"`
+	}
+	if err := json.Unmarshal([]byte(raw), &opps); err != nil {
+		return -1, err
+	}
+	count := 0
+	for _, o := range opps {
+		if o.FilterStatus == "" {
+			count++
+		}
+	}
+	return count, nil
+}

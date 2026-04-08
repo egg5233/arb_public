@@ -47,6 +47,34 @@ Before making structural changes or adding new modules, read ARCHITECTURE.md in 
 ## Codex Integration
 If user asks to run codex , read instructions in ~/.claude/plugins/marketplaces/openai-codex/README.md and decide which /codex: command to run
 
+Official graphify invocation is skill-based:
+- In Claude, use `/graphify <path>`
+- In Codex, use `$graphify <path>`
+- Do not treat shell `graphify <path>` as the canonical build flow unless a repo explicitly documents a separate terminal CLI workflow
+
+When delegating to Codex for any codebase question, code review, investigation, or implementation task in this repo:
+- Include that this project has a graphify knowledge graph at `graphify-out/`
+- For code review tasks, tell Codex to read `graphify-out/AI_REVIEW_ROUTER.md` first
+- Tell Codex to read `graphify-out/AI_ROUTER.md` first for architecture/codebase tasks
+- Then tell Codex to read `graphify-out/AI_INDEX.md`
+- Then tell Codex to navigate `graphify-out/wiki/index.md` before reading raw files where possible
+- Tell Codex to use `graphify-out/GRAPH_REPORT.md` only as secondary graph context
+- For code edits, require Codex to consult graphify before editing and rebuild graphify after modifying code files
+- Do not hand off repo work to Codex without passing along these graphify requirements
+- Do not delegate with a single vague sentence. Every Codex handoff must include:
+  1. the concrete task
+  2. the expected output
+  3. the graphify read order
+  4. the primary files or modules to inspect first
+- If the task is about architecture, exchange behavior, risk, config, API, UI, balances, pnl, or regressions, the handoff must explicitly mention `graphify-out/AI_ROUTER.md`
+- If the task is code review, the handoff must explicitly mention `graphify-out/AI_REVIEW_ROUTER.md`
+- If there is any chance Codex would otherwise start with broad search, include "Do not start with repo-wide grep; follow AI_ROUTER first"
+- Any code review handoff that does not explicitly tell Codex to read `graphify-out/AI_REVIEW_ROUTER.md` first is invalid and must be restarted with the missing context
+- Any architecture/codebase handoff that does not explicitly tell Codex to read `graphify-out/AI_ROUTER.md` first is invalid and must be restarted with the missing context
+
+Minimum handoff template to Codex:
+`If this is a review task, read graphify-out/AI_REVIEW_ROUTER.md first. Then read graphify-out/AI_ROUTER.md, then graphify-out/AI_INDEX.md, then graphify-out/wiki/index.md. Do not start with repo-wide grep. Task: <task>. Output: <expected output>. Inspect first: <modules/files>.`
+
 <!-- GSD:project-start source:PROJECT.md -->
 ## Project
 
@@ -435,13 +463,13 @@ A funding rate arbitrage system that monitors funding rate differentials across 
 ## Scan Schedule
 | Minute | Scan Type | Handler |
 |--------|-----------|---------|
-| :05 | NormalScan | Dashboard broadcast only |
-| :15 | NormalScan | Dashboard broadcast only |
-| :20 | RebalanceScan | `rebalanceFunds()` |
-| :25 | ExitScan | `checkIntervalChanges()` + `checkExitsV2()` |
-| :35 | EntryScan | `executeArbitrage(opps)` |
-| :45 | RotateScan | `checkRotations()` |
-| :55 | NormalScan | Dashboard broadcast only |
+| :10 | NormalScan | Dashboard broadcast only |
+| :20 | RebalanceScan | `rebalanceFunds()` (code default :10, production :20) |
+| :30 | ExitScan | `checkIntervalChanges()` + `checkExitsV2()` |
+| :35 | RotateScan | `checkRotations()` |
+| :40 | EntryScan | `executeArbitrage(opps)` |
+| :45 | NormalScan | Dashboard broadcast only |
+| :50 | NormalScan | Dashboard broadcast only |
 ## Risk Tiers
 | Level | Threshold | Action |
 |-------|-----------|--------|
@@ -478,6 +506,18 @@ Do not make direct repo edits outside a GSD workflow unless the user explicitly 
 This project has a graphify knowledge graph at graphify-out/.
 
 Rules:
-- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
-- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
-- After modifying code files in this session, run `python3 -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('.'))"` to keep the graph current
+- If graph outputs are stale or missing, run official graphify first:
+  - Claude: `/graphify F:\AI\arb_public`
+  - Codex: `$graphify F:\AI\arb_public`
+- Before answering architecture or codebase questions, read graphify-out/AI_ROUTER.md first
+- Then read graphify-out/AI_INDEX.md
+- Then use graphify-out/wiki/index.md for navigation
+- Use graphify-out/GRAPH_REPORT.md only for graph-specific context like god nodes, communities, and surprising edges
+- For code review tasks, read graphify-out/AI_REVIEW_ROUTER.md before the general graphify files
+- Any code review started without first reading graphify-out/AI_REVIEW_ROUTER.md is invalid and must restart from that file
+- Any architecture/codebase analysis started without first reading graphify-out/AI_ROUTER.md is invalid and must restart from that file
+- After modifying code files in this session, prefer rerunning official graphify first:
+  - Claude: `/graphify F:\AI\arb_public`
+  - Codex: `$graphify F:\AI\arb_public`
+- If only a fast local code-only refresh is needed, use `python3 -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('.'))"`
+- When delegating this repo to another agent, always pass the graphify read order explicitly; never assume the other agent will discover it on its own

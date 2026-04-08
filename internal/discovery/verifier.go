@@ -261,6 +261,34 @@ func (s *Scanner) verifyOpportunity(opp models.Opportunity) (bool, models.Opport
 		return false, opp, fmt.Sprintf("spread direction mismatch: long=%.4f short=%.4f", *longRes.rate, *shortRes.rate)
 	}
 
+	// Verify alternatives (only when the primary pair passes).
+	// Build a temporary Opportunity per alt and recursively call verifyOpportunity.
+	// Empty Alternatives to avoid infinite recursion.
+	if len(opp.Alternatives) > 0 {
+		var verifiedAlts []models.AlternativePair
+		for _, alt := range opp.Alternatives {
+			altOpp := models.Opportunity{
+				Symbol:        opp.Symbol,
+				LongExchange:  alt.LongExchange,
+				ShortExchange: alt.ShortExchange,
+				LongRate:      alt.LongRate,
+				ShortRate:     alt.ShortRate,
+				Spread:        alt.Spread, // needed for spread-magnitude check
+				IntervalHours: alt.IntervalHours,
+				OIRank:        opp.OIRank, // inherit for isPersistent() low-OI gate
+				Source:        opp.Source,
+				// Alternatives intentionally left nil to prevent recursion
+			}
+			pass, enriched, _ := s.verifyOpportunity(altOpp)
+			if pass {
+				alt.NextFunding = enriched.NextFunding
+				alt.Verified = true
+				verifiedAlts = append(verifiedAlts, alt)
+			}
+		}
+		opp.Alternatives = verifiedAlts
+	}
+
 	return true, opp, ""
 }
 

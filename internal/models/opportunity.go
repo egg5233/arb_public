@@ -5,14 +5,16 @@ import "time"
 // AlternativePair represents another viable long/short exchange pair for the
 // same symbol. The main Opportunity fields remain the primary selected pair.
 type AlternativePair struct {
-	LongExchange  string  `json:"long_exchange"`
-	ShortExchange string  `json:"short_exchange"`
-	LongRate      float64 `json:"long_rate"`
-	ShortRate     float64 `json:"short_rate"`
-	Spread        float64 `json:"spread"`
-	CostRatio     float64 `json:"cost_ratio"`
-	Score         float64 `json:"score"`
-	IntervalHours float64 `json:"interval_hours"`
+	LongExchange  string    `json:"long_exchange"`
+	ShortExchange string    `json:"short_exchange"`
+	LongRate      float64   `json:"long_rate"`
+	ShortRate     float64   `json:"short_rate"`
+	Spread        float64   `json:"spread"`
+	CostRatio     float64   `json:"cost_ratio"`
+	Score         float64   `json:"score"`
+	IntervalHours float64   `json:"interval_hours"`
+	NextFunding   time.Time `json:"next_funding"`
+	Verified      bool      `json:"verified"`
 }
 
 // Opportunity represents a funding rate arbitrage opportunity between two exchanges.

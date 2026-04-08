@@ -89,6 +89,13 @@ func (a *CapitalAllocator) Enabled() bool {
 }
 
 func (a *CapitalAllocator) Reserve(strategy Strategy, exposures map[string]float64) (*CapitalReservation, error) {
+	return a.ReserveWithCap(strategy, exposures, 0)
+}
+
+// ReserveWithCap is like Reserve but accepts an optional capOverride. When
+// capOverride > 0 and greater than the computed strategy percentage, it
+// replaces the strategy cap for this reservation (CA-04 dynamic shifting).
+func (a *CapitalAllocator) ReserveWithCap(strategy Strategy, exposures map[string]float64, capOverride float64) (*CapitalReservation, error) {
 	if !a.Enabled() {
 		return nil, nil
 	}
@@ -118,7 +125,7 @@ func (a *CapitalAllocator) Reserve(strategy Strategy, exposures map[string]float
 		if err != nil {
 			return err
 		}
-		if err := a.checkCaps(state, strategy, cleaned); err != nil {
+		if err := a.checkCapsWithOverride(state, strategy, cleaned, capOverride); err != nil {
 			return err
 		}
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
@@ -546,7 +553,7 @@ func (a *CapitalAllocator) loadState(ctx context.Context, reader redis.Cmdable) 
 	return state, nil
 }
 
-func (a *CapitalAllocator) checkCaps(state allocatorState, strategy Strategy, exposures map[string]float64) error {
+func (a *CapitalAllocator) checkCapsWithOverride(state allocatorState, strategy Strategy, exposures map[string]float64, capOverride float64) error {
 	totalCap := a.cfg.MaxTotalExposureUSDT
 	if totalCap <= 0 {
 		return nil
@@ -564,7 +571,11 @@ func (a *CapitalAllocator) checkCaps(state allocatorState, strategy Strategy, ex
 		return fmt.Errorf("total capital cap exceeded: need %.2f, available %.2f", requestTotal, totalCap-state.total)
 	}
 
-	strategyCap := totalCap * a.strategyPct(strategy)
+	pct := a.strategyPct(strategy)
+	if capOverride > 0 && capOverride > pct {
+		pct = capOverride
+	}
+	strategyCap := totalCap * pct
 	if strategyCap > 0 && state.byStrategy[strategy]+requestTotal > strategyCap {
 		return fmt.Errorf("%s cap exceeded: requested %.2f would reach %.2f / %.2f", strategy, requestTotal, state.byStrategy[strategy]+requestTotal, strategyCap)
 	}
