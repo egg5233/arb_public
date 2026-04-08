@@ -79,9 +79,20 @@ Check CHANGELOG.md
 
 ## graphify
 
-This project has a graphify knowledge graph at graphify-out/.
+Two pre-built knowledge graphs are available — use them before grepping the repo:
+
+- `graphify-publish/` — Full codebase graph (46584 nodes, 108015 edges, rebuilt 2026-04-08). Covers code + docs across 7894 files.
+- `graphify-out/` — Doc-only graph (122 nodes, high confidence). Use for exchange API comparisons, margin models, and risk design questions.
+
+Routing — since your role is code review, prioritize the review router:
+
+- **Code review / bug finding / regression detection** (primary) → read `graphify-publish/AI_REVIEW_ROUTER.md` first. It routes by change area with focus checklists and high-risk patterns specific to this codebase.
+- **Architecture / cross-module questions** → read `graphify-publish/AI_ROUTER.md` (routes by intent to module + doc)
+- **Exchange API specifics** → prefer `graphify-out/` (higher confidence edges)
 
 Rules:
-- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
-- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
+- Always start with the appropriate router above, not repo-wide grep
+- `graphify-publish/wiki/` has 135 community pages — navigate those instead of reading raw files when available
+- `GRAPH_REPORT.md` in graphify-publish may surface noisy frontend/tooling symbols — treat global god nodes as hints, not authority; stay anchored to module-scoped routing
+- Query either graph with `/graphify query "<question>"`
 - After modifying code files in this session, run `python3 -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('.'))"` to keep the graph current

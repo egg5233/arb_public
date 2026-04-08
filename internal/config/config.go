@@ -104,17 +104,17 @@ type Config struct {
 	ZeroSpreadTolerance     int  // exit after N consecutive checks where both legs have equal funding rate (0=disabled)
 
 	// Anti-spike filters
-	EnableSpreadStabilityGate       bool    // enable spread stability pre-trade gate (default false)
-	SpreadVolatilityMaxCV           float64 // max stddev/mean for spread across scans (default 0.5, 0=disabled)
-	SpreadVolatilityMinSamples      int     // min scan records to evaluate CV (default 3)
-	SpreadStabilityStricterForAuto  bool    // apply tighter spread CV threshold for automated entries (default true)
-	SpreadStabilityAutoCVMultiplier float64 // multiplier applied to CV threshold for automated entries (default 0.7)
-	FundingWindowMin                int     // max minutes before funding to allow entry (default 30)
-	LossCooldownHours               float64 // hours to blacklist symbol after loss close (default 4.0)
-	ReEnterCooldownHours            float64 // hours to block re-entry on same symbol after any close (default 0, disabled)
-	BacktestDays                    int     // days of historical funding to check (default 3, 0 = disabled)
-	BacktestMinProfit               float64 // minimum net profit to pass backtest filter (default 0)
-	DelistFilterEnabled             bool    // enable Binance delist monitoring & filtering (default true)
+	EnableSpreadStabilityGate       bool          // enable spread stability pre-trade gate (default false)
+	SpreadVolatilityMaxCV           float64       // max stddev/mean for spread across scans (default 0.5, 0=disabled)
+	SpreadVolatilityMinSamples      int           // min scan records to evaluate CV (default 3)
+	SpreadStabilityStricterForAuto  bool          // apply tighter spread CV threshold for automated entries (default true)
+	SpreadStabilityAutoCVMultiplier float64       // multiplier applied to CV threshold for automated entries (default 0.7)
+	FundingWindowMin                int           // max minutes before funding to allow entry (default 30)
+	LossCooldownHours               float64       // hours to blacklist symbol after loss close (default 4.0)
+	ReEnterCooldownHours            float64       // hours to block re-entry on same symbol after any close (default 0, disabled)
+	BacktestDays                    int           // days of historical funding to check (default 3, 0 = disabled)
+	BacktestMinProfit               float64       // minimum net profit to pass backtest filter (default 0)
+	DelistFilterEnabled             bool          // enable Binance delist monitoring & filtering (default true)
 	ContractRefreshInterval         time.Duration // cadence for the deliveryDate-based contract refresh poller (default 1h, 0 disables)
 
 	// Scan schedule
@@ -124,9 +124,9 @@ type Config struct {
 	RotateScanMinute int   // minute mark that triggers rotation checks (default 35)
 
 	// Rebalance scheduling
-	EnablePoolAllocator    bool
-	TopPairsPerSymbol      int
-	AllocatorTimeoutMs int
+	EnablePoolAllocator bool
+	TopPairsPerSymbol   int
+	AllocatorTimeoutMs  int
 
 	// Leg rotation parameters
 	RotationThresholdBPS float64 // min spread improvement to trigger rotation (default: 20)
@@ -256,21 +256,21 @@ type Config struct {
 // ---------- Nested JSON config structs ----------
 
 type jsonConfig struct {
-	DryRun      *bool                   `json:"dry_run"`
-	TradFiSigned *bool                  `json:"tradfi_signed"`
-	Exchanges   map[string]jsonExchange `json:"exchanges"`
-	Redis       *jsonRedis              `json:"redis"`
-	Dashboard   *jsonDashboard          `json:"dashboard"`
-	Strategy    *jsonStrategy           `json:"strategy"`
-	Fund        *jsonFund               `json:"fund"`
-	Risk        *jsonRisk               `json:"risk"`
-	AI          *jsonAI                 `json:"ai"`
-	SpotArb     *jsonSpotArb            `json:"spot_arb"`
-	SpotFutures *jsonSpotFutures        `json:"spot_futures"`
-	Telegram    *jsonTelegram           `json:"telegram"`
-	Safety      *jsonSafety             `json:"safety"`
-	Analytics   *jsonAnalytics          `json:"analytics"`
-	Allocation  *jsonAllocation        `json:"allocation"`
+	DryRun       *bool                   `json:"dry_run"`
+	TradFiSigned *bool                   `json:"tradfi_signed"`
+	Exchanges    map[string]jsonExchange `json:"exchanges"`
+	Redis        *jsonRedis              `json:"redis"`
+	Dashboard    *jsonDashboard          `json:"dashboard"`
+	Strategy     *jsonStrategy           `json:"strategy"`
+	Fund         *jsonFund               `json:"fund"`
+	Risk         *jsonRisk               `json:"risk"`
+	AI           *jsonAI                 `json:"ai"`
+	SpotArb      *jsonSpotArb            `json:"spot_arb"`
+	SpotFutures  *jsonSpotFutures        `json:"spot_futures"`
+	Telegram     *jsonTelegram           `json:"telegram"`
+	Safety       *jsonSafety             `json:"safety"`
+	Analytics    *jsonAnalytics          `json:"analytics"`
+	Allocation   *jsonAllocation         `json:"allocation"`
 }
 
 type jsonAnalytics struct {
@@ -335,7 +335,7 @@ type jsonSpotFutures struct {
 	CapitalUnifiedUSDT    *float64 `json:"capital_unified_usdt"`
 
 	// Phase 2: native scanner + exit/entry guards
-	NativeScannerEnabled  *bool    `json:"native_scanner_enabled"`  // deprecated: backward compat
+	NativeScannerEnabled  *bool    `json:"native_scanner_enabled"` // deprecated: backward compat
 	ScannerMode           *string  `json:"scanner_mode"`
 	EnableMinHold         *bool    `json:"enable_min_hold"`
 	MinHoldHours          *int     `json:"min_hold_hours"`
@@ -379,19 +379,19 @@ type jsonAI struct {
 }
 
 type jsonStrategy struct {
-	TopOpportunities       *int           `json:"top_opportunities"`
-	ScanMinutes            []int          `json:"scan_minutes"`
-	EntryScanMinute        *int           `json:"entry_scan_minute"`
-	ExitScanMinute         *int           `json:"exit_scan_minute"`
-	RotateScanMinute       *int           `json:"rotate_scan_minute"`
-	RebalanceScanMinute    *int           `json:"rebalance_scan_minute"`
-	EnablePoolAllocator    *bool          `json:"enable_pool_allocator"`
-	TopPairsPerSymbol      *int           `json:"top_pairs_per_symbol"`
-	AllocatorTimeoutMs *int           `json:"allocator_timeout_ms"`
-	Discovery          *jsonDiscovery `json:"discovery"`
-	Entry                  *jsonEntry     `json:"entry"`
-	Exit                   *jsonExit      `json:"exit"`
-	Rotation               *jsonRotation  `json:"rotation"`
+	TopOpportunities    *int           `json:"top_opportunities"`
+	ScanMinutes         []int          `json:"scan_minutes"`
+	EntryScanMinute     *int           `json:"entry_scan_minute"`
+	ExitScanMinute      *int           `json:"exit_scan_minute"`
+	RotateScanMinute    *int           `json:"rotate_scan_minute"`
+	RebalanceScanMinute *int           `json:"rebalance_scan_minute"`
+	EnablePoolAllocator *bool          `json:"enable_pool_allocator"`
+	TopPairsPerSymbol   *int           `json:"top_pairs_per_symbol"`
+	AllocatorTimeoutMs  *int           `json:"allocator_timeout_ms"`
+	Discovery           *jsonDiscovery `json:"discovery"`
+	Entry               *jsonEntry     `json:"entry"`
+	Exit                *jsonExit      `json:"exit"`
+	Rotation            *jsonRotation  `json:"rotation"`
 }
 
 type jsonDiscovery struct {

@@ -39,3 +39,6 @@ config.json.*
 docs/*-plan.md
 graphify-out/memory/*
 .graphify_python
+graphify-publish/
+.mcp.json
+CLAUDE.local.md
