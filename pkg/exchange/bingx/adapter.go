@@ -764,10 +764,11 @@ func (a *Adapter) TransferToFutures(coin string, amount string) error {
 // Withdraw initiates a withdrawal from BingX.
 func (a *Adapter) Withdraw(params exchange.WithdrawParams) (*exchange.WithdrawResult, error) {
 	reqParams := map[string]string{
-		"coin":    params.Coin,
-		"network": mapChainToBingXNetwork(params.Chain),
-		"address": params.Address,
-		"amount":  params.Amount,
+		"coin":       params.Coin,
+		"network":    mapChainToBingXNetwork(params.Chain),
+		"address":    params.Address,
+		"amount":     params.Amount,
+		"walletType": "1", // Fund account — TransferToSpot lands funds here
 	}
 	result, err := a.client.Post("/openApi/wallets/v1/capital/withdraw/apply", reqParams)
 	if err != nil {
