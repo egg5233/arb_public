@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -145,6 +146,18 @@ func (e *Engine) checkExitsV2() {
 		return
 	}
 
+	// Sort exit candidates: worst live spread first, then largest notional as tiebreaker.
+	// This mirrors how L4 sorts worst PnL first — ensures the most urgent exits
+	// get processed before we run out of exit goroutine capacity.
+	sort.Slice(positions, func(i, j int) bool {
+		si := positions[i].CurrentSpread
+		sj := positions[j].CurrentSpread
+		if si != sj {
+			return si < sj // worst (most negative) spread first
+		}
+		return positions[i].EntryNotional > positions[j].EntryNotional // larger notional first
+	})
+
 	for _, pos := range positions {
 		if pos.Status != models.StatusActive {
 			continue
@@ -234,11 +247,14 @@ func (e *Engine) checkExitsV2() {
 
 // spawnExitGoroutine launches a background goroutine to close a position
 // using the depth-fill loop. The goroutine is cancellable via context for L4/L5 preemption.
-func (e *Engine) spawnExitGoroutine(pos *models.ArbitragePosition, reason string) {
+// Returns true if the exit worker was successfully launched, false if exitActive was
+// already claimed or the CAS active→exiting transition failed (position no longer Active).
+// Callers should NOT pre-set StatusExiting — this function is the single authority.
+func (e *Engine) spawnExitGoroutine(pos *models.ArbitragePosition, reason string) bool {
 	e.exitMu.Lock()
 	if e.exitActive[pos.ID] {
 		e.exitMu.Unlock()
-		return
+		return false
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	e.exitCancels[pos.ID] = cancel
@@ -247,15 +263,27 @@ func (e *Engine) spawnExitGoroutine(pos *models.ArbitragePosition, reason string
 	e.exitDone[pos.ID] = done
 	e.exitMu.Unlock()
 
-	// Set status to "exiting" and store exit reason.
+	// CAS active→exiting (single authority for this transition).
+	casOK := false
 	_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
 		if fresh.Status != models.StatusActive {
 			return false
 		}
 		fresh.Status = models.StatusExiting
 		fresh.ExitReason = reason
+		casOK = true
 		return true
 	})
+	if !casOK {
+		// Position is no longer Active — don't start worker, clean up.
+		e.exitMu.Lock()
+		delete(e.exitActive, pos.ID)
+		delete(e.exitCancels, pos.ID)
+		delete(e.exitDone, pos.ID)
+		e.exitMu.Unlock()
+		cancel() // release context resources
+		return false
+	}
 	pos.ExitReason = reason
 	e.api.BroadcastPositionUpdate(pos)
 
@@ -282,6 +310,7 @@ func (e *Engine) spawnExitGoroutine(pos *models.ArbitragePosition, reason string
 			}
 		}
 	}()
+	return true
 }
 
 // executeDepthExit runs a depth-fill exit loop similar to executeTradeV2 but reversed.
@@ -524,74 +553,146 @@ exitLoop:
 			continue
 		}
 
-		// Sell long leg first (reduce-only).
+		// Close the side with thinner depth first (risk-leg-first ordering).
+		// The thinner side is harder to fill — close it while liquidity exists,
+		// then match the other side which has more depth available.
+		// Default to long-first (sell) if depth is similar.
 		slippage := e.cfg.SlippageBPS / 10000.0
-		sellPrice := e.formatPrice(pos.LongExchange, pos.Symbol, bestBid*(1-slippage))
-		sizeStr := e.formatSize(pos.LongExchange, pos.Symbol, size)
+		longFirst := bidQty <= askQty // long side thinner or equal → sell long first
 
-		oid, err := longExch.PlaceOrder(exchange.PlaceOrderParams{
-			Symbol:     pos.Symbol,
-			Side:       exchange.SideSell,
-			OrderType:  "limit",
-			Price:      sellPrice,
-			Size:       sizeStr,
-			Force:      "ioc",
-			ReduceOnly: true,
-		})
-		if err != nil {
-			e.log.Warn("depth exit: long sell failed: %v", err)
-			longConsecFails++
-			continue
-		}
-		longConsecFails = 0
-		filled, avg := e.confirmFill(longExch, oid, pos.Symbol)
-		if filled <= 0 {
-			continue
-		}
+		var firstFilled, secondFilled float64
+		var firstAvg, secondAvg float64
 
-		closedLong += filled
-		if avg > 0 {
-			longVWAPSum += avg * filled
-		}
+		if longFirst {
+			// --- First leg: sell long ---
+			sellPrice := e.formatPrice(pos.LongExchange, pos.Symbol, bestBid*(1-slippage))
+			sizeStr := e.formatSize(pos.LongExchange, pos.Symbol, size)
 
-		// Buy to close short for matched qty (reduce-only).
-		bestAsk = shortDepth.Asks[0].Price // refresh from current depth
-		buyPrice := e.formatPrice(pos.ShortExchange, pos.Symbol, bestAsk*(1+slippage))
-		buySize := e.formatSize(pos.ShortExchange, pos.Symbol, filled)
+			oid, err := longExch.PlaceOrder(exchange.PlaceOrderParams{
+				Symbol:     pos.Symbol,
+				Side:       exchange.SideSell,
+				OrderType:  "limit",
+				Price:      sellPrice,
+				Size:       sizeStr,
+				Force:      "ioc",
+				ReduceOnly: true,
+			})
+			if err != nil {
+				e.log.Warn("depth exit: long sell failed: %v", err)
+				longConsecFails++
+				continue
+			}
+			longConsecFails = 0
+			firstFilled, firstAvg = e.confirmFill(longExch, oid, pos.Symbol)
+			if firstFilled <= 0 {
+				continue
+			}
 
-		oid2, err := shortExch.PlaceOrder(exchange.PlaceOrderParams{
-			Symbol:     pos.Symbol,
-			Side:       exchange.SideBuy,
-			OrderType:  "limit",
-			Price:      buyPrice,
-			Size:       buySize,
-			Force:      "ioc",
-			ReduceOnly: true,
-		})
-		if err != nil {
-			e.log.Warn("depth exit: short buy failed: %v", err)
-			shortConsecFails++
-			continue
-		}
-		shortConsecFails = 0
-		filled2, avg2 := e.confirmFill(shortExch, oid2, pos.Symbol)
+			closedLong += firstFilled
+			if firstAvg > 0 {
+				longVWAPSum += firstAvg * firstFilled
+			}
 
-		closedShort += filled2
-		if filled2 > 0 {
-			lastFillTime = time.Now()
-		}
-		if avg2 > 0 {
-			shortVWAPSum += avg2 * filled2
-		}
+			// --- Second leg: buy short for matched qty ---
+			bestAsk = shortDepth.Asks[0].Price // refresh from current depth
+			buyPrice := e.formatPrice(pos.ShortExchange, pos.Symbol, bestAsk*(1+slippage))
+			buySize := e.formatSize(pos.ShortExchange, pos.Symbol, firstFilled)
 
-		// If short didn't fully fill, do NOT decrement closedLong — the long
-		// was already sold on exchange. Falsifying bookkeeping causes the market
-		// fallback to re-sell shares that are already gone. The consolidator
-		// will reconcile any small imbalance.
-		if filled2 < filled {
-			excess := filled - filled2
-			e.log.Warn("depth exit %s: short under-filled by %.6f (long=%.6f short=%.6f), imbalance will be reconciled by consolidator",
-				pos.ID, excess, filled, filled2)
+			oid2, err := shortExch.PlaceOrder(exchange.PlaceOrderParams{
+				Symbol:     pos.Symbol,
+				Side:       exchange.SideBuy,
+				OrderType:  "limit",
+				Price:      buyPrice,
+				Size:       buySize,
+				Force:      "ioc",
+				ReduceOnly: true,
+			})
+			if err != nil {
+				e.log.Warn("depth exit: short buy failed: %v", err)
+				shortConsecFails++
+				continue
+			}
+			shortConsecFails = 0
+			secondFilled, secondAvg = e.confirmFill(shortExch, oid2, pos.Symbol)
+
+			closedShort += secondFilled
+			if secondFilled > 0 {
+				lastFillTime = time.Now()
+			}
+			if secondAvg > 0 {
+				shortVWAPSum += secondAvg * secondFilled
+			}
+
+			if secondFilled < firstFilled {
+				excess := firstFilled - secondFilled
+				e.log.Warn("depth exit %s: short under-filled by %.6f (long=%.6f short=%.6f), imbalance will be reconciled by consolidator",
+					pos.ID, excess, firstFilled, secondFilled)
+			}
+		} else {
+			// --- First leg: buy short (thinner depth) ---
+			buyPrice := e.formatPrice(pos.ShortExchange, pos.Symbol, bestAsk*(1+slippage))
+			sizeStr := e.formatSize(pos.ShortExchange, pos.Symbol, size)
+
+			oid, err := shortExch.PlaceOrder(exchange.PlaceOrderParams{
+				Symbol:     pos.Symbol,
+				Side:       exchange.SideBuy,
+				OrderType:  "limit",
+				Price:      buyPrice,
+				Size:       sizeStr,
+				Force:      "ioc",
+				ReduceOnly: true,
+			})
+			if err != nil {
+				e.log.Warn("depth exit: short buy failed: %v", err)
+				shortConsecFails++
+				continue
+			}
+			shortConsecFails = 0
+			firstFilled, firstAvg = e.confirmFill(shortExch, oid, pos.Symbol)
+			if firstFilled <= 0 {
+				continue
+			}
+
+			closedShort += firstFilled
+			if firstAvg > 0 {
+				shortVWAPSum += firstAvg * firstFilled
+			}
+
+			// --- Second leg: sell long for matched qty ---
+			bestBid = longDepth.Bids[0].Price // refresh from current depth
+			sellPrice := e.formatPrice(pos.LongExchange, pos.Symbol, bestBid*(1-slippage))
+			sellSize := e.formatSize(pos.LongExchange, pos.Symbol, firstFilled)
+
+			oid2, err := longExch.PlaceOrder(exchange.PlaceOrderParams{
+				Symbol:     pos.Symbol,
+				Side:       exchange.SideSell,
+				OrderType:  "limit",
+				Price:      sellPrice,
+				Size:       sellSize,
+				Force:      "ioc",
+				ReduceOnly: true,
+			})
+			if err != nil {
+				e.log.Warn("depth exit: long sell failed: %v", err)
+				longConsecFails++
+				continue
+			}
+			longConsecFails = 0
+			secondFilled, secondAvg = e.confirmFill(longExch, oid2, pos.Symbol)
+
+			closedLong += secondFilled
+			if secondFilled > 0 {
+				lastFillTime = time.Now()
+			}
+			if secondAvg > 0 {
+				longVWAPSum += secondAvg * secondFilled
+			}
+
+			if secondFilled < firstFilled {
+				excess := firstFilled - secondFilled
+				e.log.Warn("depth exit %s: long under-filled by %.6f (short=%.6f long=%.6f), imbalance will be reconciled by consolidator",
+					pos.ID, excess, firstFilled, secondFilled)
+			}
 		}
 
 		e.log.Info("depth exit %s: tick closedLong=%.6f closedShort=%.6f",
@@ -624,20 +725,40 @@ marketFallback:
 	if longRemaining > 0 || shortRemaining > 0 {
 		e.log.Info("depth exit: market fallback for %s (longRem=%.6f shortRem=%.6f)",
 			pos.ID, longRemaining, shortRemaining)
+
+		// Close both legs concurrently to minimize price drift between legs.
+		var wg sync.WaitGroup
+		var longFallbackFilled, shortFallbackFilled float64
+		var longFallbackVWAP, shortFallbackVWAP float64
+
 		if longRemaining > 0 {
-			filled, avg := e.closeFullyWithRetryPriced(ctx, longExch, pos.Symbol, exchange.SideSell, longRemaining)
-			if avg > 0 {
-				longVWAPSum += avg * filled
-			}
-			closedLong += filled
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				filled, avg := e.closeFullyWithRetryPriced(ctx, longExch, pos.Symbol, exchange.SideSell, longRemaining)
+				longFallbackFilled = filled
+				longFallbackVWAP = avg
+			}()
 		}
 		if shortRemaining > 0 {
-			filled, avg := e.closeFullyWithRetryPriced(ctx, shortExch, pos.Symbol, exchange.SideBuy, shortRemaining)
-			if avg > 0 {
-				shortVWAPSum += avg * filled
-			}
-			closedShort += filled
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				filled, avg := e.closeFullyWithRetryPriced(ctx, shortExch, pos.Symbol, exchange.SideBuy, shortRemaining)
+				shortFallbackFilled = filled
+				shortFallbackVWAP = avg
+			}()
 		}
+		wg.Wait()
+
+		if longFallbackVWAP > 0 {
+			longVWAPSum += longFallbackVWAP * longFallbackFilled
+		}
+		closedLong += longFallbackFilled
+		if shortFallbackVWAP > 0 {
+			shortVWAPSum += shortFallbackVWAP * shortFallbackFilled
+		}
+		closedShort += shortFallbackFilled
 	}
 
 	// Compute VWAP close prices.
@@ -749,6 +870,9 @@ marketFallback:
 			e.lossLimiter.RecordClosedPnL(pos.ID, realizedPnL, pos.Symbol, time.Now().UTC())
 		}
 
+		// Release allocator exposure now that position is fully closed.
+		e.releasePerpPosition(pos.ID)
+
 		e.log.Info("position %s depth-exit closed: pnl=%.4f (long=%.4f short=%.4f funding=%.4f entryFees=%.4f)",
 			pos.ID, realizedPnL, longPnL, shortPnL, pos.FundingCollected, pos.EntryFees)
 
@@ -803,36 +927,48 @@ marketFallback:
 // from real fill data. Runs async after position close. Updates the position
 // record and stats if different. Retries up to 3 times on failure.
 func (e *Engine) reconcilePnL(pos *models.ArbitragePosition) {
-	e.pnlReconcileMu.Lock()
+	mu := e.acquirePnlLock(pos.ID)
 
-	// Immediate attempt: wait 2s for exchange to finalize, then try once.
+	// Wait 2s for exchange to finalize BEFORE acquiring lock to avoid blocking
+	// other positions' reconciliation.
 	time.Sleep(2 * time.Second)
+
+	mu.Lock()
 	if e.tryReconcilePnL(pos, 1) {
-		e.pnlReconcileMu.Unlock()
+		mu.Unlock()
+		e.pnlLocks.Delete(pos.ID) // cleanup per-position lock on success
 		return
 	}
-	e.pnlReconcileMu.Unlock()
+	mu.Unlock()
 
 	// Async retries if immediate attempt failed.
 	go func() {
-		delays := []time.Duration{5 * time.Second, 15 * time.Second}
+		delays := []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second}
 		for i, d := range delays {
 			time.Sleep(d)
-			e.pnlReconcileMu.Lock()
+			mu.Lock()
 			ok := e.tryReconcilePnL(pos, i+2)
-			e.pnlReconcileMu.Unlock()
+			mu.Unlock()
 			if ok {
+				e.pnlLocks.Delete(pos.ID)
 				return
 			}
 		}
 		e.log.Error("reconcile %s: all attempts failed, keeping PnL=%.4f", pos.ID, pos.RealizedPnL)
+		e.pnlLocks.Delete(pos.ID)
 	}()
 }
 
 // tryReconcilePnL performs a single reconciliation attempt using exchange-native
 // position close PnL APIs. Returns true on success, false if data was incomplete.
 func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) bool {
+	// Use last rotation timestamp if available to avoid double-counting
+	// PnL from rotated-away legs (their PnL is already in pos.RotationPnL).
 	since := pos.CreatedAt.Add(-1 * time.Minute)
+	if len(pos.RotationHistory) > 0 {
+		lastRotation := pos.RotationHistory[len(pos.RotationHistory)-1].Timestamp
+		since = lastRotation.Add(-1 * time.Minute)
+	}
 
 	// Only query the current two legs. Rotated-away leg PnL is already captured
 	// in pos.RotationPnL at rotation time — no need to re-query.
@@ -1374,7 +1510,7 @@ func (e *Engine) reducePosition(pos *models.ArbitragePosition, fraction float64)
 			Symbol:     pos.Symbol,
 			Side:       exchange.SideSell,
 			OrderType:  "market",
-			Size:       utils.FormatSize(reduceLong, 6),
+			Size:       e.formatSize(pos.LongExchange, pos.Symbol, reduceLong),
 			Force:      "ioc",
 			ReduceOnly: true,
 		})
@@ -1398,7 +1534,7 @@ func (e *Engine) reducePosition(pos *models.ArbitragePosition, fraction float64)
 			Symbol:     pos.Symbol,
 			Side:       exchange.SideBuy,
 			OrderType:  "market",
-			Size:       utils.FormatSize(reduceShort, 6),
+			Size:       e.formatSize(pos.ShortExchange, pos.Symbol, reduceShort),
 			Force:      "ioc",
 			ReduceOnly: true,
 		})
@@ -1951,6 +2087,17 @@ func (e *Engine) checkRotations() {
 			continue
 		}
 
+		// 2.4: Also check entryActive for the NEW target exchange.
+		// The earlier check only covers the current position's exchanges.
+		targetKey := bestNewExch + ":" + pos.Symbol
+		e.entryMu.Lock()
+		targetBusy := e.entryActive[targetKey]
+		e.entryMu.Unlock()
+		if targetBusy != "" {
+			e.log.Debug("rotation: skipping %s — entry in progress on target exchange %s", pos.ID, bestNewExch)
+			continue
+		}
+
 		_ = bestSharedLeg // used for classification, logged via legSide
 
 		e.log.Info("rotation triggered for %s: %s leg %s → %s (current=%.1f opp=%.1f improvement=%.1f bps/h)",
@@ -2087,18 +2234,26 @@ func (e *Engine) settlementFrequencyPenalty(
 func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity, legSide, oldExchName, newExchName string) {
 	// Claim busy state to prevent normal exit/SL/consolidator from racing.
 	// L5/delist emergency close does NOT check exitActive — intentional.
+	// Full lifecycle registration so L4/L5 can cancel via exitCancels.
 	e.exitMu.Lock()
 	if e.exitActive[pos.ID] {
 		e.exitMu.Unlock()
 		e.log.Info("rotation: %s already has active exit, skipping", pos.ID)
 		return
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	e.exitActive[pos.ID] = true
+	e.exitCancels[pos.ID] = cancel
+	done := make(chan struct{})
+	e.exitDone[pos.ID] = done
 	e.exitMu.Unlock()
 	defer func() {
 		e.exitMu.Lock()
 		delete(e.exitActive, pos.ID)
+		delete(e.exitCancels, pos.ID)
+		delete(e.exitDone, pos.ID)
 		e.exitMu.Unlock()
+		close(done)
 	}()
 
 	// Always set cooldown timestamp, even on failure, to prevent rapid retries.
@@ -2212,7 +2367,7 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 	}
 
 	slippage := e.cfg.SlippageBPS / 10000.0
-	sizeStr := utils.FormatSize(closeSize, 6)
+	sizeStr := e.formatSize(newExchName, pos.Symbol, closeSize)
 
 	// Pre-check: position notional must meet minimum to avoid partial-fill loops.
 	const minNotionalUSDT = 10.0
@@ -2229,6 +2384,25 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 	} else {
 		openPrice = e.formatPrice(newExchName, pos.Symbol, newBBO.Ask*(1+slippage))
 	}
+
+	// Checkpoint 1: before opening new leg (nothing changed yet — safe abort).
+	if ctx.Err() != nil {
+		e.log.Info("rotation %s: cancelled before new-leg open", pos.ID)
+		return
+	}
+
+	// Fix B: protect the new leg from consolidator while rotation is in progress.
+	rotKey := newExchName + ":" + pos.Symbol
+	e.entryMu.Lock()
+	e.entryActive[rotKey] = pos.ID
+	e.entryMu.Unlock()
+	defer func() {
+		e.entryMu.Lock()
+		if e.entryActive[rotKey] == pos.ID {
+			delete(e.entryActive, rotKey)
+		}
+		e.entryMu.Unlock()
+	}()
 
 	// ---------------------------------------------------------------
 	// Step 1: OPEN new leg first. If this fails, abort — nothing changed.
@@ -2279,6 +2453,20 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 		rem := e.closeFullyWithRetry(newExch, pos.Symbol, closeSide, openFilled)
 		if rem > 0 {
 			e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", pos.Symbol, closeSide, rem, newExch.Name())
+		}
+		return
+	}
+
+	// Checkpoint 2: after opening new leg, before closing old leg.
+	// State: both old and new legs are open (double-legged). Revert by closing new leg.
+	if ctx.Err() != nil {
+		e.log.Warn("rotation %s: cancelled after new-leg open — closing new leg to revert", pos.ID)
+		rem := e.closeFullyWithRetry(newExch, pos.Symbol, closeSide, openFilled)
+		if rem > 0 {
+			e.log.Error("ORPHAN: rotation revert %s: %.6f left on %s — position keeps original legs, orphan needs manual close", pos.ID, rem, newExchName)
+			if e.telegram != nil {
+				e.telegram.Send("⚠️ ROTATION REVERT ORPHAN: %s has %.6f on %s that couldn't be closed. Original position unchanged. Manual close needed on %s.", pos.ID, rem, newExchName, newExchName)
+			}
 		}
 		return
 	}
@@ -2336,6 +2524,30 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 		}
 		return
 	}
+	// Checkpoint 3: after closing old leg, before DB swap.
+	// State: old leg closed, new leg open. Write the truth to DB.
+	if ctx.Err() != nil {
+		e.log.Warn("rotation %s: cancelled after old-leg close — writing actual state", pos.ID)
+		_ = e.db.UpdatePositionFields(pos.ID, func(f *models.ArbitragePosition) bool {
+			if f.Status == models.StatusClosed || f.Status == models.StatusClosing {
+				return false
+			}
+			f.Status = models.StatusPartial
+			f.FailureReason = fmt.Sprintf("rotation_cancelled: old=%s closed, new=%s open=%.6f", oldExchName, newExchName, openFilled)
+			if legSide == "short" {
+				f.ShortExchange = newExchName
+				f.ShortSize = openFilled
+				f.ShortEntry = openAvg
+			} else {
+				f.LongExchange = newExchName
+				f.LongSize = openFilled
+				f.LongEntry = openAvg
+			}
+			return true
+		})
+		return
+	}
+
 	// Update position record atomically.
 	if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
 		if fresh.Status != models.StatusActive {
@@ -2381,10 +2593,55 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 		return
 	}
 
-	// Update stop-loss for the rotated leg: cancel old, place new.
-	e.updateRotationStopLoss(pos, legSide, oldExchName, newExchName, openFilled, openAvg)
+	// Re-read to verify swap actually applied (UpdatePositionFields returns nil on skip).
+	freshPos, rereadErr := e.db.GetPosition(pos.ID)
+	if rereadErr != nil || freshPos == nil {
+		e.log.Error("rotateLeg %s: cannot re-read position after DB swap: %v", pos.ID, rereadErr)
+		return // DB error — can't verify, don't proceed unsafely
+	}
+	swapApplied := false
+	if legSide == "short" {
+		swapApplied = freshPos.ShortExchange == newExchName
+	} else {
+		swapApplied = freshPos.LongExchange == newExchName
+	}
+	if !swapApplied {
+		e.log.Error("rotateLeg %s: DB swap skipped (status race). Old=%s closed, New=%s open=%.6f",
+			pos.ID, oldExchName, newExchName, openFilled)
+		if e.telegram != nil {
+			e.telegram.Send("⚠️ ROTATION SWAP FAILED: %s — saving partial with actual leg state", pos.ID)
+		}
+		// CAS-guarded: only write partial if not already Closed/Closing.
+		_ = e.db.UpdatePositionFields(pos.ID, func(f *models.ArbitragePosition) bool {
+			if f.Status == models.StatusClosed || f.Status == models.StatusClosing {
+				return false // concurrent close won — don't overwrite
+			}
+			f.Status = models.StatusPartial
+			f.FailureReason = fmt.Sprintf("rotation_swap_failed: old=%s closed, new=%s open=%.6f avg=%.6f",
+				oldExchName, newExchName, openFilled, openAvg)
+			// Write the actual new leg info so consolidator/reconciler can find it.
+			if legSide == "short" {
+				f.ShortExchange = newExchName
+				f.ShortSize = openFilled
+				f.ShortEntry = openAvg
+			} else {
+				f.LongExchange = newExchName
+				f.LongSize = openFilled
+				f.LongEntry = openAvg
+			}
+			return true
+		})
+		// Broadcast the partial state so dashboard reflects reality.
+		if updated, _ := e.db.GetPosition(pos.ID); updated != nil {
+			e.api.BroadcastPositionUpdate(updated)
+		}
+		return // Do NOT proceed with normal post-rotation reconcile
+	}
 
-	e.api.BroadcastPositionUpdate(pos)
+	// Update stop-loss for the rotated leg: cancel old, place new.
+	e.updateRotationStopLoss(freshPos, legSide, oldExchName, newExchName, openFilled, openAvg)
+
+	e.api.BroadcastPositionUpdate(freshPos)
 	e.log.Info("rotation complete for %s: %s leg %s → %s (size=%.6f entry=%.6f spread=%.1f bps/h)",
 		pos.ID, legSide, oldExchName, newExchName, openFilled, openAvg, opp.Spread)
 
@@ -2398,21 +2655,24 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 // Uses a narrow time window around the rotation to avoid picking up stale records.
 // If the position is already closed, recomputes RealizedPnL and updates history.
 func (e *Engine) reconcileRotationPnL(posID string, oldExch exchange.Exchange, oldExchName, symbol, legSide string, rotationTime time.Time) {
+	mu := e.acquirePnlLock(posID)
+
 	// Query window: 2 minutes before rotation to capture the close record.
 	since := rotationTime.Add(-2 * time.Minute)
 
 	// Retry up to 3 times with increasing delays — exchange may not finalize immediately.
 	delays := []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second}
 	for attempt, delay := range delays {
+		// Sleep BEFORE acquiring lock so other positions aren't blocked.
 		time.Sleep(delay)
 
-		e.pnlReconcileMu.Lock()
+		mu.Lock()
 
 		records, err := oldExch.GetClosePnL(symbol, since)
 		if err != nil {
 			e.log.Warn("rotation PnL reconcile %s [attempt %d]: %s GetClosePnL failed: %v",
 				posID, attempt+1, oldExchName, err)
-			e.pnlReconcileMu.Unlock()
+			mu.Unlock()
 			continue
 		}
 
@@ -2433,7 +2693,7 @@ func (e *Engine) reconcileRotationPnL(posID string, oldExch exchange.Exchange, o
 			}
 			e.log.Warn("rotation PnL reconcile %s [attempt %d]: no %s close record near rotation time on %s (total records=%d)",
 				posID, attempt+1, legSide, oldExchName, len(records))
-			e.pnlReconcileMu.Unlock()
+			mu.Unlock()
 			continue
 		}
 
@@ -2460,7 +2720,7 @@ func (e *Engine) reconcileRotationPnL(posID string, oldExch exchange.Exchange, o
 			return true
 		}); err != nil {
 			e.log.Error("rotation PnL reconcile %s: failed to update: %v", posID, err)
-			e.pnlReconcileMu.Unlock()
+			mu.Unlock()
 			return
 		}
 		e.log.Info("rotation PnL reconcile %s: RotationPnL accumulated by %.4f", posID, rotPnL)
@@ -2471,7 +2731,7 @@ func (e *Engine) reconcileRotationPnL(posID string, oldExch exchange.Exchange, o
 		// reconciledPnL = longAgg.NetPnL + shortAgg.NetPnL + pos.RotationPnL
 		pos, err := e.db.GetPosition(posID)
 		if err != nil {
-			e.pnlReconcileMu.Unlock()
+			mu.Unlock()
 			return
 		}
 		if pos.Status == models.StatusClosed {
@@ -2480,7 +2740,7 @@ func (e *Engine) reconcileRotationPnL(posID string, oldExch exchange.Exchange, o
 				e.tryReconcilePnL(fresh, 1)
 			}
 		}
-		e.pnlReconcileMu.Unlock()
+		mu.Unlock()
 		return
 	}
 	e.log.Error("rotation PnL reconcile %s: all attempts failed for %s on %s", posID, legSide, oldExchName)

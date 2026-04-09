@@ -74,6 +74,10 @@ type CapitalAllocator struct {
 	mu               sync.RWMutex
 	effectivePerpPct float64
 	effectiveSpotPct float64
+
+	// Per-strategy dynamic capital caps (set via SetDynamicStrategyCap)
+	dynamicCapMu sync.RWMutex
+	dynamicCaps  map[string]float64
 }
 
 func NewCapitalAllocator(db *database.Client, cfg *config.Config) *CapitalAllocator {
@@ -443,12 +447,12 @@ func (a *CapitalAllocator) Reconcile() error {
 
 	ctx := context.Background()
 	return a.withVersionRetry(ctx, func(tx *redis.Tx) error {
-		committedKeys, err := tx.Keys(ctx, allocatorCommittedPrefix+"*").Result()
-		if err != nil && err != redis.Nil {
+		committedKeys, err := scanKeys(ctx, tx, allocatorCommittedPrefix+"*")
+		if err != nil {
 			return err
 		}
-		positionKeys, err := tx.Keys(ctx, allocatorPositionPrefix+"*").Result()
-		if err != nil && err != redis.Nil {
+		positionKeys, err := scanKeys(ctx, tx, allocatorPositionPrefix+"*")
+		if err != nil {
 			return err
 		}
 
@@ -501,8 +505,8 @@ func (a *CapitalAllocator) loadState(ctx context.Context, reader redis.Cmdable) 
 		byExchange: make(map[string]float64),
 	}
 
-	committedKeys, err := reader.Keys(ctx, allocatorCommittedPrefix+"*").Result()
-	if err != nil && err != redis.Nil {
+	committedKeys, err := scanKeys(ctx, reader, allocatorCommittedPrefix+"*")
+	if err != nil {
 		return state, err
 	}
 	for _, key := range committedKeys {
@@ -522,8 +526,8 @@ func (a *CapitalAllocator) loadState(ctx context.Context, reader redis.Cmdable) 
 		state.byExchange[exchangeName] += amount
 	}
 
-	reservationKeys, err := reader.Keys(ctx, allocatorReservationPref+"*").Result()
-	if err != nil && err != redis.Nil {
+	reservationKeys, err := scanKeys(ctx, reader, allocatorReservationPref+"*")
+	if err != nil {
 		return state, err
 	}
 	now := time.Now().UTC()
@@ -650,6 +654,25 @@ func (a *CapitalAllocator) readFloatKey(ctx context.Context, reader redis.Cmdabl
 	return parsed, nil
 }
 
+// scanKeys replaces Redis KEYS command with incremental SCAN to avoid blocking
+// Redis on large keyspaces. Returns all keys matching the given pattern.
+func scanKeys(ctx context.Context, reader redis.Cmdable, pattern string) ([]string, error) {
+	var allKeys []string
+	var cursor uint64
+	for {
+		keys, nextCursor, err := reader.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return nil, err
+		}
+		allKeys = append(allKeys, keys...)
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
+	}
+	return allKeys, nil
+}
+
 // ---------------------------------------------------------------------------
 // Dynamic allocation: performance-weighted split + derived sizing + shifting
 // ---------------------------------------------------------------------------
@@ -698,9 +721,29 @@ func (a *CapitalAllocator) SetEffectiveAllocation(perpPct, spotPct float64) {
 	a.effectiveSpotPct = spotPct
 }
 
+// SetDynamicStrategyCap sets a per-strategy capital-per-leg cap. Strategy IDs
+// should be "perp_perp" or "spot_futures" (matching StrategyPerpPerp / StrategySpotFutures).
+func (a *CapitalAllocator) SetDynamicStrategyCap(strategy string, cap float64) {
+	if a == nil {
+		return
+	}
+	a.dynamicCapMu.Lock()
+	defer a.dynamicCapMu.Unlock()
+	if a.dynamicCaps == nil {
+		a.dynamicCaps = make(map[string]float64)
+	}
+	if cap <= 0 {
+		delete(a.dynamicCaps, strategy)
+	} else {
+		a.dynamicCaps[strategy] = cap
+	}
+}
+
 // EffectiveCapitalPerLeg returns the USDT amount per position leg.
 // Priority: (1) manual CapitalPerLeg override, (2) derived from TotalCapitalUSDT, (3) 0 (auto from balance).
-func (a *CapitalAllocator) EffectiveCapitalPerLeg() float64 {
+// When an optional strategy ID is provided and a dynamic cap is set for it,
+// the derived value is capped to the per-strategy cap.
+func (a *CapitalAllocator) EffectiveCapitalPerLeg(strategy ...string) float64 {
 	if a == nil || a.cfg == nil {
 		return 0
 	}
@@ -719,7 +762,21 @@ func (a *CapitalAllocator) EffectiveCapitalPerLeg() float64 {
 	if mult <= 0 {
 		mult = 1.0
 	}
-	return derived * mult
+	derived *= mult
+
+	// Apply per-strategy dynamic cap if provided.
+	// Cap values are percentages (0-1 range) from DynamicStrategyPct, applied as multipliers.
+	if len(strategy) > 0 && strategy[0] != "" {
+		a.dynamicCapMu.RLock()
+		if a.dynamicCaps != nil {
+			if pct, ok := a.dynamicCaps[strategy[0]]; ok && pct > 0 && pct < 1.0 {
+				derived *= pct
+			}
+		}
+		a.dynamicCapMu.RUnlock()
+	}
+
+	return derived
 }
 
 // DynamicStrategyPct returns the effective cap for the given strategy,

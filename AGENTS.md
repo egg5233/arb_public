@@ -95,4 +95,9 @@ Rules:
 - `graphify-publish/wiki/` has 135 community pages — navigate those instead of reading raw files when available
 - `GRAPH_REPORT.md` in graphify-publish may surface noisy frontend/tooling symbols — treat global god nodes as hints, not authority; stay anchored to module-scoped routing
 - Query either graph with `/graphify query "<question>"`
+- Before answering architecture or codebase questions, read graphify-out/AI_ROUTER.md first
+- Then read graphify-out/AI_INDEX.md
+- Then use graphify-out/wiki/index.md for navigation
+- For code review tasks, read graphify-out/AI_REVIEW_ROUTER.md before the general graphify files
 - After modifying code files in this session, run `python3 -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('.'))"` to keep the graph current
+- When handing this repo to another agent, always include the graphify read order explicitly; never assume the next agent will infer it

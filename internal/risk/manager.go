@@ -21,6 +21,7 @@ type PrefetchCache struct {
 	Balances               map[string]*exchange.Balance   // exchange name -> futures balance
 	Orderbooks             map[string]*exchange.Orderbook // "exchange:symbol" -> orderbook
 	TransferablePerExchange map[string]float64             // exchange name -> max USDT receivable from other exchanges
+	ActivePositions         []*models.ArbitragePosition    // pre-fetched active positions (avoid repeated DB calls in batch)
 }
 
 // Manager performs pre-trade risk assessment before entering positions.
@@ -49,9 +50,10 @@ func NewManager(exchanges map[string]exchange.Exchange, db *database.Client, cfg
 
 // effectiveCapitalPerLeg returns the USDT per leg using the allocator's derived
 // value when unified capital is enabled, falling back to cfg.CapitalPerLeg.
-func (m *Manager) effectiveCapitalPerLeg() float64 {
+// When strategy is non-empty, the per-strategy dynamic cap is applied.
+func (m *Manager) effectiveCapitalPerLeg(strategy ...string) float64 {
 	if m.allocator != nil {
-		if ecl := m.allocator.EffectiveCapitalPerLeg(); ecl > 0 {
+		if ecl := m.allocator.EffectiveCapitalPerLeg(strategy...); ecl > 0 {
 			return ecl
 		}
 	}
@@ -203,10 +205,21 @@ func (m *Manager) ApproveRotation(exchName string, symbol string, size float64, 
 // When cache is non-nil, pre-fetched balances and orderbooks are used instead of
 // live API calls. Cache misses fall back to live calls transparently.
 func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]float64, dryRun bool, cache *PrefetchCache) (*models.RiskApproval, error) {
-	// a. Position count check
-	active, err := m.db.GetActivePositions()
-	if err != nil {
-		return nil, fmt.Errorf("get active positions: %w", err)
+	// a. Position count check — use cached active positions if available to avoid
+	// repeated Redis calls when approving a batch of opportunities.
+	var active []*models.ArbitragePosition
+	if cache != nil && cache.ActivePositions != nil {
+		active = cache.ActivePositions
+	} else {
+		var err error
+		active, err = m.db.GetActivePositions()
+		if err != nil {
+			return nil, fmt.Errorf("get active positions: %w", err)
+		}
+		// Store back into cache for subsequent calls in the same batch.
+		if cache != nil {
+			cache.ActivePositions = active
+		}
 	}
 	if len(active) >= m.cfg.MaxPositions {
 		reason := fmt.Sprintf("max positions reached (%d/%d)", len(active), m.cfg.MaxPositions)
@@ -249,7 +262,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		}
 	}
 
-	needed := m.effectiveCapitalPerLeg()
+	needed := m.effectiveCapitalPerLeg(string(StrategyPerpPerp))
 	if !dryRun {
 		if needed > 0 {
 			bufferedNeed := needed * m.cfg.MarginSafetyMultiplier
@@ -410,51 +423,49 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		m.log.Debug("approval rejected %s: empty orderbook on %s", opp.Symbol, opp.LongExchange)
 		return &models.RiskApproval{Approved: false, Reason: "empty orderbook on long exchange"}, nil
 	}
-	midPrice := (longOB.Bids[0].Price + longOB.Asks[0].Price) / 2.0
+	longMid := (longOB.Bids[0].Price + longOB.Asks[0].Price) / 2.0
+	midPrice := longMid // used as reference for sizing (preserves existing behavior)
 
 	// Calculate position size (pass midPrice to avoid redundant orderbook fetch).
-	size := m.calculateSizeWithPrice(opp, balances, midPrice)
+	size := m.calculateSizeWithPrice(opp, balances, midPrice, active)
 	if size <= 0 {
 		m.log.Debug("approval rejected %s: insufficient capital for minimum position size (long=%s=%.2f short=%s=%.2f)", opp.Symbol, opp.LongExchange, effectiveLongAvail, opp.ShortExchange, effectiveShortAvail)
 		return &models.RiskApproval{Approved: false, Reason: "insufficient capital for minimum position size"}, nil
 	}
 
-	// Verify enough free margin per leg (with configurable safety buffer)
-	requiredMarginPerLeg := (size * midPrice) / float64(leverage)
-	safetyMultiplier := m.cfg.MarginSafetyMultiplier
-	safetyPct := (safetyMultiplier - 1) * 100
-	requiredWithBuffer := requiredMarginPerLeg * safetyMultiplier
-	if effectiveLongAvail < requiredWithBuffer {
-		reason := fmt.Sprintf("insufficient margin buffer on %s: need %.2f (including %.0f%% safety buffer), have %.2f", opp.LongExchange, requiredWithBuffer, safetyPct, effectiveLongAvail)
-		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-		return &models.RiskApproval{Approved: false, Reason: reason}, nil
-	}
-	if effectiveShortAvail < requiredWithBuffer {
-		reason := fmt.Sprintf("insufficient margin buffer on %s: need %.2f (including %.0f%% safety buffer), have %.2f", opp.ShortExchange, requiredWithBuffer, safetyPct, effectiveShortAvail)
+	// $10 per-leg notional floor (4.1): reject if either leg's notional < $10
+	longNotional := size * longMid
+	if longNotional < 10.0 {
+		reason := fmt.Sprintf("long-leg notional $%.2f < $10 minimum on %s", longNotional, opp.LongExchange)
 		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
 		return &models.RiskApproval{Approved: false, Reason: reason}, nil
 	}
 
-	// Post-trade margin ratio projection check (uses effective avail after batch reservations)
-	for _, leg := range []struct {
-		exchange       string
-		bal            *exchange.Balance
-		effectiveAvail float64
-	}{
-		{opp.LongExchange, longBal, effectiveLongAvail},
-		{opp.ShortExchange, shortBal, effectiveShortAvail},
-	} {
-		if leg.bal.Total > 0 {
-			projectedAvail := leg.effectiveAvail - requiredMarginPerLeg
-			if projectedAvail < 0 {
-				projectedAvail = 0
-			}
-			projectedRatio := 1 - projectedAvail/leg.bal.Total
-			if projectedRatio >= m.cfg.MarginL4Threshold {
-				reason := fmt.Sprintf("post-trade margin ratio would reach %.2f on %s (L4 threshold: %.2f)", projectedRatio, leg.exchange, m.cfg.MarginL4Threshold)
-				m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-				return &models.RiskApproval{Approved: false, Reason: reason}, nil
-			}
+	// Verify enough free margin per leg (with configurable safety buffer).
+	// Use per-leg mid prices so each exchange's margin is computed from its own orderbook.
+	safetyMultiplier := m.cfg.MarginSafetyMultiplier
+	safetyPct := (safetyMultiplier - 1) * 100
+	longMarginPerLeg := (size * longMid) / float64(leverage)
+	longMarginWithBuffer := longMarginPerLeg * safetyMultiplier
+	if effectiveLongAvail < longMarginWithBuffer {
+		reason := fmt.Sprintf("insufficient margin buffer on %s: need %.2f (including %.0f%% safety buffer), have %.2f", opp.LongExchange, longMarginWithBuffer, safetyPct, effectiveLongAvail)
+		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
+		return &models.RiskApproval{Approved: false, Reason: reason}, nil
+	}
+
+	// Short-leg margin check is deferred until after shortOB is fetched (see below).
+
+	// Post-trade margin ratio projection (long leg — short leg checked after shortOB fetch)
+	if longBal.Total > 0 {
+		projectedAvail := effectiveLongAvail - longMarginPerLeg
+		if projectedAvail < 0 {
+			projectedAvail = 0
+		}
+		projectedRatio := 1 - projectedAvail/longBal.Total
+		if projectedRatio >= m.cfg.MarginL4Threshold {
+			reason := fmt.Sprintf("post-trade margin ratio would reach %.2f on %s (L4 threshold: %.2f)", projectedRatio, opp.LongExchange, m.cfg.MarginL4Threshold)
+			m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
+			return &models.RiskApproval{Approved: false, Reason: reason}, nil
 		}
 	}
 
@@ -482,14 +493,44 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		return &models.RiskApproval{Approved: false, Reason: reason}, nil
 	}
 
-	// Compute both mid prices for slippage estimation.
-	shortMid := midPrice
+	// Compute short mid price from short exchange orderbook.
+	shortMid := longMid
 	if len(shortOB.Bids) > 0 && len(shortOB.Asks) > 0 {
 		shortMid = (shortOB.Bids[0].Price + shortOB.Asks[0].Price) / 2.0
 	}
+	// $10 per-leg notional floor (4.1): check short leg
+	shortNotional := size * shortMid
+	if shortNotional < 10.0 {
+		reason := fmt.Sprintf("short-leg notional $%.2f < $10 minimum on %s", shortNotional, opp.ShortExchange)
+		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
+		return &models.RiskApproval{Approved: false, Reason: reason}, nil
+	}
+
+	// Short-leg margin check (deferred from above — needed shortMid)
+	shortMarginPerLeg := (size * shortMid) / float64(leverage)
+	shortMarginWithBuffer := shortMarginPerLeg * safetyMultiplier
+	if effectiveShortAvail < shortMarginWithBuffer {
+		reason := fmt.Sprintf("insufficient margin buffer on %s: need %.2f (including %.0f%% safety buffer), have %.2f", opp.ShortExchange, shortMarginWithBuffer, safetyPct, effectiveShortAvail)
+		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
+		return &models.RiskApproval{Approved: false, Reason: reason}, nil
+	}
+
+	// Post-trade margin ratio projection (short leg)
+	if shortBal.Total > 0 {
+		projectedAvail := effectiveShortAvail - shortMarginPerLeg
+		if projectedAvail < 0 {
+			projectedAvail = 0
+		}
+		projectedRatio := 1 - projectedAvail/shortBal.Total
+		if projectedRatio >= m.cfg.MarginL4Threshold {
+			reason := fmt.Sprintf("post-trade margin ratio would reach %.2f on %s (L4 threshold: %.2f)", projectedRatio, opp.ShortExchange, m.cfg.MarginL4Threshold)
+			m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
+			return &models.RiskApproval{Approved: false, Reason: reason}, nil
+		}
+	}
 
 	// Estimate slippage on both legs at full size.
-	longSlippage := estimateSlippageFromLevels(longOB.Asks, size, midPrice)
+	longSlippage := estimateSlippageFromLevels(longOB.Asks, size, longMid)
 	shortSlippage := estimateSlippageFromLevels(shortOB.Bids, size, shortMid)
 
 	if longSlippage > m.cfg.SlippageBPS || shortSlippage > m.cfg.SlippageBPS {
@@ -555,8 +596,11 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		m.log.Info("[adaptive] %s: size reduced %.0f → %.0f ($%.2f → $%.2f per leg, limit=%.1f bps)",
 			opp.Symbol, size, adaptedSize, originalNotional, newNotional, m.cfg.SlippageBPS)
 		size = adaptedSize
-		requiredMarginPerLeg = (size * midPrice) / float64(leverage)
-		requiredWithBuffer = requiredMarginPerLeg * safetyMultiplier // recompute after adaptive sizing
+		// Recompute per-leg margins after adaptive sizing
+		longMarginPerLeg = (size * longMid) / float64(leverage)
+		longMarginWithBuffer = longMarginPerLeg * safetyMultiplier
+		shortMarginPerLeg = (size * shortMid) / float64(leverage)
+		shortMarginWithBuffer = shortMarginPerLeg * safetyMultiplier
 	}
 
 	// e. Cross-exchange price gap check (VWAP across depth for actual trade size)
@@ -632,8 +676,8 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		totalCapital := longBal.Total + shortBal.Total
 		if totalCapital > 0 {
 			// Sum existing notional exposure per exchange from active positions.
-			longExposure := requiredMarginPerLeg
-			shortExposure := requiredMarginPerLeg
+			longExposure := longMarginPerLeg
+			shortExposure := shortMarginPerLeg
 			for _, pos := range active {
 				if pos.LongExchange == opp.LongExchange {
 					longExposure += (pos.LongSize * pos.LongEntry) / float64(leverage)
@@ -671,14 +715,17 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		m.log.Warn("exchange %s has >60%% of active positions (short leg)", opp.ShortExchange)
 	}
 
-	m.log.Info("approved %s: size=%.6f price=%.2f spread=%.2f bps/h gapBps=%.1f", opp.Symbol, size, midPrice, opp.Spread, gapBps)
+	requiredWithBuffer := math.Max(longMarginWithBuffer, shortMarginWithBuffer)
+	m.log.Info("approved %s: size=%.6f longMid=%.2f shortMid=%.2f spread=%.2f bps/h gapBps=%.1f", opp.Symbol, size, longMid, shortMid, opp.Spread, gapBps)
 	return &models.RiskApproval{
-		Approved:       true,
-		Size:           size,
-		Reason:         "all pre-trade checks passed",
-		Price:          midPrice,
-		GapBPS:         gapBps,
-		RequiredMargin: requiredWithBuffer,
+		Approved:          true,
+		Size:              size,
+		Reason:            "all pre-trade checks passed",
+		Price:             midPrice,
+		GapBPS:            gapBps,
+		RequiredMargin:    requiredWithBuffer,
+		LongMarginNeeded:  longMarginWithBuffer,
+		ShortMarginNeeded: shortMarginWithBuffer,
 	}, nil
 }
 
@@ -688,7 +735,7 @@ func (m *Manager) CalculateSize(opp models.Opportunity, balances map[string]floa
 	balB := balances[opp.ShortExchange]
 	availableCapital := math.Min(balA, balB)
 
-	ecl := m.effectiveCapitalPerLeg()
+	ecl := m.effectiveCapitalPerLeg(string(StrategyPerpPerp))
 	m.log.Info("[sizing] %s: %s=%.4f %s=%.4f availCap=%.4f capPerLeg=%.2f lev=%d",
 		opp.Symbol, opp.LongExchange, balA, opp.ShortExchange, balB,
 		availableCapital, ecl, m.cfg.Leverage)
@@ -794,12 +841,13 @@ func (m *Manager) CalculateSize(opp models.Opportunity, balances map[string]floa
 // calculateSizeWithPrice is like CalculateSize but uses a pre-computed reference
 // price instead of fetching a separate orderbook. This avoids a redundant API
 // call when the caller (approveInternal) already has an orderbook.
-func (m *Manager) calculateSizeWithPrice(opp models.Opportunity, balances map[string]float64, refPrice float64) float64 {
+// When cachedActive is non-nil, it is used instead of querying the DB again.
+func (m *Manager) calculateSizeWithPrice(opp models.Opportunity, balances map[string]float64, refPrice float64, cachedActive []*models.ArbitragePosition) float64 {
 	balA := balances[opp.LongExchange]
 	balB := balances[opp.ShortExchange]
 	availableCapital := math.Min(balA, balB)
 
-	ecl2 := m.effectiveCapitalPerLeg()
+	ecl2 := m.effectiveCapitalPerLeg(string(StrategyPerpPerp))
 	m.log.Info("[sizing] %s: %s=%.4f %s=%.4f availCap=%.4f capPerLeg=%.2f lev=%d",
 		opp.Symbol, opp.LongExchange, balA, opp.ShortExchange, balB,
 		availableCapital, ecl2, m.cfg.Leverage)
@@ -814,10 +862,14 @@ func (m *Manager) calculateSizeWithPrice(opp models.Opportunity, balances map[st
 		leverage = MaxLeverage()
 	}
 
-	active, err := m.db.GetActivePositions()
-	if err != nil {
-		m.log.Error("failed to get active positions for sizing: %v", err)
-		return 0
+	active := cachedActive
+	if active == nil {
+		var err error
+		active, err = m.db.GetActivePositions()
+		if err != nil {
+			m.log.Error("failed to get active positions for sizing: %v", err)
+			return 0
+		}
 	}
 	remainingSlots := m.cfg.MaxPositions - len(active)
 	if remainingSlots <= 0 {

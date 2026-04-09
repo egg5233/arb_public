@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.0] - 2026-04-09
+
+### Fixed (Critical)
+- **Rollback/trim one-sided exposure** — In-loop rollback and trim branches now correctly account for surviving exposure via `abortFillLoop` flag, ensuring VWAP stays in sync before breaking the fill loop. Telegram alerts for orphan exposure events.
+- **rotateLeg DB swap silent failure** — Re-reads position after `UpdatePositionFields` to verify swap applied. On failure, writes `StatusPartial` with actual leg state (CAS-guarded against concurrent close). Broadcasts partial to dashboard.
+- **Rotation not cancellable by L4/L5** — `rotateLeg` now registers full exit lifecycle (`exitCancels`, `exitDone`, context). Three cancel checkpoints at each critical stage with safe cleanup. New leg protected from consolidator orphan scan via `entryActive`.
+
+### Fixed (High)
+- **First-leg confirm zeroing real fill** — Detects actual exchange position via `getExchangePositionSize` when `confirmFillSafe` fails. Updates existing pending position to `StatusPartial` instead of archiving as zero.
+- **Leverage clamp inconsistency** — Entry now uses `effectiveLev = min(cfg.Leverage, MaxLeverage())` consistently for SetLeverage calls and margin calculations.
+- **Micro-order sizing short-only validation** — Looks up contract specs for both exchanges. New `commonTradeableSize` helper iteratively converges to a size both exchanges can represent.
+- **entryActive rotation target check** — `checkRotations` now checks `entryActive` on the candidate replacement exchange before proceeding.
+- **ManualClose strands StatusExiting** — `spawnExitGoroutine` returns `bool` and is sole authority for `active→exiting` CAS. ManualClose no longer pre-sets status.
+- **Depth exit allocator leak** — Added `releasePerpPosition` call in depth-exit fully-flat branch.
+- **FormatSize hardcoded 6 decimals** — L4 reduce and rotation open now use `e.formatSize(exchName, symbol, size)` instead of `utils.FormatSize(size, 6)`.
+- **PnL double-count on rotate-back** — `tryReconcilePnL` queries from last `RotationHistory.Timestamp` instead of `CreatedAt`.
+- **Reconcile retry missing 30s** — Added third retry at 30s to the delays slice.
+
+### Optimizations
+- **Depth stream pre-warming** — Subscribes depth WS at :35 for top candidates. Ref-counted subscriptions with 5s freshness check. Entry at :40 skips 3-8s wait when data is fresh.
+- **Parallel market fallback close** — Both legs closed concurrently via goroutines in market fallback, reducing naked exposure time.
+- **Risk-leg-first depth exit** — Closes the leg with thinner depth first instead of always long-first.
+- **Parallel SetLeverage/SetMarginMode** — Both exchanges' setup calls run concurrently.
+- **Exit check at :40** — `checkIntervalChanges` + `checkExitsV2` now run before `executeArbitrage` on EntryScan, reducing worst-case exit detection latency.
+- **Per-position PnL lock** — Replaced global `pnlReconcileMu` with per-position locks via `sync.Map`. 2s sleep moved outside lock. Both `reconcilePnL` and `reconcileRotationPnL` updated.
+- **Approval cache ActivePositions** — `PrefetchCache` now includes `ActivePositions` with incremental delta-update during batch approval.
+- **SCAN replaces KEYS** — All 4 `Keys()` calls in allocator.go replaced with iterative `SCAN` (cursor-based, batch 100).
+- **Exit priority ordering** — `checkExitsV2` now sorts by worst `CurrentSpread` first, largest notional as tiebreaker.
+
+### Improved (Medium)
+- **$10 per-leg floor in pre-trade** — `approveInternal` checks per-leg notional using per-exchange mid prices. Post-loop check also uses per-leg fill VWAPs.
+- **Per-leg margin math** — `RiskApproval` extended with `LongMarginNeeded`/`ShortMarginNeeded`. Approval, buffer checks, projected ratio, and reservation all use per-exchange values.
+- **Strategy-aware CapitalPerLeg** — `EffectiveCapitalPerLeg` accepts optional strategy param. Per-strategy dynamic caps prevent perp cap from bleeding into spot-futures sizing.
+
 ## [0.31.2] - 2026-04-09
 
 ### Fixed

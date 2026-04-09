@@ -37,9 +37,17 @@ func (e *Engine) reservePerpCapital(opp models.Opportunity, approval *models.Ris
 	if e.allocator == nil || !e.allocator.Enabled() {
 		return nil, nil
 	}
+	longMargin := approval.LongMarginNeeded
+	if longMargin <= 0 {
+		longMargin = approval.RequiredMargin // fallback
+	}
+	shortMargin := approval.ShortMarginNeeded
+	if shortMargin <= 0 {
+		shortMargin = approval.RequiredMargin
+	}
 	exposures := map[string]float64{
-		opp.LongExchange:  approval.RequiredMargin,
-		opp.ShortExchange: approval.RequiredMargin,
+		opp.LongExchange:  longMargin,
+		opp.ShortExchange: shortMargin,
 	}
 	if dynamicCap > 0 {
 		return e.allocator.ReserveWithCap(risk.StrategyPerpPerp, exposures, dynamicCap)
@@ -67,9 +75,10 @@ func (e *Engine) commitPerpCapital(res *risk.CapitalReservation, posID string) e
 
 // effectiveCapitalPerLeg returns the USDT per leg, using allocator's derived value
 // when unified capital is enabled, or falling back to cfg.CapitalPerLeg.
-func (e *Engine) effectiveCapitalPerLeg() float64 {
+// When strategy is non-empty, the per-strategy dynamic cap is applied.
+func (e *Engine) effectiveCapitalPerLeg(strategy ...string) float64 {
 	if e.allocator != nil && e.allocator.Enabled() {
-		if ecl := e.allocator.EffectiveCapitalPerLeg(); ecl > 0 {
+		if ecl := e.allocator.EffectiveCapitalPerLeg(strategy...); ecl > 0 {
 			return ecl
 		}
 	}

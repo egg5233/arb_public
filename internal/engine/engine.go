@@ -76,8 +76,9 @@ type Engine struct {
 	// Global capacity lock for manual open to prevent concurrent over-subscription.
 	capacityMu sync.Mutex
 
-	// Mutex to serialize PnL reconciliation (reconcilePnL + reconcileRotationPnL).
-	pnlReconcileMu sync.Mutex
+	// Per-position PnL reconciliation locks. Each position gets its own mutex
+	// so concurrent reconciliations for different positions don't block each other.
+	pnlLocks sync.Map // posID → *sync.Mutex
 
 	// Rejection tracking for dashboard display.
 	rejStore *models.RejectionStore
@@ -120,12 +121,22 @@ type Engine struct {
 	// spotCloseCallback dispatches spot-futures health actions to SpotEngine.
 	// Set via SetSpotCloseCallback after both engines are initialized.
 	spotCloseCallback func(pos *models.SpotFuturesPosition, reason string, isEmergency bool) error
+
+	// Ref-counted depth subscriptions for pre-warming before entry scan.
+	depthRefsMu    sync.Mutex
+	depthRefs      map[string]*depthRef // "exchange:symbol" → ref
+	prewarmedKeys  []string             // keys acquired by prewarmDepthForEntry
 }
 
 // slEntry maps a stop-loss order to its position and leg.
 type slEntry struct {
 	PosID string
 	Leg   string // "long" or "short"
+}
+
+// depthRef tracks reference count for a depth subscription.
+type depthRef struct {
+	refCount int
 }
 
 // NewEngine creates a new Engine with all required dependencies.
@@ -161,8 +172,98 @@ func NewEngine(
 		slFillCh:        make(chan slFillEvent, 64),
 		apiErrCounts:       make(map[string]int),
 		consolidateRetries: make(map[string]int),
+		depthRefs:          make(map[string]*depthRef),
 	}
 	return e
+}
+
+// acquirePnlLock returns the per-position mutex for PnL reconciliation.
+// Creates one on first access (lazy init via sync.Map).
+func (e *Engine) acquirePnlLock(posID string) *sync.Mutex {
+	v, _ := e.pnlLocks.LoadOrStore(posID, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
+
+// ---------------------------------------------------------------------------
+// Ref-counted depth subscription management for pre-warming
+// ---------------------------------------------------------------------------
+
+// acquireDepthRef increments the ref count for a depth subscription.
+// If this is the first reference, it subscribes to depth on the exchange.
+func (e *Engine) acquireDepthRef(exchName, symbol string) {
+	key := exchName + ":" + symbol
+	e.depthRefsMu.Lock()
+	defer e.depthRefsMu.Unlock()
+	ref, ok := e.depthRefs[key]
+	if !ok {
+		e.exchanges[exchName].SubscribeDepth(symbol)
+		ref = &depthRef{}
+		e.depthRefs[key] = ref
+	}
+	ref.refCount++
+}
+
+// releaseDepthRef decrements the ref count and unsubscribes when it reaches zero.
+func (e *Engine) releaseDepthRef(exchName, symbol string) {
+	key := exchName + ":" + symbol
+	e.depthRefsMu.Lock()
+	defer e.depthRefsMu.Unlock()
+	ref, ok := e.depthRefs[key]
+	if !ok {
+		return
+	}
+	ref.refCount--
+	if ref.refCount <= 0 {
+		e.exchanges[exchName].UnsubscribeDepth(symbol)
+		delete(e.depthRefs, key)
+	}
+}
+
+// isDepthFresh returns true if the exchange has recent depth data for the symbol.
+func (e *Engine) isDepthFresh(exchName, symbol string) bool {
+	exch, ok := e.exchanges[exchName]
+	if !ok {
+		return false
+	}
+	ob, ok := exch.GetDepth(symbol)
+	if !ok || ob == nil {
+		return false
+	}
+	return time.Since(ob.Time) < 5*time.Second
+}
+
+// prewarmDepthForEntry subscribes to depth streams for the top opportunities
+// so data is already flowing when the entry scan runs 5 minutes later.
+func (e *Engine) prewarmDepthForEntry(opps []models.Opportunity) {
+	e.prewarmedKeys = nil
+	limit := e.cfg.MaxPositions
+	if limit <= 0 {
+		limit = 5 // sensible default
+	}
+	if limit > len(opps) {
+		limit = len(opps)
+	}
+	for _, opp := range opps[:limit] {
+		e.acquireDepthRef(opp.LongExchange, opp.Symbol)
+		e.acquireDepthRef(opp.ShortExchange, opp.Symbol)
+		e.prewarmedKeys = append(e.prewarmedKeys,
+			opp.LongExchange+":"+opp.Symbol,
+			opp.ShortExchange+":"+opp.Symbol)
+	}
+	if len(e.prewarmedKeys) > 0 {
+		e.log.Info("prewarm: subscribed depth for %d exchange:symbol pairs", len(e.prewarmedKeys))
+	}
+}
+
+// cleanupPrewarmedDepth releases the prewarm references after entry execution.
+func (e *Engine) cleanupPrewarmedDepth() {
+	for _, key := range e.prewarmedKeys {
+		parts := strings.SplitN(key, ":", 2)
+		if len(parts) == 2 {
+			e.releaseDepthRef(parts[0], parts[1])
+		}
+	}
+	e.prewarmedKeys = nil
 }
 
 // SetTelegram injects the shared Telegram notifier for perp-perp alerts.
@@ -213,7 +314,7 @@ func (e *Engine) recordAPISuccess(exchName string) {
 }
 
 // ManualClose initiates an exit for the given position from the dashboard.
-// It atomically transitions active → exiting before spawning the exit goroutine.
+// spawnExitGoroutine is the single authority for the active → exiting transition.
 func (e *Engine) ManualClose(posID string) error {
 	pos, err := e.db.GetPosition(posID)
 	if err != nil {
@@ -222,24 +323,10 @@ func (e *Engine) ManualClose(posID string) error {
 	if pos.Status != models.StatusActive {
 		return fmt.Errorf("position %s is not active (status=%s)", posID, pos.Status)
 	}
-	// Atomic: only proceed if we win the active → exiting transition.
-	err = e.db.UpdatePositionFields(posID, func(fresh *models.ArbitragePosition) bool {
-		if fresh.Status != models.StatusActive {
-			return false
-		}
-		fresh.Status = models.StatusExiting
-		return true
-	})
-	if err != nil {
-		return fmt.Errorf("position %s already being handled", posID)
-	}
-	// Re-read to confirm we won the transition.
-	pos, _ = e.db.GetPosition(posID)
-	if pos.Status != models.StatusExiting {
-		return fmt.Errorf("position %s already being handled (status=%s)", posID, pos.Status)
-	}
 	e.log.Info("manual close requested for %s (%s)", posID, pos.Symbol)
-	e.spawnExitGoroutine(pos, "manual close from dashboard")
+	if !e.spawnExitGoroutine(pos, "manual close from dashboard") {
+		return fmt.Errorf("position %s: exit already in progress or position no longer active", posID)
+	}
 	return nil
 }
 
@@ -680,22 +767,34 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 		}
 
 		// Approval passed. Check if exchanges need cross-exchange transfers.
-		requiredMargin := approval.RequiredMargin
-		if requiredMargin <= 0 {
-			requiredMargin = e.effectiveCapitalPerLeg() * e.cfg.MarginSafetyMultiplier
+		// Use per-exchange margins when available, falling back to symmetric RequiredMargin.
+		longMarginNeeded := approval.LongMarginNeeded
+		if longMarginNeeded <= 0 {
+			longMarginNeeded = approval.RequiredMargin
+		}
+		if longMarginNeeded <= 0 {
+			longMarginNeeded = e.effectiveCapitalPerLeg() * e.cfg.MarginSafetyMultiplier
+		}
+		shortMarginNeeded := approval.ShortMarginNeeded
+		if shortMarginNeeded <= 0 {
+			shortMarginNeeded = approval.RequiredMargin
+		}
+		if shortMarginNeeded <= 0 {
+			shortMarginNeeded = e.effectiveCapitalPerLeg() * e.cfg.MarginSafetyMultiplier
 		}
 
 		needsTransfer := false
 		for _, leg := range []struct {
 			exchange string
+			margin   float64
 		}{
-			{opp.LongExchange},
-			{opp.ShortExchange},
+			{opp.LongExchange, longMarginNeeded},
+			{opp.ShortExchange, shortMarginNeeded},
 		} {
 			bal := balances[leg.exchange]
 			effectiveAvail := bal.futures - reserved[leg.exchange]
-			if effectiveAvail < requiredMargin {
-				deficit := requiredMargin - effectiveAvail
+			if effectiveAvail < leg.margin {
+				deficit := leg.margin - effectiveAvail
 				foundDonor := false
 				for donorName, donorBal := range balances {
 					if donorName == leg.exchange {
@@ -741,13 +840,13 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			continue
 		}
 
-		needs[opp.LongExchange] += requiredMargin
-		needs[opp.ShortExchange] += requiredMargin
-		reserved[opp.LongExchange] += requiredMargin
-		reserved[opp.ShortExchange] += requiredMargin
+		needs[opp.LongExchange] += longMarginNeeded
+		needs[opp.ShortExchange] += shortMarginNeeded
+		reserved[opp.LongExchange] += longMarginNeeded
+		reserved[opp.ShortExchange] += shortMarginNeeded
 		selectedSymbols[opp.Symbol] = true
 		selected++
-		e.log.Info("rebalance: selected %s (margin=%.2f per leg)", opp.Symbol, requiredMargin)
+		e.log.Info("rebalance: selected %s (longMargin=%.2f shortMargin=%.2f)", opp.Symbol, longMarginNeeded, shortMarginNeeded)
 	}
 
 	e.log.Info("rebalance: analyzed %d opportunities, selected %d, needs: %v, plannedTransfers: %v", len(opps), selected, needs, plannedTransfers)
@@ -1062,8 +1161,15 @@ func (e *Engine) run() {
 					e.rebalanceFunds()
 					e.log.Info("rotateScan: rebalanceFunds done")
 				}
+				// Pre-warm depth streams for top opportunities so data is
+				// already flowing when the :40 entry scan runs.
+				e.prewarmDepthForEntry(result.Opps)
 				e.log.Info("run loop: rotateScan handler done")
 			case discovery.EntryScan:
+				// Run exit checks at :40 too — reduces exit detection latency by 10 min.
+				e.checkIntervalChanges()
+				e.checkExitsV2()
+
 				// Update performance-weighted allocation before entry decisions (CA-03/CA-04).
 				e.updateAllocation()
 
@@ -1087,6 +1193,7 @@ func (e *Engine) run() {
 				perpCap := e.dynamicStrategyPct(risk.StrategyPerpPerp, perpHasOpps, spotHasOpps)
 				if perpCap > 0 {
 					e.log.Info("dynamic strategy cap: perp=%.1f%% (perpOpps=%v, spotOpps=%v)", perpCap*100, perpHasOpps, spotHasOpps)
+					e.allocator.SetDynamicStrategyCap(string(risk.StrategyPerpPerp), perpCap)
 				}
 
 				if len(result.Opps) > 0 {
@@ -1119,6 +1226,8 @@ func (e *Engine) run() {
 					e.executeArbitrage(entryOpps, perpCap)
 					e.log.Info("run loop: entryScan handler done (via %s)", tier)
 				}
+				// Release pre-warm depth refs from :35 rotation scan.
+				e.cleanupPrewarmedDepth()
 			}
 
 		case <-e.stopCh:
@@ -2034,8 +2143,9 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 
 	// Convert sync.Maps to regular maps for the cache.
 	prefetchCache := &risk.PrefetchCache{
-		Balances:   make(map[string]*exchange.Balance),
-		Orderbooks: make(map[string]*exchange.Orderbook),
+		Balances:        make(map[string]*exchange.Balance),
+		Orderbooks:      make(map[string]*exchange.Orderbook),
+		ActivePositions: active,
 	}
 	balanceSyncMap.Range(func(k, v interface{}) bool {
 		prefetchCache.Balances[k.(string)] = v.(*exchange.Balance)
@@ -2150,6 +2260,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 			symLock.Release()
 			continue
 		}
+		prefetchCache.ActivePositions = append(prefetchCache.ActivePositions, pendingPos)
 		e.api.BroadcastPositionUpdate(pendingPos)
 
 		candidates = append(candidates, candidate{
@@ -2162,8 +2273,16 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 			pos:         pendingPos,
 			reservation: reservation,
 		})
-		reserved[opp.LongExchange] += approval.RequiredMargin
-		reserved[opp.ShortExchange] += approval.RequiredMargin
+		longMargin := approval.LongMarginNeeded
+		if longMargin <= 0 {
+			longMargin = approval.RequiredMargin // fallback for backwards compat
+		}
+		shortMargin := approval.ShortMarginNeeded
+		if shortMargin <= 0 {
+			shortMargin = approval.RequiredMargin
+		}
+		reserved[opp.LongExchange] += longMargin
+		reserved[opp.ShortExchange] += shortMargin
 		newSlotCandidates++
 	}
 
@@ -2647,29 +2766,55 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 		return fmt.Errorf("short exchange %s not found", opp.ShortExchange)
 	}
 
-	// Set leverage and margin mode on both exchanges.
-	leverage := strconv.Itoa(e.cfg.Leverage)
-	for _, setup := range []struct {
-		exch exchange.Exchange
-		name string
-		side string
-	}{
-		{longExch, opp.LongExchange, "long"},
-		{shortExch, opp.ShortExchange, "short"},
-	} {
-		if err := setup.exch.SetLeverage(opp.Symbol, leverage, setup.side); err != nil {
-			if isAlreadySetError(err) {
-				e.log.Debug("set leverage on %s: %v (already set)", setup.name, err)
-			} else {
-				return fmt.Errorf("set leverage on %s: %w", setup.name, err)
-			}
+	// Set leverage and margin mode on both exchanges (parallel).
+	// Clamp to risk hard cap so config can never exceed risk.MaxLeverage().
+	effectiveLev := e.cfg.Leverage
+	if effectiveLev > risk.MaxLeverage() {
+		effectiveLev = risk.MaxLeverage()
+	}
+	leverage := strconv.Itoa(effectiveLev)
+	{
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		var firstErr error
+		for _, setup := range []struct {
+			exch exchange.Exchange
+			name string
+			side string
+		}{
+			{longExch, opp.LongExchange, "long"},
+			{shortExch, opp.ShortExchange, "short"},
+		} {
+			wg.Add(1)
+			go func(ex exchange.Exchange, name, side string) {
+				defer wg.Done()
+				if err := ex.SetLeverage(opp.Symbol, leverage, side); err != nil {
+					if isAlreadySetError(err) {
+						e.log.Debug("set leverage on %s: %v (already set)", name, err)
+					} else {
+						mu.Lock()
+						if firstErr == nil {
+							firstErr = fmt.Errorf("set leverage on %s: %w", name, err)
+						}
+						mu.Unlock()
+					}
+				}
+				if err := ex.SetMarginMode(opp.Symbol, "cross"); err != nil {
+					if isAlreadySetError(err) {
+						e.log.Debug("set margin mode on %s: %v (already set)", name, err)
+					} else {
+						mu.Lock()
+						if firstErr == nil {
+							firstErr = fmt.Errorf("set margin mode on %s: %w", name, err)
+						}
+						mu.Unlock()
+					}
+				}
+			}(setup.exch, setup.name, setup.side)
 		}
-		if err := setup.exch.SetMarginMode(opp.Symbol, "cross"); err != nil {
-			if isAlreadySetError(err) {
-				e.log.Debug("set margin mode on %s: %v (already set)", setup.name, err)
-			} else {
-				return fmt.Errorf("set margin mode on %s: %w", setup.name, err)
-			}
+		wg.Wait()
+		if firstErr != nil {
+			return firstErr
 		}
 	}
 
@@ -2812,9 +2957,12 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 	minFill := math.Min(longFilled, shortFilled)
 	const minPositionUSDT = 10.0
 
-	if minFill*price < minPositionUSDT {
+	// Per-leg notional check: use each leg's actual fill price
+	longNotional := longFilled * longAvg
+	shortNotional := shortFilled * shortAvg
+	if longNotional < minPositionUSDT || shortNotional < minPositionUSDT {
 		// Too small to keep — close whatever filled.
-		e.log.Warn("IOC fills too small for %s (min=%.2f USDT), aborting", posID, minFill*price)
+		e.log.Warn("IOC fills too small for %s (long=$%.2f short=$%.2f), aborting", posID, longNotional, shortNotional)
 		if longFilled > 0 {
 			rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
 			if rem > 0 {
@@ -2913,6 +3061,24 @@ func (e *Engine) formatSize(exchName, symbol string, size float64) string {
 	return utils.FormatSize(size, 6)
 }
 
+// commonTradeableSize finds the largest size <= input that both exchanges can
+// represent given their respective step sizes. It iteratively formats through
+// both exchanges until convergence (max 5 iterations).
+func (e *Engine) commonTradeableSize(longExch, shortExch, symbol string, size float64) float64 {
+	for i := 0; i < 5; i++ {
+		longStr := e.formatSize(longExch, symbol, size)
+		shortStr := e.formatSize(shortExch, symbol, size)
+		longParsed, _ := strconv.ParseFloat(longStr, 64)
+		shortParsed, _ := strconv.ParseFloat(shortStr, 64)
+		common := math.Min(longParsed, shortParsed)
+		if common == size || common <= 0 {
+			return common // converged or zero
+		}
+		size = common // retry with the smaller formatted value
+	}
+	return size
+}
+
 // executeTradeV2 opens a delta-neutral position using depth-driven sequential
 // IOC orders. It reads the live orderbook depth on each tick, sizes to available
 // liquidity, and places the less-liquid leg first. If the first leg fails, it
@@ -2960,44 +3126,75 @@ func (e *Engine) executeTradeV2WithPos(opp models.Opportunity, pos *models.Arbit
 		return fmt.Errorf("short exchange %s not found", opp.ShortExchange)
 	}
 
-	// Set leverage and margin mode on both exchanges.
-	leverage := strconv.Itoa(e.cfg.Leverage)
-	for _, setup := range []struct {
-		exch exchange.Exchange
-		name string
-		side string
-	}{
-		{longExch, opp.LongExchange, "long"},
-		{shortExch, opp.ShortExchange, "short"},
-	} {
-		if err := setup.exch.SetLeverage(opp.Symbol, leverage, setup.side); err != nil {
-			if isAlreadySetError(err) {
-				e.log.Debug("set leverage on %s: %v (already set)", setup.name, err)
-			} else {
-				return fmt.Errorf("set leverage on %s: %w", setup.name, err)
-			}
+	// Set leverage and margin mode on both exchanges (parallel).
+	// Clamp to risk hard cap so config can never exceed risk.MaxLeverage().
+	effectiveLev := e.cfg.Leverage
+	if effectiveLev > risk.MaxLeverage() {
+		effectiveLev = risk.MaxLeverage()
+	}
+	leverage := strconv.Itoa(effectiveLev)
+	{
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		var firstErr error
+		for _, setup := range []struct {
+			exch exchange.Exchange
+			name string
+			side string
+		}{
+			{longExch, opp.LongExchange, "long"},
+			{shortExch, opp.ShortExchange, "short"},
+		} {
+			wg.Add(1)
+			go func(ex exchange.Exchange, name, side string) {
+				defer wg.Done()
+				if err := ex.SetLeverage(opp.Symbol, leverage, side); err != nil {
+					if isAlreadySetError(err) {
+						e.log.Debug("set leverage on %s: %v (already set)", name, err)
+					} else {
+						mu.Lock()
+						if firstErr == nil {
+							firstErr = fmt.Errorf("set leverage on %s: %w", name, err)
+						}
+						mu.Unlock()
+					}
+				}
+				if err := ex.SetMarginMode(opp.Symbol, "cross"); err != nil {
+					if isAlreadySetError(err) {
+						e.log.Debug("set margin mode on %s: %v (already set)", name, err)
+					} else {
+						mu.Lock()
+						if firstErr == nil {
+							firstErr = fmt.Errorf("set margin mode on %s: %w", name, err)
+						}
+						mu.Unlock()
+					}
+				}
+			}(setup.exch, setup.name, setup.side)
 		}
-		if err := setup.exch.SetMarginMode(opp.Symbol, "cross"); err != nil {
-			if isAlreadySetError(err) {
-				e.log.Debug("set margin mode on %s: %v (already set)", setup.name, err)
-			} else {
-				return fmt.Errorf("set margin mode on %s: %w", setup.name, err)
-			}
+		wg.Wait()
+		if firstErr != nil {
+			return firstErr
 		}
 	}
 
 	// ---------------------------------------------------------------
-	// Subscribe to depth on both exchanges
+	// Subscribe to depth on both exchanges (ref-counted for pre-warm)
 	// ---------------------------------------------------------------
-	longExch.SubscribeDepth(opp.Symbol)
-	shortExch.SubscribeDepth(opp.Symbol)
-	defer longExch.UnsubscribeDepth(opp.Symbol)
-	defer shortExch.UnsubscribeDepth(opp.Symbol)
+	longFresh := e.isDepthFresh(opp.LongExchange, opp.Symbol)
+	shortFresh := e.isDepthFresh(opp.ShortExchange, opp.Symbol)
+	e.acquireDepthRef(opp.LongExchange, opp.Symbol)
+	e.acquireDepthRef(opp.ShortExchange, opp.Symbol)
+	defer e.releaseDepthRef(opp.LongExchange, opp.Symbol)
+	defer e.releaseDepthRef(opp.ShortExchange, opp.Symbol)
 
 	// Wait up to 8s for depth data to arrive with retry.
-	// Some exchanges (BingX) have unstable WS — re-subscribe if first attempt fails.
-	depthReady := false
-	for attempt := 0; attempt < 2; attempt++ {
+	// Skip wait if depth was pre-warmed and is still fresh.
+	depthReady := longFresh && shortFresh
+	if depthReady {
+		e.log.Debug("depth pre-warmed for %s, skipping wait", opp.Symbol)
+	}
+	for attempt := 0; !depthReady && attempt < 2; attempt++ {
 		for i := 0; i < 40; i++ { // 4s per attempt
 			_, lok := longExch.GetDepth(opp.Symbol)
 			_, sok := shortExch.GetDepth(opp.Symbol)
@@ -3013,11 +3210,11 @@ func (e *Engine) executeTradeV2WithPos(opp models.Opportunity, pos *models.Arbit
 		if attempt == 0 {
 			// First attempt failed — force re-subscribe (handles stale WS state)
 			e.log.Warn("depth subscribe retry for %s: re-subscribing both legs", opp.Symbol)
-			longExch.UnsubscribeDepth(opp.Symbol)
-			shortExch.UnsubscribeDepth(opp.Symbol)
+			e.releaseDepthRef(opp.LongExchange, opp.Symbol)
+			e.releaseDepthRef(opp.ShortExchange, opp.Symbol)
 			time.Sleep(200 * time.Millisecond)
-			longExch.SubscribeDepth(opp.Symbol)
-			shortExch.SubscribeDepth(opp.Symbol)
+			e.acquireDepthRef(opp.LongExchange, opp.Symbol)
+			e.acquireDepthRef(opp.ShortExchange, opp.Symbol)
 		}
 	}
 	if !depthReady {
@@ -3065,6 +3262,7 @@ func (e *Engine) executeTradeV2WithPos(opp models.Opportunity, pos *models.Arbit
 		opp.Symbol, targetSize, e.cfg.EntryTimeoutSec)
 
 	// Look up step size + min size for the "close enough" check.
+	// Use max of both exchanges so the remaining qty is tradeable on BOTH.
 	var stepSize, minSize float64
 	if e.contracts != nil {
 		if exContracts, ok := e.contracts[opp.ShortExchange]; ok {
@@ -3073,11 +3271,23 @@ func (e *Engine) executeTradeV2WithPos(opp models.Opportunity, pos *models.Arbit
 				minSize = ci.MinSize
 			}
 		}
+		if exContracts, ok := e.contracts[opp.LongExchange]; ok {
+			if ci, ok := exContracts[opp.Symbol]; ok {
+				if ci.StepSize > stepSize {
+					stepSize = ci.StepSize
+				}
+				if ci.MinSize > minSize {
+					minSize = ci.MinSize
+				}
+			}
+		}
 	}
 
 	// Cached balance for margin pre-check (refreshed every 5s, not every 100ms tick)
 	var cachedLongBal, cachedShortBal *exchange.Balance
 	var lastBalCheck time.Time
+
+	var abortFillLoop bool
 
 fillLoop:
 	for {
@@ -3199,16 +3409,10 @@ fillLoop:
 		// Size to available aggregated liquidity
 		size := math.Min(remaining, math.Min(bidQty, askQty))
 
-		// Round to contract step size (use short exchange as reference for step)
-		if e.contracts != nil {
-			if exContracts, ok := e.contracts[opp.ShortExchange]; ok {
-				if ci, ok := exContracts[opp.Symbol]; ok && ci.StepSize > 0 {
-					size = utils.RoundToStep(size, ci.StepSize)
-					if size < ci.MinSize {
-						continue
-					}
-				}
-			}
+		// Round to contract step size that both exchanges can represent.
+		size = e.commonTradeableSize(opp.LongExchange, opp.ShortExchange, opp.Symbol, size)
+		if size <= 0 || size < minSize {
+			continue
 		}
 
 		// Min notional check
@@ -3227,7 +3431,8 @@ fillLoop:
 
 		// Margin pre-check: cap size to what both exchanges can actually afford.
 		// Cache balance for 5s to avoid hammering REST APIs every 100ms tick.
-		leverage := float64(e.cfg.Leverage)
+		// Use effectiveLev (already clamped to risk.MaxLeverage() above).
+		leverage := float64(effectiveLev)
 		if leverage <= 0 {
 			leverage = 1
 		}
@@ -3259,14 +3464,8 @@ fillLoop:
 			affordableSize := math.Min(maxLongSize, maxShortSize)
 
 			if affordableSize < size {
-				// Round down to step size
-				if e.contracts != nil {
-					if exContracts, ok := e.contracts[opp.ShortExchange]; ok {
-						if ci, ok := exContracts[opp.Symbol]; ok && ci.StepSize > 0 {
-							affordableSize = utils.RoundToStep(affordableSize, ci.StepSize)
-						}
-					}
-				}
+				// Round down to step size that both exchanges can represent.
+				affordableSize = e.commonTradeableSize(opp.LongExchange, opp.ShortExchange, opp.Symbol, affordableSize)
 				if affordableSize > 0 && affordableSize*bidPrice >= e.cfg.MinChunkUSDT {
 					e.log.Info("depth tick: margin cap %s size %.6f → %.6f (longAvail=%.2f shortAvail=%.2f)",
 						opp.Symbol, size, affordableSize, cachedLongBal.Available, cachedShortBal.Available)
@@ -3318,6 +3517,20 @@ fillLoop:
 				// Do NOT continue loop blindly; the order may have filled.
 				e.log.Error("depth tick: short fill state unknown for %s: %v — freezing tick", shortOID, shortCFErr)
 				_ = shortExch.CancelOrder(opp.Symbol, shortOID)
+				// Check if fill actually happened using existing helper
+				exchSize, exchErr := getExchangePositionSize(shortExch, opp.Symbol, "short")
+				if exchErr == nil && exchSize > 0 {
+					e.log.Warn("first leg %s: confirmFill failed but exchange shows short position %.6f", opp.Symbol, exchSize)
+					// Update the EXISTING pending position (pos is already created and passed in)
+					_ = e.db.UpdatePositionFields(pos.ID, func(f *models.ArbitragePosition) bool {
+						f.Status = models.StatusPartial
+						f.FailureReason = "first_leg_fill_unknown"
+						f.ShortSize = exchSize
+						f.LongSize = confirmedLong
+						return true
+					})
+					return errPartialEntry
+				}
 				shortConsecFails++
 				// Break out of depth loop to trigger post-loop reconciliation
 				// which will use the force checkpoint to persist actual state.
@@ -3356,10 +3569,17 @@ fillLoop:
 				} else {
 					rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
 					if rem > 0 {
-						e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", opp.Symbol, exchange.SideBuy, rem, shortExch.Name())
+						e.log.Error("ORPHAN EXPOSURE: %s rollback incomplete, %.6f still open on %s", opp.Symbol, rem, opp.ShortExchange)
+						e.telegram.Send("⚠️ ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.ShortExchange)
+						// Preserve surviving exposure so VWAP accumulation accounts for it.
+						// Do NOT overwrite shortAvg — it holds the original fill price.
+						shortFilled = rem
+						longFilled = 0
+						abortFillLoop = true
+					} else {
+						longConsecFails++
+						continue
 					}
-					longConsecFails++
-					continue
 				}
 			} else {
 				e.recordAPISuccess(opp.LongExchange)
@@ -3388,10 +3608,15 @@ fillLoop:
 					} else {
 						rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
 						if rem > 0 {
-							e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", opp.Symbol, exchange.SideBuy, rem, shortExch.Name())
+							e.log.Error("ORPHAN EXPOSURE: %s rollback incomplete, %.6f still open on %s", opp.Symbol, rem, opp.ShortExchange)
+							e.telegram.Send("⚠️ ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.ShortExchange)
+							shortFilled = rem
+							longFilled = 0
+							abortFillLoop = true
+						} else {
+							longConsecFails++
+							continue
 						}
-						longConsecFails++
-						continue
 					}
 				}
 			}
@@ -3400,9 +3625,14 @@ fillLoop:
 				e.log.Info("depth tick: trimming short excess %.6f", excess)
 				rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, excess)
 				if rem > 0 {
-					e.log.Warn("trim incomplete: %s %s %.6f remaining on %s", opp.Symbol, exchange.SideBuy, rem, shortExch.Name())
+					e.log.Warn("trim incomplete: %s %.6f remaining on %s", opp.Symbol, rem, opp.ShortExchange)
+					e.telegram.Send("⚠️ TRIM INCOMPLETE: %s %.6f on %s", opp.Symbol, rem, opp.ShortExchange)
+					// shortFilled = matched portion + un-closable remainder
+					shortFilled = longFilled + rem
+					abortFillLoop = true
+				} else {
+					shortFilled = longFilled // only count matched portion
 				}
-				shortFilled = longFilled // only count matched portion
 			}
 		} else {
 			e.log.Info("depth tick: long-first %s size=%s bid=%.2f ask=%.2f spread=%.1fbps",
@@ -3435,6 +3665,20 @@ fillLoop:
 			if longCFErr != nil {
 				e.log.Error("depth tick: long fill state unknown for %s: %v — freezing tick", longOID, longCFErr)
 				_ = longExch.CancelOrder(opp.Symbol, longOID)
+				// Check if fill actually happened using existing helper
+				exchSize, exchErr := getExchangePositionSize(longExch, opp.Symbol, "long")
+				if exchErr == nil && exchSize > 0 {
+					e.log.Warn("first leg %s: confirmFill failed but exchange shows long position %.6f", opp.Symbol, exchSize)
+					// Update the EXISTING pending position (pos is already created and passed in)
+					_ = e.db.UpdatePositionFields(pos.ID, func(f *models.ArbitragePosition) bool {
+						f.Status = models.StatusPartial
+						f.FailureReason = "first_leg_fill_unknown"
+						f.LongSize = exchSize
+						f.ShortSize = confirmedShort
+						return true
+					})
+					return errPartialEntry
+				}
 				longConsecFails++
 				break // freeze depth loop — post-loop reconciliation handles
 			}
@@ -3471,10 +3715,17 @@ fillLoop:
 				} else {
 					rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
 					if rem > 0 {
-						e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", opp.Symbol, exchange.SideSell, rem, longExch.Name())
+						e.log.Error("ORPHAN EXPOSURE: %s rollback incomplete, %.6f still open on %s", opp.Symbol, rem, opp.LongExchange)
+						e.telegram.Send("⚠️ ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.LongExchange)
+						// Preserve surviving exposure so VWAP accumulation accounts for it.
+						// Do NOT overwrite longAvg — it holds the original fill price.
+						longFilled = rem
+						shortFilled = 0
+						abortFillLoop = true
+					} else {
+						shortConsecFails++
+						continue
 					}
-					shortConsecFails++
-					continue
 				}
 			} else {
 				e.recordAPISuccess(opp.ShortExchange)
@@ -3503,10 +3754,15 @@ fillLoop:
 					} else {
 						rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
 						if rem > 0 {
-							e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", opp.Symbol, exchange.SideSell, rem, longExch.Name())
+							e.log.Error("ORPHAN EXPOSURE: %s rollback incomplete, %.6f still open on %s", opp.Symbol, rem, opp.LongExchange)
+							e.telegram.Send("⚠️ ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.LongExchange)
+							longFilled = rem
+							shortFilled = 0
+							abortFillLoop = true
+						} else {
+							shortConsecFails++
+							continue
 						}
-						shortConsecFails++
-						continue
 					}
 				}
 			}
@@ -3515,9 +3771,14 @@ fillLoop:
 				e.log.Info("depth tick: trimming long excess %.6f", excess)
 				rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, excess)
 				if rem > 0 {
-					e.log.Warn("trim incomplete: %s %s %.6f remaining on %s", opp.Symbol, exchange.SideSell, rem, longExch.Name())
+					e.log.Warn("trim incomplete: %s %.6f remaining on %s", opp.Symbol, rem, opp.LongExchange)
+					e.telegram.Send("⚠️ TRIM INCOMPLETE: %s %.6f on %s", opp.Symbol, rem, opp.LongExchange)
+					// longFilled = matched portion + un-closable remainder
+					longFilled = shortFilled + rem
+					abortFillLoop = true
+				} else {
+					longFilled = shortFilled // only count matched portion
 				}
-				longFilled = shortFilled // only count matched portion
 			}
 		}
 
@@ -3545,6 +3806,10 @@ fillLoop:
 			confirmedShort += shortFilled
 		}
 
+		if abortFillLoop {
+			break fillLoop
+		}
+
 		minSoFar := math.Min(confirmedLong, confirmedShort)
 		e.log.Info("depth fill: %s cumulative long=%.6f short=%.6f (%.1f%% of target)",
 			opp.Symbol, confirmedLong, confirmedShort, minSoFar/targetSize*100)
@@ -3567,8 +3832,11 @@ fillLoop:
 	minFill := math.Min(confirmedLong, confirmedShort)
 	const minPositionUSDT = 10.0
 
-	if minFill*price < minPositionUSDT {
-		e.log.Warn("depth fill too small for %s (%.2f USDT), aborting", posID, minFill*price)
+	// Per-leg notional check: use each leg's VWAP fill price
+	longNotional := confirmedLong * longVWAP
+	shortNotional := confirmedShort * shortVWAP
+	if longNotional < minPositionUSDT || shortNotional < minPositionUSDT {
+		e.log.Warn("depth fill too small for %s (long=$%.2f short=$%.2f), aborting", posID, longNotional, shortNotional)
 		if confirmedLong > 0 {
 			rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, confirmedLong)
 			if rem > 0 {

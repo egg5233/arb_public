@@ -61,6 +61,16 @@ func (t *TelegramNotifier) send(text string) {
 	}
 }
 
+// Send delivers a formatted message via Telegram. Nil-receiver safe.
+// Used for ad-hoc alerts (orphan exposure, trim failures) that don't have
+// a dedicated Notify* method.
+func (t *TelegramNotifier) Send(format string, args ...interface{}) {
+	if t == nil {
+		return
+	}
+	go t.send(fmt.Sprintf(format, args...))
+}
+
 // NotifyAutoEntry sends an alert when a new spot-futures position is opened automatically.
 func (t *TelegramNotifier) NotifyAutoEntry(pos *models.SpotFuturesPosition, expectedYieldAPR float64) {
 	if t == nil {

@@ -37,7 +37,9 @@ type RiskApproval struct {
 	Reason         string  `json:"reason"`
 	Price          float64 `json:"price"`
 	GapBPS         float64 `json:"gap_bps"`         // cross-exchange price gap at approval time
-	RequiredMargin float64 `json:"required_margin"` // per-leg margin with safety buffer (for reservation)
+	RequiredMargin   float64 `json:"required_margin"`    // max(long,short) margin with safety buffer (for reservation)
+	LongMarginNeeded float64 `json:"long_margin_needed"` // per-leg margin needed on long exchange (with buffer)
+	ShortMarginNeeded float64 `json:"short_margin_needed"` // per-leg margin needed on short exchange (with buffer)
 }
 
 // RiskAlert represents an alert emitted by the risk monitor for dashboard
