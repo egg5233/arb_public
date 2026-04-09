@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.1] - 2026-04-09
+
+### Debug
+- **History/reconcile debug logging** — Added comprehensive debug logs to trace per-leg field writing through the entire flow: tryReconcilePnL aggregate values, needsBreakdownUpdate comparison, UpdatePositionFields mutator, GetPosition re-read, UpdateHistoryEntry, and AddToHistory. Also logs JSON content checks for `long_total_fees` and `has_reconciled` presence.
+
 ## [0.32.0] - 2026-04-09
 
 ### Fixed (Critical)

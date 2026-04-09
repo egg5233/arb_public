@@ -859,6 +859,9 @@ marketFallback:
 		pos.ShortSize = 0
 		pos.Status = models.StatusClosed
 
+		// DEBUG: per-leg fields at history add time
+		e.log.Debug("adding to history %s — per-leg fields: LongTotalFees=%.6f ShortTotalFees=%.6f LongFunding=%.6f ShortFunding=%.6f LongClosePnL=%.6f ShortClosePnL=%.6f HasReconciled=%v",
+			pos.ID, pos.LongTotalFees, pos.ShortTotalFees, pos.LongFunding, pos.ShortFunding, pos.LongClosePnL, pos.ShortClosePnL, pos.HasReconciled)
 		if err := e.db.AddToHistory(pos); err != nil {
 			e.log.Error("failed to add to history: %v", err)
 		}
@@ -927,6 +930,7 @@ marketFallback:
 // from real fill data. Runs async after position close. Updates the position
 // record and stats if different. Retries up to 3 times on failure.
 func (e *Engine) reconcilePnL(pos *models.ArbitragePosition) {
+	e.log.Debug("reconcilePnL starting for %s, sleeping 2s", pos.ID)
 	mu := e.acquirePnlLock(pos.ID)
 
 	// Wait 2s for exchange to finalize BEFORE acquiring lock to avoid blocking
@@ -934,7 +938,9 @@ func (e *Engine) reconcilePnL(pos *models.ArbitragePosition) {
 	time.Sleep(2 * time.Second)
 
 	mu.Lock()
-	if e.tryReconcilePnL(pos, 1) {
+	ok := e.tryReconcilePnL(pos, 1)
+	e.log.Debug("reconcilePnL %s: attempt 1 result=%v", pos.ID, ok)
+	if ok {
 		mu.Unlock()
 		e.pnlLocks.Delete(pos.ID) // cleanup per-position lock on success
 		return
@@ -948,6 +954,7 @@ func (e *Engine) reconcilePnL(pos *models.ArbitragePosition) {
 			time.Sleep(d)
 			mu.Lock()
 			ok := e.tryReconcilePnL(pos, i+2)
+			e.log.Debug("reconcilePnL %s: attempt %d result=%v", pos.ID, i+2, ok)
 			mu.Unlock()
 			if ok {
 				e.pnlLocks.Delete(pos.ID)
@@ -1000,6 +1007,12 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 	longAgg, longOK := aggregateClosePnLBySide(longPnLs, "long")
 	shortAgg, shortOK := aggregateClosePnLBySide(shortPnLs, "short")
 
+	// DEBUG: per-leg aggregation results
+	e.log.Debug("reconcile %s [attempt %d]: longAgg  Fees=%.6f Funding=%.6f PricePnL=%.6f NetPnL=%.6f (ok=%v)",
+		pos.ID, attempt, longAgg.Fees, longAgg.Funding, longAgg.PricePnL, longAgg.NetPnL, longOK)
+	e.log.Debug("reconcile %s [attempt %d]: shortAgg Fees=%.6f Funding=%.6f PricePnL=%.6f NetPnL=%.6f (ok=%v)",
+		pos.ID, attempt, shortAgg.Fees, shortAgg.Funding, shortAgg.PricePnL, shortAgg.NetPnL, shortOK)
+
 	if !longOK || !shortOK {
 		e.log.Warn("reconcile %s [attempt %d]: missing close PnL record (long=%v short=%v, longRecords=%d shortRecords=%d)",
 			pos.ID, attempt, longOK, shortOK, len(longPnLs), len(shortPnLs))
@@ -1011,6 +1024,12 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 	// PnL proportionally by each position's size.
 	longAgg = e.splitSharedPnL(longAgg, pos, "long")
 	shortAgg = e.splitSharedPnL(shortAgg, pos, "short")
+
+	// DEBUG: after splitSharedPnL
+	e.log.Debug("reconcile %s [attempt %d]: after split — longAgg Fees=%.6f Funding=%.6f PricePnL=%.6f NetPnL=%.6f",
+		pos.ID, attempt, longAgg.Fees, longAgg.Funding, longAgg.PricePnL, longAgg.NetPnL)
+	e.log.Debug("reconcile %s [attempt %d]: after split — shortAgg Fees=%.6f Funding=%.6f PricePnL=%.6f NetPnL=%.6f",
+		pos.ID, attempt, shortAgg.Fees, shortAgg.Funding, shortAgg.PricePnL, shortAgg.NetPnL)
 
 	// Calculate reconciled PnL from exchange-reported figures.
 	reconciledPnL := longAgg.NetPnL + shortAgg.NetPnL + pos.RotationPnL
@@ -1055,6 +1074,16 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 		pos.LongClosePnL != longAgg.PricePnL ||
 		pos.ShortClosePnL != shortAgg.PricePnL
 
+	// DEBUG: breakdown comparison details
+	e.log.Debug("reconcile %s [attempt %d]: breakdown compare — pos.LongTotalFees=%.6f vs longAgg.Fees=%.6f, pos.ShortTotalFees=%.6f vs shortAgg.Fees=%.6f",
+		pos.ID, attempt, pos.LongTotalFees, longAgg.Fees, pos.ShortTotalFees, shortAgg.Fees)
+	e.log.Debug("reconcile %s [attempt %d]: breakdown compare — pos.LongFunding=%.6f vs longAgg.Funding=%.6f, pos.ShortFunding=%.6f vs shortAgg.Funding=%.6f",
+		pos.ID, attempt, pos.LongFunding, longAgg.Funding, pos.ShortFunding, shortAgg.Funding)
+	e.log.Debug("reconcile %s [attempt %d]: breakdown compare — pos.LongClosePnL=%.6f vs longAgg.PricePnL=%.6f, pos.ShortClosePnL=%.6f vs shortAgg.PricePnL=%.6f",
+		pos.ID, attempt, pos.LongClosePnL, longAgg.PricePnL, pos.ShortClosePnL, shortAgg.PricePnL)
+	e.log.Debug("reconcile %s [attempt %d]: needsPnLUpdate=%v needsFundingUpdate=%v needsExitUpdate=%v needsBreakdownUpdate=%v",
+		pos.ID, attempt, needsPnLUpdate, needsFundingUpdate, needsExitUpdate, needsBreakdownUpdate)
+
 	if !needsPnLUpdate && !needsFundingUpdate && !needsExitUpdate && !needsBreakdownUpdate {
 		// Even when numbers didn't change, mark reconciliation as done so
 		// analytics can trust this position's PnL figures.
@@ -1083,6 +1112,9 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 		}
 		// Per-leg breakdown + decomposition: populate whenever PnL, funding, or breakdown needs update.
 		if needsBreakdownUpdate || needsPnLUpdate || needsFundingUpdate {
+			// DEBUG: writing per-leg fields into position
+			e.log.Debug("reconcile %s [attempt %d]: WRITING per-leg fields — LongTotalFees=%.6f ShortTotalFees=%.6f LongFunding=%.6f ShortFunding=%.6f LongClosePnL=%.6f ShortClosePnL=%.6f",
+				pos.ID, attempt, longAgg.Fees, shortAgg.Fees, longAgg.Funding, shortAgg.Funding, longAgg.PricePnL, shortAgg.PricePnL)
 			fresh.ExitFees = totalFees
 			// BasisGainLoss = current-leg price movement only (no fees, no funding).
 			// RotationPnL is NOT subtracted: it's NetPnL (includes rotation fees+funding),
@@ -1108,6 +1140,7 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 		e.log.Error("reconcile %s: failed to update position: %v", pos.ID, err)
 		return true // don't retry DB errors
 	}
+	e.log.Debug("reconcile %s [attempt %d]: UpdatePositionFields succeeded", pos.ID, attempt)
 
 	if needsPnLUpdate {
 		// Adjust total_pnl only — do NOT call UpdateStats which increments trade/win/loss counts.
@@ -1136,11 +1169,20 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 
 	// Update the history entry so the dashboard shows corrected PnL / per-leg breakdown.
 	if needsPnLUpdate || needsFundingUpdate || needsExitUpdate || needsBreakdownUpdate {
+		e.log.Debug("reconcile %s [attempt %d]: re-reading position for history update", pos.ID, attempt)
 		updated, err := e.db.GetPosition(pos.ID)
 		if err == nil && updated != nil {
+			e.log.Debug("reconcile %s [attempt %d]: re-read position — LongTotalFees=%.6f ShortTotalFees=%.6f LongFunding=%.6f ShortFunding=%.6f LongClosePnL=%.6f ShortClosePnL=%.6f HasReconciled=%v",
+				pos.ID, attempt, updated.LongTotalFees, updated.ShortTotalFees, updated.LongFunding, updated.ShortFunding, updated.LongClosePnL, updated.ShortClosePnL, updated.HasReconciled)
+			e.log.Debug("reconcile %s [attempt %d]: updating history entry with per-leg fields present: LongTotalFees=%.6f HasReconciled=%v",
+				pos.ID, attempt, updated.LongTotalFees, updated.HasReconciled)
 			if err := e.db.UpdateHistoryEntry(updated); err != nil {
 				e.log.Error("reconcile %s: failed to update history: %v", pos.ID, err)
+			} else {
+				e.log.Debug("reconcile %s [attempt %d]: UpdateHistoryEntry succeeded", pos.ID, attempt)
 			}
+		} else {
+			e.log.Debug("reconcile %s [attempt %d]: re-read position failed or nil: err=%v", pos.ID, attempt, err)
 		}
 	}
 

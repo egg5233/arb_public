@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strconv"
+	"strings"
 	"time"
 
 	"arb/internal/models"
@@ -240,6 +242,13 @@ func (c *Client) AddToHistory(pos *models.ArbitragePosition) error {
 		return fmt.Errorf("marshal position: %w", err)
 	}
 
+	// DEBUG: check if per-leg fields survive marshalling
+	jsonStr := string(data)
+	hasLongFees := strings.Contains(jsonStr, "long_total_fees")
+	hasReconciled := strings.Contains(jsonStr, "has_reconciled")
+	log.Printf("[DEBUG] AddToHistory %s: json len=%d has_long_total_fees=%v has_reconciled=%v",
+		pos.ID, len(data), hasLongFees, hasReconciled)
+
 	pipe := c.rdb.Pipeline()
 	pipe.LPush(ctx, keyHistory, data)
 	pipe.LTrim(ctx, keyHistory, 0, historyMaxLen-1)
@@ -257,22 +266,33 @@ func (c *Client) UpdateHistoryEntry(pos *models.ArbitragePosition) error {
 		return fmt.Errorf("read history: %w", err)
 	}
 
+	log.Printf("[DEBUG] UpdateHistoryEntry called for %s, scanning %d history entries", pos.ID, len(vals))
+
 	for i, v := range vals {
 		var entry models.ArbitragePosition
 		if err := json.Unmarshal([]byte(v), &entry); err != nil {
 			continue
 		}
 		if entry.ID == pos.ID {
+			log.Printf("[DEBUG] UpdateHistoryEntry: found matching history entry at index %d", i)
 			data, err := json.Marshal(pos)
 			if err != nil {
 				return fmt.Errorf("marshal position: %w", err)
 			}
+			// DEBUG: check if per-leg fields are in the marshaled JSON
+			jsonStr := string(data)
+			hasLongFees := strings.Contains(jsonStr, "long_total_fees")
+			hasReconciled := strings.Contains(jsonStr, "has_reconciled")
+			log.Printf("[DEBUG] UpdateHistoryEntry %s: json len=%d has_long_total_fees=%v has_reconciled=%v",
+				pos.ID, len(data), hasLongFees, hasReconciled)
 			if err := c.rdb.LSet(ctx, keyHistory, int64(i), data).Err(); err != nil {
 				return fmt.Errorf("update history[%d]: %w", i, err)
 			}
+			log.Printf("[DEBUG] UpdateHistoryEntry %s: LSet succeeded at index %d", pos.ID, i)
 			return nil
 		}
 	}
+	log.Printf("[DEBUG] UpdateHistoryEntry %s: position not found in history list (scanned %d entries)", pos.ID, len(vals))
 	return nil // not found — may have been trimmed
 }
 
