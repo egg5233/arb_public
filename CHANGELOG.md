@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.3] - 2026-04-09
+
+### Fixed
+- **Gate.io unified balance double-count** — GetSpotBalance for unified accounts returned overlapping value from /spot/accounts (same money as /unified/accounts). Now returns zero for unified mode. Cross-exchange withdrawal donor and deposit polling use GetFuturesBalance for unified accounts.
+- **Exit check at :40 removed** — v0.32.0 added exit checks in EntryScan handler, which defeated SpreadReversalTolerance=1 (tolerance requires full scan cycles, not 10-min gaps). Exits now only run at :30 as designed.
+
+## [0.32.3] - 2026-04-09
+
+### Fixed
+- **Gate.io unified balance double-count** — GetSpotBalance for unified accounts returned overlapping value from /spot/accounts (same money as /unified/accounts). Now returns zero for unified mode. Cross-exchange withdrawal donor and deposit polling use GetFuturesBalance for unified accounts.
+- **Exit check at :40 removed** — v0.32.0 added exit checks in EntryScan handler, which defeated SpreadReversalTolerance=1 (tolerance requires full scan cycles, not 10-min gaps). Exits now only run at :30 as designed.
+
 ## [0.32.1] - 2026-04-09
 
 ### Debug

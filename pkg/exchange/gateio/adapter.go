@@ -860,6 +860,12 @@ func (a *Adapter) getClassicFuturesBalance() (*exchange.Balance, error) {
 }
 
 func (a *Adapter) GetSpotBalance() (*exchange.Balance, error) {
+	// Unified account: spot and futures share the same margin pool.
+	// GetFuturesBalance() already returns the full available_margin via /unified/accounts.
+	// Returning /spot/accounts here would double-count (same money reported twice).
+	if a.isUnified {
+		return &exchange.Balance{Currency: "USDT"}, nil
+	}
 	data, err := a.client.Get("/spot/accounts", nil)
 	if err != nil {
 		return nil, fmt.Errorf("GetSpotBalance: %w", err)

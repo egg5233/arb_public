@@ -1166,10 +1166,6 @@ func (e *Engine) run() {
 				e.prewarmDepthForEntry(result.Opps)
 				e.log.Info("run loop: rotateScan handler done")
 			case discovery.EntryScan:
-				// Run exit checks at :40 too — reduces exit detection latency by 10 min.
-				e.checkIntervalChanges()
-				e.checkExitsV2()
-
 				// Update performance-weighted allocation before entry decisions (CA-03/CA-04).
 				e.updateAllocation()
 
@@ -1780,6 +1776,8 @@ func (e *Engine) handleOrphanClose(action risk.HealthAction) {
 		pos.Status = models.StatusClosed
 		pos.ExitReason = reason
 
+		e.log.Info("[reconcile-debug] AddToHistory %s: LongTotalFees=%.6f ShortTotalFees=%.6f LongFunding=%.6f ShortFunding=%.6f LongClosePnL=%.6f ShortClosePnL=%.6f HasReconciled=%v",
+			pos.ID, pos.LongTotalFees, pos.ShortTotalFees, pos.LongFunding, pos.ShortFunding, pos.LongClosePnL, pos.ShortClosePnL, pos.HasReconciled)
 		if err := e.db.AddToHistory(pos); err != nil {
 			e.log.Error("[orphan-cleanup] failed to add %s to history: %v", pos.ID, err)
 		}
@@ -2564,6 +2562,8 @@ func (e *Engine) cleanupFailedPosition(symbol string, reason string) {
 		pos.ExitReason = "entry_failed: " + reason
 		pos.UpdatedAt = time.Now().UTC()
 		// Persist to history before saving state so the record is not lost.
+		e.log.Info("[reconcile-debug] AddToHistory %s: LongTotalFees=%.6f ShortTotalFees=%.6f LongFunding=%.6f ShortFunding=%.6f LongClosePnL=%.6f ShortClosePnL=%.6f HasReconciled=%v",
+			pos.ID, pos.LongTotalFees, pos.ShortTotalFees, pos.LongFunding, pos.ShortFunding, pos.LongClosePnL, pos.ShortClosePnL, pos.HasReconciled)
 		if err := e.db.AddToHistory(pos); err != nil {
 			e.log.Error("cleanupFailedPosition: AddToHistory failed for %s: %v", pos.ID, err)
 		}
@@ -3226,6 +3226,8 @@ func (e *Engine) executeTradeV2WithPos(opp models.Opportunity, pos *models.Arbit
 		pos.FailureStage = "depth_subscribe"
 		pos.ExitReason = "entry_failed: " + reason
 		pos.UpdatedAt = time.Now().UTC()
+		e.log.Info("[reconcile-debug] AddToHistory %s: LongTotalFees=%.6f ShortTotalFees=%.6f LongFunding=%.6f ShortFunding=%.6f LongClosePnL=%.6f ShortClosePnL=%.6f HasReconciled=%v",
+			pos.ID, pos.LongTotalFees, pos.ShortTotalFees, pos.LongFunding, pos.ShortFunding, pos.LongClosePnL, pos.ShortClosePnL, pos.HasReconciled)
 		_ = e.db.AddToHistory(pos)
 		_ = e.db.SavePosition(pos)
 		return fmt.Errorf("%s", reason)
@@ -3855,6 +3857,8 @@ fillLoop:
 		pos.FailureStage = "depth_fill"
 		pos.ExitReason = "entry_failed: " + reason
 		pos.UpdatedAt = time.Now().UTC()
+		e.log.Info("[reconcile-debug] AddToHistory %s: LongTotalFees=%.6f ShortTotalFees=%.6f LongFunding=%.6f ShortFunding=%.6f LongClosePnL=%.6f ShortClosePnL=%.6f HasReconciled=%v",
+			pos.ID, pos.LongTotalFees, pos.ShortTotalFees, pos.LongFunding, pos.ShortFunding, pos.LongClosePnL, pos.ShortClosePnL, pos.HasReconciled)
 		_ = e.db.AddToHistory(pos)
 		_ = e.db.SavePosition(pos)
 		return fmt.Errorf("%s", reason)
@@ -3899,6 +3903,8 @@ fillLoop:
 		pos.ExitReason = "entry_failed: DB unreachable, rolled back to flat"
 		pos.UpdatedAt = time.Now().UTC()
 		_ = e.db.SavePosition(pos)
+		e.log.Info("[reconcile-debug] AddToHistory %s: LongTotalFees=%.6f ShortTotalFees=%.6f LongFunding=%.6f ShortFunding=%.6f LongClosePnL=%.6f ShortClosePnL=%.6f HasReconciled=%v",
+			pos.ID, pos.LongTotalFees, pos.ShortTotalFees, pos.LongFunding, pos.ShortFunding, pos.LongClosePnL, pos.ShortClosePnL, pos.HasReconciled)
 		_ = e.db.AddToHistory(pos)
 		e.api.BroadcastPositionUpdate(pos)
 		return fmt.Errorf("checkpoint save failed, rolled back to flat: %w", ckErr)

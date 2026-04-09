@@ -1701,9 +1701,17 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				movedToSpot = moveAmt
 			}
 
-			donorSpotBal, err := e.exchanges[bestDonor].GetSpotBalance()
-			if err != nil {
-				e.log.Error("rebalance: %s get spot balance failed: %v", bestDonor, err)
+			// Unified accounts: spot balance is 0 (same pool as futures).
+			// Use GetFuturesBalance to get the real withdrawable amount.
+			var donorSpotBal *exchange.Balance
+			var donorBalErr error
+			if uc, ok := e.exchanges[bestDonor].(interface{ IsUnified() bool }); ok && uc.IsUnified() {
+				donorSpotBal, donorBalErr = e.exchanges[bestDonor].GetFuturesBalance()
+			} else {
+				donorSpotBal, donorBalErr = e.exchanges[bestDonor].GetSpotBalance()
+			}
+			if donorBalErr != nil {
+				e.log.Error("rebalance: %s get spot balance failed: %v", bestDonor, donorBalErr)
 				surplus[bestDonor] = 0
 				continue
 			}
@@ -1776,7 +1784,17 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 			e.recordTransfer(bestDonor, exchName, "USDT", chain, amtStr, result.Fee, result.TxID, "completed", "rebalance")
 
 			if _, exists := pendingStartBal[exchName]; !exists {
-				pendingStartBal[exchName] = balances[exchName].spot
+				// Unified accounts: use futures balance as baseline (deposits land in unified pool).
+				if uc, ok := e.exchanges[exchName].(interface{ IsUnified() bool }); ok && uc.IsUnified() {
+					if fb, err := e.exchanges[exchName].GetFuturesBalance(); err == nil {
+						pendingStartBal[exchName] = fb.Available
+					} else {
+						e.log.Warn("rebalance: %s unified GetFuturesBalance for deposit baseline failed: %v, using spot fallback", exchName, err)
+						pendingStartBal[exchName] = balances[exchName].spot
+					}
+				} else {
+					pendingStartBal[exchName] = balances[exchName].spot
+				}
 			}
 			pendingDeposits[exchName] += recipientReceives
 			surplus[bestDonor] -= netAmount + fee
@@ -1802,13 +1820,20 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 		pollDeadline := time.Now().Add(5 * time.Minute)
 		for time.Now().Before(pollDeadline) {
 			time.Sleep(5 * time.Second)
-			spotBal, err := recipientExch.GetSpotBalance()
-			if err != nil {
+			// Unified accounts: deposits land in unified pool, poll via GetFuturesBalance.
+			var spotBal *exchange.Balance
+			var pollErr error
+			if uc, ok := recipientExch.(interface{ IsUnified() bool }); ok && uc.IsUnified() {
+				spotBal, pollErr = recipientExch.GetFuturesBalance()
+			} else {
+				spotBal, pollErr = recipientExch.GetSpotBalance()
+			}
+			if pollErr != nil {
 				continue
 			}
 			if spotBal.Available >= startBal+totalPending*0.9 {
 				arrived = true
-				e.log.Info("rebalance: all deposits confirmed on %s (spot=%.2f)", recipient, spotBal.Available)
+				e.log.Info("rebalance: all deposits confirmed on %s (bal=%.2f)", recipient, spotBal.Available)
 				break
 			}
 		}

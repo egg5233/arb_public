@@ -596,6 +596,8 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 	if err := e.db.SavePosition(pos); err != nil {
 		e.log.Error("consolidate: failed to close %s: %v", pos.ID, err)
 	}
+	e.log.Info("[reconcile-debug] AddToHistory %s: LongTotalFees=%.6f ShortTotalFees=%.6f LongFunding=%.6f ShortFunding=%.6f LongClosePnL=%.6f ShortClosePnL=%.6f HasReconciled=%v",
+		pos.ID, pos.LongTotalFees, pos.ShortTotalFees, pos.LongFunding, pos.ShortFunding, pos.LongClosePnL, pos.ShortClosePnL, pos.HasReconciled)
 	if err := e.db.AddToHistory(pos); err != nil {
 		e.log.Error("consolidate: failed to add %s to history: %v", pos.ID, err)
 	}
@@ -836,6 +838,8 @@ func (e *Engine) markPartialClosed(pos *models.ArbitragePosition, reason, exitRe
 	pos.ExitReason = exitReason
 	pos.UpdatedAt = time.Now().UTC()
 	_ = e.db.SavePosition(pos)
+	e.log.Info("[reconcile-debug] AddToHistory %s: LongTotalFees=%.6f ShortTotalFees=%.6f LongFunding=%.6f ShortFunding=%.6f LongClosePnL=%.6f ShortClosePnL=%.6f HasReconciled=%v",
+		pos.ID, pos.LongTotalFees, pos.ShortTotalFees, pos.LongFunding, pos.ShortFunding, pos.LongClosePnL, pos.ShortClosePnL, pos.HasReconciled)
 	_ = e.db.AddToHistory(pos)
 	e.releasePerpPosition(pos.ID)
 	e.api.BroadcastPositionUpdate(pos)
