@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.5] - 2026-04-10
+
+### Fixed
+- **Allocator appendChoice missing backtest validation** — Alternative exchange pairs were accepted without running CheckPairFilters (backtest/persistence/volatility). Could select unprofitable pairs, plan useless cross-exchange transfers. Now validates alt pairs before adding to candidates.
+- **Tier-3 entry blocked by stale overrides** — When allocator overrides failed at entry, tier-3 fallback was blocked ("avoid unfunded entries"). Profitable opps like ARIAUSDT/SIRENUSDT were skipped. Now falls through to tier-3; risk.Approve still gates margins.
+- **Rotation missing pair filter validation** — checkRotations could rotate into pairs that fail backtest/persistence. Now calls CheckPairFilters on rotation target before rotateLeg.
+
 ## [0.32.4] - 2026-04-09
 
 ### Fixed

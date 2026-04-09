@@ -2144,6 +2144,22 @@ func (e *Engine) checkRotations() {
 
 		_ = bestSharedLeg // used for classification, logged via legSide
 
+		// Validate rotation target passes pair-level filters (backtest, persistence, volatility).
+		rotOpp := models.Opportunity{
+			Symbol:        pos.Symbol,
+			LongExchange:  bestOpp.LongExchange,
+			ShortExchange: bestOpp.ShortExchange,
+			Spread:        bestOpp.Spread,
+			IntervalHours: bestOpp.IntervalHours,
+			NextFunding:   bestOpp.NextFunding,
+			OIRank:        bestOpp.OIRank,
+		}
+		if reason := e.discovery.CheckPairFilters(rotOpp); reason != "" {
+			e.log.Info("rotation: %s target %s/%s rejected by pair filter: %s",
+				pos.Symbol, bestOpp.LongExchange, bestOpp.ShortExchange, reason)
+			continue
+		}
+
 		e.log.Info("rotation triggered for %s: %s leg %s → %s (current=%.1f opp=%.1f improvement=%.1f bps/h)",
 			pos.ID, bestLegSide, bestOldExch, bestNewExch, currentSpread, bestOpp.Spread, bestImprovement)
 

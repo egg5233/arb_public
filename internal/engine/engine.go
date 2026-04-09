@@ -1206,9 +1206,11 @@ func (e *Engine) run() {
 							e.log.Info("entry: %s using %d opps", tier, len(patched))
 							entryOpps = patched
 						} else if hadOverrides {
-							// Allocator ran but all overrides stale — block tier-3 fallback
-							tier = "blocked-stale-overrides"
-							e.log.Warn("entry: allocator ran but overrides stale, skipping tier-3 to avoid unfunded entries")
+							// Allocator ran but all overrides stale — don't block tier-3.
+							// Stale overrides only mean the allocator's specific pair choices
+							// failed, not that all exchanges lack funds. Tier-3 will
+							// re-evaluate with current balances via risk.Approve.
+							e.log.Warn("entry: allocator overrides all stale, falling through to tier-3")
 						}
 					}
 

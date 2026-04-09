@@ -344,6 +344,24 @@ func (e *Engine) buildAllocatorCandidates(opps []models.Opportunity, cache *risk
 				}
 				return
 			}
+			// Run pair-keyed filters (backtest, persistence, volatility) on alternative pairs.
+			// Discovery already filtered the original pair, but alternatives bypass that check.
+			if alt != nil {
+				altOpp := models.Opportunity{
+					Symbol:        opp.Symbol,
+					LongExchange:  longExch,
+					ShortExchange: shortExch,
+					Spread:        spread,
+					IntervalHours: intervalHours,
+					NextFunding:   alt.NextFunding,
+					OIRank:        opp.OIRank,
+				}
+				if reason := e.discovery.CheckPairFilters(altOpp); reason != "" {
+					e.log.Debug("allocator: appendChoice rejected %s %s/%s: %s", opp.Symbol, longExch, shortExch, reason)
+					return
+				}
+			}
+
 			entryNotional := approval.Size * approval.Price
 			requiredMargin := approval.RequiredMargin
 			if requiredMargin <= 0 {
