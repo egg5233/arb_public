@@ -908,12 +908,8 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 						maxMove = donorBal.futures
 					}
 					maxMove -= needs[bestDonor]
-					// Apply 0.99 cap only on maxTransferOut (executor does fresh cap at allocator.go:1392)
-					if donorBal.maxTransferOut > 0 {
-						freshCap := donorBal.maxTransferOut * 0.99
-						if maxMove > freshCap {
-							maxMove = freshCap
-						}
+					if donorBal.maxTransferOut > 0 && maxMove > donorBal.maxTransferOut {
+						maxMove = donorBal.maxTransferOut
 					}
 					healthCap := e.capByMarginHealth(donorBal) - needs[bestDonor]
 					if healthCap < maxMove {
@@ -1418,10 +1414,9 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 					continue
 				}
 				if freshBal, err := e.exchanges[bestDonor].GetFuturesBalance(); err == nil && freshBal.MaxTransferOut > 0 {
-					cap := freshBal.MaxTransferOut * 0.99
-					if moveAmt > cap {
-						e.log.Info("rebalance: %s capping moveAmt %.4f to fresh maxTransferOut %.4f (99%%)", bestDonor, moveAmt, cap)
-						moveAmt = cap
+					if moveAmt > freshBal.MaxTransferOut {
+						e.log.Info("rebalance: %s capping moveAmt %.4f to fresh maxTransferOut %.4f", bestDonor, moveAmt, freshBal.MaxTransferOut)
+						moveAmt = freshBal.MaxTransferOut
 					}
 				}
 				if moveAmt <= 0 {
