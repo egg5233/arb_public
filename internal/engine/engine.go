@@ -644,8 +644,8 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			e.log.Info("rebalance: complete")
 			return
 		} else {
-			e.log.Warn("rebalance: pool allocator infeasible, skipping rebalance")
-			return
+			e.log.Warn("rebalance: pool allocator infeasible, falling through to sequential")
+			// Fall through to sequential path below
 		}
 	}
 
@@ -719,7 +719,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 					if donorName == legExch {
 						continue
 					}
-					if balances[donorName].marginRatio >= e.cfg.MarginL3Threshold {
+					if balances[donorName].marginRatio >= e.cfg.MarginL4Threshold {
 						continue
 					}
 					donorSurplus := donorBal.futures + donorBal.spot - reserved[donorName] - plannedTransfers[donorName+"_out"]
@@ -730,9 +730,9 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 						donorSurplus = donorBal.futures - reserved[donorName] - plannedTransfers[donorName+"_out"]
 					}
 					// Cap donor surplus by margin health to prevent draining exchanges with active positions.
-					if balances[donorName].hasPositions && balances[donorName].marginRatio > 0 && balances[donorName].futuresTotal > 0 && e.cfg.MarginL3Threshold > 0 {
+					if balances[donorName].hasPositions && balances[donorName].marginRatio > 0 && balances[donorName].futuresTotal > 0 && e.cfg.MarginL4Threshold > 0 {
 						maint := balances[donorName].marginRatio * balances[donorName].futuresTotal
-						healthCap := balances[donorName].futuresTotal - maint/e.cfg.MarginL3Threshold
+						healthCap := balances[donorName].futuresTotal - maint/e.cfg.MarginL4Threshold
 						if healthCap < donorSurplus {
 							donorSurplus = healthCap
 						}
@@ -807,13 +807,13 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 					} else if uc, ok := e.exchanges[donorName].(unifiedChecker); ok && uc.IsUnified() {
 						donorSurplus = donorBal.futures - reserved[donorName] - plannedTransfers[donorName+"_out"]
 					}
-					if balances[donorName].marginRatio >= e.cfg.MarginL3Threshold {
+					if balances[donorName].marginRatio >= e.cfg.MarginL4Threshold {
 						continue
 					}
 					// Cap donor surplus by margin health to prevent draining exchanges with active positions.
-					if balances[donorName].hasPositions && balances[donorName].marginRatio > 0 && balances[donorName].futuresTotal > 0 && e.cfg.MarginL3Threshold > 0 {
+					if balances[donorName].hasPositions && balances[donorName].marginRatio > 0 && balances[donorName].futuresTotal > 0 && e.cfg.MarginL4Threshold > 0 {
 						maint := balances[donorName].marginRatio * balances[donorName].futuresTotal
-						healthCap := balances[donorName].futuresTotal - maint/e.cfg.MarginL3Threshold
+						healthCap := balances[donorName].futuresTotal - maint/e.cfg.MarginL4Threshold
 						if healthCap < donorSurplus {
 							donorSurplus = healthCap
 						}

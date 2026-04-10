@@ -166,7 +166,7 @@ After sizing: round to contract step size, enforce min size, enforce 10 USDT min
 **Pre-Execution Fund Rebalancing**: On the rebalance scan (code default :10, production :20), `rebalanceFunds()` analyzes capital needs across all discovered opportunities and ensures each exchange has sufficient margin:
 1. Same-exchange spot→futures transfers (instant, free)
 2. Cross-exchange withdrawals via APT (preferred) or BEP20 for remaining deficits
-3. Only withdraws from L0/L1/L2 exchanges (margin ratio below L3 threshold)
+3. Only withdraws from exchanges with margin ratio below L4 threshold (allows L3 donors)
 4. Needs capped to `max_positions × capital_per_leg` to avoid over-allocation
 
 **Stop-Loss Protection**: After position activation, protective stop-loss orders are placed on both legs. SL distance = `90% / leverage` (e.g. 3x→30%). Lifecycle:
