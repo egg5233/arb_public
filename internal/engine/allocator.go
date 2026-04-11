@@ -1251,6 +1251,17 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 
 	pendingDeposits := map[string]float64{}
 	pendingStartBal := map[string]float64{}
+
+	// Batch withdrawals: accumulate per donor→recipient, execute after loop.
+	type batchedWd struct {
+		donor, recipient string
+		chain, destAddr  string
+		netTotal         float64
+		fee              float64
+		isGross          bool
+		movedToSpot      float64
+	}
+	batchedWds := map[string]*batchedWd{}
 	for i := range crossDeficits {
 		remaining := crossDeficits[i].amount
 		exchName := crossDeficits[i].exchange
@@ -1487,50 +1498,21 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				surplus[bestDonor] = 0
 				continue
 			}
-			amtStr := fmt.Sprintf("%.4f", withdrawAmtForAPI)
-			result, err := e.exchanges[bestDonor].Withdraw(exchange.WithdrawParams{
-				Coin:    "USDT",
-				Chain:   chain,
-				Address: destAddr,
-				Amount:  amtStr,
-			})
-			if err != nil {
-				e.log.Error("rebalance: withdraw from %s failed: %v", bestDonor, err)
-				if movedToSpot > 0 {
-					rollbackStr := fmt.Sprintf("%.4f", movedToSpot)
-					e.log.Info("rebalance: rollback %s spot->futures %s USDT", bestDonor, rollbackStr)
-					if bestDonor == "bingx" {
-						time.Sleep(2 * time.Second)
-					}
-					if rbErr := e.exchanges[bestDonor].TransferToFutures("USDT", rollbackStr); rbErr != nil {
-						e.log.Error("rebalance: rollback failed: %v", rbErr)
-					}
-				}
-				surplus[bestDonor] = 0
-				continue
-			}
-
-			recipientReceives := netAmount
-			if isGross {
-				recipientReceives = withdrawAmtForAPI - fee
-			}
-			e.log.Info("rebalance: withdraw from %s txid=%s (apiAmt=%.2f, recipient=%.2f, fee=%.4f, gross=%v) -> %s", bestDonor, result.TxID, withdrawAmtForAPI, recipientReceives, fee, isGross, exchName)
-			e.recordTransfer(bestDonor, exchName, "USDT", chain, amtStr, result.Fee, result.TxID, "completed", "rebalance")
-
-			if _, exists := pendingStartBal[exchName]; !exists {
-				// Unified accounts: use futures balance as baseline (deposits land in unified pool).
-				if uc, ok := e.exchanges[exchName].(interface{ IsUnified() bool }); ok && uc.IsUnified() {
-					if fb, err := e.exchanges[exchName].GetFuturesBalance(); err == nil {
-						pendingStartBal[exchName] = fb.Available
-					} else {
-						e.log.Warn("rebalance: %s unified GetFuturesBalance for deposit baseline failed: %v, using spot fallback", exchName, err)
-						pendingStartBal[exchName] = balances[exchName].spot
-					}
-				} else {
-					pendingStartBal[exchName] = balances[exchName].spot
+			// Accumulate into batch instead of immediate withdraw.
+			wdKey := bestDonor + "->" + exchName
+			if bw, ok := batchedWds[wdKey]; ok {
+				bw.netTotal += netAmount
+				bw.movedToSpot += movedToSpot
+			} else {
+				batchedWds[wdKey] = &batchedWd{
+					donor: bestDonor, recipient: exchName,
+					chain: chain, destAddr: destAddr,
+					netTotal: netAmount, fee: fee,
+					isGross: isGross, movedToSpot: movedToSpot,
 				}
 			}
-			pendingDeposits[exchName] += recipientReceives
+
+			// Keep surplus/balance updates for correct donor selection in subsequent iterations.
 			surplus[bestDonor] -= netAmount + fee
 			bi := balances[bestDonor]
 			bi.futures -= movedToSpot
@@ -1539,8 +1521,68 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				bi.spot = 0
 			}
 			balances[bestDonor] = bi
-			remaining -= recipientReceives
+			remaining -= netAmount
 		}
+	}
+
+	// Execute batched withdrawals in deterministic order.
+	batchKeys := make([]string, 0, len(batchedWds))
+	for k := range batchedWds {
+		batchKeys = append(batchKeys, k)
+	}
+	sort.Strings(batchKeys)
+	for _, bk := range batchKeys {
+		bw := batchedWds[bk]
+		withdrawAmtForAPI := bw.netTotal
+		if bw.isGross {
+			withdrawAmtForAPI = bw.netTotal + bw.fee
+		}
+		amtStr := fmt.Sprintf("%.4f", withdrawAmtForAPI)
+		e.log.Info("rebalance: batched withdraw %s->%s net=%.2f fee=%.4f amount=%.2f via %s",
+			bw.donor, bw.recipient, bw.netTotal, bw.fee, withdrawAmtForAPI, bw.chain)
+
+		result, err := e.exchanges[bw.donor].Withdraw(exchange.WithdrawParams{
+			Coin:    "USDT",
+			Chain:   bw.chain,
+			Address: bw.destAddr,
+			Amount:  amtStr,
+		})
+		if err != nil {
+			e.log.Error("rebalance: batched withdraw from %s failed: %v", bw.donor, err)
+			if bw.movedToSpot > 0 {
+				rollbackStr := fmt.Sprintf("%.4f", bw.movedToSpot)
+				e.log.Info("rebalance: rollback %s spot->futures %s USDT", bw.donor, rollbackStr)
+				if bw.donor == "bingx" {
+					time.Sleep(2 * time.Second)
+				}
+				if rbErr := e.exchanges[bw.donor].TransferToFutures("USDT", rollbackStr); rbErr != nil {
+					e.log.Error("rebalance: rollback failed: %v", rbErr)
+				}
+			}
+			continue
+		}
+
+		recipientReceives := bw.netTotal
+		if bw.isGross {
+			recipientReceives = withdrawAmtForAPI - bw.fee
+		}
+		e.log.Info("rebalance: withdraw from %s txid=%s (apiAmt=%.2f, recipient=%.2f, fee=%.4f, gross=%v) -> %s",
+			bw.donor, result.TxID, withdrawAmtForAPI, recipientReceives, bw.fee, bw.isGross, bw.recipient)
+		e.recordTransfer(bw.donor, bw.recipient, "USDT", bw.chain, amtStr, result.Fee, result.TxID, "completed", "rebalance")
+
+		if _, exists := pendingStartBal[bw.recipient]; !exists {
+			if uc, ok := e.exchanges[bw.recipient].(interface{ IsUnified() bool }); ok && uc.IsUnified() {
+				if fb, err := e.exchanges[bw.recipient].GetFuturesBalance(); err == nil {
+					pendingStartBal[bw.recipient] = fb.Available
+				} else {
+					e.log.Warn("rebalance: %s unified GetFuturesBalance for deposit baseline failed: %v, using spot fallback", bw.recipient, err)
+					pendingStartBal[bw.recipient] = balances[bw.recipient].spot
+				}
+			} else {
+				pendingStartBal[bw.recipient] = balances[bw.recipient].spot
+			}
+		}
+		pendingDeposits[bw.recipient] += recipientReceives
 	}
 
 	for recipient, totalPending := range pendingDeposits {
