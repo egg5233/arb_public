@@ -594,9 +594,64 @@ exitLoop:
 			}
 
 			// --- Second leg: buy short for matched qty ---
+			// Normalize to common-tradeable size so both exchanges can represent it.
+			matchSize := e.commonTradeableSize(pos.LongExchange, pos.ShortExchange, pos.Symbol, firstFilled)
+			if matchSize < firstFilled {
+				// Top up: close more on long exchange to reach next common step
+				ceilSize := utils.RoundUpToStep(firstFilled, exitStepSize)
+				for i := 0; i < 10 && ceilSize > 0; i++ {
+					cts := e.commonTradeableSize(pos.LongExchange, pos.ShortExchange, pos.Symbol, ceilSize)
+					if cts > 0 && math.Abs(cts-ceilSize) < exitStepSize*0.01 {
+						ceilSize = cts
+						break
+					}
+					ceilSize += exitStepSize
+				}
+				longRemAfterFirst := totalLong - closedLong
+				shortRemaining := totalShort - closedShort
+				topUpOK := ceilSize-firstFilled <= longRemAfterFirst && ceilSize <= shortRemaining
+				if topUpOK {
+					topUp := ceilSize - firstFilled
+					topUpStr := e.formatSize(pos.LongExchange, pos.Symbol, topUp)
+					if parsed, _ := strconv.ParseFloat(topUpStr, 64); parsed <= 0 {
+						topUpOK = false
+					} else {
+						sellPrice := e.formatPrice(pos.LongExchange, pos.Symbol, bestBid*(1-slippage))
+						topUpOID, topUpErr := longExch.PlaceOrder(exchange.PlaceOrderParams{
+							Symbol:     pos.Symbol,
+							Side:       exchange.SideSell,
+							OrderType:  "limit",
+							Price:      sellPrice,
+							Size:       topUpStr,
+							Force:      "ioc",
+							ReduceOnly: true,
+						})
+						if topUpErr == nil {
+							topUpFilled, topUpAvg := e.confirmFill(longExch, topUpOID, pos.Symbol)
+							if topUpFilled > 0 {
+								if topUpAvg > 0 {
+									longVWAPSum += topUpAvg * topUpFilled
+								}
+								firstFilled += topUpFilled
+								closedLong += topUpFilled
+								matchSize = e.commonTradeableSize(pos.LongExchange, pos.ShortExchange, pos.Symbol, firstFilled)
+								e.log.Info("depth exit %s: topped up long close by %.6f → total %.6f, matchSize=%.6f",
+									pos.ID, topUpFilled, firstFilled, matchSize)
+							}
+						} else {
+							e.log.Warn("depth exit %s: top-up order failed: %v", pos.ID, topUpErr)
+						}
+					}
+				}
+
+				if matchSize <= 0 || matchSize < firstFilled {
+					e.log.Warn("depth exit %s: top-up failed, breaking to market fallback", pos.ID)
+					break
+				}
+			}
 			bestAsk = shortDepth.Asks[0].Price // refresh from current depth
 			buyPrice := e.formatPrice(pos.ShortExchange, pos.Symbol, bestAsk*(1+slippage))
-			buySize := e.formatSize(pos.ShortExchange, pos.Symbol, firstFilled)
+			buySize := e.formatSize(pos.ShortExchange, pos.Symbol, matchSize)
 
 			oid2, err := shortExch.PlaceOrder(exchange.PlaceOrderParams{
 				Symbol:     pos.Symbol,
@@ -659,9 +714,64 @@ exitLoop:
 			}
 
 			// --- Second leg: sell long for matched qty ---
+			// Normalize to common-tradeable size so both exchanges can represent it.
+			matchSize := e.commonTradeableSize(pos.LongExchange, pos.ShortExchange, pos.Symbol, firstFilled)
+			if matchSize < firstFilled {
+				// Top up: close more on short exchange to reach next common step
+				ceilSize := utils.RoundUpToStep(firstFilled, exitStepSize)
+				for i := 0; i < 10 && ceilSize > 0; i++ {
+					cts := e.commonTradeableSize(pos.LongExchange, pos.ShortExchange, pos.Symbol, ceilSize)
+					if cts > 0 && math.Abs(cts-ceilSize) < exitStepSize*0.01 {
+						ceilSize = cts
+						break
+					}
+					ceilSize += exitStepSize
+				}
+				shortRemAfterFirst := totalShort - closedShort
+				longRemaining := totalLong - closedLong
+				topUpOK := ceilSize-firstFilled <= shortRemAfterFirst && ceilSize <= longRemaining
+				if topUpOK {
+					topUp := ceilSize - firstFilled
+					topUpStr := e.formatSize(pos.ShortExchange, pos.Symbol, topUp)
+					if parsed, _ := strconv.ParseFloat(topUpStr, 64); parsed <= 0 {
+						topUpOK = false
+					} else {
+						buyPrice := e.formatPrice(pos.ShortExchange, pos.Symbol, bestAsk*(1+slippage))
+						topUpOID, topUpErr := shortExch.PlaceOrder(exchange.PlaceOrderParams{
+							Symbol:     pos.Symbol,
+							Side:       exchange.SideBuy,
+							OrderType:  "limit",
+							Price:      buyPrice,
+							Size:       topUpStr,
+							Force:      "ioc",
+							ReduceOnly: true,
+						})
+						if topUpErr == nil {
+							topUpFilled, topUpAvg := e.confirmFill(shortExch, topUpOID, pos.Symbol)
+							if topUpFilled > 0 {
+								if topUpAvg > 0 {
+									shortVWAPSum += topUpAvg * topUpFilled
+								}
+								firstFilled += topUpFilled
+								closedShort += topUpFilled
+								matchSize = e.commonTradeableSize(pos.LongExchange, pos.ShortExchange, pos.Symbol, firstFilled)
+								e.log.Info("depth exit %s: topped up short close by %.6f → total %.6f, matchSize=%.6f",
+									pos.ID, topUpFilled, firstFilled, matchSize)
+							}
+						} else {
+							e.log.Warn("depth exit %s: top-up order failed: %v", pos.ID, topUpErr)
+						}
+					}
+				}
+
+				if matchSize <= 0 || matchSize < firstFilled {
+					e.log.Warn("depth exit %s: top-up failed, breaking to market fallback", pos.ID)
+					break
+				}
+			}
 			bestBid = longDepth.Bids[0].Price // refresh from current depth
 			sellPrice := e.formatPrice(pos.LongExchange, pos.Symbol, bestBid*(1-slippage))
-			sellSize := e.formatSize(pos.LongExchange, pos.Symbol, firstFilled)
+			sellSize := e.formatSize(pos.LongExchange, pos.Symbol, matchSize)
 
 			oid2, err := longExch.PlaceOrder(exchange.PlaceOrderParams{
 				Symbol:     pos.Symbol,

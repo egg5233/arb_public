@@ -3268,11 +3268,13 @@ func (e *Engine) executeTradeV2WithPos(opp models.Opportunity, pos *models.Arbit
 	// Look up step size + min size for the "close enough" check.
 	// Use max of both exchanges so the remaining qty is tradeable on BOTH.
 	var stepSize, minSize float64
+	var longStep, shortStep float64 // per-exchange steps for ordering decision
 	if e.contracts != nil {
 		if exContracts, ok := e.contracts[opp.ShortExchange]; ok {
 			if ci, ok := exContracts[opp.Symbol]; ok {
 				stepSize = ci.StepSize
 				minSize = ci.MinSize
+				shortStep = ci.StepSize
 			}
 		}
 		if exContracts, ok := e.contracts[opp.LongExchange]; ok {
@@ -3283,6 +3285,7 @@ func (e *Engine) executeTradeV2WithPos(opp models.Opportunity, pos *models.Arbit
 				if ci.MinSize > minSize {
 					minSize = ci.MinSize
 				}
+				longStep = ci.StepSize
 			}
 		}
 	}
@@ -3426,6 +3429,12 @@ fillLoop:
 
 		// Determine less-liquid leg (higher consumption ratio = riskier → goes first)
 		shortFirst := (size / bidQty) >= (size / askQty)
+		// Override: when step sizes differ, coarser-step exchange goes first.
+		// Its fills are guaranteed multiples of its own step, which the finer
+		// exchange can always match (step sizes are powers-of-10 in practice).
+		if shortStep > 0 && longStep > 0 && shortStep != longStep {
+			shortFirst = shortStep >= longStep
+		}
 
 		// Format size per-leg: each exchange may have different StepSize/precision.
 		shortSizeStr := e.formatSize(opp.ShortExchange, opp.Symbol, size)
@@ -3548,7 +3557,86 @@ fillLoop:
 			shortConsecFails = 0
 
 			// Long leg second (buy from asks) — only fill what short filled
-			longSizeStr := e.formatSize(opp.LongExchange, opp.Symbol, shortFilled)
+			// Normalize to common-tradeable size so both exchanges can represent it.
+			matchSize := e.commonTradeableSize(opp.LongExchange, opp.ShortExchange, opp.Symbol, shortFilled)
+			if matchSize < shortFilled {
+				// Top up first leg to next common-tradeable step
+				ceilSize := utils.RoundUpToStep(shortFilled, stepSize)
+				// Verify ceilSize is common-tradeable; if not, search upward
+				for i := 0; i < 10 && ceilSize > 0; i++ {
+					cts := e.commonTradeableSize(opp.LongExchange, opp.ShortExchange, opp.Symbol, ceilSize)
+					if cts > 0 && math.Abs(cts-ceilSize) < stepSize*0.01 {
+						ceilSize = cts
+						break
+					}
+					ceilSize += stepSize
+				}
+				topUpOK := ceilSize <= remaining
+				if topUpOK {
+					topUp := ceilSize - shortFilled
+					topUpStr := e.formatSize(opp.ShortExchange, opp.Symbol, topUp)
+					if parsed, _ := strconv.ParseFloat(topUpStr, 64); parsed <= 0 {
+						topUpOK = false
+					} else {
+						topUpOID, topUpErr := shortExch.PlaceOrder(exchange.PlaceOrderParams{
+							Symbol:    opp.Symbol,
+							Side:      exchange.SideSell,
+							OrderType: "limit",
+							Price:     shortPriceStr,
+							Size:      topUpStr,
+							Force:     "ioc",
+						})
+						if topUpErr == nil {
+							topUpFilled, topUpAvg, topUpCFErr := e.confirmFillSafe(shortExch, topUpOID, opp.Symbol)
+							if topUpCFErr != nil {
+								e.log.Warn("depth tick: top-up fill state unknown: %v", topUpCFErr)
+								_ = shortExch.CancelOrder(opp.Symbol, topUpOID)
+								exchSize, exchErr := getExchangePositionSize(shortExch, opp.Symbol, "short")
+								priorTotal := confirmedShort + shortFilled
+								if exchErr == nil && exchSize > priorTotal {
+									actualTopUp := exchSize - priorTotal
+									if actualTopUp > 0 {
+										shortFilled += actualTopUp
+										e.log.Warn("depth tick: top-up unknown but exchange shows %.6f (prior=%.6f), topUp=%.6f",
+											exchSize, priorTotal, actualTopUp)
+										matchSize = e.commonTradeableSize(opp.LongExchange, opp.ShortExchange, opp.Symbol, shortFilled)
+									}
+								}
+							} else if topUpFilled > 0 {
+								if topUpAvg > 0 && shortAvg > 0 {
+									shortAvg = (shortAvg*shortFilled + topUpAvg*topUpFilled) / (shortFilled + topUpFilled)
+								} else if topUpAvg > 0 {
+									shortAvg = topUpAvg
+								}
+								shortFilled += topUpFilled
+								matchSize = e.commonTradeableSize(opp.LongExchange, opp.ShortExchange, opp.Symbol, shortFilled)
+								e.log.Info("depth tick: topped up %s by %.6f → total %.6f, matchSize=%.6f",
+									opp.Symbol, topUpFilled, shortFilled, matchSize)
+							}
+						} else {
+							e.log.Warn("depth tick: top-up order failed: %v", topUpErr)
+						}
+					}
+				}
+
+				if matchSize < shortFilled {
+					// Top-up failed — rollback as last resort
+					e.log.Warn("depth tick: top-up failed (matchSize=%.6f < shortFilled=%.6f), rolling back on %s",
+						matchSize, shortFilled, opp.ShortExchange)
+					rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
+					if rem > 0 {
+						e.log.Error("ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.ShortExchange)
+						e.telegram.Send("⚠️ ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.ShortExchange)
+						shortFilled = rem
+						longFilled = 0
+						abortFillLoop = true
+					} else {
+						shortConsecFails++
+						continue
+					}
+				}
+			}
+			longSizeStr := e.formatSize(opp.LongExchange, opp.Symbol, matchSize)
 			e.log.Info("depth-fill %s: placing BUY order on %s size=%s price=%s (IOC)", opp.Symbol, opp.LongExchange, longSizeStr, longPriceStr)
 			longOID, err := longExch.PlaceOrder(exchange.PlaceOrderParams{
 				Symbol:    opp.Symbol,
@@ -3565,7 +3653,7 @@ fillLoop:
 					lastBalCheck = time.Time{}
 				}
 				e.log.Warn("depth tick: long IOC failed after short filled %.6f, retrying second leg: %v", shortFilled, err)
-				retryFilled, retryAvg := e.retrySecondLeg(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, shortFilled, askPrice)
+				retryFilled, retryAvg := e.retrySecondLeg(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, matchSize, askPrice)
 				if retryFilled > 0 {
 					longFilled = retryFilled
 					longAvg = retryAvg
@@ -3604,7 +3692,7 @@ fillLoop:
 				}
 				if longFilled == 0 {
 					e.log.Warn("depth tick: long confirmFill got 0 after short filled %.6f, retrying second leg", shortFilled)
-					retryFilled, retryAvg := e.retrySecondLeg(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, shortFilled, askPrice)
+					retryFilled, retryAvg := e.retrySecondLeg(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, matchSize, askPrice)
 					if retryFilled > 0 {
 						longFilled = retryFilled
 						longAvg = retryAvg
@@ -3694,7 +3782,84 @@ fillLoop:
 			longConsecFails = 0
 
 			// Short leg second — only fill what long filled
-			shortSizeStr := e.formatSize(opp.ShortExchange, opp.Symbol, longFilled)
+			// Normalize to common-tradeable size so both exchanges can represent it.
+			matchSize := e.commonTradeableSize(opp.LongExchange, opp.ShortExchange, opp.Symbol, longFilled)
+			if matchSize < longFilled {
+				// Top up first leg to next common-tradeable step
+				ceilSize := utils.RoundUpToStep(longFilled, stepSize)
+				for i := 0; i < 10 && ceilSize > 0; i++ {
+					cts := e.commonTradeableSize(opp.LongExchange, opp.ShortExchange, opp.Symbol, ceilSize)
+					if cts > 0 && math.Abs(cts-ceilSize) < stepSize*0.01 {
+						ceilSize = cts
+						break
+					}
+					ceilSize += stepSize
+				}
+				topUpOK := ceilSize <= remaining
+				if topUpOK {
+					topUp := ceilSize - longFilled
+					topUpStr := e.formatSize(opp.LongExchange, opp.Symbol, topUp)
+					if parsed, _ := strconv.ParseFloat(topUpStr, 64); parsed <= 0 {
+						topUpOK = false
+					} else {
+						topUpOID, topUpErr := longExch.PlaceOrder(exchange.PlaceOrderParams{
+							Symbol:    opp.Symbol,
+							Side:      exchange.SideBuy,
+							OrderType: "limit",
+							Price:     longPriceStr,
+							Size:      topUpStr,
+							Force:     "ioc",
+						})
+						if topUpErr == nil {
+							topUpFilled, topUpAvg, topUpCFErr := e.confirmFillSafe(longExch, topUpOID, opp.Symbol)
+							if topUpCFErr != nil {
+								e.log.Warn("depth tick: top-up fill state unknown: %v", topUpCFErr)
+								_ = longExch.CancelOrder(opp.Symbol, topUpOID)
+								exchSize, exchErr := getExchangePositionSize(longExch, opp.Symbol, "long")
+								priorTotal := confirmedLong + longFilled
+								if exchErr == nil && exchSize > priorTotal {
+									actualTopUp := exchSize - priorTotal
+									if actualTopUp > 0 {
+										longFilled += actualTopUp
+										e.log.Warn("depth tick: top-up unknown but exchange shows %.6f (prior=%.6f), topUp=%.6f",
+											exchSize, priorTotal, actualTopUp)
+										matchSize = e.commonTradeableSize(opp.LongExchange, opp.ShortExchange, opp.Symbol, longFilled)
+									}
+								}
+							} else if topUpFilled > 0 {
+								if topUpAvg > 0 && longAvg > 0 {
+									longAvg = (longAvg*longFilled + topUpAvg*topUpFilled) / (longFilled + topUpFilled)
+								} else if topUpAvg > 0 {
+									longAvg = topUpAvg
+								}
+								longFilled += topUpFilled
+								matchSize = e.commonTradeableSize(opp.LongExchange, opp.ShortExchange, opp.Symbol, longFilled)
+								e.log.Info("depth tick: topped up %s by %.6f → total %.6f, matchSize=%.6f",
+									opp.Symbol, topUpFilled, longFilled, matchSize)
+							}
+						} else {
+							e.log.Warn("depth tick: top-up order failed: %v", topUpErr)
+						}
+					}
+				}
+
+				if matchSize < longFilled {
+					e.log.Warn("depth tick: top-up failed (matchSize=%.6f < longFilled=%.6f), rolling back on %s",
+						matchSize, longFilled, opp.LongExchange)
+					rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
+					if rem > 0 {
+						e.log.Error("ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.LongExchange)
+						e.telegram.Send("⚠️ ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.LongExchange)
+						longFilled = rem
+						shortFilled = 0
+						abortFillLoop = true
+					} else {
+						longConsecFails++
+						continue
+					}
+				}
+			}
+			shortSizeStr := e.formatSize(opp.ShortExchange, opp.Symbol, matchSize)
 			e.log.Info("depth-fill %s: placing SELL order on %s size=%s price=%s (IOC)", opp.Symbol, opp.ShortExchange, shortSizeStr, shortPriceStr)
 			shortOID, err := shortExch.PlaceOrder(exchange.PlaceOrderParams{
 				Symbol:    opp.Symbol,
@@ -3711,7 +3876,7 @@ fillLoop:
 					lastBalCheck = time.Time{}
 				}
 				e.log.Warn("depth tick: short IOC failed after long filled %.6f, retrying second leg: %v", longFilled, err)
-				retryFilled, retryAvg := e.retrySecondLeg(shortExch, opp.ShortExchange, opp.Symbol, exchange.SideSell, longFilled, bidPrice)
+				retryFilled, retryAvg := e.retrySecondLeg(shortExch, opp.ShortExchange, opp.Symbol, exchange.SideSell, matchSize, bidPrice)
 				if retryFilled > 0 {
 					shortFilled = retryFilled
 					shortAvg = retryAvg
@@ -3750,7 +3915,7 @@ fillLoop:
 				}
 				if shortFilled == 0 {
 					e.log.Warn("depth tick: short confirmFill got 0 after long filled %.6f, retrying second leg", longFilled)
-					retryFilled, retryAvg := e.retrySecondLeg(shortExch, opp.ShortExchange, opp.Symbol, exchange.SideSell, longFilled, bidPrice)
+					retryFilled, retryAvg := e.retrySecondLeg(shortExch, opp.ShortExchange, opp.Symbol, exchange.SideSell, matchSize, bidPrice)
 					if retryFilled > 0 {
 						shortFilled = retryFilled
 						shortAvg = retryAvg

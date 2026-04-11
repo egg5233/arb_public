@@ -15,6 +15,20 @@ func RoundToStep(value, step float64) float64 {
 	return math.Floor(value/step) * step
 }
 
+// RoundUpToStep rounds a value UP to the nearest multiple of step.
+// If value is already a multiple (within float epsilon), returns it unchanged.
+func RoundUpToStep(value, step float64) float64 {
+	if step <= 0 {
+		return value
+	}
+	n := value / step
+	// Guard float noise: if n is very close to an integer, don't jump up
+	if math.Abs(n-math.Round(n)) < 1e-9 {
+		return math.Round(n) * step
+	}
+	return math.Ceil(n) * step
+}
+
 // FormatSize formats a size value to the given number of decimal places.
 func FormatSize(size float64, decimals int) string {
 	return strconv.FormatFloat(size, 'f', decimals, 64)
