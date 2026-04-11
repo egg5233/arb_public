@@ -116,13 +116,13 @@ const Logs: FC<LogsProps> = ({ logs, connected, getLogs, setLogs }) => {
       {/* Log entries */}
       <div
         ref={scrollRef}
-        className="bg-gray-900 border border-gray-800 rounded-lg p-4 h-[calc(100vh-200px)] overflow-y-auto font-mono text-xs leading-5"
+        className="bg-gray-900 border border-gray-800 rounded-lg p-4 h-[calc(100vh-200px)] overflow-y-auto overflow-x-auto font-mono text-xs leading-5"
       >
         {filtered.length === 0 ? (
           <p className="text-gray-500 text-sm">{t('logs.noLogs')}</p>
         ) : (
           filtered.map((entry, i) => (
-            <div key={i} className="flex gap-2 hover:bg-gray-800/50 px-1 rounded">
+            <div key={i} className="flex gap-2 hover:bg-gray-800/50 px-1 rounded whitespace-nowrap">
               <span className="text-gray-500 whitespace-nowrap shrink-0">
                 {entry.timestamp || '--'}
               </span>
@@ -136,7 +136,7 @@ const Logs: FC<LogsProps> = ({ logs, connected, getLogs, setLogs }) => {
               {entry.module && (
                 <span className="text-purple-400 shrink-0">[{entry.module}]</span>
               )}
-              <span className="text-gray-200 break-all">{entry.message}</span>
+              <span className="text-gray-200">{entry.message}</span>
             </div>
           ))
         )}
