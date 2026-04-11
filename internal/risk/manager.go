@@ -968,6 +968,9 @@ func (m *Manager) ensureFuturesBalance(exchName string, exc exchange.Exchange, f
 	}
 	// Floor to 4 decimal places to prevent rounding above spotAvailable.
 	transferAmt = math.Floor(transferAmt*10000) / 10000
+	if transferAmt <= 0 {
+		return // nothing to transfer, avoid API error
+	}
 
 	amtStr := fmt.Sprintf("%.4f", transferAmt)
 	m.log.Info("auto-transfer %s USDT spot→futures on %s (futures=%.2f, needed=%.2f)", amtStr, exchName, futBal.Available, needed)

@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.6] - 2026-04-11
+
+### Fixed
+- **Step size sync — coarse-first ordering + top-up alignment** — When two exchanges have vastly different step sizes (e.g., BingX 0.01 vs Gate.io 100), partial fills on the fine-step exchange produce amounts the coarse exchange cannot match (ARIAUSDT imbalance bug: long=176.18 vs short=100). Entry now overrides leg ordering so coarse-step exchange goes first. Second leg uses commonTradeableSize to verify alignment; if misaligned, tops up first leg to next common step instead of rolling back (saves fees). Exit keeps risk-leg-first ordering with same top-up logic; falls back to market close only if top-up fails.
+- **Merge same-direction rebalance withdrawals** — When the rebalance loop picks the same donor for the same recipient multiple times (e.g., bingx→bitget 15.19 + 5.00), each withdrawal incurred a separate on-chain fee. Now accumulates withdrawals per donor→recipient pair and executes merged withdrawals after the loop, saving one fee per merged pair.
+
+### Added
+- `RoundUpToStep()` utility function for top-up step alignment calculations.
+
 ## [0.32.5] - 2026-04-10
 
 ### Fixed
