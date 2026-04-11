@@ -1111,6 +1111,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 		sortedNeeds = append(sortedNeeds, name)
 	}
 	sort.Strings(sortedNeeds)
+	e.log.Debug("rebalance: sortedNeeds=%v needs=%v MSM=%.2f L4=%.4f", sortedNeeds, needs, e.cfg.MarginSafetyMultiplier, e.cfg.MarginL4Threshold)
 	for _, name := range sortedNeeds {
 		need := needs[name]
 		bal := balances[name]
@@ -1119,6 +1120,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 			targetFreeRatio = 0.20
 		}
 
+		e.log.Debug("rebalance: checking %s: need=%.2f futures=%.4f spot=%.8f total=%.4f isUnified=%v", name, need, bal.futures, bal.spot, bal.futuresTotal, func() bool { uc, ok := e.exchanges[name].(interface{ IsUnified() bool }); return ok && uc.IsUnified() }())
 		if bal.futures >= need {
 			isUnified := false
 			if uc, ok := e.exchanges[name].(interface{ IsUnified() bool }); ok && uc.IsUnified() {
@@ -1148,12 +1150,19 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 								bi := balances[name]
 								bi.futures += extra
 								bi.spot -= extra
+								bi.futuresTotal += extra
 								balances[name] = bi
+								bal = balances[name] // refresh local copy for L4 check below
 							}
 						}
 					}
 				}
-				continue
+				// After spot relief attempt, fall through to L4 check below.
+				// Previously this was an unconditional 'continue' which skipped
+				// the L4 cross-exchange deficit check when spot > 0 but too small
+				// to actually fix the ratio. Bug: OKX with spot=0.001 entered
+				// this branch, skipped L4 check, and no crossDeficit was queued.
+				e.log.Debug("rebalance: %s spot-relief done (spot=%.8f), falling through to L4 check", name, bal.spot)
 			}
 
 			// Unified account or no spot: check if post-trade ratio would breach L4.
@@ -1168,6 +1177,8 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 					projectedAvail = 0
 				}
 				projectedRatio := 1 - projectedAvail/bal.futuresTotal
+				e.log.Debug("rebalance: %s L4-check: need=%.2f actualMargin=%.2f futures=%.2f total=%.2f projAvail=%.2f projRatio=%.4f L4=%.4f",
+					name, need, actualMargin, bal.futures, bal.futuresTotal, projectedAvail, projectedRatio, e.cfg.MarginL4Threshold)
 				if projectedRatio >= e.cfg.MarginL4Threshold {
 					// Compute ratio deficit: how much extra needed so ratio < L4
 					targetRatio := e.cfg.MarginL4Threshold - marginEpsilon
@@ -1180,6 +1191,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 					}
 				}
 			}
+			e.log.Debug("rebalance: %s sufficient-futures path done, continue", name)
 			continue
 		}
 

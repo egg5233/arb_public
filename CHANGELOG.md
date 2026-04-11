@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.7] - 2026-04-11
+
+### Fixed
+- **Spot-relief continue skipping L4 check** — When an exchange had spot balance > 0 (even dust like 0.001 USDT), the rebalance spot→futures relief branch unconditionally `continue`d past the post-trade L4 margin ratio check. Exchanges like OKX with tiny spot dust never got a crossDeficit entry even when post-trade ratio would exceed L4, causing wasted transfers to the other leg with no entry possible. Fixed in both pool allocator (allocator.go) and sequential rebalance (engine.go) paths. Also fixed futuresTotal not being updated after spot→futures transfers.
+
 ## [0.32.6] - 2026-04-11
 
 ### Fixed

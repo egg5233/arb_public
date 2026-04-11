@@ -889,9 +889,35 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 								bi := balances[name]
 								bi.futures += extra
 								bi.spot -= extra
+								bi.futuresTotal += extra
 								balances[name] = bi
+								bal = balances[name]
 							}
 						}
+					}
+				}
+			}
+			// Post-trade L4 check: even with sufficient futures, opening this
+			// position may push margin ratio past L4. Queue cross-exchange
+			// transfer if needed. (Previously skipped by unconditional continue.)
+			if bal.futuresTotal > 0 {
+				actualMargin := need / e.cfg.MarginSafetyMultiplier
+				if actualMargin <= 0 {
+					actualMargin = need
+				}
+				projectedAvail := bal.futures - actualMargin
+				if projectedAvail < 0 {
+					projectedAvail = 0
+				}
+				projectedRatio := 1 - projectedAvail/bal.futuresTotal
+				if projectedRatio >= e.cfg.MarginL4Threshold {
+					targetRatio := e.cfg.MarginL4Threshold - marginEpsilon
+					freeTarget := 1.0 - targetRatio
+					ratioDeficit := (freeTarget*bal.futuresTotal - bal.futures + actualMargin) / targetRatio
+					if ratioDeficit > 0 {
+						e.log.Info("rebalance: %s post-trade ratio=%.4f >= L4=%.4f, queueing cross-exchange deficit=%.2f (seq)",
+							name, projectedRatio, e.cfg.MarginL4Threshold, ratioDeficit)
+						crossDeficits = append(crossDeficits, seqDeficit{name, ratioDeficit})
 					}
 				}
 			}
