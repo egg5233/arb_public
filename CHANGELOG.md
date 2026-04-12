@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.11] - 2026-04-13
+
+### Fixed
+- **Unified donor rebalance ignored `maxTransferOut`** — For unified-account donors (Bybit UTA), the allocator's capacity calculation and pre-withdraw check used raw futures balance instead of the exchange-reported withdrawable cap. Bybit's `/v5/account/withdrawal` returns `availableWithdrawal` reflecting risk-delay freezes and position collateral that raw balance misses, so the allocator could request more than Bybit allows, triggering `code=131001 insufficient` even after v0.32.10's `accountType=UTA` fix. Production evidence 2026-04-12 15:46 UTC: `maxTransferOut=33.40` but allocator tried `60.02`. Added `maxTransferOut` clamps at `internal/engine/allocator.go:684-697` (scan-time capacity) and `:1610-1624` (pre-withdraw `effectiveAvail`), mirroring the existing split-account logic at `:1557-1560`. Gate.io unified unaffected (adapter does not populate `MaxTransferOut`).
+
 ## [0.32.10] - 2026-04-12
 
 ### Fixed

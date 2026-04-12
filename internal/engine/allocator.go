@@ -683,6 +683,15 @@ func (e *Engine) allocatorDonorGrossCapacity(name string, bal rebalanceBalanceIn
 	var futuresAvail float64
 	if isUnified {
 		futuresAvail = bal.futures
+		// Respect the exchange's authoritative withdrawable cap when
+		// available. maxTransferOut reflects risk-delay freezes and
+		// position collateral that raw futures balance misses
+		// (e.g. Bybit's /v5/account/withdrawal availableWithdrawal).
+		// maxTransferOut=0 means "unknown/API failed" — fall through
+		// to raw futures in that case.
+		if bal.maxTransferOut > 0 && bal.maxTransferOut < futuresAvail {
+			futuresAvail = bal.maxTransferOut
+		}
 	} else {
 		futuresAvail = bal.maxTransferOut
 		if futuresAvail <= 0 {
@@ -1607,9 +1616,18 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				}
 			}
 
-			if donorSpotBal.Available < grossRequired {
-				netAmount = donorSpotBal.Available - fee
-				e.log.Debug("rebalance: adjusted netAmount %s: spotAvail=%.2f gross=%.2f net=%.2f", bestDonor, donorSpotBal.Available, grossRequired, netAmount)
+			// For unified donors, also respect MaxTransferOut (the exchange's
+			// authoritative withdrawable cap). For split donors the earlier
+			// :1557-1560 fresh re-cap already applied; here it is a no-op
+			// because spot balance adapters don't set MaxTransferOut.
+			effectiveAvail := donorSpotBal.Available
+			if donorSpotBal.MaxTransferOut > 0 && donorSpotBal.MaxTransferOut < effectiveAvail {
+				effectiveAvail = donorSpotBal.MaxTransferOut
+			}
+			if effectiveAvail < grossRequired {
+				netAmount = effectiveAvail - fee
+				e.log.Debug("rebalance: adjusted netAmount %s: effAvail=%.2f (spotAvail=%.2f maxTransferOut=%.2f) gross=%.2f net=%.2f",
+					bestDonor, effectiveAvail, donorSpotBal.Available, donorSpotBal.MaxTransferOut, grossRequired, netAmount)
 			}
 			if netAmount <= 0 {
 				e.log.Warn("rebalance: %s spot balance too low to withdraw (netAmount=%.4f, fee=%.4f)", bestDonor, netAmount, fee)
