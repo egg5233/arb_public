@@ -916,12 +916,16 @@ func (a *Adapter) TransferToSpot(coin string, amount string) error {
 
 func (a *Adapter) Withdraw(params exchange.WithdrawParams) (*exchange.WithdrawResult, error) {
 	chain := mapChainToBybit(params.Chain)
+	// accountType is required by /v5/asset/withdraw/create (doc/EXCHANGEAPI_BYBIT.md:1318).
+	// UTA: system transfers funds UNIFIED -> Funding and withdraws, matching the
+	// rebalance flow where donor funds live in the UNIFIED pool.
 	reqParams := map[string]string{
-		"coin":      params.Coin,
-		"chain":     chain,
-		"address":   params.Address,
-		"amount":    params.Amount,
-		"timestamp": fmt.Sprintf("%d", time.Now().UnixMilli()),
+		"coin":        params.Coin,
+		"chain":       chain,
+		"address":     params.Address,
+		"amount":      params.Amount,
+		"timestamp":   fmt.Sprintf("%d", time.Now().UnixMilli()),
+		"accountType": "UTA",
 	}
 
 	result, err := a.client.Post("/v5/asset/withdraw/create", reqParams)

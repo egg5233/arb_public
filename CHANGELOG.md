@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.10] - 2026-04-12
+
+### Fixed
+- **Bybit withdraw missing required `accountType`** — `pkg/exchange/bybit/adapter.go` `Withdraw()` did not send the `accountType` field that `POST /v5/asset/withdraw/create` lists as required (`doc/EXCHANGEAPI_BYBIT.md:1318`). Every automated rebalance donor withdrawal from Bybit was therefore failing with `code=131001 Account available balance insufficient` (7+ failures observed in VPS journalctl between 2026-04-09 and 2026-04-12; zero successful `bybit [rebalance] -> X` entries in Redis `arb:transfers`). Added `accountType: "UTA"` so Bybit internally transfers the required amount UNIFIED → Funding and withdraws in one call, matching the rebalance flow where donor funds live in UNIFIED. Prior BingX fix in v0.32.4 addressed the same pattern.
+
 ## [0.32.9] - 2026-04-12
 
 ### Fixed
