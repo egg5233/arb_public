@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.9] - 2026-04-12
+
+### Fixed
+- **Rebalance allocator override guard** — `rebalanceFunds()` previously stored allocator overrides unconditionally after calling a void `executeRebalanceFundingPlan()`, so overrides could survive even when the executor never actually moved funds. Next entry scan then attempted trades on unfunded exchanges and got rejected for L4 margin breach (2026-04-12 03:45–:55 incident: SIRENUSDT post-trade margin 0.94 on bitget after rebalance failed to transfer). The executor now returns `rebalanceExecutionResult{PostBalances, Unfunded, SkipReasons}`; the caller filters `allocSel.choices` via new `keepFundedChoices` helper (deterministic replay against post-execution balances) before storing overrides. Donor bookkeeping is now account-type aware (unified vs split), with rollback/refetch/pessimistic-zero fallback on batched-withdraw failure, merged-batch fee reconciliation on success, and `futuresTotal` tracked across all relief paths. 7 new regression tests in `allocator_override_test.go`. Verified via 10 Codex review passes.
+- **Sequential rebalance relief missing `futuresTotal` update** — Same-exchange spot→futures relief in the sequential fallback path (`engine.go:982-989`) omitted `bi.futuresTotal += actualTransfer` while the sufficient-futures branch and allocator path both updated all three fields. Post-relief L4 ratio calculations on that branch used a stale `futuresTotal`.
+
 ## [0.32.8] - 2026-04-12
 
 ### Added

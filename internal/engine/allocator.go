@@ -66,6 +66,105 @@ type dryRunResult struct {
 	PostRatios map[string]float64
 }
 
+// rebalanceExecutionResult reports POST-EXECUTION state so callers can
+// revalidate allocator choices against reality rather than trusting the
+// feasibility assumptions the allocator made (which include theoretical
+// cross-exchange transferables that may not have moved in practice).
+//
+// PostBalances reflects actual balances after all successful transfers and
+// same-exchange relief moves. Unfunded/SkipReasons are diagnostic only.
+type rebalanceExecutionResult struct {
+	PostBalances map[string]rebalanceBalanceInfo
+	Unfunded     map[string]float64
+	SkipReasons  map[string]string
+}
+
+// cloneRebalanceBalances returns a shallow copy of the map. rebalanceBalanceInfo
+// is a value type so per-key writes on the copy are independent.
+func cloneRebalanceBalances(src map[string]rebalanceBalanceInfo) map[string]rebalanceBalanceInfo {
+	dst := make(map[string]rebalanceBalanceInfo, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+// postTradeMarginRatio computes the post-trade margin ratio for an exchange
+// leg assuming `margin` is debited from its futures balance. Returns ok=false
+// only when the ratio breaches the configured L4 threshold. This is the
+// shared helper used by both dryRunTransferPlan and replayProjectedRatioOK so
+// both paths agree on what "feasible" means.
+func (e *Engine) postTradeMarginRatio(bal rebalanceBalanceInfo, margin float64) (ratio float64, ok bool) {
+	if bal.futuresTotal <= 0 {
+		return 0, true
+	}
+	futures := bal.futures - margin
+	if futures < 0 {
+		futures = 0
+	}
+	ratio = 1 - futures/bal.futuresTotal
+	return ratio, ratio < e.cfg.MarginL4Threshold
+}
+
+// replayProjectedRatioOK is a thin wrapper over postTradeMarginRatio used by
+// keepFundedChoices during the post-execution replay.
+func (e *Engine) replayProjectedRatioOK(bal rebalanceBalanceInfo, margin float64) bool {
+	_, ok := e.postTradeMarginRatio(bal, margin)
+	return ok
+}
+
+// canReserveAllocatorChoice reports whether both legs of the choice still
+// have enough futures capacity in the working balance map. Mirrors the
+// allocator's own needs accounting where requiredMargin is added to EACH
+// exchange independently (allocator.go:231-232 / 666-667 — requiredMargin
+// is max(long,short) buffered, not a total).
+func (e *Engine) canReserveAllocatorChoice(work map[string]rebalanceBalanceInfo, c allocatorChoice) bool {
+	long, okL := work[c.longExchange]
+	short, okS := work[c.shortExchange]
+	if !okL || !okS {
+		return false
+	}
+	// Buffered sufficiency: same threshold the allocator used for selection.
+	if long.futures < c.requiredMargin || short.futures < c.requiredMargin {
+		return false
+	}
+	// Unbuffered projected-ratio check mirroring dryRunTransferPlan's
+	// post-trade L4 gate, so replay matches feasibility semantics.
+	margin := c.requiredMargin
+	if e.cfg.MarginSafetyMultiplier > 0 {
+		margin = c.requiredMargin / e.cfg.MarginSafetyMultiplier
+	}
+	return e.replayProjectedRatioOK(long, margin) && e.replayProjectedRatioOK(short, margin)
+}
+
+// reserveAllocatorChoice subtracts requiredMargin from BOTH legs (not /2),
+// matching allocator.go:231-232 / 666-667 semantics.
+func (e *Engine) reserveAllocatorChoice(work map[string]rebalanceBalanceInfo, c allocatorChoice) {
+	long := work[c.longExchange]
+	short := work[c.shortExchange]
+	long.futures -= c.requiredMargin
+	short.futures -= c.requiredMargin
+	work[c.longExchange] = long
+	work[c.shortExchange] = short
+}
+
+// keepFundedChoices replays allocator choices in order against the executor's
+// post-execution balances, reserving capacity per kept choice. Choices that
+// cannot be satisfied after real transfers are dropped so stale overrides do
+// not leak into the next entry scan.
+func (e *Engine) keepFundedChoices(choices []allocatorChoice, post map[string]rebalanceBalanceInfo) map[string]allocatorChoice {
+	work := cloneRebalanceBalances(post)
+	kept := make(map[string]allocatorChoice, len(choices))
+	for _, c := range choices {
+		if !e.canReserveAllocatorChoice(work, c) {
+			continue
+		}
+		e.reserveAllocatorChoice(work, c)
+		kept[c.symbol] = c
+	}
+	return kept
+}
+
 type allocatorChoice struct {
 	symbol         string
 	longExchange   string
@@ -1066,13 +1165,9 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 		if bal.futuresTotal <= 0 {
 			continue
 		}
-		futures := bal.futures
-		if futures < 0 {
-			futures = 0
-		}
-		ratio := 1 - futures/bal.futuresTotal
+		ratio, ok := e.postTradeMarginRatio(bal, 0) // margin already applied to sim.futures above
 		postRatios[name] = ratio
-		if ratio >= e.cfg.MarginL4Threshold {
+		if !ok {
 			e.log.Debug("dryRun: %s post-ratio=%.4f >= L4=%.4f, infeasible", name, ratio, e.cfg.MarginL4Threshold)
 			return dryRunResult{Feasible: false}
 		}
@@ -1098,7 +1193,18 @@ func (e *Engine) formatAllocatorSummary(sel *allocatorSelection) string {
 	return strings.Join(names, ", ")
 }
 
-func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances map[string]rebalanceBalanceInfo, precomputedDeficits []rebalanceDeficit) {
+func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances map[string]rebalanceBalanceInfo, precomputedDeficits []rebalanceDeficit) rebalanceExecutionResult {
+	// PostBalances starts as a clone of caller balances. The executor mutates
+	// `balances` in place throughout (same-exchange relief, eager donor
+	// decrements, etc). We mirror those mutations into PostBalances only at
+	// confirmed-success points, and on batched-withdraw failure we also
+	// restore the donor entry on `balances` so subsequent aliasing reflects
+	// reality. keepFundedChoices reads PostBalances via this alias at end.
+	result := rebalanceExecutionResult{
+		PostBalances: balances,
+		Unfunded:     map[string]float64{},
+		SkipReasons:  map[string]string{},
+	}
 	var crossDeficits []rebalanceDeficit
 
 	if precomputedDeficits != nil {
@@ -1241,6 +1347,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 					bi := balances[name]
 					bi.futures += actualTransfer
 					bi.spot -= actualTransfer
+					bi.futuresTotal += actualTransfer // same-exchange relief: futures pool grows, keep PostBalances consistent with the other relief branch at 1150-1155
 					balances[name] = bi
 				}
 			}
@@ -1252,8 +1359,8 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 	} // end else (precomputedDeficits == nil)
 
 	if len(crossDeficits) == 0 {
-		e.log.Info("rebalance: all exchanges funded, no cross-exchange transfers needed")
-		return
+		e.log.Info("rebalance: no cross-exchange transfers needed (crossDeficits empty after local fund relief)")
+		return result
 	}
 
 	surplus := map[string]float64{}
@@ -1271,12 +1378,21 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 		netTotal         float64
 		fee              float64
 		isGross          bool
+		isUnifiedDonor   bool
 		movedToSpot      float64
+		// debitFutures / debitSpot / debitFuturesTotal track the EXACT
+		// cumulative in-memory decrements applied to the donor balance
+		// during accumulation, so we can roll them back if the batched
+		// Withdraw fails and reconcile merged-fee over-debit on success.
+		debitFutures      float64
+		debitSpot         float64
+		debitFuturesTotal float64
 	}
 	batchedWds := map[string]*batchedWd{}
 	for i := range crossDeficits {
 		remaining := crossDeficits[i].amount
 		exchName := crossDeficits[i].exchange
+		origDeficit := remaining
 		e.log.Debug("rebalance: processing crossDeficit %s amount=%.2f", exchName, remaining)
 		// FIX 9: removed remaining < 1.0 skip — intentional over-transfer when deficit < minWd
 		for remaining > 0 {
@@ -1298,6 +1414,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 			}
 			if bestDonor == "" {
 				e.log.Warn("rebalance: no donor found for %s remaining deficit=%.2f", exchName, remaining)
+				result.SkipReasons[exchName] = fmt.Sprintf("no donor found (deficit=%.2f)", remaining)
 				break
 			}
 
@@ -1315,6 +1432,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 			e.cfg.RUnlock()
 			if len(recipientAddrs) == 0 {
 				e.log.Warn("rebalance: no deposit addresses for %s", exchName)
+				result.SkipReasons[exchName] = "no deposit addresses configured"
 				break
 			}
 
@@ -1510,30 +1628,68 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				surplus[bestDonor] = 0
 				continue
 			}
+			// Compute this iteration's in-memory decrement so we can
+			// accumulate it into the batch for possible rollback.
+			// Account-type aware: unified donors have no separate spot pool —
+			// the withdraw drains the unified pool directly. Split donors
+			// perform a futures->spot prep (movedToSpot) then withdraw from
+			// spot, so the futures pool shrinks by the prep amount and the
+			// futuresTotal shrinks by the same amount.
+			var iterFuturesDebit, iterSpotDebit, iterFuturesTotalDebit float64
+			if skipOuterTransfer {
+				// Unified donor: withdraw drains the unified futures pool.
+				iterFuturesDebit = netAmount + fee
+				iterFuturesTotalDebit = netAmount + fee
+			} else {
+				// Split donor: prep moves futures->spot, then withdraw drains spot.
+				iterFuturesDebit = movedToSpot
+				iterSpotDebit = netAmount + fee - movedToSpot
+				iterFuturesTotalDebit = movedToSpot
+			}
+
 			// Accumulate into batch instead of immediate withdraw.
 			wdKey := bestDonor + "->" + exchName
 			if bw, ok := batchedWds[wdKey]; ok {
 				bw.netTotal += netAmount
 				bw.movedToSpot += movedToSpot
+				bw.debitFutures += iterFuturesDebit
+				bw.debitSpot += iterSpotDebit
+				bw.debitFuturesTotal += iterFuturesTotalDebit
 			} else {
 				batchedWds[wdKey] = &batchedWd{
 					donor: bestDonor, recipient: exchName,
 					chain: chain, destAddr: destAddr,
 					netTotal: netAmount, fee: fee,
-					isGross: isGross, movedToSpot: movedToSpot,
+					isGross: isGross, isUnifiedDonor: skipOuterTransfer,
+					movedToSpot:       movedToSpot,
+					debitFutures:      iterFuturesDebit,
+					debitSpot:         iterSpotDebit,
+					debitFuturesTotal: iterFuturesTotalDebit,
 				}
 			}
 
 			// Keep surplus/balance updates for correct donor selection in subsequent iterations.
 			surplus[bestDonor] -= netAmount + fee
 			bi := balances[bestDonor]
-			bi.futures -= movedToSpot
-			bi.spot -= (netAmount + fee - movedToSpot)
+			bi.futures -= iterFuturesDebit
+			bi.spot -= iterSpotDebit
+			bi.futuresTotal -= iterFuturesTotalDebit
 			if bi.spot < 0 {
 				bi.spot = 0
 			}
+			if bi.futuresTotal < 0 {
+				bi.futuresTotal = 0
+			}
 			balances[bestDonor] = bi
 			remaining -= netAmount
+		}
+		if remaining > 0 {
+			// Inner loop broke (no donor / no addresses / etc) or ran out of
+			// viable donor capacity; track the shortfall for caller diagnostics.
+			result.Unfunded[exchName] = remaining
+			if _, ok := result.SkipReasons[exchName]; !ok {
+				result.SkipReasons[exchName] = fmt.Sprintf("partial fill only: %.2f of %.2f funded", origDeficit-remaining, origDeficit)
+			}
 		}
 	}
 
@@ -1553,7 +1709,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 		e.log.Info("rebalance: batched withdraw %s->%s net=%.2f fee=%.4f amount=%.2f via %s",
 			bw.donor, bw.recipient, bw.netTotal, bw.fee, withdrawAmtForAPI, bw.chain)
 
-		result, err := e.exchanges[bw.donor].Withdraw(exchange.WithdrawParams{
+		wdResult, err := e.exchanges[bw.donor].Withdraw(exchange.WithdrawParams{
 			Coin:    "USDT",
 			Chain:   bw.chain,
 			Address: bw.destAddr,
@@ -1561,6 +1717,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 		})
 		if err != nil {
 			e.log.Error("rebalance: batched withdraw from %s failed: %v", bw.donor, err)
+			rollbackOK := true
 			if bw.movedToSpot > 0 {
 				rollbackStr := fmt.Sprintf("%.4f", bw.movedToSpot)
 				e.log.Info("rebalance: rollback %s spot->futures %s USDT", bw.donor, rollbackStr)
@@ -1569,8 +1726,53 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				}
 				if rbErr := e.exchanges[bw.donor].TransferToFutures("USDT", rollbackStr); rbErr != nil {
 					e.log.Error("rebalance: rollback failed: %v", rbErr)
+					rollbackOK = false
 				}
 			}
+			if rollbackOK {
+				// Exchange-side rollback succeeded (or was not needed). Restore
+				// in-memory donor balance to the pre-decrement state so
+				// PostBalances (aliased to balances) reflects reality.
+				bi := balances[bw.donor]
+				bi.futures += bw.debitFutures
+				bi.spot += bw.debitSpot
+				bi.futuresTotal += bw.debitFuturesTotal
+				balances[bw.donor] = bi
+			} else {
+				// Rollback failed — funds are stuck in the donor's spot pool
+				// (split donor) or pool state is unknown. Refresh from the
+				// exchange; if that also fails, zero out the donor so
+				// keepFundedChoices cannot reserve against stale in-memory
+				// values.
+				refreshed := false
+				if fb, ferr := e.exchanges[bw.donor].GetFuturesBalance(); ferr == nil {
+					bi := balances[bw.donor]
+					bi.futures = fb.Available
+					if fb.Total > 0 {
+						bi.futuresTotal = fb.Total
+					}
+					if sb, serr := e.exchanges[bw.donor].GetSpotBalance(); serr == nil {
+						bi.spot = sb.Available
+						refreshed = true
+					} else {
+						e.log.Warn("rebalance: %s spot balance refresh failed after rollback failure: %v", bw.donor, serr)
+					}
+					balances[bw.donor] = bi
+				} else {
+					e.log.Warn("rebalance: %s futures balance refresh failed after rollback failure: %v", bw.donor, ferr)
+				}
+				if !refreshed {
+					// Pessimistic: zero the donor so keepFundedChoices cannot
+					// pick it to satisfy any choice. This is safer than
+					// trusting either pre- or post-decrement in-memory state
+					// when on-exchange reality is unknown.
+					bi := rebalanceBalanceInfo{futuresTotal: balances[bw.donor].futuresTotal}
+					balances[bw.donor] = bi
+				}
+			}
+			// Track as unfunded for diagnostics regardless of rollback state.
+			result.Unfunded[bw.recipient] = bw.netTotal
+			result.SkipReasons[bw.recipient] = fmt.Sprintf("withdraw from %s failed: %v (rollbackOK=%v)", bw.donor, err, rollbackOK)
 			continue
 		}
 
@@ -1579,8 +1781,33 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 			recipientReceives = withdrawAmtForAPI - bw.fee
 		}
 		e.log.Info("rebalance: withdraw from %s txid=%s (apiAmt=%.2f, recipient=%.2f, fee=%.4f, gross=%v) -> %s",
-			bw.donor, result.TxID, withdrawAmtForAPI, recipientReceives, bw.fee, bw.isGross, bw.recipient)
-		e.recordTransfer(bw.donor, bw.recipient, "USDT", bw.chain, amtStr, result.Fee, result.TxID, "completed", "rebalance")
+			bw.donor, wdResult.TxID, withdrawAmtForAPI, recipientReceives, bw.fee, bw.isGross, bw.recipient)
+		e.recordTransfer(bw.donor, bw.recipient, "USDT", bw.chain, amtStr, wdResult.Fee, wdResult.TxID, "completed", "rebalance")
+
+		// Reconcile donor PostBalances against the ACTUAL merged-batch debit.
+		// Per-iteration tracking subtracted fee each iteration, but the merged
+		// withdraw only charges one bw.fee. Restore any excess so keepFundedChoices
+		// sees the true donor balance. Account-type aware — unified donors drain
+		// the futures pool while split donors drain spot after a prep move.
+		var actualFuturesDebit, actualSpotDebit, actualFuturesTotalDebit float64
+		if bw.isUnifiedDonor {
+			actualFuturesDebit = bw.netTotal + bw.fee
+			actualFuturesTotalDebit = bw.netTotal + bw.fee
+		} else {
+			actualFuturesDebit = bw.movedToSpot
+			actualSpotDebit = bw.netTotal + bw.fee - bw.movedToSpot
+			actualFuturesTotalDebit = bw.movedToSpot
+		}
+		excessFutures := bw.debitFutures - actualFuturesDebit
+		excessSpot := bw.debitSpot - actualSpotDebit
+		excessFuturesTotal := bw.debitFuturesTotal - actualFuturesTotalDebit
+		if excessFutures != 0 || excessSpot != 0 || excessFuturesTotal != 0 {
+			bi := balances[bw.donor]
+			bi.futures += excessFutures
+			bi.spot += excessSpot
+			bi.futuresTotal += excessFuturesTotal
+			balances[bw.donor] = bi
+		}
 
 		if _, exists := pendingStartBal[bw.recipient]; !exists {
 			if uc, ok := e.exchanges[bw.recipient].(interface{ IsUnified() bool }); ok && uc.IsUnified() {
@@ -1638,10 +1865,21 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 		} else {
 			e.log.Info("rebalance: %s spot->futures %s USDT (rebalance deposit)", recipient, transferStr)
 			e.recordTransfer(recipient+" spot", recipient, "USDT", "internal", transferStr, "0", "", "completed", "rebalance-recv")
+			// Update PostBalances so keepFundedChoices sees the recipient's real
+			// funded state. spot->futures is atomic, so we can credit immediately.
+			bi := balances[recipient]
+			bi.futures += totalPending
+			bi.futuresTotal += totalPending
+			bi.spot -= totalPending
+			if bi.spot < 0 {
+				bi.spot = 0
+			}
+			balances[recipient] = bi
 		}
 	}
 
-	e.log.Info("rebalance: complete")
+	e.log.Info("rebalance: complete (unfunded=%d skipReasons=%d)", len(result.Unfunded), len(result.SkipReasons))
+	return result
 }
 
 func findOppBySymbol(opps []models.Opportunity, symbol string) *models.Opportunity {

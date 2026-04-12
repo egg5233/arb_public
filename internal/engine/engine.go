@@ -629,17 +629,33 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			e.log.Warn("rebalance: pool allocator failed, falling back to sequential: %v", allocErr)
 		} else if allocSel != nil && allocSel.feasible {
 			e.log.Info("rebalance: pool allocator selected %d opps (value=%.4f, choices=%s)", len(allocSel.choices), allocSel.totalBaseValue, e.formatAllocatorSummary(allocSel))
-			e.executeRebalanceFundingPlan(allocSel.needs, balances, nil)
+			result := e.executeRebalanceFundingPlan(allocSel.needs, balances, nil)
 
-			// Store allocator choices so the upcoming entry scan can patch
-			// opportunities to use the same exchange pairs that funds were rebalanced for.
+			// Gate override storage on post-execution reality. Replay choices
+			// against PostBalances and drop any whose required legs are no
+			// longer funded, so the next :55 entry scan cannot be steered
+			// onto unfunded exchanges.
+			kept := e.keepFundedChoices(allocSel.choices, result.PostBalances)
+
 			e.allocOverrideMu.Lock()
-			e.allocOverrides = make(map[string]allocatorChoice, len(allocSel.choices))
-			for _, c := range allocSel.choices {
-				e.allocOverrides[c.symbol] = c
-			}
+			e.allocOverrides = kept
 			e.allocOverrideMu.Unlock()
-			e.log.Info("rebalance: stored %d allocator overrides for entry scan", len(allocSel.choices))
+
+			dropped := len(allocSel.choices) - len(kept)
+			if dropped > 0 {
+				e.log.Warn("rebalance: dropped %d/%d allocator overrides after executor outcome (kept=%d)",
+					dropped, len(allocSel.choices), len(kept))
+				for _, c := range allocSel.choices {
+					if _, ok := kept[c.symbol]; ok {
+						continue
+					}
+					reasonLong := result.SkipReasons[c.longExchange]
+					reasonShort := result.SkipReasons[c.shortExchange]
+					e.log.Info("rebalance: dropped override %s (%s/%s): longReason=%q shortReason=%q",
+						c.symbol, c.longExchange, c.shortExchange, reasonLong, reasonShort)
+				}
+			}
+			e.log.Info("rebalance: stored %d allocator overrides for entry scan", len(kept))
 
 			e.log.Info("rebalance: complete")
 			return
@@ -970,6 +986,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 					bi := balances[name]
 					bi.futures += actualTransfer
 					bi.spot -= actualTransfer
+					bi.futuresTotal += actualTransfer // keep parity with the sufficient-futures branch and allocator relief paths
 					balances[name] = bi
 				}
 			}
@@ -992,7 +1009,9 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 		precomputed[i] = rebalanceDeficit{exchange: cd.exchange, amount: cd.amount}
 	}
 	e.log.Info("rebalance: %d exchanges need cross-exchange funding, delegating to allocator executor", len(precomputed))
-	e.executeRebalanceFundingPlan(needs, balances, precomputed)
+	// Sequential fallback does not use allocOverrides; signature aligned but
+	// result not consumed.
+	_ = e.executeRebalanceFundingPlan(needs, balances, precomputed)
 
 	e.log.Info("rebalance: complete")
 }
