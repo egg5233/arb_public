@@ -14,6 +14,21 @@ type Discoverer interface {
 	GetOpportunities() []Opportunity
 }
 
+// SymbolPair identifies a specific exchange pair for targeted re-scanning.
+// Used by the entry fallback path when allocator overrides need re-validation.
+type SymbolPair struct {
+	Symbol        string
+	LongExchange  string
+	ShortExchange string
+}
+
+// SymbolRescanner can re-scan specific symbols through the full scanner pipeline
+// with fresh data. Implemented by the concrete Scanner. Engine uses type
+// assertion to check if the Discoverer also supports this capability.
+type SymbolRescanner interface {
+	RescanSymbols(pairs []SymbolPair) []Opportunity
+}
+
 // RiskChecker abstracts pre-trade risk assessment. The engine calls Approve
 // before executing any trade.
 type RiskChecker interface {

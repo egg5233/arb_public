@@ -890,6 +890,64 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 	// 5b. Record all verified opportunities in scan history (every scan, not just :35)
 	s.recordScanHistory(verified)
 
+	// 5c-8. Apply full entry filter chain (persistence, volatility, cooldown,
+	// interval, funding window, backtest, delist). Extracted for reuse by
+	// RescanSymbols (override fallback path).
+	verified = s.applyEntryFilters(verified, scanType)
+
+	for i, opp := range verified {
+		s.log.Info("  [%d] %s (%s) | Long: %s (%.4f bps/h) | Short: %s (%.4f bps/h) | Spread: %.4f bps/h | Interval: %.0fh | CostRatio: %.4f | OIRank: %d | Score: %.4f | NextFunding: %s",
+			i+1, opp.Symbol, opp.Source, opp.LongExchange, opp.LongRate, opp.ShortExchange, opp.ShortRate,
+			opp.Spread, opp.IntervalHours, opp.CostRatio, opp.OIRank, opp.Score, opp.NextFunding.Format("15:04 UTC"))
+	}
+
+	s.mu.Lock()
+	s.opportunities = verified
+	s.mu.Unlock()
+
+	// Pre-fetch backtest data for non-entry scans to warm cache.
+	// Include verified alternatives as synthetic Opportunity objects so their
+	// backtest cache is also warmed before the engine may select them via override.
+	if scanType != EntryScan && s.cfg.BacktestDays > 0 && len(verified) > 0 {
+		expanded := make([]models.Opportunity, 0, len(verified))
+		expanded = append(expanded, verified...)
+		for _, opp := range verified {
+			for _, alt := range opp.Alternatives {
+				if !alt.Verified {
+					continue
+				}
+				expanded = append(expanded, models.Opportunity{
+					Symbol:        opp.Symbol,
+					LongExchange:  alt.LongExchange,
+					ShortExchange: alt.ShortExchange,
+					LongRate:      alt.LongRate,
+					ShortRate:     alt.ShortRate,
+					Spread:        alt.Spread,
+					IntervalHours: alt.IntervalHours,
+					OIRank:        opp.OIRank,
+					Source:        opp.Source,
+				})
+			}
+		}
+		go s.prefetchBacktestData(expanded)
+	}
+
+	// Send scan result to engine, blocking until consumed or scanner stopped.
+	s.sendScanResult(ScanResult{Opps: verified, Type: scanType})
+}
+
+// applyEntryFilters runs the full entry filter chain on verified opps.
+// Called by both runCycleInternal and RescanSymbols.
+//
+// Pipeline order (matches original runCycleInternal):
+// 5c. persistence filter
+// 5d. spread volatility filter
+// 5e. symbol cooldown filter
+// 5f. interval filter
+// 6.  funding window filter (EntryScan/RebalanceScan/RotateScan only)
+// 7.  backtest filter
+// 8.  delist filter
+func (s *Scanner) applyEntryFilters(verified []models.Opportunity, scanType ScanType) []models.Opportunity {
 	// 5c. Apply persistence filter (entry + rebalance + exit scans)
 	if scanType == EntryScan || scanType == RebalanceScan || scanType == ExitScan || scanType == RotateScan {
 		var persistent []models.Opportunity
@@ -971,9 +1029,6 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 	}
 
 	// 6. Filter to only opportunities with imminent funding.
-	// ExitScan skips this so rebalance can prepare funds BEFORE the funding
-	// window opens. RebalanceScan keeps the filter so its standalone behavior
-	// is unchanged.
 	if scanType == EntryScan || scanType == RebalanceScan || scanType == RotateScan {
 		maxFundingWindow := time.Duration(s.cfg.FundingWindowMin) * time.Minute
 		var imminent []models.Opportunity
@@ -1014,7 +1069,7 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 		verified = backtested
 	}
 
-	// 8. Filter delisted coins (all scan types — block from appearing anywhere).
+	// 8. Filter delisted coins (all scan types).
 	if s.cfg.DelistFilterEnabled {
 		var notDelisted []models.Opportunity
 		for _, opp := range verified {
@@ -1034,43 +1089,113 @@ func (s *Scanner) runCycleInternal(scanType ScanType) {
 		verified = notDelisted
 	}
 
-	for i, opp := range verified {
-		s.log.Info("  [%d] %s (%s) | Long: %s (%.4f bps/h) | Short: %s (%.4f bps/h) | Spread: %.4f bps/h | Interval: %.0fh | CostRatio: %.4f | OIRank: %d | Score: %.4f | NextFunding: %s",
-			i+1, opp.Symbol, opp.Source, opp.LongExchange, opp.LongRate, opp.ShortExchange, opp.ShortRate,
-			opp.Spread, opp.IntervalHours, opp.CostRatio, opp.OIRank, opp.Score, opp.NextFunding.Format("15:04 UTC"))
+	return verified
+}
+
+// RescanSymbols performs a targeted re-scan for specific symbol+pair combinations.
+// Runs the full pipeline: poll fresh rates → rank → symbol filter → verify →
+// record history → entry filters → pair match.
+//
+// Used by entry fallback when :55 discovery returned 0 opps but allocator
+// overrides from :45 exist. Does NOT send oppChan (avoids deadlock).
+//
+// Limitation: Poll is Loris-only. CoinGlass-sourced symbols will not be
+// found and return nil gracefully (logged). Rare in practice.
+func (s *Scanner) RescanSymbols(pairs []models.SymbolPair) []models.Opportunity {
+	if len(pairs) == 0 {
+		return nil
 	}
 
-	s.mu.Lock()
-	s.opportunities = verified
-	s.mu.Unlock()
+	// Build requested set for fast lookup
+	requested := make(map[string]models.SymbolPair, len(pairs))
+	for _, p := range pairs {
+		requested[p.Symbol] = p
+	}
 
-	// Pre-fetch backtest data for non-entry scans to warm cache.
-	// Include verified alternatives as synthetic Opportunity objects so their
-	// backtest cache is also warmed before the engine may select them via override.
-	if scanType != EntryScan && s.cfg.BacktestDays > 0 && len(verified) > 0 {
-		expanded := make([]models.Opportunity, 0, len(verified))
-		expanded = append(expanded, verified...)
-		for _, opp := range verified {
-			for _, alt := range opp.Alternatives {
-				if !alt.Verified {
-					continue
-				}
-				expanded = append(expanded, models.Opportunity{
-					Symbol:        opp.Symbol,
-					LongExchange:  alt.LongExchange,
-					ShortExchange: alt.ShortExchange,
-					LongRate:      alt.LongRate,
-					ShortRate:     alt.ShortRate,
-					Spread:        alt.Spread,
-					IntervalHours: alt.IntervalHours,
-					OIRank:        opp.OIRank,
-					Source:        opp.Source,
-				})
-			}
+	// 1. Poll fresh Loris rates
+	loris, err := s.Poll()
+	if err != nil {
+		s.log.Error("RescanSymbols: poll failed: %v", err)
+		return nil
+	}
+
+	// 1b. Update interval cache (same as runCycleInternal)
+	if loris != nil && loris.FundingIntervals != nil {
+		s.intervalsMu.Lock()
+		s.lastLorisIntervals = loris.FundingIntervals
+		s.intervalsMu.Unlock()
+	}
+
+	// 2. Rank (populates OIRank, Source, metadata)
+	ranked := s.RankOpportunities(loris)
+
+	// 3. Filter to requested symbols BEFORE topN would apply (we skip topN here)
+	var targetOpps []models.Opportunity
+	for _, opp := range ranked {
+		if _, ok := requested[opp.Symbol]; ok {
+			targetOpps = append(targetOpps, opp)
 		}
-		go s.prefetchBacktestData(expanded)
+	}
+	if len(targetOpps) == 0 {
+		s.log.Info("RescanSymbols: none of %d requested symbols found in Loris poll (may be CoinGlass-only)", len(pairs))
+		return nil
 	}
 
-	// Send scan result to engine, blocking until consumed or scanner stopped.
-	s.sendScanResult(ScanResult{Opps: verified, Type: scanType})
+	// 4. Verify rates (sign, magnitude, divergence, NextFunding)
+	verified := s.VerifyRates(targetOpps)
+
+	// 5. Record scan history (needed for persistence filter consistency)
+	s.recordScanHistory(verified)
+
+	// 6. Apply full entry filter chain
+	filtered := s.applyEntryFilters(verified, EntryScan)
+
+	// 7. Post-filter to specific exchange pairs from overrides
+	var result []models.Opportunity
+	for _, opp := range filtered {
+		p, ok := requested[opp.Symbol]
+		if !ok {
+			continue
+		}
+		// Check primary pair
+		if opp.LongExchange == p.LongExchange && opp.ShortExchange == p.ShortExchange {
+			result = append(result, opp)
+			continue
+		}
+		// Check verified alternatives
+		for _, alt := range opp.Alternatives {
+			if alt.LongExchange != p.LongExchange || alt.ShortExchange != p.ShortExchange {
+				continue
+			}
+			if !alt.Verified {
+				s.log.Info("RescanSymbols: %s alt %s/%s not verified, skipping",
+					opp.Symbol, alt.LongExchange, alt.ShortExchange)
+				break
+			}
+			// Patch opp to use alt pair
+			patched := opp
+			patched.LongExchange = alt.LongExchange
+			patched.ShortExchange = alt.ShortExchange
+			patched.LongRate = alt.LongRate
+			patched.ShortRate = alt.ShortRate
+			patched.Spread = alt.Spread
+			if alt.IntervalHours > 0 {
+				patched.IntervalHours = alt.IntervalHours
+			}
+			if !alt.NextFunding.IsZero() {
+				patched.NextFunding = alt.NextFunding
+			}
+			// Run pair-level filters on the alt
+			if reason := s.CheckPairFilters(patched); reason != "" {
+				s.log.Info("RescanSymbols: %s alt %s/%s rejected by pair filter: %s",
+					opp.Symbol, alt.LongExchange, alt.ShortExchange, reason)
+				break
+			}
+			result = append(result, patched)
+			break
+		}
+	}
+
+	s.log.Info("RescanSymbols: %d/%d symbols passed re-scan", len(result), len(pairs))
+	return result
 }

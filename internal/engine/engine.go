@@ -1249,6 +1249,36 @@ func (e *Engine) run() {
 
 					e.executeArbitrage(entryOpps, perpCap)
 					e.log.Info("run loop: entryScan handler done (via %s)", tier)
+				} else {
+					// Fallback: discovery returned 0 opps but allocator overrides
+					// from :45 may exist. Re-scan those specific symbols with
+					// fresh data to salvage the transferred funds.
+					e.allocOverrideMu.Lock()
+					overrides := e.allocOverrides
+					e.allocOverrides = nil
+					e.allocOverrideMu.Unlock()
+
+					if len(overrides) > 0 {
+						e.log.Info("entry: discovery returned 0 opps but %d allocator overrides exist, re-scanning", len(overrides))
+
+						var pairs []models.SymbolPair
+						for symbol, choice := range overrides {
+							pairs = append(pairs, models.SymbolPair{
+								Symbol:        symbol,
+								LongExchange:  choice.longExchange,
+								ShortExchange: choice.shortExchange,
+							})
+						}
+
+						fallbackOpps := e.discovery.RescanSymbols(pairs)
+
+						if len(fallbackOpps) > 0 {
+							e.log.Info("entry: override fallback: %d/%d passed re-scan, executing (tier-2-override-fallback)", len(fallbackOpps), len(pairs))
+							e.executeArbitrage(fallbackOpps, perpCap)
+						} else {
+							e.log.Info("entry: override fallback: all %d symbols failed re-scan", len(pairs))
+						}
+					}
 				}
 				// Release pre-warm depth refs from :35 rotation scan.
 				e.cleanupPrewarmedDepth()

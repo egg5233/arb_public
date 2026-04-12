@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.8] - 2026-04-12
+
+### Added
+- **Override fallback when discovery returns 0** — When entry scan discovery returns 0 opportunities but allocator overrides from the :45 rotate scan exist (funds already transferred cross-exchange), the entry handler now re-scans those specific symbols through the full scanner pipeline (poll fresh rates → rank → verify → filters) to salvage the transferred capital. Previously the overrides were silently discarded at the next rebalance cycle, wasting the transfer fees. New `Scanner.RescanSymbols()` method and `models.SymbolRescanner` interface.
+
+### Refactored
+- Extracted entry filter chain (persistence, volatility, cooldown, interval, funding window, backtest, delist) into `Scanner.applyEntryFilters()` for reuse by both `runCycleInternal` and `RescanSymbols`.
+
 ## [0.32.7] - 2026-04-11
 
 ### Fixed
