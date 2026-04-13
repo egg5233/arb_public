@@ -897,8 +897,19 @@ marketFallback:
 	}
 
 	// Check for incomplete close (partial fill or ctx cancelled).
+	// Snap dust to zero: depth-exit loop already treats sub-step / sub-min
+	// remainder as done (exit.go ~402-417, ~515-523), so the finalizer must
+	// accept the same threshold. Without this, float epsilon residue from
+	// totalX-closedX (e.g. 7.1e-15) keeps the position Active forever.
+	// closedLong/closedShort are NOT snapped — they feed VWAP/PnL math.
 	longRemainder := totalLong - closedLong
 	shortRemainder := totalShort - closedShort
+	if e.isDust(pos.LongExchange, pos.Symbol, longRemainder) {
+		longRemainder = 0
+	}
+	if e.isDust(pos.ShortExchange, pos.Symbol, shortRemainder) {
+		shortRemainder = 0
+	}
 	fullyFlat := longRemainder <= 0 && shortRemainder <= 0
 
 	if !fullyFlat {
@@ -919,7 +930,19 @@ marketFallback:
 
 	// Sanity check: PnL should not exceed position notional value.
 	// If it does, the close price is likely wrong — fall back to 0 PnL.
+	// On dust retries, totalLong/totalShort are ~0 so notional ~= 0 and any
+	// positive PnL would trip the gate falsely; fall back to stored EntryNotional
+	// (set at open per models/position.go:48) or skip the check entirely.
 	notional := math.Max(pos.LongEntry*totalLong, pos.ShortEntry*totalShort)
+	if notional <= 0 {
+		if pos.EntryNotional > 0 {
+			notional = pos.EntryNotional
+			e.log.Warn("depth-exit %s: residual notional=0, using EntryNotional=%.4f for sanity check", pos.ID, notional)
+		} else {
+			e.log.Warn("depth-exit %s: notional=0 and EntryNotional=0, skipping sanity check (PnL=%.4f)", pos.ID, realizedPnL)
+			notional = 0 // explicit: skip via the > 0 gate below
+		}
+	}
 	if notional > 0 && math.Abs(realizedPnL) > notional*2 {
 		e.log.Error("depth-exit %s: PnL %.4f exceeds 2x notional %.4f — close prices suspect (longClose=%.8f shortClose=%.8f), zeroing PnL",
 			pos.ID, realizedPnL, notional, longClosePrice, shortClosePrice)
@@ -1751,12 +1774,46 @@ func (e *Engine) closePositionEmergency(pos *models.ArbitragePosition) error {
 // closePositionWithMode is the shared close implementation.
 // emergency=true uses immediate market orders; emergency=false uses simultaneous
 // IOC limit orders with market fallback for any unfilled remainder.
+//
+// Fix F: serialized via per-position close lock to prevent double bookkeeping
+// when this path races with markPositionClosed (consolidator). Phase-1 claim
+// gate accepts Active OR Exiting OR Pending OR Partial (rejecting only
+// Closing/Closed) because preemption callers (delist/SL/L4/L5) and pre-entry
+// recovery may invoke this in any of those states.
 func (e *Engine) closePositionWithMode(pos *models.ArbitragePosition, emergency bool) error {
+	// Acquire per-position close lock outside any other engine lock.
+	lock, ok, lerr := e.db.AcquireOwnedLock("close:"+pos.ID, 30*time.Second)
+	if lerr != nil {
+		e.log.Error("close %s: failed to acquire close lock: %v", pos.ID, lerr)
+		return lerr
+	}
+	if !ok {
+		e.log.Info("close %s lock held by another path, skipping", pos.ID)
+		return nil
+	}
+	defer lock.Release()
+
+	// Phase 1: claim → Closing. Reject only terminal states (Closing/Closed).
+	// Mirrors checkDelistPositions filter; allows Active/Exiting/Pending/Partial.
+	claimed := false
+	if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+		if fresh.Status == models.StatusClosing || fresh.Status == models.StatusClosed {
+			return false
+		}
+		fresh.Status = models.StatusClosing
+		// UpdatedAt auto-bumped.
+		claimed = true
+		return true
+	}); err != nil {
+		e.log.Error("close %s: phase-1 claim failed: %v", pos.ID, err)
+		return err
+	}
+	if !claimed {
+		e.log.Info("close %s: already Closing/Closed, no-op", pos.ID)
+		return nil
+	}
 	pos.Status = models.StatusClosing
 	pos.UpdatedAt = time.Now().UTC()
-	if err := e.db.SavePosition(pos); err != nil {
-		e.log.Error("failed to save closing status for %s: %v", pos.ID, err)
-	}
 	e.api.BroadcastPositionUpdate(pos)
 
 	longExch, ok := e.exchanges[pos.LongExchange]
@@ -1890,7 +1947,19 @@ func (e *Engine) closePositionWithMode(pos *models.ArbitragePosition, emergency 
 	realizedPnL := longPnL + shortPnL + pos.FundingCollected - pos.EntryFees
 
 	// Sanity check: PnL should not exceed position notional value.
+	// On dust retries (longSize/shortSize ~= 0), fall back to stored EntryNotional
+	// (models/position.go:48) or skip the gate entirely. Same rationale as
+	// depth-exit sanity above.
 	notional := math.Max(pos.LongEntry*longSize, pos.ShortEntry*shortSize)
+	if notional <= 0 {
+		if pos.EntryNotional > 0 {
+			notional = pos.EntryNotional
+			e.log.Warn("closePosition %s: residual notional=0, using EntryNotional=%.4f for sanity check", pos.ID, notional)
+		} else {
+			e.log.Warn("closePosition %s: notional=0 and EntryNotional=0, skipping sanity check (PnL=%.4f)", pos.ID, realizedPnL)
+			notional = 0
+		}
+	}
 	if notional > 0 && math.Abs(realizedPnL) > notional*2 {
 		e.log.Error("closePosition %s: PnL %.4f exceeds 2x notional %.4f — close prices suspect (longClose=%.8f shortClose=%.8f), zeroing PnL",
 			pos.ID, realizedPnL, notional, longClosePrice, shortClosePrice)
@@ -1910,52 +1979,90 @@ func (e *Engine) closePositionWithMode(pos *models.ArbitragePosition, emergency 
 	pos.Status = models.StatusClosed
 	pos.UpdatedAt = time.Now().UTC()
 
-	// Cancel orphan TP/SL/algo orders BEFORE SavePosition — prevents race
-	// where a new entry re-uses the symbol and the async cancel wipes its orders.
+	// Cancel orphan TP/SL/algo orders BEFORE phase-2 SavePosition — prevents
+	// race where a new entry re-uses the symbol and the async cancel wipes
+	// its orders. Order MUST stay before the predicate save.
 	longExch.CancelAllOrders(pos.Symbol)
 	shortExch.CancelAllOrders(pos.Symbol)
 
-	if err := e.db.SavePosition(pos); err != nil {
-		e.log.Error("failed to save closed position: %v", err)
+	// Phase 2: persist Closed via predicate (Fix F). Reject if another path
+	// (consolidator) already closed it. Strict mirror of the previous
+	// SavePosition write set: only LongExit/ShortExit (>0 guards), RealizedPnL,
+	// Status. ExitFees / LongClosePnL / ShortClosePnL are NOT written here —
+	// they belong to reconcilePnL; pre-writing would trip InferHasReconciled
+	// (models/position.go:73-83) and skip the real reconcile pass.
+	saved := false
+	if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+		if fresh.Status == models.StatusClosed {
+			return false
+		}
+		if longClosePrice > 0 {
+			fresh.LongExit = longClosePrice
+		}
+		if shortClosePrice > 0 {
+			fresh.ShortExit = shortClosePrice
+		}
+		fresh.RealizedPnL = realizedPnL
+		fresh.Status = models.StatusClosed
+		// UpdatedAt auto-bumped.
+		// NOTE: do NOT set ExitReason here — caller already set it.
+		saved = true
+		return true
+	}); err != nil {
+		e.log.Error("close %s: phase-2 save failed: %v", pos.ID, err)
+	}
+	if !saved {
+		e.log.Info("close %s: already Closed by another path, skipping bookkeeping", pos.ID)
+		return nil
+	}
+
+	// Re-read persisted truth with retry-then-fallback for bookkeeping.
+	bookkeepingPos := pos
+	for attempt := 0; attempt < 3; attempt++ {
+		if updated, gerr := e.db.GetPosition(pos.ID); gerr == nil && updated != nil {
+			bookkeepingPos = updated
+			break
+		}
+		time.Sleep(time.Duration(50*(attempt+1)) * time.Millisecond)
 	}
 
 	e.log.Info("[reconcile-debug] AddToHistory %s: LongTotalFees=%.6f ShortTotalFees=%.6f LongFunding=%.6f ShortFunding=%.6f LongClosePnL=%.6f ShortClosePnL=%.6f HasReconciled=%v",
-		pos.ID, pos.LongTotalFees, pos.ShortTotalFees, pos.LongFunding, pos.ShortFunding, pos.LongClosePnL, pos.ShortClosePnL, pos.HasReconciled)
-	if err := e.db.AddToHistory(pos); err != nil {
+		bookkeepingPos.ID, bookkeepingPos.LongTotalFees, bookkeepingPos.ShortTotalFees, bookkeepingPos.LongFunding, bookkeepingPos.ShortFunding, bookkeepingPos.LongClosePnL, bookkeepingPos.ShortClosePnL, bookkeepingPos.HasReconciled)
+	if err := e.db.AddToHistory(bookkeepingPos); err != nil {
 		e.log.Error("failed to add position to history: %v", err)
 	}
 
-	won := realizedPnL > 0
-	if err := e.db.UpdateStats(realizedPnL, won); err != nil {
+	won := bookkeepingPos.RealizedPnL > 0
+	if err := e.db.UpdateStats(bookkeepingPos.RealizedPnL, won); err != nil {
 		e.log.Error("failed to update stats: %v", err)
 	}
 	if e.lossLimiter != nil {
-		e.lossLimiter.RecordClosedPnL(pos.ID, realizedPnL, pos.Symbol, time.Now().UTC())
+		e.lossLimiter.RecordClosedPnL(bookkeepingPos.ID, bookkeepingPos.RealizedPnL, bookkeepingPos.Symbol, time.Now().UTC())
 	}
-	e.releasePerpPosition(pos.ID)
+	e.releasePerpPosition(bookkeepingPos.ID)
 
-	e.api.BroadcastPositionUpdate(pos)
+	e.api.BroadcastPositionUpdate(bookkeepingPos)
 
 	mode := "smart"
 	if emergency {
 		mode = "emergency"
 	}
 	e.log.Info("position %s closed (%s): pnl=%.4f (long=%.4f short=%.4f funding=%.4f entryFees=%.4f)",
-		pos.ID, mode, realizedPnL, longPnL, shortPnL, pos.FundingCollected, pos.EntryFees)
+		bookkeepingPos.ID, mode, bookkeepingPos.RealizedPnL, longPnL, shortPnL, bookkeepingPos.FundingCollected, bookkeepingPos.EntryFees)
 
 	// Set symbol cooldown on loss close.
-	if realizedPnL < 0 && e.cfg.LossCooldownHours > 0 {
+	if bookkeepingPos.RealizedPnL < 0 && e.cfg.LossCooldownHours > 0 {
 		cooldown := time.Duration(e.cfg.LossCooldownHours * float64(time.Hour))
-		e.discovery.SetSymbolCooldown(pos.Symbol, cooldown)
+		e.discovery.SetSymbolCooldown(bookkeepingPos.Symbol, cooldown)
 	}
 	// Set re-entry cooldown on any close.
 	if e.cfg.ReEnterCooldownHours > 0 {
 		cooldown := time.Duration(e.cfg.ReEnterCooldownHours * float64(time.Hour))
-		e.discovery.SetReEnterCooldown(pos.Symbol, cooldown)
+		e.discovery.SetReEnterCooldown(bookkeepingPos.Symbol, cooldown)
 	}
 
 	// Reconcile PnL from exchange trade history (immediate attempt is synchronous).
-	posCopy := *pos
+	posCopy := *bookkeepingPos
 	e.reconcilePnL(&posCopy)
 
 	return nil

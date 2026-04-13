@@ -2005,9 +2005,14 @@ func (e *Engine) updateFundingCollected() {
 				}
 				if fundingChanged {
 					fresh.FundingCollected = fundingAccrued
-					if !fresh.NextFunding.IsZero() && time.Now().UTC().After(fresh.NextFunding) {
-						fresh.NextFunding = nextFunding
-					}
+				}
+				// Always advance NextFunding when settlement passed, regardless of
+				// whether funding was credited this cycle. Zero-rate periods (e.g.
+				// TSLAUSDT during quiet hours) otherwise leave NextFunding stuck
+				// in the past, breaking the ±10min settlement protection window
+				// in checkSpreadReversal (exit.go).
+				if !fresh.NextFunding.IsZero() && time.Now().UTC().After(fresh.NextFunding) {
+					fresh.NextFunding = nextFunding
 				}
 				fresh.LongUnrealizedPnL = longUPL
 				fresh.ShortUnrealizedPnL = shortUPL

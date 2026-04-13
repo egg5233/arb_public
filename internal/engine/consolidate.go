@@ -315,17 +315,26 @@ func (e *Engine) consolidatePosition(pos *models.ArbitragePosition, siblingTotal
 	// This catches positions where exit reduced both legs but consolidator
 	// didn't mark them closed before sizes were zeroed.
 	if longSize == 0 && shortSize == 0 && pos.Status == models.StatusActive {
-		// Guard: skip if position was updated very recently (within 60s).
-		// Protects against recent consolidator size syncs (L372 sets UpdatedAt)
-		// and recent entry/exit activity. Note: reducePosition does NOT set
-		// UpdatedAt, so this guard does not cover the L4 reduce window directly.
-		// That window is milliseconds in practice and not a practical concern.
-		if time.Since(pos.UpdatedAt) < 60*time.Second {
-			e.log.Debug("consolidate: %s exchange-flat but recently updated (%.0fs ago), skipping",
-				pos.ID, time.Since(pos.UpdatedAt).Seconds())
-			return
-		}
-
+		// Drop the previous 60s `UpdatedAt` guard for this branch.
+		//
+		// Why this is safe:
+		//   - Both exchange reads returned 0 (exchange truth, not local guess).
+		//   - markPositionClosed acquires a per-position close lock (Fix F) and
+		//     re-verifies flatness via getExchangePositionSize before persisting
+		//     the closed state, so racing closers cannot double-bookkeep.
+		//
+		// Why UpdatedAt was wrong: UpdatePositionFields auto-bumps UpdatedAt on
+		// every successful mutate (database/state.go), and several writers touch
+		// active positions for non-size reasons (risk-monitor CurrentSpread,
+		// exit-check NextFunding/ReversalCount/ZeroSpreadCount, funding tracker
+		// FundingCollected/UnrealizedPnL, rotation/reconcile metadata). With those
+		// running every few minutes, this branch was starved indefinitely — see
+		// the NATGAS incident (position stuck Active 3 days with 7.1e-15 dust).
+		//
+		// Note: L4 full-flatten (engine.go reducePosition) writes sizes without
+		// claiming exitActive/entryActive. The Fix F close lock guards against
+		// that race; this consolidator branch may legitimately fire moments
+		// after L4 has zeroed the exchange-side legs.
 		e.log.Warn("consolidate: %s exchange-flat (both sizes=0) but Active for %.0fs, attempting close",
 			pos.ID, time.Since(pos.UpdatedAt).Seconds())
 		// Set local sizes to 0 so markPositionClosed skips close orders (legs already flat).
@@ -425,7 +434,26 @@ func (e *Engine) consolidatePosition(pos *models.ArbitragePosition, siblingTotal
 // markPositionClosed closes a position that has a missing leg on the exchange.
 // If the remaining leg still exists, it closes it with verified retry.
 // Only marks closed if confirmed flat.
+//
+// Fix F: serialized via per-position close lock to prevent double bookkeeping
+// when this consolidator path races with closePositionWithMode (e.g. L4
+// reducePosition → closePositionEmergency). The lock guarantees only one
+// closer runs the bookkeeping (history append, stats, releasePerpPosition).
 func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string) {
+	// Acquire per-position close lock outside any other engine lock.
+	// 30s TTL with auto-renew handles slow exchange close calls; on caller
+	// crash the lock auto-expires.
+	lock, ok, err := e.db.AcquireOwnedLock("close:"+pos.ID, 30*time.Second)
+	if err != nil {
+		e.log.Error("consolidate: failed to acquire close lock for %s: %v", pos.ID, err)
+		return
+	}
+	if !ok {
+		e.log.Info("consolidate: %s close lock held by another path, skipping", pos.ID)
+		return
+	}
+	defer lock.Release()
+
 	// Try to close BOTH legs — including the one reported as "missing".
 	// The "missing" leg may still exist on the exchange (transient API glitch),
 	// so we re-query and attempt to close it too. Uses verified retry (up to 10 attempts).
@@ -490,7 +518,13 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 		}
 		shortRemaining = rem
 	}
-	if !verifyOK || longRemaining > 0 || shortRemaining > 0 {
+	// Accept dust as flat (Fix E) — exchange-side rounding can return e.g. 1e-7
+	// even when both legs are effectively closed. isDust matches the same
+	// threshold (max(stepSize, minSize) or formatSize=0 fallback) that the
+	// depth-exit finalizer uses, keeping verify semantics consistent.
+	longDust := e.isDust(pos.LongExchange, pos.Symbol, longRemaining)
+	shortDust := e.isDust(pos.ShortExchange, pos.Symbol, shortRemaining)
+	if !verifyOK || !longDust || !shortDust {
 		e.log.Error("consolidate: CRITICAL — %s not confirmed flat (long=%.6f short=%.6f verified=%v), keeping active",
 			pos.ID, longRemaining, shortRemaining, verifyOK)
 		return
@@ -593,25 +627,78 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 	}
 
 	pos.ExitReason = reason
-	if err := e.db.SavePosition(pos); err != nil {
+
+	// Persist via UpdatePositionFields predicate (Fix F). The predicate accepts
+	// only Active or Exiting — reject if another path already closed/closing
+	// this position. Predicate copies the FULL close bundle from local pos
+	// into fresh, mirroring the previous SavePosition(pos) write set so
+	// fallback semantics are preserved.
+	saved := false
+	if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+		if fresh.Status != models.StatusActive && fresh.Status != models.StatusExiting {
+			return false
+		}
+		fresh.RealizedPnL = pos.RealizedPnL
+		fresh.FundingCollected = pos.FundingCollected
+		fresh.ExitFees = pos.ExitFees
+		fresh.BasisGainLoss = pos.BasisGainLoss
+		fresh.LongTotalFees = pos.LongTotalFees
+		fresh.ShortTotalFees = pos.ShortTotalFees
+		fresh.LongFunding = pos.LongFunding
+		fresh.ShortFunding = pos.ShortFunding
+		fresh.LongClosePnL = pos.LongClosePnL
+		fresh.ShortClosePnL = pos.ShortClosePnL
+		fresh.LongExit = pos.LongExit
+		fresh.ShortExit = pos.ShortExit
+		fresh.LongSize = 0
+		fresh.ShortSize = 0
+		fresh.Status = models.StatusClosed
+		fresh.HasReconciled = pos.HasReconciled
+		fresh.PartialReconcile = pos.PartialReconcile
+		fresh.ExitReason = pos.ExitReason
+		// UpdatedAt auto-bumped by UpdatePositionFields.
+		saved = true
+		return true
+	}); err != nil {
 		e.log.Error("consolidate: failed to close %s: %v", pos.ID, err)
+		return
 	}
+	if !saved {
+		e.log.Info("consolidate: %s already closed by another path, skipping bookkeeping", pos.ID)
+		return
+	}
+
+	// Sync local pos UpdatedAt so fallback bookkeeping reflects the persisted
+	// auto-bump (other close-bundle fields were already on local pos before save).
+	pos.UpdatedAt = time.Now().UTC()
+
+	// Re-read persisted truth with retry-then-fallback. Reread failure MUST NOT
+	// abort — that would drop history + releasePerpPosition + reconcilePnL.
+	bookkeepingPos := pos
+	for attempt := 0; attempt < 3; attempt++ {
+		if updated, gerr := e.db.GetPosition(pos.ID); gerr == nil && updated != nil {
+			bookkeepingPos = updated
+			break
+		}
+		time.Sleep(time.Duration(50*(attempt+1)) * time.Millisecond)
+	}
+
 	e.log.Info("[reconcile-debug] AddToHistory %s: LongTotalFees=%.6f ShortTotalFees=%.6f LongFunding=%.6f ShortFunding=%.6f LongClosePnL=%.6f ShortClosePnL=%.6f HasReconciled=%v",
-		pos.ID, pos.LongTotalFees, pos.ShortTotalFees, pos.LongFunding, pos.ShortFunding, pos.LongClosePnL, pos.ShortClosePnL, pos.HasReconciled)
-	if err := e.db.AddToHistory(pos); err != nil {
-		e.log.Error("consolidate: failed to add %s to history: %v", pos.ID, err)
+		bookkeepingPos.ID, bookkeepingPos.LongTotalFees, bookkeepingPos.ShortTotalFees, bookkeepingPos.LongFunding, bookkeepingPos.ShortFunding, bookkeepingPos.LongClosePnL, bookkeepingPos.ShortClosePnL, bookkeepingPos.HasReconciled)
+	if err := e.db.AddToHistory(bookkeepingPos); err != nil {
+		e.log.Error("consolidate: failed to add %s to history: %v", bookkeepingPos.ID, err)
 	}
-	won := reconciledPnL > 0
-	if err := e.db.UpdateStats(reconciledPnL, won); err != nil {
-		e.log.Error("consolidate: failed to update stats for %s: %v", pos.ID, err)
+	won := bookkeepingPos.RealizedPnL > 0
+	if err := e.db.UpdateStats(bookkeepingPos.RealizedPnL, won); err != nil {
+		e.log.Error("consolidate: failed to update stats for %s: %v", bookkeepingPos.ID, err)
 	}
-	e.releasePerpPosition(pos.ID)
-	e.api.BroadcastPositionUpdate(pos)
+	e.releasePerpPosition(bookkeepingPos.ID)
+	e.api.BroadcastPositionUpdate(bookkeepingPos)
 	e.log.Info("consolidate: closed %s (%s) pnl=%.4f (long=%.4f short=%.4f funding=%.4f rotation=%.4f)",
-		pos.ID, reason, reconciledPnL, longAgg.NetPnL, shortAgg.NetPnL, reconciledFunding, pos.RotationPnL)
+		bookkeepingPos.ID, reason, bookkeepingPos.RealizedPnL, longAgg.NetPnL, shortAgg.NetPnL, bookkeepingPos.FundingCollected, bookkeepingPos.RotationPnL)
 
 	if partialClose {
-		posCopy := *pos
+		posCopy := *bookkeepingPos
 		go e.reconcilePnL(&posCopy)
 	}
 }
