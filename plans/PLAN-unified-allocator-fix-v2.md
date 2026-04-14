@@ -1,6 +1,6 @@
 # PLAN: Unified Allocator Post-Impl Fix v2
 
-**Status:** DRAFT v13 — applies Codex v12 3 required changes
+**Status:** DRAFT v14 — applies Codex v13 1 required change (final polish)
 **Revision history:**
 - v1 → Codex NEEDS REVISION: cap unit mismatch, missing strategyPct fallback, non-existent helper references, capacityMu insufficient (spot race), dispatchUnifiedPerp pending double-create, wrong parity framing, Summary not cached.
 - v2 → applied 8 v1 changes; Codex re-review found 5 plan-to-code mismatches.
@@ -14,7 +14,8 @@
 - v10 → applied 5 v9 changes; Codex re-review (v10 re-dispatch with embedded plan after v5/v10 cache-mismatch issue) confirmed 5/5 landed; found 5 new plan-text inconsistencies.
 - v11 → fixes per codex v10 verbatim: (1) ManualOpen snippet no longer uses `defer e.admissionUnlock()` — explicit unlock after persist; (2) Fix H constructor-plumbing sentence rewritten to remove `*Engine`-ref contradiction; (3) AGENTS.md change note rewritten to match documented spot lock order; (4) "Section 9" references replaced with "Fix H unified occupancy model"; (5) lock-duration risk row updated to reflect full in-lock scope.
 - v12 → applied 3 v11 changes; Codex re-review confirmed 3/3 landed; found 3 new plan-text polish items.
-- v13 → fixes per codex v12 verbatim: (1) removed duplicated v12 revision-history entry; (2) stale `selected_entry.go:297-305` references replaced — `persistPendingEntry` is at `internal/spotengine/selected_entry.go:419`, reservation setup is at `:297-305` (clarified in prose); (3) `TestSpotManualOpen_AdmissionLockBlocksStaleReads` description rewritten to describe the actual race: spot `ManualOpen` STARTS while admissionMu is held by concurrent goroutine, BLOCKS, resumes after lock release, observes new occupancy state, rejects (previously said "starts AFTER lock release" which was trivial).
+- v13 → applied 3 v12 changes; Codex re-review confirmed 3/3 landed; found 1 remaining type-name drift.
+- v14 → fixes per codex v13 verbatim: `*risk.Reservation` → `*risk.CapitalReservation` in Fix H pseudocode (2 sites: lines 249 + 297). Matches live type at `internal/risk/allocator.go:34`. Codex stated: "After that fix, I do not see any remaining plan-text inconsistencies in v13."
 **Author:** claude
 **Date:** 2026-04-14
 **Trigger:** Codex post-fix review (#30b7ce58) found 2 blocking issues in v0.33.0 implementation that i5's review missed.
@@ -246,7 +247,7 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
      // fetch, order placement). ALL post-lock failure paths must release the lock
      // AND any owned reservation via the local helper below.
      
-     var reservation *risk.Reservation  // nil until reserveSpotCapital succeeds
+     var reservation *risk.CapitalReservation  // nil until reserveSpotCapital succeeds
      failAdmission := func(err error) error {
          if reservation != nil { e.releaseSpotReservation(reservation) }
          e.admissionUnlock()
@@ -294,7 +295,7 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
      // ALL post-lock failure paths route through failAdmission to release lock +
      // any owned self-reserved reservation.
      
-     var selfReservation *risk.Reservation  // only set if we fall back to reserveSpotCapital
+     var selfReservation *risk.CapitalReservation  // only set if we fall back to reserveSpotCapital
      failAdmission := func(err error) error {
          if selfReservation != nil { e.releaseSpotReservation(selfReservation) }
          e.admissionUnlock()
