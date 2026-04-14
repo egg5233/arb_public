@@ -1,11 +1,12 @@
 # PLAN: Unified Allocator Post-Impl Fix v2
 
-**Status:** DRAFT v4 — applies Codex v3 5 required changes
+**Status:** DRAFT v5 — applies Codex v4 3 required changes
 **Revision history:**
 - v1 → Codex NEEDS REVISION: cap unit mismatch, missing strategyPct fallback, non-existent helper references, capacityMu insufficient (spot race), dispatchUnifiedPerp pending double-create, wrong parity framing, Summary not cached.
 - v2 → applied 8 v1 changes; Codex re-review found 5 plan-to-code mismatches.
 - v3 → applied 5 v2 changes; Codex re-review found 5 internal inconsistencies.
-- v4 → fixes: (1) admitUnifiedWinners pseudocode threads (perpHasOpps, spotHasOpps) and handles Summary error return; (2) NewSpotEngine documented signature uses real `*notify.TelegramNotifier`; only cmd/main.go is the live caller (no test grep hits); (3) pending rollback uses real existing API — `SavePosition(pos)` with `Status=Closed` + `FailureReason="batch_admission_rollback"` + `ExitReason="entry_failed: ..."` + `AddToHistory(pos)` matching legacy abandon at engine.go:2695-2710; no new db helpers needed; (4) Section 5 picks single chosen path: replace `capacityMu` field entirely; (5) Section 8 — db layer untouched (uses existing SavePosition + AddToHistory).
+- v4 → applied 5 v3 changes; Codex re-review found 3 spec inconsistencies.
+- v5 → fixes per codex v4 verbatim: (1) rollback adds `FailureStage = deriveFailureStage(reason)` to fully mirror legacy abandon at engine.go:2695-2708; (2) Section 4 test descriptions updated — "close-and-history" instead of "deleted"; "SavePosition" instead of "SavePendingPosition"; (3) risk table entry corrected — only cmd/main.go is live caller per grep, no test callers to update.
 **Author:** claude
 **Date:** 2026-04-14
 **Trigger:** Codex post-fix review (#30b7ce58) found 2 blocking issues in v0.33.0 implementation that i5's review missed.
@@ -252,9 +253,11 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
                    // Without this, the pending records would orphan in the active set
                    // and falsely consume slot accounting.
                    for prevKey, prevPos := range pending {
+                       reason := "batch_admission_rollback: peer save failed"
                        prevPos.Status = models.StatusClosed
-                       prevPos.FailureReason = "batch_admission_rollback: peer save failed"
-                       prevPos.ExitReason = "entry_failed: batch_admission_rollback"
+                       prevPos.FailureReason = reason
+                       prevPos.FailureStage = deriveFailureStage(reason)  // mirror legacy engine.go:2698
+                       prevPos.ExitReason = "entry_failed: " + reason
                        prevPos.UpdatedAt = time.Now().UTC()
                        if histErr := e.db.AddToHistory(prevPos); histErr != nil {
                            e.log.Error("admit rollback: history write failed for %s (%s): %v", prevKey, prevPos.ID, histErr)
@@ -356,8 +359,8 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
 | `TestUnifiedEntry_EvaluatorHonorsPctOverride` | `unified_entry_test.go` | when snapshot has non-zero `PerpPctOverride`, evaluator computes ceiling as `TotalCap * max(EffectivePerpPct, PerpPctOverride)` (percentage units, not USDT) |
 | `TestUnifiedEntry_BatchReservationItemThreadsPctOverride` | `unified_entry_test.go` | `BatchReservationItem.CapOverride` carries `snapshot.PerpPctOverride` / `SpotPctOverride` through to `ReserveBatch` |
 | `TestUnifiedEntry_AdmissionSerializedAgainstConcurrentManualOpen` | `unified_entry_test.go` | while unified admission holds `admissionMu`, concurrent perp `ManualOpen` AND spot `ManualOpen` block until admission finishes (use goroutine + sync.WaitGroup + miniredis + shared `*sync.Mutex` injected into both engines) |
-| `TestUnifiedEntry_PendingPositionRollbackOnPartialFailure` | `unified_entry_test.go` | when 2 perp pending saves succeed and 3rd fails, all 3 are deleted before returning; batch released; no orphan rows |
-| `TestUnifiedEntry_DispatchUsesPreCreatedPendingNotNew` | `unified_entry_test.go` | `dispatchUnifiedPerp` consumes `pending[w.Key]`, never calls `db.SavePendingPosition` itself (spy with counter on save) |
+| `TestUnifiedEntry_PendingPositionRollbackOnPartialFailure` | `unified_entry_test.go` | when 2 perp pending saves succeed and 3rd fails, the 2 prior records get close-and-history rollback (Status=Closed + FailureReason + FailureStage + ExitReason + AddToHistory + SavePosition), batch released, no orphans in active set |
+| `TestUnifiedEntry_DispatchUsesPreCreatedPendingNotNew` | `unified_entry_test.go` | `dispatchUnifiedPerp` consumes `pending[w.Key]`; never calls `db.SavePosition` for a NEW pending record itself (spy on SavePosition counts only the admission-time saves) |
 | `TestUnifiedEntry_E2ESpotPreheldHandoff` | `unified_entry_test.go` | See Fix I — orchestrator → ReserveBatch → batch.Items[key] → OpenSelectedEntry (spot-only, uses existing stubSpotEntryExecutor) |
 | `TestAllocator_FrozenFixtureNonZeroTransferFees` | `allocator_parity_test.go` | See Fix J — frozen fixture exercises Pass-2 cross-exchange transfer with non-zero withdraw fee |
 
@@ -378,7 +381,7 @@ Note: Fix H **replaces** `capacityMu` field with `admissionMu *sync.Mutex` (sing
 | Dynamic pct query adds Redis latency (per-tick) | `Summary()` is NOT cached today (`risk/allocator.go:346-357` — corrected from v1 which wrongly claimed 1s cache). Each call re-computes via `loadState()`. Snapshot built ONCE per EntryScan tick, so latency impact = 1× `loadState()` per tick. Measure in practice; if > 500ms, add explicit per-tick cache. |
 | `admissionMu` held longer than legacy `capacityMu` (admission covers B&B) | B&B has 30s timeout; realistic admission < 3s. Legacy admission ~500ms. Worst-case 6× longer. Acceptable for 10-minute EntryScan cadence. Measure post-deploy; add candidate count cap if > 5s. |
 | `admissionMu` replaces `capacityMu` — lock-ordering mistakes | No nested locks (single admission lock at top level). All callers must acquire at same logical level. Enforced by removing `capacityMu` field from Engine and replacing all call sites atomically in one commit. |
-| Cross-engine admission requires `Engine` → `SpotEngine` lock sharing | CHOSEN: pass `*sync.Mutex` into `NewSpotEngine` constructor (`internal/spotengine/engine.go:73-102`). Engine exposes `AdmissionMutex()` accessor; cmd/main.go:432 wires it. Avoids `*Engine` reference cycle. All test callers must add the arg. |
+| Cross-engine admission requires `Engine` → `SpotEngine` lock sharing | CHOSEN: pass `*sync.Mutex` into `NewSpotEngine` constructor (`internal/spotengine/engine.go:73-80`). Engine exposes `AdmissionMutex()` accessor; cmd/main.go:432 wires it. Avoids `*Engine` reference cycle. Grep confirms only cmd/main.go is the live caller — no test callers to update. |
 | `dispatchUnifiedPerp` pending-removal breaks existing callers | Audit: only the unified path calls `dispatchUnifiedPerp`; legacy perp uses different dispatch. Single caller — low risk. |
 | Frozen fixture parity test (Fix J) requires concrete exchange/risk stubs | Use existing test-doubles in `internal/engine/*_test.go`. If stubs don't exist for `SimulateApprovalForPair`, add a thin test-only interface override OR test `dryRunTransferPlan` directly. |
 
