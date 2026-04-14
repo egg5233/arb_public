@@ -1,6 +1,6 @@
 # PLAN: Unified Allocator Post-Impl Fix v2
 
-**Status:** DRAFT v14 — applies Codex v13 1 required change (final polish)
+**Status:** DRAFT v15 — applies Codex v14 1 required change (line-number correction in history bullet)
 **Revision history:**
 - v1 → Codex NEEDS REVISION: cap unit mismatch, missing strategyPct fallback, non-existent helper references, capacityMu insufficient (spot race), dispatchUnifiedPerp pending double-create, wrong parity framing, Summary not cached.
 - v2 → applied 8 v1 changes; Codex re-review found 5 plan-to-code mismatches.
@@ -15,7 +15,8 @@
 - v11 → fixes per codex v10 verbatim: (1) ManualOpen snippet no longer uses `defer e.admissionUnlock()` — explicit unlock after persist; (2) Fix H constructor-plumbing sentence rewritten to remove `*Engine`-ref contradiction; (3) AGENTS.md change note rewritten to match documented spot lock order; (4) "Section 9" references replaced with "Fix H unified occupancy model"; (5) lock-duration risk row updated to reflect full in-lock scope.
 - v12 → applied 3 v11 changes; Codex re-review confirmed 3/3 landed; found 3 new plan-text polish items.
 - v13 → applied 3 v12 changes; Codex re-review confirmed 3/3 landed; found 1 remaining type-name drift.
-- v14 → fixes per codex v13 verbatim: `*risk.Reservation` → `*risk.CapitalReservation` in Fix H pseudocode (2 sites: lines 249 + 297). Matches live type at `internal/risk/allocator.go:34`. Codex stated: "After that fix, I do not see any remaining plan-text inconsistencies in v13."
+- v14 → fixes per codex v13 verbatim: `*risk.Reservation` → `*risk.CapitalReservation` in Fix H pseudocode (2 sites: lines 250 + 298). Matches live type at `internal/risk/allocator.go:34`. Codex stated: "After that fix, I do not see any remaining plan-text inconsistencies in v13."
+- v15 → codex v14 identified stale line numbers in v14 history bullet (said `249`/`297` but actual lines were `250`/`298` after content shift). Corrected in this entry.
 **Author:** claude
 **Date:** 2026-04-14
 **Trigger:** Codex post-fix review (#30b7ce58) found 2 blocking issues in v0.33.0 implementation that i5's review missed.
