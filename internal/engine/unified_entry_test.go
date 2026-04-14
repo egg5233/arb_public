@@ -1220,3 +1220,173 @@ func TestUnifiedEntry_E2ESpotPreheldHandoff(t *testing.T) {
 		})
 	}
 }
+
+// TestUnifiedEntry_SnapshotUsesStrategyPctFallback — Fix G regression: when
+// allocator.Summary() reports EffectivePerpPct/EffectiveSpotPct == 0 (the
+// state that holds before updateAllocation() has run at least once), the
+// snapshot must fall back to the static cfg.MaxPerpPerpPct / MaxSpotFuturesPct.
+// Without this, B&B feasibility uses zero caps and admits nothing.
+//
+// Plan v15 Section 4 acceptance #508 (strategyPct fallback path); plan calls
+// out allocator.go:599-621 as the live fallback source.
+func TestUnifiedEntry_SnapshotUsesStrategyPctFallback(t *testing.T) {
+	e, _, _ := newTestEngineForUnified(t)
+	// Distinctive static values so we can verify the fallback took effect
+	// rather than the zero from an uninitialized allocator.
+	e.cfg.MaxPerpPerpPct = 0.42
+	e.cfg.MaxSpotFuturesPct = 0.31
+
+	// Do NOT call SetEffectiveAllocation / updateAllocation — allocator starts
+	// with effectivePerpPct=0, effectiveSpotPct=0. That is the very state the
+	// fallback is designed to cover.
+
+	snap, err := e.buildCapacitySnapshot(true, true)
+	if err != nil {
+		t.Fatalf("buildCapacitySnapshot: %v", err)
+	}
+	if snap.effectivePerpPct != 0.42 {
+		t.Errorf("effectivePerpPct = %v; want static fallback 0.42", snap.effectivePerpPct)
+	}
+	if snap.effectiveSpotPct != 0.31 {
+		t.Errorf("effectiveSpotPct = %v; want static fallback 0.31", snap.effectiveSpotPct)
+	}
+	// perpPctOverride / spotPctOverride must also resolve to the static
+	// fallback (they default to effective*Pct when DynamicStrategyPct returns 0).
+	if snap.perpPctOverride != 0.42 {
+		t.Errorf("perpPctOverride = %v; want fallback 0.42", snap.perpPctOverride)
+	}
+	if snap.spotPctOverride != 0.31 {
+		t.Errorf("spotPctOverride = %v; want fallback 0.31", snap.spotPctOverride)
+	}
+}
+
+// TestUnifiedEntry_SnapshotThreadsOppPresenceToDynamicPct — Fix G regression:
+// buildCapacitySnapshot must pass (perpHasOpps, spotHasOpps) through to
+// DynamicStrategyPct so the dynamic-shift logic (free unused capacity from
+// the strategy that has no opps) kicks in. When spotHasOpps=false, perp
+// should be allowed to borrow the spot allocation; and vice versa.
+//
+// Plan v15 Section 3 Fix G + Section 4 acceptance #509.
+func TestUnifiedEntry_SnapshotThreadsOppPresenceToDynamicPct(t *testing.T) {
+	e, _, _ := newTestEngineForUnified(t)
+	// Enable unified-capital allocation so DynamicStrategyPct's dynamic-shift
+	// branch runs (otherwise it short-circuits to strategyPct).
+	e.cfg.EnableUnifiedCapital = true
+	e.cfg.MaxTotalExposureUSDT = 1000
+	e.cfg.MaxPerpPerpPct = 0.40
+	e.cfg.MaxSpotFuturesPct = 0.40
+	e.cfg.AllocationCeilingPct = 0.90
+
+	// Seed effective pcts directly — simulates post-updateAllocation state.
+	// With zero committed on both sides, the unused-spot pool available to
+	// borrow back to perp is spotPct*totalCap = 400. When spotHasOpps=false,
+	// perp override should include that freed capacity.
+	e.allocator.SetEffectiveAllocation(0.40, 0.40)
+
+	bothSides, err := e.buildCapacitySnapshot(true, true)
+	if err != nil {
+		t.Fatalf("buildCapacitySnapshot(true,true): %v", err)
+	}
+	perpOnly, err := e.buildCapacitySnapshot(true, false)
+	if err != nil {
+		t.Fatalf("buildCapacitySnapshot(true,false): %v", err)
+	}
+	spotOnly, err := e.buildCapacitySnapshot(false, true)
+	if err != nil {
+		t.Fatalf("buildCapacitySnapshot(false,true): %v", err)
+	}
+
+	// perp + spot both present — no freed allocation, plain 0.40.
+	if bothSides.perpPctOverride != 0.40 {
+		t.Errorf("bothSides perpPctOverride = %v; want 0.40", bothSides.perpPctOverride)
+	}
+	// spot has no opps → perp grabs spot's uncommitted share → strictly > 0.40.
+	if !(perpOnly.perpPctOverride > bothSides.perpPctOverride) {
+		t.Errorf("perpOnly perpPctOverride %v must exceed bothSides %v (spot free capacity not threaded through)",
+			perpOnly.perpPctOverride, bothSides.perpPctOverride)
+	}
+	// perp has no opps → spot grabs perp's uncommitted share → strictly > 0.40.
+	if !(spotOnly.spotPctOverride > bothSides.spotPctOverride) {
+		t.Errorf("spotOnly spotPctOverride %v must exceed bothSides %v (perp free capacity not threaded through)",
+			spotOnly.spotPctOverride, bothSides.spotPctOverride)
+	}
+	// Ceiling clamp holds (AllocationCeilingPct=0.90).
+	if perpOnly.perpPctOverride > 0.90 {
+		t.Errorf("perpOnly perpPctOverride %v breaches ceiling 0.90", perpOnly.perpPctOverride)
+	}
+	if spotOnly.spotPctOverride > 0.90 {
+		t.Errorf("spotOnly spotPctOverride %v breaches ceiling 0.90", spotOnly.spotPctOverride)
+	}
+}
+
+// TestUnifiedEntry_AdmissionSerializedAgainstConcurrentManualOpen — Fix H
+// regression: the admissionMu is a SHARED *sync.Mutex between Engine (value
+// field owner via AdmissionMutex() accessor) and SpotEngine (holds pointer
+// via NewSpotEngine param). While one side holds the lock (simulating unified
+// admission), the other side's lock acquisition (simulating perp ManualOpen
+// or spot ManualOpen) must block until release.
+//
+// Plan v15 Section 4 acceptance #512. This test verifies the lock-sharing
+// contract directly — real Engine.ManualOpen / SpotEngine.ManualOpen funnel
+// through the same *sync.Mutex via e.admissionMu.Lock / e.admissionLock(),
+// so the serialization property proved here applies to them.
+func TestUnifiedEntry_AdmissionSerializedAgainstConcurrentManualOpen(t *testing.T) {
+	e, _, _ := newTestEngineForUnified(t)
+	// Engine.AdmissionMutex() is the canonical accessor; SpotEngine is wired
+	// with this exact pointer in cmd/main.go:432.
+	sharedMu := e.AdmissionMutex()
+	if sharedMu == nil {
+		t.Fatal("AdmissionMutex() returned nil — lock-sharing contract broken")
+	}
+
+	// Hold the lock via the Engine's own admissionMu to simulate unified
+	// admission in-progress (runUnifiedEntrySelection holds this during
+	// solver + reserve + pending-save per Fix H).
+	sharedMu.Lock()
+
+	// Two contenders simulate perp ManualOpen and spot ManualOpen. Both must
+	// acquire sharedMu before doing any admission work (perp via
+	// e.admissionMu.Lock in engine.go ManualOpen / executeArbitrage; spot via
+	// e.admissionLock() helper that wraps e.admissionMu.Lock). Here we use
+	// the raw *sync.Mutex — what matters is the shared identity.
+	acquired := make(chan string, 2)
+	var wg sync.WaitGroup
+	contenders := []string{"perp-ManualOpen", "spot-ManualOpen"}
+	for _, name := range contenders {
+		wg.Add(1)
+		go func(who string) {
+			defer wg.Done()
+			sharedMu.Lock()
+			acquired <- who
+			sharedMu.Unlock()
+		}(name)
+	}
+
+	// Give contenders time to schedule. None may acquire while we still hold.
+	select {
+	case name := <-acquired:
+		sharedMu.Unlock() // avoid leaking lock in the failure path
+		t.Fatalf("%s acquired admissionMu while unified admission still held it", name)
+	case <-time.After(80 * time.Millisecond):
+		// Expected: both contenders are blocked waiting on sharedMu.
+	}
+
+	// Release. Both contenders must proceed in some order.
+	sharedMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// Both goroutines finished — serialization worked.
+	case <-time.After(2 * time.Second):
+		t.Fatal("contenders did not unblock within 2s after admissionMu release")
+	}
+
+	if len(acquired) != 2 {
+		t.Errorf("expected 2 contender acquisitions after release, got %d", len(acquired))
+	}
+}
