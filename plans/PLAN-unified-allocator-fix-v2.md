@@ -1,13 +1,14 @@
 # PLAN: Unified Allocator Post-Impl Fix v2
 
-**Status:** DRAFT v6 — applies Codex v5 5 required changes
+**Status:** DRAFT v7 — applies Codex v6 6 required changes
 **Revision history:**
 - v1 → Codex NEEDS REVISION: cap unit mismatch, missing strategyPct fallback, non-existent helper references, capacityMu insufficient (spot race), dispatchUnifiedPerp pending double-create, wrong parity framing, Summary not cached.
 - v2 → applied 8 v1 changes; Codex re-review found 5 plan-to-code mismatches.
 - v3 → applied 5 v2 changes; Codex re-review found 5 internal inconsistencies.
 - v4 → applied 5 v3 changes; Codex re-review found 3 spec inconsistencies.
 - v5 → applied 3 v4 changes; Codex re-review found 5 deeper issues.
-- v6 → fixes per codex v5 verbatim: (1) `summary.TotalCap` doesn't exist — use `cfg.MaxTotalExposureUSDT`; add `updateAllocation()` call in unified path; use `allocator.DynamicStrategyPct()` for one-Summary-per-tick; (2) move approval/revalidation + cross-strategy occupancy recheck INSIDE admissionMu; don't ignore loadUnifiedOccupancy error; (3) timeout from `cfg.AllocatorTimeoutMs` with 30ms fallback (not hardcoded 30s); (4) `admissionMu` as VALUE `sync.Mutex` + accessor returns `&e.admissionMu`; nil-safe spot helpers preserve direct test literals; (5) pending lifecycle preserved — broadcast + cleanup on ALL early-return paths (acquire-lock err, busy, dry-run, any pre-execute abort) + regression test.
+- v6 → applied 5 v5 changes; Codex re-review found 6 residuals.
+- v7 → fixes per codex v6 verbatim: (1) admissionMu wording consistent value-everywhere (no `*sync.Mutex` leftovers); (2) restore `selectUnifiedPerpOpps` wrapper call (tier-3 override salvage); (3) spot flow: `ListEntryCandidates` → `BuildEntryPlan` (before or inside admission) → plans; pseudocode signatures consistent; (4) `DynamicStrategyPct` uses real signature `(strategy, perpHasOpps, spotHasOpps, committed)`, committed from the one Summary call — no allocator API churn; (5) all new `BroadcastPositionUpdate` calls guarded `if e.api != nil`; rollback loop broadcasts each rolled-back position; (6) Fix I test re-scoped to observable Redis reservation state, no spy-call-count.
 **Author:** claude
 **Date:** 2026-04-14
 **Trigger:** Codex post-fix review (#30b7ce58) found 2 blocking issues in v0.33.0 implementation that i5's review missed.
@@ -95,13 +96,13 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
        effectiveSpot := summary.EffectiveSpotPct
        if effectiveSpot == 0 { effectiveSpot = e.cfg.MaxSpotFuturesPct }
        
-       // Overrides: use allocator.DynamicStrategyPct(strategy, perpHasOpps, spotHasOpps)
-       // — expose the same math engine/capital.go:226-241 uses, but without the extra
-       // Summary() calls dynamicStrategyPct makes internally. One summary per tick only.
-       // (If allocator.DynamicStrategyPct doesn't exist yet, add it as a method that
-       //  takes the already-loaded summary to avoid duplicate loadState() calls.)
-       perpOverride := e.allocator.DynamicStrategyPct(summary, risk.StrategyPerpPerp, perpHasOpps, spotHasOpps)
-       spotOverride := e.allocator.DynamicStrategyPct(summary, risk.StrategySpotFutures, perpHasOpps, spotHasOpps)
+       // Overrides: reuse the live allocator.DynamicStrategyPct API with its real signature
+       // (allocator.go:785-830): DynamicStrategyPct(strategy, perpHasOpps, spotHasOpps, committed).
+       // Pass `committed` from the already-loaded summary so no extra loadState() happens.
+       // No allocator API change needed.
+       committed := summary.ByStrategy  // map[risk.Strategy]float64 from the single Summary call
+       perpOverride := e.allocator.DynamicStrategyPct(risk.StrategyPerpPerp, perpHasOpps, spotHasOpps, committed)
+       spotOverride := e.allocator.DynamicStrategyPct(risk.StrategySpotFutures, perpHasOpps, spotHasOpps, committed)
        
        return &unifiedCapacitySnapshot{
            TotalCap:         e.cfg.MaxTotalExposureUSDT,  // NOT summary.TotalCap (doesn't exist)
@@ -205,7 +206,7 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
    - **`cmd/main.go:432`** — update `NewSpotEngine` call to pass `eng.AdmissionMutex()` (new accessor on Engine returning `*sync.Mutex`):
      ```go
      // engine.go new accessor:
-     func (e *Engine) AdmissionMutex() *sync.Mutex { return e.admissionMu }
+     func (e *Engine) AdmissionMutex() *sync.Mutex { return &e.admissionMu }
      
      // cmd/main.go:432:
      spotEng = spotengine.NewSpotEngine(exchanges, db, apiSrv, cfg, allocator, tg, eng.AdmissionMutex())
@@ -218,10 +219,27 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
    ```go
    func (e *Engine) runUnifiedEntrySelection() error {
        // readiness gate, log, opp gathering (no lock)
-       perpOpps, tier := e.consumeOverridesAndEnrichOpps(...)
-       spotCands := e.spotEntry.ListEntryCandidates(...)
+       // Preserve the existing tier-3 override-salvage wrapper. Do NOT bypass to raw
+       // consumeOverridesAndEnrichOpps — that loses the stale-override → original-opps
+       // fallback path (engine/unified_entry.go:119-120, :322-331).
+       originalPerpOpps := e.discovery.GetOpportunities()
+       perpOpps, tier := e.selectUnifiedPerpOpps(originalPerpOpps)
        
-       winners, batch, pendingRecs, err := e.admitUnifiedWinners(perpOpps, spotCands)
+       // Spot: ListEntryCandidates returns []SpotEntryCandidate (no plans yet);
+       // BuildEntryPlan turns each into SpotEntryPlan with sizing/fees/borrow checks.
+       // Plans are built BEFORE admission lock (read-only, network / exchange-metadata queries).
+       spotRaw := e.spotEntry.ListEntryCandidates(...)
+       spotPlans := make([]*models.SpotEntryPlan, 0, len(spotRaw))
+       for _, c := range spotRaw {
+           plan, err := e.spotEntry.BuildEntryPlan(c)
+           if err != nil {
+               e.log.Warn("BuildEntryPlan %s/%s: %v", c.Exchange, c.Symbol, err)
+               continue
+           }
+           spotPlans = append(spotPlans, plan)
+       }
+       
+       winners, batch, pendingRecs, err := e.admitUnifiedWinners(perpOpps, spotPlans)
        if err != nil { return err }
        if len(winners) == 0 { return nil }
        
@@ -230,7 +248,7 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
    
    func (e *Engine) admitUnifiedWinners(
        perpOpps []models.Opportunity,
-       spotCands []*models.SpotEntryPlan,
+       spotPlans []*models.SpotEntryPlan,  // plans, NOT raw candidates (BuildEntryPlan ran before admission)
    ) (winners []*unifiedEntryChoice, batch *risk.BatchReservation, pending map[string]*models.ArbitragePosition, err error) {
        // CRITICAL: all admission decisions (occupancy, approval revalidation, solver,
        // reserve, pending-save) must happen under this lock. Candidate gathering
@@ -289,22 +307,17 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
                    // + FailureReason + ExitReason, AddToHistory, then SavePosition.
                    // Without this, the pending records would orphan in the active set
                    // and falsely consume slot accounting.
-                   for prevKey, prevPos := range pending {
-                       reason := "batch_admission_rollback: peer save failed"
-                       prevPos.Status = models.StatusClosed
-                       prevPos.FailureReason = reason
-                       prevPos.FailureStage = deriveFailureStage(reason)  // mirror legacy engine.go:2698
-                       prevPos.ExitReason = "entry_failed: " + reason
-                       prevPos.UpdatedAt = time.Now().UTC()
-                       if histErr := e.db.AddToHistory(prevPos); histErr != nil {
-                           e.log.Error("admit rollback: history write failed for %s (%s): %v", prevKey, prevPos.ID, histErr)
-                       }
-                       if saveErr := e.db.SavePosition(prevPos); saveErr != nil {
-                           e.log.Error("admit rollback: close-state save failed for %s (%s): %v", prevKey, prevPos.ID, saveErr)
-                       }
+                   // Route peer cleanup through abandonPendingPerp (single source of truth).
+                   // That helper does: Status=Closed + FailureReason + FailureStage +
+                   // ExitReason + AddToHistory + SavePosition + Broadcast (nil-guarded).
+                   for _, prevPos := range pending {
+                       e.abandonPendingPerp(prevPos, "batch_admission_rollback: peer save failed")
                    }
                    e.allocator.ReleaseBatch(batch)
                    return nil, nil, nil, err
+               }
+               if e.api != nil {
+                   e.api.BroadcastPositionUpdate(pos)  // preserve broadcast (unified_entry.go:597-599 guarded)
                }
                pending[w.Key] = pos
            }
@@ -315,10 +328,12 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
 
 3. **Pending lifecycle preservation** — moving pending-save to admission must preserve ALL current side effects:
    
-   a. **Broadcast after admission save.** Current `dispatchUnifiedPerp` does `BroadcastPositionUpdate(pendingPos)` at `unified_entry.go:598`. After move, `admitUnifiedWinners` must broadcast each created pending record before returning:
+   a. **Broadcast after admission save (nil-guarded).** Current `dispatchUnifiedPerp` does `BroadcastPositionUpdate(pendingPos)` at `unified_entry.go:597-599` AFTER a `if e.api != nil` guard. After move, `admitUnifiedWinners` must broadcast each created pending record with the SAME nil guard (test harness constructs `&Engine{}` with `api=nil` at `unified_entry_test.go:115-120`):
       ```go
-      if err := e.db.SavePosition(pos); err != nil { /* rollback... */ }
-      e.api.BroadcastPositionUpdate(pos)  // preserve broadcast
+      if err := e.db.SavePosition(pos); err != nil { /* rollback via abandonPendingPerp... */ }
+      if e.api != nil {
+          e.api.BroadcastPositionUpdate(pos)  // nil-guarded, preserves tests
+      }
       pending[w.Key] = pos
       ```
    
@@ -354,7 +369,9 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
           if err := e.db.SavePosition(pos); err != nil {
               e.log.Error("abandonPendingPerp: save %s: %v", pos.ID, err)
           }
-          e.api.BroadcastPositionUpdate(pos)
+          if e.api != nil {
+              e.api.BroadcastPositionUpdate(pos)  // nil-guarded; preserves test harness with api=nil
+          }
       }
       ```
    
@@ -379,17 +396,23 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
 `TestUnifiedEntry_E2ESpotPreheldHandoff` in `internal/engine/unified_entry_test.go`:
 ```go
 // Setup:
-//   - miniredis-backed CapitalAllocator
-//   - stubSpotEntryExecutor spying OpenSelectedEntry(plan, capOverride, preheld *risk.CapitalReservation)
+//   - miniredis-backed CapitalAllocator (real implementation — enables Redis key inspection)
+//   - stubSpotEntryExecutor records (plan, capOverride, preheld) per OpenSelectedEntry call
 //   - 1 or more spot candidates, 0 perp (or perp disabled) to isolate the handoff
 // Run: e.runUnifiedEntrySelection()
-// Assert:
-//   1. allocator.ReserveBatch called exactly once (count via allocator spy)
-//   2. batch.Items contains one reservation per spot winner keyed by candidate key
-//   3. each OpenSelectedEntry call received preheld != nil, matching batch.Items[c.Key]
-//   4. allocator.Reserve (single) never called during dispatch (count must stay 0 after admission)
-// Complements: internal/spotengine/selected_entry_test.go:677-724 which verifies
-//   the inner preheld branch of OpenSelectedEntry itself.
+// Assert via OBSERVABLE REDIS STATE (no spy on concrete *risk.CapitalAllocator internals):
+//   1. After admission: miniredis has exactly len(winners) reservation keys
+//      (allocatorReservationPref prefix per risk/allocator.go:30) with the expected
+//      strategy tag and exposures. One key per winner, keyed by candidate key.
+//   2. Each OpenSelectedEntry record has preheld != nil, and preheld.ID matches
+//      one of the Redis reservation keys from step 1.
+//   3. After dispatch: the Redis reservation count is UNCHANGED (no secondary Reserve
+//      happened). Commit (if executor calls Commit) transitions Reserved → Committed
+//      via the existing committed key prefix, NOT a new Reserve key.
+// Why observable Redis vs spy: Engine/SpotEngine hold concrete *risk.CapitalAllocator
+// fields (not interfaces), so a spy would require an interface refactor. Redis state
+// is already observable via miniredis and matches the live contract.
+// Complements: internal/spotengine/selected_entry_test.go:677-724 (inner preheld branch).
 ```
 
 **Perp E2E note (non-blocking):** if later we need perp E2E coverage, add a narrow test-only dispatch hook patterned after `rescannerOverride` (`internal/engine/consume_overrides.go:16-27`). NOT in scope for v2 — Codex recommends spot-only for this fix.
@@ -443,7 +466,7 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
 
 All 4 fixes are additive or local — no schema changes. Rollback = `git revert <fix commit>`. Flag-gated behavior unchanged; legacy path unaffected.
 
-Note: Fix H **replaces** `capacityMu` field with `admissionMu *sync.Mutex` (single chosen path — not "rename or add alongside"). Legacy perp callers `ManualOpen` (`engine.go:407-485`) and `executeArbitrage` (`engine.go:2126-2427`) update in the same commit. No coexistence period.
+Note: Fix H **replaces** `capacityMu` field with `admissionMu sync.Mutex` VALUE (single chosen path — not "rename or add alongside"; not a pointer). `AdmissionMutex() *sync.Mutex` accessor returns `&e.admissionMu`. Legacy perp callers `ManualOpen` (`engine.go:407-485`) and `executeArbitrage` (`engine.go:2126-2427`) update in the same commit. No coexistence period.
 
 ---
 
@@ -488,7 +511,7 @@ Note: Fix H **replaces** `capacityMu` field with `admissionMu *sync.Mutex` (sing
 **Modified:**
 - `internal/engine/unified_capacity.go` — snapshot carries percentages (`EffectivePerpPct`, `EffectiveSpotPct`, `PerpPctOverride`, `SpotPctOverride`); strategyPct() fallback; `buildCapacitySnapshot(perpHasOpps, spotHasOpps) (*unifiedCapacitySnapshot, error)` handles Summary error
 - `internal/engine/unified_entry.go` — `admissionMu` wrap (replaces capacityMu); pct override threading via `BatchReservationItem.CapOverride`; `admitUnifiedWinners` helper returns `pending map`; pending rollback uses existing `SavePosition + AddToHistory` (legacy abandon pattern engine.go:2695-2710); `dispatchUnifiedPerp` consumes pre-created pending instead of creating new
-- `internal/engine/engine.go` — REPLACE `capacityMu` field with `admissionMu *sync.Mutex` (pointer for sharing); `AdmissionMutex()` accessor; update all call sites at `:407-485` (`ManualOpen`) and `:2126-2427` (`executeArbitrage`)
+- `internal/engine/engine.go` — REPLACE `capacityMu` field with `admissionMu sync.Mutex` VALUE; `AdmissionMutex() *sync.Mutex` accessor returns `&e.admissionMu`; update all call sites at `:407-485` (`ManualOpen`) and `:2126-2427` (`executeArbitrage`)
 - `internal/spotengine/engine.go` — `NewSpotEngine` adds `admissionMu *sync.Mutex` parameter (after existing `*notify.TelegramNotifier`); SpotEngine struct stores it; `admissionLock()/admissionUnlock()` helpers
 - `internal/spotengine/execution.go` — `ManualOpen` (`:143-157,292-306`) wraps admission window with `admissionLock()`; audit `spotEntryLock` for scope overlap
 - `internal/spotengine/selected_entry.go` — `OpenSelectedEntry` (`:237-305`) acquires `admissionLock()` for its own admission (NOT nested with caller's lock — caller releases first)
