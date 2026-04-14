@@ -117,6 +117,28 @@ func (e *Engine) consolidatePositions(missCount map[string]int, dustIgnore map[s
 	}
 	e.entryMu.Unlock()
 
+	// Build exclusion set and size offsets from active spot-futures positions.
+	// Used by orphan detection (keys) and size-mismatch detection (offsets).
+	spotFuturesKeys := make(map[string]bool)
+	sfSizeOffset := make(map[string]float64) // key = "exchange:symbol:side" → total futures size
+	if spotPositions, sfErr := e.db.GetActiveSpotPositions(); sfErr == nil {
+		for _, sp := range spotPositions {
+			// Dir A = futures long, Dir B = futures short
+			side := "long"
+			if sp.Direction == "buy_spot_short" {
+				side = "short"
+			}
+			key := fmt.Sprintf("%s:%s:%s", sp.Exchange, sp.Symbol, side)
+			spotFuturesKeys[key] = true
+			// Only count the futures leg for size offset if the position is
+			// truly active (futures leg still open on exchange). Pending and
+			// exiting positions may have a flat or stale FuturesSize.
+			if sp.Status == models.SpotStatusActive {
+				sfSizeOffset[key] += sp.FuturesSize
+			}
+		}
+	}
+
 	for _, pos := range positions {
 		if pos.Status != models.StatusActive {
 			continue
@@ -132,7 +154,7 @@ func (e *Engine) consolidatePositions(missCount map[string]int, dustIgnore map[s
 		if busySymbols[pos.LongExchange+":"+pos.Symbol] || busySymbols[pos.ShortExchange+":"+pos.Symbol] {
 			continue
 		}
-		e.consolidatePosition(pos, siblingTotals, missCount)
+		e.consolidatePosition(pos, siblingTotals, sfSizeOffset, missCount)
 	}
 
 	// Reconcile stranded partial positions (Fix B)
@@ -144,21 +166,6 @@ func (e *Engine) consolidatePositions(missCount map[string]int, dustIgnore map[s
 			continue
 		}
 		e.reconcilePartialPosition(pos)
-	}
-
-	// Build exclusion set from active spot-futures positions so the perp-perp
-	// consolidator doesn't flag their futures legs as orphans.
-	spotFuturesKeys := make(map[string]bool)
-	if spotPositions, sfErr := e.db.GetActiveSpotPositions(); sfErr == nil {
-		for _, sp := range spotPositions {
-			// Dir A = futures long, Dir B = futures short
-			side := "long"
-			if sp.Direction == "buy_spot_short" {
-				side = "short"
-			}
-			key := fmt.Sprintf("%s:%s:%s", sp.Exchange, sp.Symbol, side)
-			spotFuturesKeys[key] = true
-		}
 	}
 
 	// Check for orphan exchange positions not tracked by any local record.
@@ -269,7 +276,7 @@ func (e *Engine) consolidatePositions(missCount map[string]int, dustIgnore map[s
 // transient BingX API responses returning empty position arrays.
 const bingxMissThreshold = 3
 
-func (e *Engine) consolidatePosition(pos *models.ArbitragePosition, siblingTotals map[string]float64, missCount map[string]int) {
+func (e *Engine) consolidatePosition(pos *models.ArbitragePosition, siblingTotals map[string]float64, sfSizeOffset map[string]float64, missCount map[string]int) {
 	longExch, lok := e.exchanges[pos.LongExchange]
 	shortExch, sok := e.exchanges[pos.ShortExchange]
 	if !lok || !sok {
@@ -282,6 +289,17 @@ func (e *Engine) consolidatePosition(pos *models.ArbitragePosition, siblingTotal
 
 	if longErr != nil || shortErr != nil {
 		return // can't verify, skip
+	}
+
+	// Subtract spot-futures position sizes from exchange totals so the
+	// perp-perp consolidator doesn't flag their futures legs as mismatches.
+	longSize -= sfSizeOffset[fmt.Sprintf("%s:%s:long", pos.LongExchange, pos.Symbol)]
+	shortSize -= sfSizeOffset[fmt.Sprintf("%s:%s:short", pos.ShortExchange, pos.Symbol)]
+	if longSize < 0 {
+		longSize = 0
+	}
+	if shortSize < 0 {
+		shortSize = 0
 	}
 
 	// When multiple local positions share the same (exchange, symbol, side),

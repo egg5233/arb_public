@@ -2646,6 +2646,17 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 	slippage := e.cfg.SlippageBPS / 10000.0
 	sizeStr := e.formatSize(newExchName, pos.Symbol, closeSize)
 
+	// Pre-check: step-size rounding must not lose significant size.
+	// If the new exchange rounds the position down (e.g. 349 → 300 due to step size),
+	// the remainder would stay on the old exchange, causing the post-close "NOT flat"
+	// check to abort and leave the position unhedged. Skip the rotation instead.
+	formattedSize, _ := strconv.ParseFloat(sizeStr, 64)
+	if formattedSize < closeSize*0.99 {
+		e.log.Warn("rotation: skipping %s — new exchange %s step-size rounds %.6f → %s (%.1f%% loss, remainder would stay on %s)",
+			pos.ID, newExchName, closeSize, sizeStr, (1-formattedSize/closeSize)*100, oldExchName)
+		return
+	}
+
 	// Pre-check: position notional must meet minimum to avoid partial-fill loops.
 	const minNotionalUSDT = 10.0
 	if closeSize*refPrice < minNotionalUSDT {
@@ -2784,21 +2795,75 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 		return
 	}
 	if remainingOnExch > 0 {
-		e.log.Error("CRITICAL: rotation close for %s — old leg NOT flat on %s (remaining=%.6f), aborting. Closing new leg back.",
-			pos.ID, oldExchName, remainingOnExch)
-		// Write remaining old-leg size back to position before aborting.
-		_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
-			if legSide == "short" {
-				fresh.ShortSize = remainingOnExch
-			} else {
-				fresh.LongSize = remainingOnExch
-			}
-			return true
-		})
+		// Check if the remainder is expected (step-size rounding caused a partial rotation)
+		// vs unexpected (genuinely failed close or another position sharing the exchange).
+		expectedRemaining := closeSize - closeQty // closeSize is the original pos size, closeQty is what was actually closed
+		tolerance := closeSize * 0.01             // 1% tolerance
+		if remainingOnExch <= expectedRemaining+tolerance && expectedRemaining > 0 {
+			// Step-size partial rotation: the close filled what was asked, but the
+			// position was larger than what the new exchange could handle.
+			// This should have been caught by the pre-check, but handle gracefully.
+			e.log.Warn("rotation close for %s — old leg has expected remainder %.6f on %s (pos=%.6f closed=%.6f). Closing new leg to revert.",
+				pos.ID, remainingOnExch, oldExchName, closeSize, closeQty)
+		} else {
+			e.log.Error("CRITICAL: rotation close for %s — old leg NOT flat on %s (remaining=%.6f, expected=%.6f), aborting.",
+				pos.ID, oldExchName, remainingOnExch, expectedRemaining)
+		}
+
+		// Revert: close the new leg back AND re-open the old leg to restore delta-neutral.
 		rem := e.closeFullyWithRetry(newExch, pos.Symbol, closeSide, openFilled)
 		if rem > 0 {
 			e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", pos.Symbol, closeSide, rem, newExch.Name())
 		}
+
+		// Re-open only the exposure actually lost on the old exchange.
+		// remainingOnExch is what's still open; we only need to restore the delta.
+		actualClosed := closeQty - remainingOnExch
+		if actualClosed < 0 {
+			actualClosed = 0
+		}
+		if actualClosed == 0 {
+			e.log.Info("rotation revert: old leg still fully open on %s (remaining=%.6f), no re-open needed", oldExchName, remainingOnExch)
+			return
+		}
+		reopenSizeStr := utils.FormatSize(actualClosed, 6)
+		reopenPrice := ""
+		oldBBO, olok := e.getBBOWithFallback(oldExch, pos.Symbol)
+		if olok {
+			if legSide == "short" {
+				reopenPrice = e.formatPrice(oldExchName, pos.Symbol, oldBBO.Bid*(1-slippage))
+			} else {
+				reopenPrice = e.formatPrice(oldExchName, pos.Symbol, oldBBO.Ask*(1+slippage))
+			}
+			e.log.Info("rotation revert: re-opening %s %s on %s size=%s @ %s", openSide, pos.Symbol, oldExchName, reopenSizeStr, reopenPrice)
+			reopenOID, reopenErr := oldExch.PlaceOrder(exchange.PlaceOrderParams{
+				Symbol:    pos.Symbol,
+				Side:      openSide,
+				OrderType: "limit",
+				Price:     reopenPrice,
+				Size:      reopenSizeStr,
+				Force:     "ioc",
+			})
+			if reopenErr != nil {
+				e.log.Error("ORPHAN EXPOSURE: rotation revert re-open on %s failed: %v — position %s lost %.6f %s exposure, manual intervention needed",
+					oldExchName, reopenErr, pos.ID, actualClosed, pos.Symbol)
+			} else {
+				deadline := time.Now().Add(30 * time.Second)
+				reopenFilled, _ := e.waitForFill(oldExch, reopenOID, pos.Symbol, deadline)
+				e.log.Info("rotation revert: re-opened %.6f/%.6f on %s", reopenFilled, actualClosed, oldExchName)
+				if reopenFilled < actualClosed*0.5 {
+					e.log.Error("ORPHAN EXPOSURE: rotation revert re-open partial on %s: filled=%.6f of %.6f — manual intervention needed",
+						oldExchName, reopenFilled, actualClosed)
+				}
+			}
+		} else {
+			e.log.Error("ORPHAN EXPOSURE: rotation revert — BBO unavailable on %s, cannot re-open %.6f %s — manual intervention needed",
+				oldExchName, actualClosed, pos.Symbol)
+		}
+
+		// DO NOT overwrite position sizes here. The re-open attempt restores the
+		// original exchange state. Let the consolidator reconcile any differences
+		// on the next 5-minute tick.
 		return
 	}
 	// Checkpoint 3: after closing old leg, before DB swap.

@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.13] - 2026-04-14
+
+### Fixed
+- **Consolidator cross-engine size mismatch** — the perp-perp consolidator's size-mismatch check (`consolidate.go:280-281`) read the total exchange position for a symbol, which includes spot-futures futures legs. When both engines hold the same symbol on the same exchange and side, the consolidator flagged a false mismatch (e.g. BARDUSDT: perp-perp local=919, exchange=1225.6 including 306.6 from spot-futures dir A). Fix: build a `sfSizeOffset` map from active spot-futures positions and subtract from exchange totals before comparing. Only `SpotStatusActive` positions contribute to the offset — pending/exiting positions with stale `FuturesSize` are excluded (per Codex review).
+- **Rotation step-size rounding causes unhedged position** — when rotating a long leg from exchange A to B, the rotation handler formatted the size for the new exchange (`formatSize(B, sym, 349)` → 300 due to step size), opened 300 on B, closed 300 on A, then the post-close verification found 49 remaining on A (349−300) and treated it as a failure. The abort path (a) overwrote `LongSize=49` in the position record, (b) rolled back the new B leg, but (c) did NOT re-open the 300 already closed on A — leaving the position 49 long vs 349 short (86% imbalanced). Incident: ARIAUSDT `ariausdt-1776041102139` on 2026-04-14 20:40 UTC, escalated to SL trigger at 23:48 UTC. Three fixes:
+  - **Pre-check** (`exit.go:2648-2656`): if `formatSize` rounds more than 1% down, skip the rotation with a warning instead of proceeding to a partial rotation that will fail verification.
+  - **Re-open on abort** (`exit.go:2819-2860`): when the "NOT flat" check fires, the handler now (1) closes the new leg (same as before), (2) re-opens the old leg via IOC order for `actualClosed = closeQty - remainingOnExch` (only the exposure actually lost, per Codex review), (3) does NOT overwrite position sizes — lets the consolidator reconcile.
+  - **Diagnostic improvement**: distinguishes expected remainder (step-size) from unexpected remainder (real failure) in the log message.
+
 ## [0.32.12] - 2026-04-13
 
 ### Fixed
