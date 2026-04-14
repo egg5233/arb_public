@@ -1795,12 +1795,18 @@ func (e *Engine) closePositionWithMode(pos *models.ArbitragePosition, emergency 
 
 	// Phase 1: claim → Closing. Reject only terminal states (Closing/Closed).
 	// Mirrors checkDelistPositions filter; allows Active/Exiting/Pending/Partial.
+	// Propagate caller-set ExitReason into DB here so SL/delist/L4 paths that
+	// only set the field on the in-memory pos (engine.go:1578, 1736; exit.go:1756)
+	// have their reason persisted and archived in history.
 	claimed := false
 	if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
 		if fresh.Status == models.StatusClosing || fresh.Status == models.StatusClosed {
 			return false
 		}
 		fresh.Status = models.StatusClosing
+		if pos.ExitReason != "" {
+			fresh.ExitReason = pos.ExitReason
+		}
 		// UpdatedAt auto-bumped.
 		claimed = true
 		return true
@@ -2005,7 +2011,7 @@ func (e *Engine) closePositionWithMode(pos *models.ArbitragePosition, emergency 
 		fresh.RealizedPnL = realizedPnL
 		fresh.Status = models.StatusClosed
 		// UpdatedAt auto-bumped.
-		// NOTE: do NOT set ExitReason here — caller already set it.
+		// ExitReason already persisted in phase-1 claim above from caller's in-memory pos.
 		saved = true
 		return true
 	}); err != nil {

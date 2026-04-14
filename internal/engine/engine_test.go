@@ -1,11 +1,20 @@
 package engine
 
 import (
+	"context"
 	"fmt"
+	"strings"
 	"testing"
+	"time"
 
+	"arb/internal/api"
 	"arb/internal/config"
+	"arb/internal/database"
 	"arb/internal/models"
+	"arb/pkg/exchange"
+	"arb/pkg/utils"
+
+	"github.com/alicebob/miniredis/v2"
 )
 
 func TestEffectiveAdvanceMin(t *testing.T) {
@@ -128,6 +137,80 @@ func TestAPIErrorCounterDisabled(t *testing.T) {
 	e.recordAPIError("binance", fmt.Errorf("timeout"))
 	if e.apiErrCounts["binance"] != 0 {
 		t.Errorf("expected 0 when disabled, got %d", e.apiErrCounts["binance"])
+	}
+}
+
+// TestClosePositionWithMode_PersistsCallerSetExitReason verifies that an
+// ExitReason set only on the caller's in-memory `pos` (as SL, delist, and
+// L4-fully-flattened paths do) is persisted to DB during the phase-1 claim.
+//
+// Regression for the "empty exit_reason" leak confirmed by codex review
+// (task #a36cc3a4) where APRUSDT / ARIAUSDT closed via SL/liquidation on
+// 2026-04-14 but neither history entry recorded the reason. Root cause was
+// that triggerEmergencyClose / delist / L4 set pos.ExitReason only on the
+// in-memory struct before launching closePositionEmergency, and neither
+// phase-1 claim nor phase-2 save in closePositionWithMode copied the field
+// into the DB-reloaded `fresh` position.
+//
+// Test strategy: save a position with empty ExitReason to DB, set the reason
+// only on the in-memory copy, invoke closePositionEmergency. The call must
+// ERROR out (unknown exchange) before the real exchange work runs, but the
+// phase-1 claim will already have persisted ExitReason. Reload from DB and
+// confirm the field matches.
+func TestClosePositionWithMode_PersistsCallerSetExitReason(t *testing.T) {
+	mr := miniredis.RunT(t)
+	db, err := database.New(mr.Addr(), "", 2)
+	if err != nil {
+		t.Fatalf("database.New: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	cfg := &config.Config{EnablePerpTelegram: false}
+	e := &Engine{
+		cfg:         cfg,
+		db:          db,
+		log:         utils.NewLogger("test"),
+		exchanges:   map[string]exchange.Exchange{}, // empty → lookup will miss
+		exitActive:  make(map[string]bool),
+		exitCancels: make(map[string]context.CancelFunc),
+	}
+	e.api = api.NewServer(db, cfg, nil)
+
+	original := &models.ArbitragePosition{
+		ID:            "regress-exitreason-1",
+		Symbol:        "APRUSDT",
+		LongExchange:  "bybit",
+		ShortExchange: "gateio",
+		Status:        models.StatusActive,
+		LongSize:      100,
+		ShortSize:     100,
+		CreatedAt:     time.Now().UTC(),
+		UpdatedAt:     time.Now().UTC(),
+		// ExitReason intentionally empty — mirrors DB state before SL fires.
+	}
+	if err := db.SavePosition(original); err != nil {
+		t.Fatalf("SavePosition: %v", err)
+	}
+
+	// Caller sets ExitReason only on the in-memory pos (matches SL path at
+	// engine.go:1736, delist at engine.go:1578-1580, L4 at exit.go:1756).
+	inMemory := *original
+	inMemory.ExitReason = "SL/liquidation: long leg on bybit"
+
+	// Expected to fail because exchanges map is empty; the important thing
+	// is that phase-1 claim ran first.
+	_ = e.closePositionEmergency(&inMemory)
+
+	persisted, err := db.GetPosition(original.ID)
+	if err != nil || persisted == nil {
+		t.Fatalf("GetPosition after close: persisted=%v err=%v", persisted, err)
+	}
+	if persisted.ExitReason != inMemory.ExitReason {
+		t.Errorf("DB ExitReason = %q; want %q (caller-set in-memory reason must propagate during phase-1 claim)",
+			persisted.ExitReason, inMemory.ExitReason)
+	}
+	if !strings.Contains(persisted.ExitReason, "SL/liquidation") {
+		t.Errorf("DB ExitReason %q missing SL marker", persisted.ExitReason)
 	}
 }
 
