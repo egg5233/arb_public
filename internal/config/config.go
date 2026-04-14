@@ -228,13 +228,14 @@ type Config struct {
 	// ---------------------------------------------------------------------------
 	// Unified capital allocation (Phase 5)
 	// ---------------------------------------------------------------------------
-	EnableUnifiedCapital   bool    // Master on/off for unified capital (default OFF per D-13)
-	TotalCapitalUSDT       float64 // Total USDT pool; 0 = disabled, use CapitalPerLeg (per D-09)
-	RiskProfile            string  // "conservative", "balanced", "aggressive", "custom" (per D-03)
-	AllocationLookbackDays int     // Performance lookback window in days (default 7, per D-07)
-	AllocationFloorPct     float64 // Min allocation per strategy (default 0.20, per D-06)
-	AllocationCeilingPct   float64 // Max allocation per strategy (default 0.80, per D-06)
-	SizeMultiplier         float64 // Profile-driven position size multiplier (default 1.0)
+	EnableUnifiedCapital        bool    // Master on/off for unified capital (default OFF per D-13)
+	EnableUnifiedEntrySelection bool    // Unified entry selection — single B&B picks best subset across perp + spot at EntryScan (default OFF)
+	TotalCapitalUSDT            float64 // Total USDT pool; 0 = disabled, use CapitalPerLeg (per D-09)
+	RiskProfile                 string  // "conservative", "balanced", "aggressive", "custom" (per D-03)
+	AllocationLookbackDays      int     // Performance lookback window in days (default 7, per D-07)
+	AllocationFloorPct          float64 // Min allocation per strategy (default 0.20, per D-06)
+	AllocationCeilingPct        float64 // Max allocation per strategy (default 0.80, per D-06)
+	SizeMultiplier              float64 // Profile-driven position size multiplier (default 1.0)
 
 	// ---------------------------------------------------------------------------
 	// Safety: perp-perp Telegram notifications (struct field only; remaining
@@ -279,13 +280,14 @@ type jsonAnalytics struct {
 }
 
 type jsonAllocation struct {
-	EnableUnifiedCapital   *bool    `json:"enable_unified_capital"`
-	TotalCapitalUSDT       *float64 `json:"total_capital_usdt"`
-	RiskProfile            *string  `json:"risk_profile"`
-	AllocationLookbackDays *int     `json:"allocation_lookback_days"`
-	AllocationFloorPct     *float64 `json:"allocation_floor_pct"`
-	AllocationCeilingPct   *float64 `json:"allocation_ceiling_pct"`
-	SizeMultiplier         *float64 `json:"size_multiplier"`
+	EnableUnifiedCapital        *bool    `json:"enable_unified_capital"`
+	EnableUnifiedEntrySelection *bool    `json:"enable_unified_entry_selection"`
+	TotalCapitalUSDT            *float64 `json:"total_capital_usdt"`
+	RiskProfile                 *string  `json:"risk_profile"`
+	AllocationLookbackDays      *int     `json:"allocation_lookback_days"`
+	AllocationFloorPct          *float64 `json:"allocation_floor_pct"`
+	AllocationCeilingPct        *float64 `json:"allocation_ceiling_pct"`
+	SizeMultiplier              *float64 `json:"size_multiplier"`
 }
 
 type jsonSafety struct {
@@ -617,13 +619,14 @@ func Load() *Config {
 		SpotFuturesMaintenanceCacheTTL:   60,
 
 		// Unified capital allocation defaults (Phase 5)
-		EnableUnifiedCapital:   false,
-		TotalCapitalUSDT:       0,
-		RiskProfile:            "balanced",
-		AllocationLookbackDays: 7,
-		AllocationFloorPct:     0.20,
-		AllocationCeilingPct:   0.80,
-		SizeMultiplier:         1.0,
+		EnableUnifiedCapital:        false,
+		EnableUnifiedEntrySelection: false,
+		TotalCapitalUSDT:            0,
+		RiskProfile:                 "balanced",
+		AllocationLookbackDays:      7,
+		AllocationFloorPct:          0.20,
+		AllocationCeilingPct:        0.80,
+		SizeMultiplier:              1.0,
 
 		// Safety defaults (all off by default per D-10)
 		EnablePerpTelegram:  false,
@@ -1235,6 +1238,9 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if alloc.EnableUnifiedCapital != nil {
 			c.EnableUnifiedCapital = *alloc.EnableUnifiedCapital
 		}
+		if alloc.EnableUnifiedEntrySelection != nil {
+			c.EnableUnifiedEntrySelection = *alloc.EnableUnifiedEntrySelection
+		}
 		if alloc.TotalCapitalUSDT != nil && *alloc.TotalCapitalUSDT >= 0 {
 			c.TotalCapitalUSDT = *alloc.TotalCapitalUSDT
 		}
@@ -1543,6 +1549,7 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	// Allocation (Phase 5)
 	alloc := getMap(raw, "allocation")
 	alloc["enable_unified_capital"] = c.EnableUnifiedCapital
+	alloc["enable_unified_entry_selection"] = c.EnableUnifiedEntrySelection
 	alloc["total_capital_usdt"] = c.TotalCapitalUSDT
 	alloc["risk_profile"] = c.RiskProfile
 	alloc["allocation_lookback_days"] = c.AllocationLookbackDays
@@ -1837,6 +1844,9 @@ func (c *Config) loadEnvOverrides() {
 	// Allocation (Phase 5)
 	if v := os.Getenv("ENABLE_UNIFIED_CAPITAL"); v == "true" || v == "1" {
 		c.EnableUnifiedCapital = true
+	}
+	if v := os.Getenv("ENABLE_UNIFIED_ENTRY_SELECTION"); v == "true" || v == "1" {
+		c.EnableUnifiedEntrySelection = true
 	}
 	if v := os.Getenv("TOTAL_CAPITAL_USDT"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {

@@ -122,6 +122,22 @@ type Engine struct {
 	// Set via SetSpotCloseCallback after both engines are initialized.
 	spotCloseCallback func(pos *models.SpotFuturesPosition, reason string, isEmergency bool) error
 
+	// spotEntry is the narrow interface the unified cross-strategy entry
+	// selector uses to pull spot candidates and dispatch preheld winners.
+	// Installed via SetSpotEntryExecutor after both engines are constructed
+	// and BEFORE Start() is called so the EntryScan branch never sees a
+	// nil executor. Remains nil when spot engine is disabled; the EntryScan
+	// branch guards with (e.spotEntry != nil) before entering the unified
+	// path.
+	spotEntry spotEntryExecutor
+
+	// rescannerOverride is a test-only hook letting unit tests substitute
+	// a lightweight RescanSymbols stub for the real *discovery.Scanner in
+	// consumeOverridesAndEnrichOpps's v0.32.8 fallback path. Production
+	// code leaves this nil; the rescanner() helper falls through to the
+	// concrete discovery scanner.
+	rescannerOverride symbolRescanner
+
 	// Ref-counted depth subscriptions for pre-warming before entry scan.
 	depthRefsMu    sync.Mutex
 	depthRefs      map[string]*depthRef // "exchange:symbol" → ref
@@ -288,6 +304,44 @@ func (e *Engine) SetSnapshotWriter(sw interface{ RecordPerpClose(pos *models.Arb
 // perp-perp close path.
 func (e *Engine) SetSpotCloseCallback(fn func(pos *models.SpotFuturesPosition, reason string, isEmergency bool) error) {
 	e.spotCloseCallback = fn
+}
+
+// SetSpotEntryExecutor registers the spotEntryExecutor (concrete *SpotEngine
+// from the spot engine package) so the unified cross-strategy entry selector
+// can pull spot candidates and dispatch preheld winners without the
+// engine package importing the spot engine package (which would create a
+// dependency cycle).
+//
+// Must be called AFTER both engines are constructed and BEFORE Engine.Start
+// so the EntryScan handler never observes a nil executor. Safe to call with
+// a nil executor to disable unified entry for spot (the EntryScan branch
+// guards with `e.spotEntry != nil`).
+func (e *Engine) SetSpotEntryExecutor(exec spotEntryExecutor) {
+	e.spotEntry = exec
+}
+
+// unifiedOwnerReady is the single readiness predicate every ownership
+// switch consults before diverting EntryScan from the legacy path. It
+// returns true only when ALL of the following hold:
+//   - EnableUnifiedEntrySelection flag is on
+//   - EnableCapitalAllocator flag is on
+//   - allocator instance is non-nil
+//   - allocator.Enabled() reports true (double-check against cfg on the
+//     allocator itself — allocator.Enabled reads the same cfg field but
+//     does its own nil guard)
+//
+// When this returns false, legacy `executeArbitrage` (and, on the spot
+// side, `attemptAutoEntries`) MUST run unchanged so a misconfigured
+// unified flag (flag on but allocator off) never suppresses both paths.
+// See plan Section 1 "HARD readiness gate".
+func (e *Engine) unifiedOwnerReady() bool {
+	if e == nil || e.cfg == nil {
+		return false
+	}
+	return e.cfg.EnableUnifiedEntrySelection &&
+		e.cfg.EnableCapitalAllocator &&
+		e.allocator != nil &&
+		e.allocator.Enabled()
 }
 
 // recordAPIError increments the consecutive error counter for an exchange.
@@ -1016,19 +1070,21 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 	e.log.Info("rebalance: complete")
 }
 
-// applyAllocatorOverrides consumes stored allocator choices and uses them to
-// both FILTER and PATCH the opportunity list.  When overrides are present
-// (allocator ran this cycle), only symbols the allocator selected are kept;
-// non-selected symbols are dropped so they cannot consume an entry slot and
-// invalidate the allocator's capital plan.  When overrides are empty (allocator
-// didn't run, or TopPairsPerSymbol==1 with no alternatives), all opps pass
-// through unchanged for backwards compatibility.
-func (e *Engine) applyAllocatorOverrides(opps []models.Opportunity) ([]models.Opportunity, bool) {
-	e.allocOverrideMu.Lock()
-	overrides := e.allocOverrides
-	e.allocOverrides = nil
-	e.allocOverrideMu.Unlock()
-
+// applyAllocatorOverridesWithState is the pure form of the tier-2 patching
+// logic formerly inlined as applyAllocatorOverrides. It takes the overrides
+// map as a parameter instead of reading+clearing e.allocOverrides under
+// allocOverrideMu, so the consume-once lock management can live in a single
+// shared helper (consumeOverridesAndEnrichOpps) used by both the legacy
+// EntryScan path and the new unified cross-strategy selector.
+//
+// Behavior is byte-identical to the old applyAllocatorOverrides for the
+// non-empty-opps branch — same filter rules, same patch rules, same log
+// lines, same return convention (filteredOpps, didPatch). Callers receive
+// didPatch=true only when at least one override was observed (matching
+// the old "overrides were present" semantics); an empty overrides map
+// returns (nil, false). Empty-opps + non-empty-overrides is the second
+// branch of consumeOverridesAndEnrichOpps and lives there, not here.
+func (e *Engine) applyAllocatorOverridesWithState(opps []models.Opportunity, overrides map[string]allocatorChoice) ([]models.Opportunity, bool) {
 	if len(overrides) == 0 {
 		return nil, false // no allocator guidance
 	}
@@ -1211,6 +1267,22 @@ func (e *Engine) run() {
 				e.prewarmDepthForEntry(result.Opps)
 				e.log.Info("run loop: rotateScan handler done")
 			case discovery.EntryScan:
+				// Unified cross-strategy entry selector — only active when
+				// unifiedOwnerReady() returns true AND an executor has been
+				// installed via SetSpotEntryExecutor. When the readiness gate
+				// fails we fall through to the legacy path so a partial
+				// config (flag on but allocator off, or missing executor)
+				// never suppresses both entry pathways.
+				if e.unifiedOwnerReady() && e.spotEntry != nil {
+					if err := e.runUnifiedEntrySelection(); err != nil {
+						e.log.Error("unified entry: %v", err)
+					}
+					// Release pre-warm depth refs from :35 rotation scan
+					// before moving on to the next scan result.
+					e.cleanupPrewarmedDepth()
+					continue
+				}
+
 				// Update performance-weighted allocation before entry decisions (CA-03/CA-04).
 				e.updateAllocation()
 
@@ -1237,20 +1309,24 @@ func (e *Engine) run() {
 					e.allocator.SetDynamicStrategyCap(string(risk.StrategyPerpPerp), perpCap)
 				}
 
+				// Consume allocator overrides exactly once via the shared helper
+				// (covers both the tier-2 patch branch for non-empty opps AND the
+				// v0.32.8 RescanSymbols salvage branch for empty opps).
+				enrichedOpps, overrideTier := e.consumeOverridesAndEnrichOpps(result.Opps)
+
 				if len(result.Opps) > 0 {
 					e.log.Info("entry scan complete, triggering trade execution")
 
 					var entryOpps []models.Opportunity
 					tier := "none"
 
-					// Tier 2: Fall back to :35 allocator overrides.
-					if len(entryOpps) == 0 {
-						patched, hadOverrides := e.applyAllocatorOverrides(result.Opps)
-						if len(patched) > 0 {
+					// Tier 2: override patching delegated to consumeOverridesAndEnrichOpps.
+					if overrideTier == "tier-2-override-patch" {
+						if len(enrichedOpps) > 0 {
 							tier = "tier-2-rebalance-overrides"
-							e.log.Info("entry: %s using %d opps", tier, len(patched))
-							entryOpps = patched
-						} else if hadOverrides {
+							e.log.Info("entry: %s using %d opps", tier, len(enrichedOpps))
+							entryOpps = enrichedOpps
+						} else {
 							// Allocator ran but all overrides stale — don't block tier-3.
 							// Stale overrides only mean the allocator's specific pair choices
 							// failed, not that all exchanges lack funds. Tier-3 will
@@ -1270,33 +1346,12 @@ func (e *Engine) run() {
 					e.log.Info("run loop: entryScan handler done (via %s)", tier)
 				} else {
 					// Fallback: discovery returned 0 opps but allocator overrides
-					// from :45 may exist. Re-scan those specific symbols with
-					// fresh data to salvage the transferred funds.
-					e.allocOverrideMu.Lock()
-					overrides := e.allocOverrides
-					e.allocOverrides = nil
-					e.allocOverrideMu.Unlock()
-
-					if len(overrides) > 0 {
-						e.log.Info("entry: discovery returned 0 opps but %d allocator overrides exist, re-scanning", len(overrides))
-
-						var pairs []models.SymbolPair
-						for symbol, choice := range overrides {
-							pairs = append(pairs, models.SymbolPair{
-								Symbol:        symbol,
-								LongExchange:  choice.longExchange,
-								ShortExchange: choice.shortExchange,
-							})
-						}
-
-						fallbackOpps := e.discovery.RescanSymbols(pairs)
-
-						if len(fallbackOpps) > 0 {
-							e.log.Info("entry: override fallback: %d/%d passed re-scan, executing (tier-2-override-fallback)", len(fallbackOpps), len(pairs))
-							e.executeArbitrage(fallbackOpps, perpCap)
-						} else {
-							e.log.Info("entry: override fallback: all %d symbols failed re-scan", len(pairs))
-						}
+					// from :45 may exist. consumeOverridesAndEnrichOpps has already
+					// issued the targeted re-scan via discovery.RescanSymbols;
+					// execute whatever passed.
+					if overrideTier == "tier-2-override-fallback" && len(enrichedOpps) > 0 {
+						e.log.Info("entry: override fallback: executing %d opps (tier-2-override-fallback)", len(enrichedOpps))
+						e.executeArbitrage(enrichedOpps, perpCap)
 					}
 				}
 				// Release pre-warm depth refs from :35 rotation scan.

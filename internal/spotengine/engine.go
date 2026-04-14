@@ -461,6 +461,20 @@ func isSeparateAccount(exchName string) bool {
 	}
 }
 
+// unifiedOwnerReady reports whether the cross-strategy unified entry selector
+// is the installed owner of spot auto-entry. The legacy attemptAutoEntries
+// path must defer to the selector ONLY when both the flag is set AND the
+// capital allocator is live; if the allocator is unavailable the selector
+// cannot preheld-reserve, so the legacy path must remain active to keep
+// spot-futures trading from stalling.
+func (e *SpotEngine) unifiedOwnerReady() bool {
+	return e.cfg != nil &&
+		e.cfg.EnableUnifiedEntrySelection &&
+		e.cfg.EnableCapitalAllocator &&
+		e.allocator != nil &&
+		e.allocator.Enabled()
+}
+
 // updateAllocation refreshes the allocator's effective allocation from analytics data.
 // Called each discovery cycle before auto-entry decisions.
 func (e *SpotEngine) updateAllocation() {

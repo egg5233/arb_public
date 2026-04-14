@@ -305,13 +305,14 @@ type configResponse struct {
 }
 
 type configAllocationResponse struct {
-	EnableUnifiedCapital   bool    `json:"enable_unified_capital"`
-	TotalCapitalUSDT       float64 `json:"total_capital_usdt"`
-	RiskProfile            string  `json:"risk_profile"`
-	AllocationLookbackDays int     `json:"allocation_lookback_days"`
-	AllocationFloorPct     float64 `json:"allocation_floor_pct"`
-	AllocationCeilingPct   float64 `json:"allocation_ceiling_pct"`
-	SizeMultiplier         float64 `json:"size_multiplier"`
+	EnableUnifiedCapital        bool    `json:"enable_unified_capital"`
+	EnableUnifiedEntrySelection bool    `json:"enable_unified_entry_selection"`
+	TotalCapitalUSDT            float64 `json:"total_capital_usdt"`
+	RiskProfile                 string  `json:"risk_profile"`
+	AllocationLookbackDays      int     `json:"allocation_lookback_days"`
+	AllocationFloorPct          float64 `json:"allocation_floor_pct"`
+	AllocationCeilingPct        float64 `json:"allocation_ceiling_pct"`
+	SizeMultiplier              float64 `json:"size_multiplier"`
 }
 
 type configAnalyticsResponse struct {
@@ -630,13 +631,14 @@ func (s *Server) buildConfigResponse() configResponse {
 			AnalyticsDBPath: s.cfg.AnalyticsDBPath,
 		},
 		Allocation: configAllocationResponse{
-			EnableUnifiedCapital:   s.cfg.EnableUnifiedCapital,
-			TotalCapitalUSDT:       s.cfg.TotalCapitalUSDT,
-			RiskProfile:            s.cfg.RiskProfile,
-			AllocationLookbackDays: s.cfg.AllocationLookbackDays,
-			AllocationFloorPct:     s.cfg.AllocationFloorPct,
-			AllocationCeilingPct:   s.cfg.AllocationCeilingPct,
-			SizeMultiplier:         s.cfg.SizeMultiplier,
+			EnableUnifiedCapital:        s.cfg.EnableUnifiedCapital,
+			EnableUnifiedEntrySelection: s.cfg.EnableUnifiedEntrySelection,
+			TotalCapitalUSDT:            s.cfg.TotalCapitalUSDT,
+			RiskProfile:                 s.cfg.RiskProfile,
+			AllocationLookbackDays:      s.cfg.AllocationLookbackDays,
+			AllocationFloorPct:          s.cfg.AllocationFloorPct,
+			AllocationCeilingPct:        s.cfg.AllocationCeilingPct,
+			SizeMultiplier:              s.cfg.SizeMultiplier,
 		},
 	}
 	resp.SpotFutures = &configSpotFuturesResponse{
@@ -749,13 +751,14 @@ type configUpdate struct {
 }
 
 type allocationUpdate struct {
-	EnableUnifiedCapital   *bool    `json:"enable_unified_capital"`
-	TotalCapitalUSDT       *float64 `json:"total_capital_usdt"`
-	RiskProfile            *string  `json:"risk_profile"`
-	AllocationLookbackDays *int     `json:"allocation_lookback_days"`
-	AllocationFloorPct     *float64 `json:"allocation_floor_pct"`
-	AllocationCeilingPct   *float64 `json:"allocation_ceiling_pct"`
-	SizeMultiplier         *float64 `json:"size_multiplier"`
+	EnableUnifiedCapital        *bool    `json:"enable_unified_capital"`
+	EnableUnifiedEntrySelection *bool    `json:"enable_unified_entry_selection"`
+	TotalCapitalUSDT            *float64 `json:"total_capital_usdt"`
+	RiskProfile                 *string  `json:"risk_profile"`
+	AllocationLookbackDays      *int     `json:"allocation_lookback_days"`
+	AllocationFloorPct          *float64 `json:"allocation_floor_pct"`
+	AllocationCeilingPct        *float64 `json:"allocation_ceiling_pct"`
+	SizeMultiplier              *float64 `json:"size_multiplier"`
 }
 
 type analyticsUpdate struct {
@@ -1462,6 +1465,9 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		if alloc.EnableUnifiedCapital != nil {
 			s.cfg.EnableUnifiedCapital = *alloc.EnableUnifiedCapital
 		}
+		if alloc.EnableUnifiedEntrySelection != nil {
+			s.cfg.EnableUnifiedEntrySelection = *alloc.EnableUnifiedEntrySelection
+		}
 		if alloc.TotalCapitalUSDT != nil && *alloc.TotalCapitalUSDT >= 0 {
 			s.cfg.TotalCapitalUSDT = *alloc.TotalCapitalUSDT
 		}
@@ -1635,6 +1641,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 
 	// Allocation fields
 	fields["enable_unified_capital"] = strconv.FormatBool(snapshot.Allocation.EnableUnifiedCapital)
+	fields["enable_unified_entry_selection"] = strconv.FormatBool(snapshot.Allocation.EnableUnifiedEntrySelection)
 	fields["total_capital_usdt"] = strconv.FormatFloat(snapshot.Allocation.TotalCapitalUSDT, 'f', -1, 64)
 	fields["risk_profile"] = snapshot.Allocation.RiskProfile
 	fields["allocation_lookback_days"] = strconv.Itoa(snapshot.Allocation.AllocationLookbackDays)

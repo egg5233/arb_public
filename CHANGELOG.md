@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.33.0] - 2026-04-14
+
+### Added
+- **Unified cross-strategy capital allocator (opt-in)** — New `allocation.enable_unified_entry_selection` flag (default OFF) enables a single branch-and-bound at EntryScan that picks the optimal subset of mixed perp-perp and spot-futures candidates to maximize expected PnL over `cfg.MinHoldTime` under current capital and per-exchange capacity constraints. Active only when both the flag AND `risk.enable_capital_allocator` are true (`unifiedOwnerReady()` readiness gate). When either is off, legacy perp `executeArbitrage` + spot `attemptAutoEntries` paths run unchanged.
+  - **Shared search core** (`internal/engine/selection_core.go`): generic grouped B&B with `solveGroupedSearch(groups, maxSlots, timeout, evaluate)`; rebalance allocator's `solveAllocator`/`greedyAllocatorSeed` refactored to call it; parity tests enforce byte-identical rebalance behavior (`internal/engine/allocator_parity_test.go`).
+  - **Orchestrator** (`internal/engine/unified_entry.go`): 12-step flow — gather opps → `consumeOverridesAndEnrichOpps` → project spot candidates via `spotEntryExecutor.ListEntryCandidates` + `BuildEntryPlan` → `groupChoicesBySymbol` (cross-strategy dedup) → `solveGroupedSearch` with per-exchange capacity + L4 post-trade ratio + strategy caps → `ReserveBatch` atomic prehold → dispatch perp via preheld-reservation path → dispatch spot via `OpenSelectedEntry` → `ReleaseBatch` unused.
+  - **Override preservation** (`internal/engine/consume_overrides.go`): v0.32.8 `RescanSymbols` salvage + tier-2 override patching refactored into single consume-once helper `consumeOverridesAndEnrichOpps(perpOpps)` acquiring `allocOverrideMu` exactly once; shared by both legacy and unified paths.
+  - **Spot candidate model** (`internal/models/spot_entry.go` + `internal/spotengine/selected_entry.go`): `SpotEntryCandidate` + `SpotEntryPlan` with coin-specific borrow feasibility (cap-then-round-then-reject). Unified accounts (Bybit/OKX/Gate.io) cap by `MaxBorrowable` pre-plan only when `> 0`; separate accounts (Binance/Bitget) skip pre-transfer cap since execution polls post-transfer. Budget-floor rejection `max(CapitalBudgetUSDT*0.10, 5.0)` matches live `ManualOpen`. BingX filtered (no spot margin).
+  - **Value normalization** (`internal/engine/unified_value.go`): spot `scoreSpotEntry` uses `cfg.MinHoldTime.Hours()` (default 16h) and `PlannedNotionalUSDT`, aligned with perp `computeAllocatorBaseValue`. APRs are decimal fractions (not percent).
+  - **Atomic prehold** (`internal/risk/batch_reservation.go`): `ReserveBatch(items)` validates cumulative caps once, persists all reservations atomically under Redis version-key optimistic concurrency; `ReleaseBatch(batch)` releases uncommitted only.
+  - **Ownership switches**: `EntryScan` branch + `spotengine/autoentry.go attemptAutoEntries` both gate on `unifiedOwnerReady()` (not flag-only) so misconfiguration never suppresses both legacy paths.
+  - **Cross-strategy symbol/slot policy** (`internal/engine/unified_state.go`): `loadUnifiedOccupancy` unions non-closed perp (pending/partial/active/exiting/closing) and spot (pending/active/exiting) symbols; `cfg.MaxPositions` is combined ceiling; `cfg.SpotFuturesMaxPositions` additionally caps spot-only.
+  - **Dashboard**: allocation section gains "Unified entry selection (beta)" toggle; standalone spot auto-entry greyed out when unified owner is ready.
+  - **Validation**: 10 rounds of Codex xhigh plan review converged to ALL PASS; implementation split across 3 parallel agent waves (foundation/spot/orchestrator); ~3000 LoC added; 40+ new tests pass including user's 5-candidate selection example, duplicate dedup across strategies, readiness-gate regression, override rescan preservation.
+
 ## [0.32.12] - 2026-04-13
 
 ### Fixed

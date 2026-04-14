@@ -292,7 +292,7 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 	if err := requireEntryLock("capital reservation"); err != nil {
 		return err
 	}
-	reservation, err := e.reserveSpotCapital(exchName, plannedNotional)
+	reservation, err := e.reserveSpotCapital(exchName, plannedNotional, 0)
 	if err != nil {
 		return fmt.Errorf("capital allocator rejected: %w", err)
 	}

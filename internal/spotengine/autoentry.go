@@ -7,7 +7,19 @@ import (
 // attemptAutoEntries processes discovered opportunities and attempts automated
 // entry for qualifying candidates. Entries are executed sequentially (one at a
 // time) to prevent overcommit from parallel entry attempts.
+//
+// When the unified cross-strategy entry selector is the installed owner
+// (unifiedOwnerReady), this legacy per-exchange path skips entirely so the
+// selector's batch-reserved dispatch is the single source of auto-entry. When
+// the flag is set but the capital allocator is unavailable the selector cannot
+// safely preheld — in that case we fall through to the legacy path to keep
+// spot-futures trading live (matches the legacy-path-runs regression test).
 func (e *SpotEngine) attemptAutoEntries(opps []SpotArbOpportunity) {
+	if e.unifiedOwnerReady() {
+		// Unified owner installed — selector dispatches spot entries.
+		return
+	}
+
 	if !e.cfg.SpotFuturesAutoEnabled {
 		return
 	}

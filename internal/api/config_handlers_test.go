@@ -862,3 +862,149 @@ func TestHandleConfig_MaintenanceGateRoundTrip(t *testing.T) {
 		t.Fatalf("expected reloaded SpotFuturesMaintenanceCacheTTL=120, got %d", reloaded.SpotFuturesMaintenanceCacheTTL)
 	}
 }
+
+// TestHandleConfig_UnifiedEntrySelectionRoundTrip verifies that GET /api/config
+// surfaces the allocation.enable_unified_entry_selection flag with its current
+// Config value, and that a POST updates the runtime Config, the raw JSON on
+// disk, and the Redis config hash.
+func TestHandleConfig_UnifiedEntrySelectionRoundTrip(t *testing.T) {
+	s, mr := newTestServer(t)
+	defer mr.Close()
+
+	s.cfg.EnableUnifiedEntrySelection = false
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	initialConfig := `{
+  "allocation": {
+    "enable_unified_entry_selection": false
+  }
+}`
+	if err := os.WriteFile(configPath, []byte(initialConfig), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("CONFIG_FILE", configPath)
+	t.Setenv("ENABLE_UNIFIED_ENTRY_SELECTION", "")
+
+	// GET /api/config — verify the flag is surfaced under allocation.
+	getReq := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	getW := httptest.NewRecorder()
+	s.handleGetConfig(getW, getReq)
+	if getW.Code != http.StatusOK {
+		t.Fatalf("GET expected 200, got %d: %s", getW.Code, getW.Body.String())
+	}
+
+	var getResp struct {
+		OK   bool                   `json:"ok"`
+		Data map[string]interface{} `json:"data"`
+	}
+	if err := json.NewDecoder(getW.Body).Decode(&getResp); err != nil {
+		t.Fatalf("decode GET response: %v", err)
+	}
+	alloc, ok := getResp.Data["allocation"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("allocation payload missing or wrong type: %#v", getResp.Data["allocation"])
+	}
+	if alloc["enable_unified_entry_selection"] != false {
+		t.Fatalf("expected allocation.enable_unified_entry_selection=false, got %#v", alloc["enable_unified_entry_selection"])
+	}
+
+	// POST /api/config — flip the flag on.
+	postReq := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"allocation":{"enable_unified_entry_selection":true}}`))
+	postW := httptest.NewRecorder()
+	s.handlePostConfig(postW, postReq)
+	if postW.Code != http.StatusOK {
+		t.Fatalf("POST expected 200, got %d: %s", postW.Code, postW.Body.String())
+	}
+
+	// In-memory runtime config updated.
+	if !s.cfg.EnableUnifiedEntrySelection {
+		t.Fatal("expected EnableUnifiedEntrySelection=true after POST")
+	}
+
+	// Subsequent GET reflects the new value.
+	getReq2 := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	getW2 := httptest.NewRecorder()
+	s.handleGetConfig(getW2, getReq2)
+	if getW2.Code != http.StatusOK {
+		t.Fatalf("2nd GET expected 200, got %d: %s", getW2.Code, getW2.Body.String())
+	}
+	var getResp2 struct {
+		OK   bool                   `json:"ok"`
+		Data map[string]interface{} `json:"data"`
+	}
+	if err := json.NewDecoder(getW2.Body).Decode(&getResp2); err != nil {
+		t.Fatalf("decode 2nd GET response: %v", err)
+	}
+	alloc2, ok := getResp2.Data["allocation"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("2nd allocation payload missing or wrong type: %#v", getResp2.Data["allocation"])
+	}
+	if alloc2["enable_unified_entry_selection"] != true {
+		t.Fatalf("expected allocation.enable_unified_entry_selection=true after POST round-trip, got %#v", alloc2["enable_unified_entry_selection"])
+	}
+}
+
+// TestHandleConfig_UnifiedEntrySelectionPostRoundTrip verifies POST persists
+// the flag via config.json save path and the Redis config hash, and that a
+// fresh config.Load() picks it up.
+func TestHandleConfig_UnifiedEntrySelectionPostRoundTrip(t *testing.T) {
+	s, mr := newTestServer(t)
+	defer mr.Close()
+
+	s.cfg.EnableUnifiedEntrySelection = false
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	initialConfig := `{
+  "allocation": {
+    "enable_unified_entry_selection": false
+  }
+}`
+	if err := os.WriteFile(configPath, []byte(initialConfig), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("CONFIG_FILE", configPath)
+	t.Setenv("ENABLE_UNIFIED_ENTRY_SELECTION", "")
+
+	postReq := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"allocation":{"enable_unified_entry_selection":true}}`))
+	postW := httptest.NewRecorder()
+	s.handlePostConfig(postW, postReq)
+	if postW.Code != http.StatusOK {
+		t.Fatalf("POST expected 200, got %d: %s", postW.Code, postW.Body.String())
+	}
+	if !s.cfg.EnableUnifiedEntrySelection {
+		t.Fatal("expected EnableUnifiedEntrySelection=true after POST")
+	}
+
+	// Redis flat hash persisted.
+	persisted, err := s.db.GetConfigField("enable_unified_entry_selection")
+	if err != nil {
+		t.Fatalf("redis get enable_unified_entry_selection: %v", err)
+	}
+	if persisted != "true" {
+		t.Fatalf("expected redis enable_unified_entry_selection=true, got %q", persisted)
+	}
+
+	// config.json on disk contains the new value.
+	reloaded := config.Load()
+	if !reloaded.EnableUnifiedEntrySelection {
+		t.Fatal("expected reloaded EnableUnifiedEntrySelection=true")
+	}
+
+	// Flip it back off via POST to confirm both directions work.
+	postOff := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"allocation":{"enable_unified_entry_selection":false}}`))
+	postOffW := httptest.NewRecorder()
+	s.handlePostConfig(postOffW, postOff)
+	if postOffW.Code != http.StatusOK {
+		t.Fatalf("POST off expected 200, got %d: %s", postOffW.Code, postOffW.Body.String())
+	}
+	if s.cfg.EnableUnifiedEntrySelection {
+		t.Fatal("expected EnableUnifiedEntrySelection=false after second POST")
+	}
+	persistedOff, err := s.db.GetConfigField("enable_unified_entry_selection")
+	if err != nil {
+		t.Fatalf("redis get enable_unified_entry_selection (off): %v", err)
+	}
+	if persistedOff != "false" {
+		t.Fatalf("expected redis enable_unified_entry_selection=false after flip, got %q", persistedOff)
+	}
+}

@@ -73,6 +73,81 @@ func (e *Engine) commitPerpCapital(res *risk.CapitalReservation, posID string) e
 	})
 }
 
+// commitExistingReservation commits a preheld CapitalReservation against
+// a position the unified cross-strategy selector has just dispatched.
+// Symmetric to commitPerpCapital but takes the reservation directly from
+// a BatchReservation instead of building a fresh one — the reservation
+// was already held atomically by ReserveBatch at the start of the
+// EntryScan tick so no new Reserve call happens here.
+//
+// The `amount` parameter is reserved for future callers that need to
+// override the committed exposure (e.g. partial fills) — pass 0 for the
+// current per-leg margin = (size * entry) / leverage semantics which
+// matches commitPerpCapital byte-for-byte.
+//
+// When `res` is nil or the allocator is disabled the function silently
+// no-ops so callers can use it uniformly regardless of whether the
+// unified selector actually produced a reservation for this winner.
+func (e *Engine) commitExistingReservation(res *risk.CapitalReservation, posID string, amount float64) error {
+	if e.allocator == nil || !e.allocator.Enabled() || res == nil || posID == "" {
+		return nil
+	}
+
+	switch res.Strategy {
+	case risk.StrategyPerpPerp:
+		pos, err := e.db.GetPosition(posID)
+		if err != nil {
+			return fmt.Errorf("load position for preheld commit: %w", err)
+		}
+		leverage := float64(e.cfg.Leverage)
+		if leverage <= 0 {
+			leverage = 1
+		}
+		// amount > 0 overrides the derived per-leg margin split —
+		// reserved for future partial-fill callers. Zero keeps the
+		// default (size*entry / leverage) semantics.
+		if amount > 0 {
+			// Scale the reservation's declared exposures proportionally
+			// to the requested amount so the per-exchange split is
+			// preserved even under an override.
+			total := 0.0
+			for _, v := range res.Exposures {
+				total += v
+			}
+			if total <= 0 {
+				// Fallback to the derived path if the reservation has
+				// no recorded exposures for some reason.
+				return e.allocator.Commit(res, posID, map[string]float64{
+					pos.LongExchange:  (pos.LongSize * pos.LongEntry) / leverage,
+					pos.ShortExchange: (pos.ShortSize * pos.ShortEntry) / leverage,
+				})
+			}
+			scaled := make(map[string]float64, len(res.Exposures))
+			for k, v := range res.Exposures {
+				scaled[k] = v * (amount / total)
+			}
+			return e.allocator.Commit(res, posID, scaled)
+		}
+		return e.allocator.Commit(res, posID, map[string]float64{
+			pos.LongExchange:  (pos.LongSize * pos.LongEntry) / leverage,
+			pos.ShortExchange: (pos.ShortSize * pos.ShortEntry) / leverage,
+		})
+	case risk.StrategySpotFutures:
+		// Spot commit semantics live in spotengine/capital.go. The
+		// unified orchestrator routes spot winners through
+		// spotEntry.OpenSelectedEntry which owns its own commit path;
+		// this branch exists for symmetry / completeness.
+		if amount > 0 {
+			return e.allocator.Commit(res, posID, map[string]float64{
+				"": amount,
+			})
+		}
+		// Use the reservation's own exposures as the committed amount.
+		return e.allocator.Commit(res, posID, res.Exposures)
+	}
+	return nil
+}
+
 // effectiveCapitalPerLeg returns the USDT per leg, using allocator's derived value
 // when unified capital is enabled, or falling back to cfg.CapitalPerLeg.
 // When strategy is non-empty, the per-strategy dynamic cap is applied.

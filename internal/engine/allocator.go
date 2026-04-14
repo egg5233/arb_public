@@ -512,109 +512,167 @@ func (e *Engine) buildAllocatorCandidates(opps []models.Opportunity, cache *risk
 	return candidates
 }
 
+// solveAllocator delegates the generic branch-and-bound subset search
+// to solveGroupedSearch (internal/engine/selection_core.go) and keeps
+// rebalance-specific concerns (choice ordering, dryRunTransferPlan
+// feasibility + fee accounting, allocatorChoice reconstruction) here.
+//
+// Behavior is byte-identical to the pre-refactor implementation for any
+// fixed input: candidate and choice ordering match buildAllocatorCandidates,
+// feasibility + score still come from dryRunTransferPlan, and the greedy
+// seed inside selection_core performs the same dryRun-driven walk the
+// old greedyAllocatorSeed did.
 func (e *Engine) solveAllocator(candidates []allocatorCandidate, capacity map[string]float64, balances map[string]rebalanceBalanceInfo, remainingSlots int, timeout time.Duration, feeCache map[string]feeEntry) []allocatorChoice {
+	_ = capacity // capacity map is recomputed per-branch in the original code but never consulted for feasibility; feasibility is entirely via dryRunTransferPlan. Kept in signature for call-site compatibility.
+
+	if len(candidates) == 0 || remainingSlots <= 0 {
+		return nil
+	}
+
+	// Build groups + index for key->choice reconstruction. GroupKey is the
+	// symbol (mutual exclusion: at most one long/short pair per symbol).
+	// The Key is "symbol|long>short" so alternative-pair choices within the
+	// same symbol remain distinguishable.
+	groups := make(map[string][]searchChoice, len(candidates))
+	index := make(map[string]allocatorChoice, len(candidates)*2)
+	choiceKey := func(c allocatorChoice) string {
+		return c.symbol + "|" + c.longExchange + ">" + c.shortExchange
+	}
+	for _, cand := range candidates {
+		if len(cand.choices) == 0 {
+			continue
+		}
+		gc := make([]searchChoice, 0, len(cand.choices))
+		for _, ch := range cand.choices {
+			key := choiceKey(ch)
+			index[key] = ch
+			gc = append(gc, searchChoice{
+				Key:       key,
+				GroupKey:  cand.symbol,
+				ValueUSDT: ch.baseValue,
+				SlotCost:  1,
+			})
+		}
+		groups[cand.symbol] = gc
+	}
+
+	// evaluate wraps dryRunTransferPlan and returns the fee-adjusted score.
+	// Feasibility and fee accounting are authoritative — all feasibility
+	// pressure is funneled through this callback.
+	evaluate := func(keys []string) (float64, bool) {
+		if len(keys) == 0 {
+			return 0, true
+		}
+		chosen := make([]allocatorChoice, 0, len(keys))
+		for _, k := range keys {
+			if c, ok := index[k]; ok {
+				chosen = append(chosen, c)
+			}
+		}
+		result := e.dryRunTransferPlan(chosen, balances, feeCache)
+		if !result.Feasible {
+			return 0, false
+		}
+		score := 0.0
+		for _, c := range chosen {
+			score += c.baseValue
+		}
+		score -= result.TotalFee
+		return score, true
+	}
+
 	start := time.Now()
-	bestValue := -1.0
-	var bestChoices []allocatorChoice
+	keys := solveGroupedSearch(groups, remainingSlots, timeout, evaluate)
+	elapsed := time.Since(start)
 
-	incumbent := e.greedyAllocatorSeed(candidates, cloneFloatMap(capacity), balances, feeCache, remainingSlots)
-	if len(incumbent) > 0 {
-		result := e.dryRunTransferPlan(incumbent, balances, feeCache)
-		if result.Feasible {
-			bestValue = 0
-			for _, c := range incumbent {
-				bestValue += c.baseValue
-			}
+	bestChoices := make([]allocatorChoice, 0, len(keys))
+	bestValue := 0.0
+	for _, k := range keys {
+		if c, ok := index[k]; ok {
+			bestChoices = append(bestChoices, c)
+			bestValue += c.baseValue
+		}
+	}
+	if len(bestChoices) > 0 {
+		if result := e.dryRunTransferPlan(bestChoices, balances, feeCache); result.Feasible {
 			bestValue -= result.TotalFee
-			bestChoices = append(bestChoices, incumbent...)
 		}
 	}
-	greedyN := len(incumbent)
-	greedyVal := bestValue
 
-	var branch func(int, map[string]float64, int, []allocatorChoice, float64)
-	branch = func(idx int, cap map[string]float64, slots int, current []allocatorChoice, currentValue float64) {
-		if time.Since(start) >= timeout {
-			e.log.Debug("allocator: B&B timeout after %v, best=%d choices", time.Since(start), len(bestChoices))
-			return
-		}
-		if idx >= len(candidates) || slots <= 0 {
-			// Leaf evaluation via dryRunTransferPlan.
-			result := e.dryRunTransferPlan(current, balances, feeCache)
-			if !result.Feasible {
-				return
-			}
-			score := 0.0
-			for _, c := range current {
-				score += c.baseValue
-			}
-			score -= result.TotalFee
-			if score > bestValue {
-				bestValue = score
-				bestChoices = append([]allocatorChoice(nil), current...)
-			}
-			return
-		}
-
-		ub := allocatorUpperBound(candidates, idx, slots)
-		if currentValue+ub <= bestValue {
-			e.log.Debug("allocator: B&B prune idx=%d bound=%.4f<=best=%.4f", idx, currentValue+ub, bestValue)
-			return
-		}
-
-		for _, choice := range candidates[idx].choices {
-			nextCap := cloneFloatMap(cap)
-			nextCap[choice.longExchange] = math.Max(0, nextCap[choice.longExchange]-choice.requiredMargin)
-			nextCap[choice.shortExchange] = math.Max(0, nextCap[choice.shortExchange]-choice.requiredMargin)
-			e.log.Debug("allocator: B&B try %s %s/%s", choice.symbol, choice.longExchange, choice.shortExchange)
-			next := append(current, choice)
-			branch(idx+1, nextCap, slots-1, next, currentValue+choice.baseValue)
-		}
-
-		branch(idx+1, cap, slots, current, currentValue)
+	if elapsed >= timeout {
+		e.log.Debug("allocator: B&B timeout after %v, best=%d choices", elapsed, len(bestChoices))
 	}
-
-	branch(0, cloneFloatMap(capacity), remainingSlots, nil, 0)
-	e.log.Debug("allocator: solver done: greedy=%d/%.4f B&B=%d/%.4f improved=%v", greedyN, greedyVal, len(bestChoices), bestValue, bestValue > greedyVal)
+	e.log.Debug("allocator: solver done: picked=%d value=%.4f in %v", len(bestChoices), bestValue, elapsed)
 	return bestChoices
 }
 
+// greedyAllocatorSeed is retained as a thin wrapper so external/test
+// callers that construct a bare Engine can still invoke the original
+// greedy walk directly. Internally it goes through the same
+// selection_core.greedySeed helper that solveAllocator relies on.
 func (e *Engine) greedyAllocatorSeed(candidates []allocatorCandidate, capacity map[string]float64, balances map[string]rebalanceBalanceInfo, feeCache map[string]feeEntry, remainingSlots int) []allocatorChoice {
-	selected := make([]allocatorChoice, 0, remainingSlots)
-	for _, candidate := range candidates {
-		if remainingSlots <= 0 {
-			break
+	_ = capacity // capacity tracking in the original version was dead code (only dryRunTransferPlan enforces feasibility).
+
+	if len(candidates) == 0 || remainingSlots <= 0 {
+		return nil
+	}
+
+	groups := make(map[string][]searchChoice, len(candidates))
+	index := make(map[string]allocatorChoice, len(candidates)*2)
+	choiceKey := func(c allocatorChoice) string {
+		return c.symbol + "|" + c.longExchange + ">" + c.shortExchange
+	}
+	for _, cand := range candidates {
+		if len(cand.choices) == 0 {
+			continue
 		}
-		for _, choice := range candidate.choices {
-			// Try adding this choice and validate via dryRunTransferPlan.
-			trial := append(append([]allocatorChoice(nil), selected...), choice)
-			result := e.dryRunTransferPlan(trial, balances, feeCache)
-			if !result.Feasible {
-				e.log.Debug("allocator: greedy skip %s %s/%s: dryRun infeasible", choice.symbol, choice.longExchange, choice.shortExchange)
-				continue
+		gc := make([]searchChoice, 0, len(cand.choices))
+		for _, ch := range cand.choices {
+			key := choiceKey(ch)
+			index[key] = ch
+			gc = append(gc, searchChoice{
+				Key:       key,
+				GroupKey:  cand.symbol,
+				ValueUSDT: ch.baseValue,
+				SlotCost:  1,
+			})
+		}
+		groups[cand.symbol] = gc
+	}
+
+	evaluate := func(keys []string) (float64, bool) {
+		if len(keys) == 0 {
+			return 0, true
+		}
+		chosen := make([]allocatorChoice, 0, len(keys))
+		for _, k := range keys {
+			if c, ok := index[k]; ok {
+				chosen = append(chosen, c)
 			}
-			capacity[choice.longExchange] = math.Max(0, capacity[choice.longExchange]-choice.requiredMargin)
-			capacity[choice.shortExchange] = math.Max(0, capacity[choice.shortExchange]-choice.requiredMargin)
-			e.log.Debug("allocator: greedy selected %s %s/%s margin=%.2f",
-				choice.symbol, choice.longExchange, choice.shortExchange, choice.requiredMargin)
-			selected = append(selected, choice)
-			remainingSlots--
-			break
+		}
+		result := e.dryRunTransferPlan(chosen, balances, feeCache)
+		if !result.Feasible {
+			return 0, false
+		}
+		score := 0.0
+		for _, c := range chosen {
+			score += c.baseValue
+		}
+		score -= result.TotalFee
+		return score, true
+	}
+
+	keys, _, ok := greedySeed(sortedSearchGroups(groups), remainingSlots, evaluate)
+	if !ok {
+		return nil
+	}
+	selected := make([]allocatorChoice, 0, len(keys))
+	for _, k := range keys {
+		if c, ok := index[k]; ok {
+			selected = append(selected, c)
 		}
 	}
 	return selected
-}
-
-func allocatorUpperBound(candidates []allocatorCandidate, idx, slots int) float64 {
-	sum := 0.0
-	for ; idx < len(candidates) && slots > 0; idx++ {
-		if len(candidates[idx].choices) == 0 {
-			continue
-		}
-		sum += math.Max(0, candidates[idx].choices[0].baseValue)
-		slots--
-	}
-	return sum
 }
 
 

@@ -409,8 +409,6 @@ func main() {
 	log.Info("Dashboard API server started")
 
 	eng.MergeExistingDuplicates()
-	eng.Start()
-	log.Info("Engine started")
 
 	// Start spot-futures arbitrage scraper if enabled.
 	if cfg.SpotArbEnabled {
@@ -421,7 +419,14 @@ func main() {
 		log.Info("Spot-futures arbitrage scraper started")
 	}
 
-	// Start spot-futures arbitrage engine if enabled.
+	// Construct the spot-futures engine BEFORE eng.Start() so we can wire
+	// the cross-engine callbacks (SetSpotCloseCallback / SetSpotEntryExecutor)
+	// before the main engine's run loop fires its first EntryScan. Without
+	// this order the unified cross-strategy selector could observe a nil
+	// e.spotEntry on the very first :40 tick — the outer readiness gate
+	// would fall back to legacy executeArbitrage, which attemptAutoEntries
+	// has already suppressed when the unified flag is on. Both paths dead.
+	// See plans/PLAN-unified-capital-allocator.md Section 3.
 	var spotEng *spotengine.SpotEngine
 	if cfg.SpotFuturesEnabled {
 		spotEng = spotengine.NewSpotEngine(exchanges, db, apiSrv, cfg, allocator, tg)
@@ -433,8 +438,17 @@ func main() {
 		apiSrv.SetSpotCloseHandler(spotEng.ManualClose)
 		apiSrv.SetSpotTestInjectHandler(spotEng.InjectTestOpportunity)
 		apiSrv.SetSpotMaintenanceWarning(spotEng.MaintenanceWarning)
-		spotEng.Start()
+		// Wire callbacks BEFORE starting either engine so the main engine's
+		// first EntryScan sees a fully-configured executor.
 		eng.SetSpotCloseCallback(spotEng.ClosePosition)
+		eng.SetSpotEntryExecutor(spotEng)
+	}
+
+	eng.Start()
+	log.Info("Engine started")
+
+	if cfg.SpotFuturesEnabled && spotEng != nil {
+		spotEng.Start()
 		log.Info("Spot-futures engine started")
 	}
 

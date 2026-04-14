@@ -1183,6 +1183,10 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
     const sfDryRun = getByPath(config, ['spot_futures', 'auto_dry_run']) === true;
     const sfExchanges = (getByPath(config, ['spot_futures', 'exchanges']) as string[] | undefined) || [];
     const sfMaintenanceGate = getByPath(config, ['spot_futures', 'enable_maintenance_gate']) === true;
+    // unifiedOwnerReady (dashboard mirror): unified entry selection flag AND capital allocator both on
+    const unifiedEntryOn = getByPath(config, ['allocation', 'enable_unified_entry_selection']) === true;
+    const capAllocatorOn = getByPath(config, ['risk', 'enable_capital_allocator']) === true;
+    const unifiedOwnsEntry = unifiedEntryOn && capAllocatorOn;
 
     return (
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1204,19 +1208,22 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
         </div>
 
         {/* Auto entry toggle */}
-        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+        <div className={`bg-gray-900 rounded-xl p-4 border border-gray-800 ${unifiedOwnsEntry ? 'opacity-60' : ''}`}>
           <div className="flex items-center gap-2 mb-2">
             <label className="text-sm font-medium">{t('cfg.sf.autoEnabled')}</label>
-            <Tooltip text={t('cfg.sf.autoEnabledDesc')} />
+            <Tooltip text={unifiedOwnsEntry ? t('cfg.sf.autoEnabledUnifiedOwner') : t('cfg.sf.autoEnabledDesc')} />
           </div>
           <div className="flex items-center gap-3">
             <ToggleSwitch
               on={sfAutoEnabled}
-              onChange={(v) => handleBoolChange(['spot_futures', 'auto_enabled'], v)}
+              onChange={(v) => { if (!unifiedOwnsEntry) handleBoolChange(['spot_futures', 'auto_enabled'], v); }}
             />
             <span className={`text-sm font-semibold ${sfAutoEnabled ? 'text-green-400' : 'text-red-400'}`}>
               {sfAutoEnabled ? 'ON' : 'OFF'}
             </span>
+            {unifiedOwnsEntry && (
+              <span className="text-xs text-violet-400 italic">{t('cfg.sf.autoEnabledUnifiedOwner')}</span>
+            )}
           </div>
         </div>
 
@@ -1645,6 +1652,14 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
           desc={t('cfg.alloc.enableUnifiedCapitalDesc')}
           value={enabled}
           onChange={(v) => handleBoolChange(['allocation', 'enable_unified_capital'], v)}
+        />
+
+        {/* Unified Entry Selection (beta) */}
+        <ToggleField
+          label={t('cfg.alloc.enableUnifiedEntrySelection')}
+          desc={t('cfg.alloc.enableUnifiedEntrySelectionDesc')}
+          value={getByPath(config, ['allocation', 'enable_unified_entry_selection']) === true}
+          onChange={(v) => handleBoolChange(['allocation', 'enable_unified_entry_selection'], v)}
         />
 
         <div className={!enabled ? 'opacity-50 space-y-4' : 'space-y-4'}>
