@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.14] - 2026-04-15
+
+### Fixed
+- **Cross-engine interference at 7 HIGH sites (audit 260415-34e follow-up)** — v0.32.13 fixed 2 cross-engine interference bugs; the audit found 21 more (7 HIGH, 9 MEDIUM, 5 LOW). This release applies the same `sfSizeOffset` subtraction pattern at all 7 HIGH sites so the perp-perp engine never confuses a spot-futures futures leg for its own position on the same `(exchange, symbol, side)`:
+  - **Shared helper** (`consolidate.go:252-307`): extracted `buildSpotFuturesMaps()` and `sfSubtract()` from the v0.32.13 inline code. `buildSpotFuturesMaps` returns both the orphan-exclusion set (all non-closed SF positions) and the size-offset map (SpotStatusActive only); `sfSubtract` performs the offset lookup with a zero-clamp.
+  - **Finding 1** — SL method-2 verify (`engine.go:1577-1588`): an SF reduce-only fill on an exchange where PP also holds the same side could false-trigger `triggerEmergencyClose` on a just-closed PP position, causing duplicate bookkeeping. Now subtracts SF offset before the `remaining > 0` skip check.
+  - **Finding 2** — orphan-cleanup verify (`engine.go:1826-1838`): `handleOrphanClose` post-close verification sees SF leg and reverts PP to Active with `LongSize/ShortSize = SF.size`. Next consolidator cycle would try to close SF's leg. Now subtracts SF offset before the dust check.
+  - **Findings 3+4** — `markPositionClosed` close-leg + verify (`consolidate.go:511-587`): without the subtraction, (a) the close command's quantity includes SF's futures leg and could flatten SF's hedge, and (b) post-close verification sees SF size and leaves PP stuck in a ghost Active state forever. Now subtracts SF offset before both the close call and the dust check.
+  - **Finding 5** — `reconcilePartialPosition` (`consolidate.go:898-904`): a `StatusPartial` PP position on a symbol where SF also holds a leg would promote to Active with SF's size imported as PP's `LongSize`/`ShortSize`, and the trim path would close SF's hedge. Now subtracts SF offset before promote/trim logic.
+  - **Finding 6** — `closePositionWithMode` verify (`exit.go:1893-1909`): direct twin of the fixed rotation verify at `exit.go:2775`. Without the subtraction, a closed PP position would be reverted to Active with SF's size and stale SLs reattached against a phantom position. Now subtracts SF offset before the `notFlat` check.
+  - **Finding 7** — entry `confirmFillSafe` fallback at 4 depth-fill paths (`engine.go:3624-3630`, `:3688-3693`, `:3855-3861`, `:3912-3918`): when confirmFill fails and the code falls back to reading exchange position size, any pre-existing SF leg on the same side was being written directly as PP's `LongSize`/`ShortSize`. Now subtracts SF offset so PP only records its own fill.
+
+No source additions beyond the 7 fix sites + 2 helper functions. `go build` clean, `go vet` clean.
+
 ## [0.32.13] - 2026-04-14
 
 ### Fixed

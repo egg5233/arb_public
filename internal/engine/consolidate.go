@@ -119,25 +119,7 @@ func (e *Engine) consolidatePositions(missCount map[string]int, dustIgnore map[s
 
 	// Build exclusion set and size offsets from active spot-futures positions.
 	// Used by orphan detection (keys) and size-mismatch detection (offsets).
-	spotFuturesKeys := make(map[string]bool)
-	sfSizeOffset := make(map[string]float64) // key = "exchange:symbol:side" → total futures size
-	if spotPositions, sfErr := e.db.GetActiveSpotPositions(); sfErr == nil {
-		for _, sp := range spotPositions {
-			// Dir A = futures long, Dir B = futures short
-			side := "long"
-			if sp.Direction == "buy_spot_short" {
-				side = "short"
-			}
-			key := fmt.Sprintf("%s:%s:%s", sp.Exchange, sp.Symbol, side)
-			spotFuturesKeys[key] = true
-			// Only count the futures leg for size offset if the position is
-			// truly active (futures leg still open on exchange). Pending and
-			// exiting positions may have a flat or stale FuturesSize.
-			if sp.Status == models.SpotStatusActive {
-				sfSizeOffset[key] += sp.FuturesSize
-			}
-		}
-	}
+	spotFuturesKeys, sfSizeOffset := e.buildSpotFuturesMaps()
 
 	for _, pos := range positions {
 		if pos.Status != models.StatusActive {
@@ -265,6 +247,58 @@ func (e *Engine) consolidatePositions(missCount map[string]int, dustIgnore map[s
 			}
 		}
 	}
+}
+
+// buildSpotFuturesMaps returns two maps derived from active spot-futures
+// positions, keyed by "exchange:symbol:side" where side = "long" for Dir A
+// (borrow_sell_long → futures long) and "short" for Dir B (buy_spot_short
+// → futures short):
+//
+//   - spotFuturesKeys: membership set covering every non-closed SF position
+//     (pending/active/exiting). Used for orphan-detection exclusion so PP
+//     doesn't mistake SF legs mid-exit for orphans and close them.
+//
+//   - sfSizeOffset: aggregated FuturesSize values for positions that are
+//     genuinely SpotStatusActive only. Used to subtract SF futures-leg
+//     sizes from exchange-reported totals when the PP engine queries
+//     getExchangePositionSize or GetAllPositions. Pending positions have
+//     no fill yet; exiting positions may have a flat or stale FuturesSize.
+//
+// Callers must treat the returned values as read-only.
+func (e *Engine) buildSpotFuturesMaps() (map[string]bool, map[string]float64) {
+	spotFuturesKeys := make(map[string]bool)
+	sfSizeOffset := make(map[string]float64)
+	spotPositions, err := e.db.GetActiveSpotPositions()
+	if err != nil {
+		return spotFuturesKeys, sfSizeOffset
+	}
+	for _, sp := range spotPositions {
+		side := "long"
+		if sp.Direction == "buy_spot_short" {
+			side = "short"
+		}
+		key := fmt.Sprintf("%s:%s:%s", sp.Exchange, sp.Symbol, side)
+		spotFuturesKeys[key] = true
+		if sp.Status == models.SpotStatusActive {
+			sfSizeOffset[key] += sp.FuturesSize
+		}
+	}
+	return spotFuturesKeys, sfSizeOffset
+}
+
+// sfSubtract returns size minus any spot-futures offset for the given
+// (exchange, symbol, side). Returns 0 if the subtraction would go negative.
+// Used by all cross-engine-safe size checks across engine.go / exit.go /
+// consolidate.go to strip SF's futures leg from exchange-reported totals.
+func sfSubtract(size float64, sfSizeOffset map[string]float64, exchName, symbol, side string) float64 {
+	if sfSizeOffset == nil {
+		return size
+	}
+	size -= sfSizeOffset[fmt.Sprintf("%s:%s:%s", exchName, symbol, side)]
+	if size < 0 {
+		return 0
+	}
+	return size
 }
 
 // consolidatePosition checks a single position's exchange legs and fixes
@@ -472,12 +506,20 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 	}
 	defer lock.Release()
 
+	// Load spot-futures offsets so the close+verify paths don't touch SF legs
+	// that happen to share (exchange, symbol, side) with this PP position.
+	_, sfSizeOffset := e.buildSpotFuturesMaps()
+
 	// Try to close BOTH legs — including the one reported as "missing".
 	// The "missing" leg may still exist on the exchange (transient API glitch),
 	// so we re-query and attempt to close it too. Uses verified retry (up to 10 attempts).
 	if pos.LongSize > 0 {
 		if longExch, ok := e.exchanges[pos.LongExchange]; ok {
 			actualSize, err := getExchangePositionSize(longExch, pos.Symbol, "long")
+			if err == nil {
+				// Exclude SF's futures leg from the close quantity.
+				actualSize = sfSubtract(actualSize, sfSizeOffset, pos.LongExchange, pos.Symbol, "long")
+			}
 			if err == nil && actualSize > 0 {
 				e.log.Info("consolidate: closing long leg on %s: %.6f (verified retry)", pos.LongExchange, actualSize)
 				rem := e.closeFullyWithRetry(longExch, pos.Symbol, exchange.SideSell, actualSize)
@@ -498,6 +540,10 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 	if pos.ShortSize > 0 {
 		if shortExch, ok := e.exchanges[pos.ShortExchange]; ok {
 			actualSize, err := getExchangePositionSize(shortExch, pos.Symbol, "short")
+			if err == nil {
+				// Exclude SF's futures leg from the close quantity.
+				actualSize = sfSubtract(actualSize, sfSizeOffset, pos.ShortExchange, pos.Symbol, "short")
+			}
 			if err == nil && actualSize > 0 {
 				e.log.Info("consolidate: closing short leg on %s: %.6f (verified retry)", pos.ShortExchange, actualSize)
 				rem := e.closeFullyWithRetry(shortExch, pos.Symbol, exchange.SideBuy, actualSize)
@@ -518,6 +564,9 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 
 	// Verify both legs are flat before marking closed.
 	// If verification fails (API error), treat as NOT confirmed flat.
+	// Re-build sfSizeOffset so the dust-check reflects any SF positions opened
+	// during the close attempt.
+	_, sfSizeOffset = e.buildSpotFuturesMaps()
 	var longRemaining, shortRemaining float64
 	verifyOK := true
 	if longExch, ok := e.exchanges[pos.LongExchange]; ok {
@@ -526,7 +575,8 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 			e.log.Error("consolidate: cannot verify long leg for %s: %v, keeping active", pos.ID, err)
 			verifyOK = false
 		}
-		longRemaining = rem
+		// Subtract SF leg so a healthy SF position doesn't keep PP stuck Active.
+		longRemaining = sfSubtract(rem, sfSizeOffset, pos.LongExchange, pos.Symbol, "long")
 	}
 	if shortExch, ok := e.exchanges[pos.ShortExchange]; ok {
 		rem, err := getExchangePositionSize(shortExch, pos.Symbol, "short")
@@ -534,7 +584,7 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 			e.log.Error("consolidate: cannot verify short leg for %s: %v, keeping active", pos.ID, err)
 			verifyOK = false
 		}
-		shortRemaining = rem
+		shortRemaining = sfSubtract(rem, sfSizeOffset, pos.ShortExchange, pos.Symbol, "short")
 	}
 	// Accept dust as flat (Fix E) — exchange-side rounding can return e.g. 1e-7
 	// even when both legs are effectively closed. isDust matches the same
@@ -845,6 +895,13 @@ func (e *Engine) reconcilePartialPosition(pos *models.ArbitragePosition) {
 		e.log.Warn("reconcilePartial %s: query failed (long=%v short=%v)", pos.ID, longErr, shortErr)
 		return
 	}
+
+	// Exclude any spot-futures futures leg on the same (exchange, symbol, side).
+	// Without this, reconcilePartial could promote PP to Active using SF's size
+	// as its own, or trim SF's leg when balancing.
+	_, sfSizeOffset := e.buildSpotFuturesMaps()
+	longActual = sfSubtract(longActual, sfSizeOffset, pos.LongExchange, pos.Symbol, "long")
+	shortActual = sfSubtract(shortActual, sfSizeOffset, pos.ShortExchange, pos.Symbol, "short")
 
 	if longActual == 0 && shortActual == 0 {
 		e.log.Info("reconcilePartial %s: both sides zero, closing as failed", pos.ID)

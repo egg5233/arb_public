@@ -1893,6 +1893,19 @@ func (e *Engine) closePositionWithMode(pos *models.ArbitragePosition, emergency 
 	actualLong, longVerifyErr := getExchangePositionSize(longExch, pos.Symbol, "long")
 	actualShort, shortVerifyErr := getExchangePositionSize(shortExch, pos.Symbol, "short")
 
+	// Subtract any spot-futures futures leg on the same (exchange, symbol, side)
+	// so an SF hedge doesn't keep PP Active with imported SF size. Direct twin
+	// of the v0.32.13 rotation-verify fix at exit.go:2775.
+	if longVerifyErr == nil || shortVerifyErr == nil {
+		_, sfSizeOffset := e.buildSpotFuturesMaps()
+		if longVerifyErr == nil {
+			actualLong = sfSubtract(actualLong, sfSizeOffset, pos.LongExchange, pos.Symbol, "long")
+		}
+		if shortVerifyErr == nil {
+			actualShort = sfSubtract(actualShort, sfSizeOffset, pos.ShortExchange, pos.Symbol, "short")
+		}
+	}
+
 	// If verification failed (API error), treat as NOT confirmed flat — safer to keep active.
 	notFlat := false
 	if longVerifyErr != nil || shortVerifyErr != nil {

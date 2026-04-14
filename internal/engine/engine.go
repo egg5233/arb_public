@@ -1578,6 +1578,10 @@ func (e *Engine) handleSLFill(exchName string, upd exchange.OrderUpdate) {
 		if err != nil {
 			continue // can't verify, skip
 		}
+		// Subtract any spot-futures futures leg on the same (exchange, symbol, side)
+		// so an SF reduce-only fill doesn't mark a healthy PP leg as SL-triggered.
+		_, sfSizeOffset := e.buildSpotFuturesMaps()
+		remaining = sfSubtract(remaining, sfSizeOffset, exchName, pos.Symbol, leg)
 		if remaining > 0 {
 			// Leg still has size — this was a partial close (trim, L4 reduction, etc.), not SL.
 			continue
@@ -1820,6 +1824,12 @@ func (e *Engine) handleOrphanClose(action risk.HealthAction) {
 			// Verify flat after close.
 			time.Sleep(500 * time.Millisecond)
 			remaining, verifyErr := getExchangePositionSize(exch, pos.Symbol, action.OrphanSide)
+			// Subtract any spot-futures leg on the same side so we don't import SF size
+			// into the PP record on revert.
+			if verifyErr == nil {
+				_, sfOff := e.buildSpotFuturesMaps()
+				remaining = sfSubtract(remaining, sfOff, action.OrphanExchange, pos.Symbol, action.OrphanSide)
+			}
 			if verifyErr != nil || remaining > 0 {
 				e.log.Error("[orphan-cleanup] position %s NOT flat after close (remaining=%.6f, err=%v) — reverting to active",
 					pos.ID, remaining, verifyErr)
@@ -3612,6 +3622,11 @@ fillLoop:
 				_ = shortExch.CancelOrder(opp.Symbol, shortOID)
 				// Check if fill actually happened using existing helper
 				exchSize, exchErr := getExchangePositionSize(shortExch, opp.Symbol, "short")
+				if exchErr == nil {
+					// Subtract any spot-futures short leg so PP doesn't absorb SF size.
+					_, sfOff := e.buildSpotFuturesMaps()
+					exchSize = sfSubtract(exchSize, sfOff, opp.ShortExchange, opp.Symbol, "short")
+				}
 				if exchErr == nil && exchSize > 0 {
 					e.log.Warn("first leg %s: confirmFill failed but exchange shows short position %.6f", opp.Symbol, exchSize)
 					// Update the EXISTING pending position (pos is already created and passed in)
@@ -3672,6 +3687,11 @@ fillLoop:
 								e.log.Warn("depth tick: top-up fill state unknown: %v", topUpCFErr)
 								_ = shortExch.CancelOrder(opp.Symbol, topUpOID)
 								exchSize, exchErr := getExchangePositionSize(shortExch, opp.Symbol, "short")
+								if exchErr == nil {
+									// Subtract SF short leg so cross-engine fills aren't attributed as PP top-up.
+									_, sfOff := e.buildSpotFuturesMaps()
+									exchSize = sfSubtract(exchSize, sfOff, opp.ShortExchange, opp.Symbol, "short")
+								}
 								priorTotal := confirmedShort + shortFilled
 								if exchErr == nil && exchSize > priorTotal {
 									actualTopUp := exchSize - priorTotal
@@ -3839,6 +3859,11 @@ fillLoop:
 				_ = longExch.CancelOrder(opp.Symbol, longOID)
 				// Check if fill actually happened using existing helper
 				exchSize, exchErr := getExchangePositionSize(longExch, opp.Symbol, "long")
+				if exchErr == nil {
+					// Subtract any spot-futures long leg so PP doesn't absorb SF size.
+					_, sfOff := e.buildSpotFuturesMaps()
+					exchSize = sfSubtract(exchSize, sfOff, opp.LongExchange, opp.Symbol, "long")
+				}
 				if exchErr == nil && exchSize > 0 {
 					e.log.Warn("first leg %s: confirmFill failed but exchange shows long position %.6f", opp.Symbol, exchSize)
 					// Update the EXISTING pending position (pos is already created and passed in)
@@ -3896,6 +3921,11 @@ fillLoop:
 								e.log.Warn("depth tick: top-up fill state unknown: %v", topUpCFErr)
 								_ = longExch.CancelOrder(opp.Symbol, topUpOID)
 								exchSize, exchErr := getExchangePositionSize(longExch, opp.Symbol, "long")
+								if exchErr == nil {
+									// Subtract SF long leg so cross-engine fills aren't attributed as PP top-up.
+									_, sfOff := e.buildSpotFuturesMaps()
+									exchSize = sfSubtract(exchSize, sfOff, opp.LongExchange, opp.Symbol, "long")
+								}
 								priorTotal := confirmedLong + longFilled
 								if exchErr == nil && exchSize > priorTotal {
 									actualTopUp := exchSize - priorTotal
