@@ -1,9 +1,10 @@
 # PLAN: Unified Allocator Post-Impl Fix v2
 
-**Status:** DRAFT v2 — applies Codex v1 8 required changes
+**Status:** DRAFT v3 — applies Codex v2 5 required changes
 **Revision history:**
 - v1 → Codex NEEDS REVISION: cap unit mismatch, missing strategyPct fallback, non-existent helper references, capacityMu insufficient (spot race), dispatchUnifiedPerp pending double-create, wrong parity framing, Summary not cached.
-- v2 → applies all 8 changes below.
+- v2 → applied 8 v1 changes; Codex re-review found 5 plan-to-code mismatches.
+- v3 → fixes: (1) dynamicStrategyPct signature `(strategy, perpHasOpps, spotHasOpps)`; (2) explicit `NewSpotEngine` + `cmd/main.go` plumbing for admissionMu sharing; (3) pending-save rollback cleans previously-written records on partial failure; (4) Sections 4/7/8 cleared of stale v1 references; (5) files-changed lists actual spot-engine plumbing.
 **Author:** claude
 **Date:** 2026-04-14
 **Trigger:** Codex post-fix review (#30b7ce58) found 2 blocking issues in v0.33.0 implementation that i5's review missed.
@@ -68,9 +69,15 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
    }
    ```
 
-2. `buildCapacitySnapshot` reproduces `strategyPct()` fallback semantics — NOT raw `Summary()`:
+2. `buildCapacitySnapshot` reproduces `strategyPct()` fallback semantics — NOT raw `Summary()`. Real `dynamicStrategyPct` signature requires opp-presence booleans:
+
    ```go
-   func (e *Engine) buildCapacitySnapshot() *unifiedCapacitySnapshot {
+   // Real signature (verified at internal/engine/capital.go:226-241):
+   //   func (e *Engine) dynamicStrategyPct(strategy risk.Strategy, perpHasOpps, spotHasOpps bool) float64
+   //
+   // NOT a 1-arg version. v3 must thread perpHasOpps/spotHasOpps through.
+   
+   func (e *Engine) buildCapacitySnapshot(perpHasOpps, spotHasOpps bool) *unifiedCapacitySnapshot {
        summary := e.allocator.Summary()
        
        // Reproduce strategyPct() fallback: if dynamic is 0, fall back to static config
@@ -79,9 +86,10 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
        effectiveSpot := summary.EffectiveSpotPct
        if effectiveSpot == 0 { effectiveSpot = e.cfg.MaxSpotFuturesPct }
        
-       // Compute overrides via same path legacy perp uses (updateAllocation → dynamicStrategyPct)
-       perpOverride := e.dynamicStrategyPct(risk.StrategyPerpPerp)  // existing helper
-       spotOverride := e.dynamicStrategyPct(risk.StrategySpotFutures)  // new helper if not yet symmetric
+       // Compute overrides via the SAME helper legacy perp uses, with opp-presence
+       // inputs determined from this tick's actual candidate gathering.
+       perpOverride := e.dynamicStrategyPct(risk.StrategyPerpPerp, perpHasOpps, spotHasOpps)
+       spotOverride := e.dynamicStrategyPct(risk.StrategySpotFutures, perpHasOpps, spotHasOpps)
        
        return &unifiedCapacitySnapshot{
            TotalCap:         summary.TotalCap,
@@ -94,6 +102,8 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
        }
    }
    ```
+   
+   Caller must supply `perpHasOpps = len(perpOpps) > 0` and `spotHasOpps = len(spotCands) > 0` from `runUnifiedEntrySelection` before calling `buildCapacitySnapshot`.
 
 3. `makeUnifiedEvaluator.evaluate(keys)` computes caps using percentage math matching `checkCapsWithOverride:578-583`:
    ```go
@@ -144,23 +154,47 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
 
 **Required changes:**
 
-1. **Cross-strategy admission lock** — `capacityMu` alone is insufficient. Two options:
-   
-   **Option H1 (recommended):** introduce a single cross-strategy admission lock used by BOTH perp and spot admission paths:
+1. **Cross-strategy admission lock — concrete plumbing.** Single `admissionMu` shared across perp + spot admission paths.
+
+   **Live spot-engine constructor signature (verified):**
    ```go
-   // internal/engine/engine.go (new, on Engine struct)
-   admissionMu sync.Mutex  // serializes ALL entry admission (perp + spot) across engines
+   // internal/spotengine/engine.go:73-102
+   func NewSpotEngine(
+       exchanges map[string]exchange.Exchange,
+       db *database.Client,
+       apiSrv *api.Server,
+       cfg *config.Config,
+       allocator *risk.CapitalAllocator,
+       telegram *notify.Telegram,
+   ) *SpotEngine
    ```
-   Update callers:
-   - `engine.go:407-485` `ManualOpen` — replace `capacityMu` with `admissionMu` (capacityMu retained only if it also guards other non-admission concerns)
-   - `engine.go:2126-2427` `executeArbitrage` — same replacement
-   - `internal/spotengine/execution.go:143-157,292-306` — add `admissionMu.Lock()/Unlock()` around the spot admission window (share via Engine reference or new method on Engine)
-   - `internal/spotengine/selected_entry.go:237-305` `OpenSelectedEntry` — same
-   - New `runUnifiedEntrySelection` admission critical section uses `admissionMu`
-   
-   **Option H2 (minimal change):** add `Engine.admissionMu` and have unified path acquire BOTH `capacityMu` AND call a new `spotEng.AcquireAdmission()` method that takes `spotEntryLock`. Less invasive but fragile — lock ordering matters.
-   
-   **Decision:** go with H1 (single `admissionMu`). Legacy `capacityMu` retained only if callers exist outside admission (grep confirms it does not); then `capacityMu` can be renamed/replaced entirely.
+   `SpotEngine` has NO `*Engine` reference. Plumbing must add one.
+
+   **Plumbing changes (chosen path):** pass `*sync.Mutex` (the shared admission lock) into `NewSpotEngine`. Avoids adding `*Engine` ref (cycle risk).
+
+   - **`internal/engine/engine.go`** — Engine struct adds `admissionMu *sync.Mutex` field (pointer, so spot can share). Initialized as `admissionMu: &sync.Mutex{}` in `NewEngine`. Replace `capacityMu` field entirely (legacy `capacityMu` callers below).
+   - **Replace ALL `e.capacityMu.*` calls in `internal/engine/engine.go`** at:
+     - `:407-485` `ManualOpen` — `e.capacityMu.Lock/Unlock` → `e.admissionMu.Lock/Unlock`
+     - `:2126-2427` `executeArbitrage` — same
+     - Any other `capacityMu` call sites (audit via grep)
+   - **`internal/spotengine/engine.go`** — `NewSpotEngine` adds `admissionMu *sync.Mutex` parameter. SpotEngine struct stores it. New helper:
+     ```go
+     func (e *SpotEngine) admissionLock()   { e.admissionMu.Lock() }
+     func (e *SpotEngine) admissionUnlock() { e.admissionMu.Unlock() }
+     ```
+   - **`internal/spotengine/execution.go:143-157,292-306`** `ManualOpen` — wrap admission window (reservation + pending save) with `e.admissionLock(); defer e.admissionUnlock()`. Replace existing spot-internal lock if scope overlaps; keep `spotEntryLock` ONLY if it serves a different purpose (per-symbol vs cross-strategy). Audit needed.
+   - **`internal/spotengine/selected_entry.go:237-305`** `OpenSelectedEntry` — same admission wrapping. Note: when called from unified dispatcher, lock is ALREADY held by caller — must use a re-entrant pattern OR caller releases before calling. Decision: caller (`runUnifiedEntrySelection`) releases admissionMu BEFORE dispatch; spot's `OpenSelectedEntry` re-acquires for its own dispatch admission. NOT nested.
+   - **`cmd/main.go:432`** — update `NewSpotEngine` call to pass `eng.AdmissionMutex()` (new accessor on Engine returning `*sync.Mutex`):
+     ```go
+     // engine.go new accessor:
+     func (e *Engine) AdmissionMutex() *sync.Mutex { return e.admissionMu }
+     
+     // cmd/main.go:432:
+     spotEng = spotengine.NewSpotEngine(exchanges, db, apiSrv, cfg, allocator, tg, eng.AdmissionMutex())
+     ```
+   - **All test callers of `NewSpotEngine` and Engine constructors** — audit + update signatures. Existing tests with stub allocators must construct a `*sync.Mutex` to pass.
+
+   **Lock ordering invariant:** all admission paths acquire `admissionMu` at TOP level, no nesting. Unified `runUnifiedEntrySelection` releases BEFORE dispatch goroutines spawn (matches legacy `executeArbitrage` releasing before exec at `engine.go:2424-2455`).
 
 2. `runUnifiedEntrySelection` structure with helper:
    ```go
@@ -201,6 +235,15 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
            if w.Strategy == risk.StrategyPerpPerp {
                pos := newPendingPerpPosition(w)  // extracted from unified_entry.go:592-599
                if err := e.db.SavePendingPosition(pos); err != nil {
+                   // Rollback ALL pending records already saved this batch.
+                   // Without this, persisted pending positions become orphans
+                   // (no dispatch will run, batch reservation is released, but
+                   // the pending records would still occupy slot accounting).
+                   for prevKey, prevPos := range pending {
+                       if delErr := e.db.DeletePendingPosition(prevPos.ID); delErr != nil {
+                           e.log.Error("admit rollback: failed to delete pending %s (%s): %v", prevKey, prevPos.ID, delErr)
+                       }
+                   }
                    e.allocator.ReleaseBatch(batch)
                    return nil, nil, nil, err
                }
@@ -289,12 +332,15 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
 
 | Test | File | What it verifies |
 |---|---|---|
-| `TestUnifiedEntry_SnapshotUsesEffectivePctNotStatic` | `unified_capacity_test.go` | snapshot reads `allocator.Summary().EffectivePerpPct`, not `cfg.MaxPerpPerpPct` |
-| `TestUnifiedEntry_EvaluatorHonorsCapOverride` | `unified_entry_test.go` | when snapshot has non-zero override, evaluator uses override as ceiling |
-| `TestUnifiedEntry_BatchReservationItemIncludesCapOverride` | `unified_entry_test.go` | `BatchReservationItem.CapOverride` populated from `computeDynamicPerpCap` / `computeDynamicSpotCap` |
-| `TestUnifiedEntry_AdmissionSerializedAgainstConcurrentManualOpen` | `unified_entry_test.go` | while unified admission holds `capacityMu`, a concurrent `ManualOpen` call blocks until admission finishes (use goroutine + sync.WaitGroup + miniredis) |
-| `TestUnifiedEntry_E2EPreheldReservationDoesNotDoubleReserve` | `unified_entry_test.go` | See Fix I |
-| `TestRunPoolAllocator_EndToEndParityWithRebalance` | `allocator_parity_test.go` | See Fix J |
+| `TestUnifiedEntry_SnapshotUsesStrategyPctFallback` | `unified_capacity_test.go` | when `Summary().EffectivePerpPct == 0`, snapshot falls back to `cfg.MaxPerpPerpPct` (matches `strategyPct()` at allocator.go:599-621) |
+| `TestUnifiedEntry_SnapshotThreadsOppPresenceToDynamicPct` | `unified_capacity_test.go` | `dynamicStrategyPct` called with `(strategy, perpHasOpps, spotHasOpps)` reflecting tick's actual candidate set |
+| `TestUnifiedEntry_EvaluatorHonorsPctOverride` | `unified_entry_test.go` | when snapshot has non-zero `PerpPctOverride`, evaluator computes ceiling as `TotalCap * max(EffectivePerpPct, PerpPctOverride)` (percentage units, not USDT) |
+| `TestUnifiedEntry_BatchReservationItemThreadsPctOverride` | `unified_entry_test.go` | `BatchReservationItem.CapOverride` carries `snapshot.PerpPctOverride` / `SpotPctOverride` through to `ReserveBatch` |
+| `TestUnifiedEntry_AdmissionSerializedAgainstConcurrentManualOpen` | `unified_entry_test.go` | while unified admission holds `admissionMu`, concurrent perp `ManualOpen` AND spot `ManualOpen` block until admission finishes (use goroutine + sync.WaitGroup + miniredis + shared `*sync.Mutex` injected into both engines) |
+| `TestUnifiedEntry_PendingPositionRollbackOnPartialFailure` | `unified_entry_test.go` | when 2 perp pending saves succeed and 3rd fails, all 3 are deleted before returning; batch released; no orphan rows |
+| `TestUnifiedEntry_DispatchUsesPreCreatedPendingNotNew` | `unified_entry_test.go` | `dispatchUnifiedPerp` consumes `pending[w.Key]`, never calls `db.SavePendingPosition` itself (spy with counter on save) |
+| `TestUnifiedEntry_E2ESpotPreheldHandoff` | `unified_entry_test.go` | See Fix I — orchestrator → ReserveBatch → batch.Items[key] → OpenSelectedEntry (spot-only, uses existing stubSpotEntryExecutor) |
+| `TestAllocator_FrozenFixtureNonZeroTransferFees` | `allocator_parity_test.go` | See Fix J — frozen fixture exercises Pass-2 cross-exchange transfer with non-zero withdraw fee |
 
 ---
 
@@ -313,7 +359,7 @@ Note: Fix H renames `capacityMu` → `admissionMu` OR adds `admissionMu` alongsi
 | Dynamic pct query adds Redis latency (per-tick) | `Summary()` is NOT cached today (`risk/allocator.go:346-357` — corrected from v1 which wrongly claimed 1s cache). Each call re-computes via `loadState()`. Snapshot built ONCE per EntryScan tick, so latency impact = 1× `loadState()` per tick. Measure in practice; if > 500ms, add explicit per-tick cache. |
 | `admissionMu` held longer than legacy `capacityMu` (admission covers B&B) | B&B has 30s timeout; realistic admission < 3s. Legacy admission ~500ms. Worst-case 6× longer. Acceptable for 10-minute EntryScan cadence. Measure post-deploy; add candidate count cap if > 5s. |
 | `admissionMu` replaces `capacityMu` — lock-ordering mistakes | No nested locks (single admission lock at top level). All callers must acquire at same logical level. Enforced by removing `capacityMu` field from Engine and replacing all call sites atomically in one commit. |
-| Cross-engine admission requires `Engine` → `SpotEngine` lock sharing | Add method on Engine (`AdmissionLock()` / `AdmissionUnlock()`) that spot engine calls through its existing Engine reference. OR pass `*sync.Mutex` into `SpotEngine` constructor. Single-source-of-truth. |
+| Cross-engine admission requires `Engine` → `SpotEngine` lock sharing | CHOSEN: pass `*sync.Mutex` into `NewSpotEngine` constructor (`internal/spotengine/engine.go:73-102`). Engine exposes `AdmissionMutex()` accessor; cmd/main.go:432 wires it. Avoids `*Engine` reference cycle. All test callers must add the arg. |
 | `dispatchUnifiedPerp` pending-removal breaks existing callers | Audit: only the unified path calls `dispatchUnifiedPerp`; legacy perp uses different dispatch. Single caller — low risk. |
 | Frozen fixture parity test (Fix J) requires concrete exchange/risk stubs | Use existing test-doubles in `internal/engine/*_test.go`. If stubs don't exist for `SimulateApprovalForPair`, add a thin test-only interface override OR test `dryRunTransferPlan` directly. |
 
@@ -323,12 +369,15 @@ Note: Fix H renames `capacityMu` → `admissionMu` OR adds `admissionMu` alongsi
 
 ## 7. Acceptance Criteria
 
-- [ ] `TestUnifiedEntry_SnapshotUsesEffectivePctNotStatic` pass
-- [ ] `TestUnifiedEntry_EvaluatorHonorsCapOverride` pass
-- [ ] `TestUnifiedEntry_BatchReservationItemIncludesCapOverride` pass
-- [ ] `TestUnifiedEntry_AdmissionSerializedAgainstConcurrentManualOpen` pass
-- [ ] `TestUnifiedEntry_E2EPreheldReservationDoesNotDoubleReserve` pass
-- [ ] `TestRunPoolAllocator_EndToEndParityWithRebalance` pass
+- [ ] `TestUnifiedEntry_SnapshotUsesStrategyPctFallback` pass
+- [ ] `TestUnifiedEntry_SnapshotThreadsOppPresenceToDynamicPct` pass
+- [ ] `TestUnifiedEntry_EvaluatorHonorsPctOverride` pass
+- [ ] `TestUnifiedEntry_BatchReservationItemThreadsPctOverride` pass
+- [ ] `TestUnifiedEntry_AdmissionSerializedAgainstConcurrentManualOpen` pass (covers BOTH perp and spot ManualOpen)
+- [ ] `TestUnifiedEntry_PendingPositionRollbackOnPartialFailure` pass
+- [ ] `TestUnifiedEntry_DispatchUsesPreCreatedPendingNotNew` pass
+- [ ] `TestUnifiedEntry_E2ESpotPreheldHandoff` pass
+- [ ] `TestAllocator_FrozenFixtureNonZeroTransferFees` pass
 - [ ] All pre-existing tests still pass (no regression)
 - [ ] `go build` / `go vet` clean
 - [ ] Codex re-review on the fix branch returns SHIP
@@ -338,15 +387,20 @@ Note: Fix H renames `capacityMu` → `admissionMu` OR adds `admissionMu` alongsi
 ## 8. Files Changed
 
 **New:**
-- `internal/engine/unified_capacity_test.go` (if not already present)
+- `internal/engine/unified_capacity_test.go` — Fix G snapshot tests
 
 **Modified:**
-- `internal/engine/unified_capacity.go` — snapshot fields + dynamic pct
-- `internal/engine/unified_entry.go` — capacityMu wrap + CapOverride threading + admitUnifiedWinners helper
-- `internal/engine/engine.go` — factor `computeDynamicPerpCap` / `computeDynamicSpotCap` helpers
-- `internal/engine/unified_entry_test.go` — 4 new tests
-- `internal/engine/allocator_parity_test.go` — 1 new test
+- `internal/engine/unified_capacity.go` — snapshot carries percentages (`EffectivePerpPct`, `EffectiveSpotPct`, `PerpPctOverride`, `SpotPctOverride`); strategyPct() fallback; takes `(perpHasOpps, spotHasOpps)`
+- `internal/engine/unified_entry.go` — `admissionMu` wrap (was capacityMu); pct override threading via `BatchReservationItem.CapOverride`; `admitUnifiedWinners` helper returns `pending map`; pending rollback on partial failure; `dispatchUnifiedPerp` consumes pre-created pending instead of creating new
+- `internal/engine/engine.go` — replace `capacityMu` field with `admissionMu *sync.Mutex` (pointer for sharing); `AdmissionMutex()` accessor; update all `capacityMu.Lock/Unlock` call sites at `:407-485` (`ManualOpen`) and `:2126-2427` (`executeArbitrage`)
+- `internal/spotengine/engine.go` — `NewSpotEngine` adds `admissionMu *sync.Mutex` parameter; SpotEngine struct stores it; `admissionLock()/admissionUnlock()` helpers
+- `internal/spotengine/execution.go` — `ManualOpen` (`:143-157,292-306`) wraps admission window with `admissionLock()`; audit `spotEntryLock` for scope overlap
+- `internal/spotengine/selected_entry.go` — `OpenSelectedEntry` (`:237-305`) acquires `admissionLock()` for its own admission (NOT nested with caller's lock — caller releases first)
+- `cmd/main.go:432` — pass `eng.AdmissionMutex()` to `NewSpotEngine` constructor
+- All test files constructing `NewSpotEngine` directly — add `*sync.Mutex` arg
+- `internal/engine/unified_entry_test.go` — 7 new tests (see Section 4 table)
+- `internal/engine/allocator_parity_test.go` — 1 new test (`TestAllocator_FrozenFixtureNonZeroTransferFees`)
 - `VERSION` → `0.33.1` (patch)
 - `CHANGELOG.md` — 0.33.1 entry
 
-Estimated ~600 LoC delta.
+Estimated ~800 LoC delta (up from 600 due to admissionMu plumbing across spotengine).
