@@ -121,7 +121,7 @@ None yet.
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 260408-ugr | deliveryDate-based delist detection | 2026-04-08 | 262ac8f | [260408-ugr-deliverydate-based-delist-detection](./quick/260408-ugr-deliverydate-based-delist-detection/) |
-| 260415-34e | Cross-engine interference audit (21 findings: 7 HIGH / 9 MEDIUM / 5 LOW) | 2026-04-15 | pending | [260415-34e-find-all-cross-engine-interference-that-](./quick/260415-34e-find-all-cross-engine-interference-that-/) |
+| 260415-34e | Cross-engine interference audit (21 findings: 7 HIGH / 9 MEDIUM / 5 LOW) | 2026-04-15 | d2518dc | [260415-34e-find-all-cross-engine-interference-that-](./quick/260415-34e-find-all-cross-engine-interference-that-/) |
 
 ## Session Continuity
 
