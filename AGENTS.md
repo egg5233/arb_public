@@ -156,12 +156,15 @@ For file-level structure, query graphify (start with `graphify-publish/AI_ROUTER
 ### Concurrency invariants (behavioral rules, not mutex list)
 - Engine main loop is **single-goroutine**, consuming from `oppChan`
 - **Consolidator skips** positions with `exitActive[posID]` or `entryActive["exchange:symbol"]` set — prevents interference with in-progress depth fills
-- `capacityMu` serializes concurrent manual-open and automated-entry
+- `admissionMu` serializes concurrent manual-open and automated-entry. `Engine` owns the value field; `SpotEngine` receives the shared `*sync.Mutex` via `Engine.AdmissionMutex()`
 - **Per-symbol Redis locks** prevent duplicate execution across restarts/instances
 - **Exit goroutines are preemptable**: L4/L5 health actions cancel running exit via stored `CancelFunc` (500ms grace period)
 - `UpdatePositionFields` uses atomic read-modify-write with a predicate function
 - **BingX legs require 3 consecutive misses** before the consolidator acts — guards against transient empty-position API responses
 - `ownOrders` sync.Map tracks engine-placed order IDs to avoid false SL triggers on own fills
+- Lock order: `admissionMu` is never nested across callers
+- Lock order: spot entry paths keep `spotEntryLock` as the outer lock, then acquire `admissionMu`; no inverse order is allowed
+- Lock order: perp entry paths do not interact with `spotEntryLock`; `admissionMu` is the sole admission lock there
 
 ### Error handling (design decisions)
 - Stop-loss failures **never block** entry/exit/rotation

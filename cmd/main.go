@@ -429,7 +429,7 @@ func main() {
 	// See plans/PLAN-unified-capital-allocator.md Section 3.
 	var spotEng *spotengine.SpotEngine
 	if cfg.SpotFuturesEnabled {
-		spotEng = spotengine.NewSpotEngine(exchanges, db, apiSrv, cfg, allocator, tg)
+		spotEng = spotengine.NewSpotEngine(exchanges, db, apiSrv, cfg, allocator, tg, eng.AdmissionMutex())
 		spotEng.SetConfigNotify(notifier.Subscribe(), notifier.Subscribe())
 		if snapWriter != nil {
 			spotEng.SetSnapshotWriter(snapWriter)

@@ -52,7 +52,7 @@ type selectorFutExchange struct {
 	transfers    []string
 }
 
-func (s *selectorFutExchange) Name() string { return s.name }
+func (s *selectorFutExchange) Name() string                                { return s.name }
 func (s *selectorFutExchange) SetMetricsCallback(exchange.MetricsCallback) {}
 func (s *selectorFutExchange) PlaceOrder(exchange.PlaceOrderParams) (string, error) {
 	s.placeCalls++
@@ -130,13 +130,13 @@ func (s *selectorFutExchange) EnsureOneWayMode() error { return nil }
 func (s *selectorFutExchange) Close()                  {}
 
 type selectorSpotMargin struct {
-	marginBal          *exchange.MarginBalance
-	marginBalErr       error
-	placeOrderID       string
-	placeCalls         int
-	queryStates        []*exchange.SpotMarginOrderStatus
-	transfersToMargin  []string
-	transferToMargin   func(coin, amount string) error
+	marginBal         *exchange.MarginBalance
+	marginBalErr      error
+	placeOrderID      string
+	placeCalls        int
+	queryStates       []*exchange.SpotMarginOrderStatus
+	transfersToMargin []string
+	transferToMargin  func(coin, amount string) error
 }
 
 func (s *selectorSpotMargin) MarginBorrow(exchange.MarginBorrowParams) error { return nil }
@@ -212,9 +212,10 @@ func newSelectorTestEngine(t *testing.T, cfg *config.Config) (*SpotEngine, *mini
 
 func defaultTestCfg() *config.Config {
 	return &config.Config{
-		SpotFuturesLeverage:       3,
-		SpotFuturesMaxPositions:   5,
-		SpotFuturesCapitalUnified: 500,
+		SpotFuturesLeverage:        3,
+		SpotFuturesMaxPositions:    5,
+		MaxPositions:               10,
+		SpotFuturesCapitalUnified:  500,
 		SpotFuturesCapitalSeparate: 200,
 	}
 }
@@ -284,6 +285,45 @@ func TestListEntryCandidates_FiltersFilterStatusAndStale(t *testing.T) {
 	}
 	if got[0].FundingAPR != 0.1 || got[0].BorrowAPR != 0.02 || got[0].FeePct != 0.002 {
 		t.Fatalf("candidate projection lost APR/fee fields: %+v", got[0])
+	}
+}
+
+func TestSpotOpenSelectedEntry_CrossStrategySymbolExclusion(t *testing.T) {
+	cfg := defaultTestCfg()
+	cfg.MaxPositions = 5
+	eng, _ := newSelectorTestEngine(t, cfg)
+	eng.exchanges["bybit"] = &selectorFutExchange{name: "bybit", orderbook: orderbookAt(100), contracts: contractWith("BTCUSDT", 0.001, 0.001, 3)}
+	eng.spotMargin["bybit"] = &selectorSpotMargin{}
+
+	if err := eng.db.SavePosition(&models.ArbitragePosition{
+		ID:            "perp-1",
+		Symbol:        "BTCUSDT",
+		LongExchange:  "binance",
+		ShortExchange: "okx",
+		Status:        models.StatusActive,
+		CreatedAt:     time.Now().UTC(),
+		UpdatedAt:     time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("SavePosition: %v", err)
+	}
+
+	plan := &models.SpotEntryPlan{
+		Candidate: models.SpotEntryCandidate{
+			Symbol:     "BTCUSDT",
+			BaseCoin:   "BTC",
+			Exchange:   "bybit",
+			Direction:  "buy_spot_short",
+			FundingAPR: 0.10,
+		},
+		MidPrice:            100,
+		PlannedBaseSize:     1,
+		PlannedNotionalUSDT: 100,
+		CapitalBudgetUSDT:   100,
+	}
+
+	err := eng.OpenSelectedEntry(plan, 0, buildFakeReservation("bybit", 100))
+	if err == nil || !strings.Contains(err.Error(), "already open") {
+		t.Fatalf("OpenSelectedEntry error = %v, want cross-strategy duplicate rejection", err)
 	}
 }
 

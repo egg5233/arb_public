@@ -73,8 +73,8 @@ type Engine struct {
 	entryMu     sync.Mutex
 	entryActive map[string]string // "exchange:symbol" → posID while depth fill is running
 
-	// Global capacity lock for manual open to prevent concurrent over-subscription.
-	capacityMu sync.Mutex
+	// Shared admission lock for perp + spot entry admission windows.
+	admissionMu sync.Mutex
 
 	// Per-position PnL reconciliation locks. Each position gets its own mutex
 	// so concurrent reconciliations for different positions don't block each other.
@@ -138,10 +138,16 @@ type Engine struct {
 	// concrete discovery scanner.
 	rescannerOverride symbolRescanner
 
+	// Test-only hooks. Production leaves these nil.
+	opportunitiesOverride   []models.Opportunity
+	approvePerpOverride     func(models.Opportunity) (*models.RiskApproval, error)
+	savePendingPerpOverride func(*models.ArbitragePosition) error
+	acquireLockOverride     func(resource string, ttl time.Duration) (*database.OwnedLock, bool, error)
+
 	// Ref-counted depth subscriptions for pre-warming before entry scan.
-	depthRefsMu    sync.Mutex
-	depthRefs      map[string]*depthRef // "exchange:symbol" → ref
-	prewarmedKeys  []string             // keys acquired by prewarmDepthForEntry
+	depthRefsMu   sync.Mutex
+	depthRefs     map[string]*depthRef // "exchange:symbol" → ref
+	prewarmedKeys []string             // keys acquired by prewarmDepthForEntry
 }
 
 // slEntry maps a stop-loss order to its position and leg.
@@ -168,24 +174,24 @@ func NewEngine(
 	allocator *risk.CapitalAllocator,
 ) *Engine {
 	e := &Engine{
-		exchanges:       exchanges,
-		discovery:       disc,
-		risk:            riskMgr,
-		monitor:         riskMon,
-		healthMonitor:   healthMon,
-		allocator:       allocator,
-		db:              db,
-		api:             apiSrv,
-		cfg:             cfg,
-		log:             utils.NewLogger("engine"),
-		stopCh:          make(chan struct{}),
-		exitCancels:     make(map[string]context.CancelFunc),
-		exitActive:      make(map[string]bool),
-		exitDone:        make(map[string]chan struct{}),
-		preSettleActive: make(map[string]bool),
-		entryActive:     make(map[string]string),
-		slIndex:         make(map[string]slEntry),
-		slFillCh:        make(chan slFillEvent, 64),
+		exchanges:          exchanges,
+		discovery:          disc,
+		risk:               riskMgr,
+		monitor:            riskMon,
+		healthMonitor:      healthMon,
+		allocator:          allocator,
+		db:                 db,
+		api:                apiSrv,
+		cfg:                cfg,
+		log:                utils.NewLogger("engine"),
+		stopCh:             make(chan struct{}),
+		exitCancels:        make(map[string]context.CancelFunc),
+		exitActive:         make(map[string]bool),
+		exitDone:           make(map[string]chan struct{}),
+		preSettleActive:    make(map[string]bool),
+		entryActive:        make(map[string]string),
+		slIndex:            make(map[string]slEntry),
+		slFillCh:           make(chan slFillEvent, 64),
 		apiErrCounts:       make(map[string]int),
 		consolidateRetries: make(map[string]int),
 		depthRefs:          make(map[string]*depthRef),
@@ -198,6 +204,56 @@ func NewEngine(
 func (e *Engine) acquirePnlLock(posID string) *sync.Mutex {
 	v, _ := e.pnlLocks.LoadOrStore(posID, &sync.Mutex{})
 	return v.(*sync.Mutex)
+}
+
+func (e *Engine) AdmissionMutex() *sync.Mutex {
+	return &e.admissionMu
+}
+
+func (e *Engine) currentOpportunities() []models.Opportunity {
+	if e == nil {
+		return nil
+	}
+	if e.opportunitiesOverride != nil {
+		out := make([]models.Opportunity, len(e.opportunitiesOverride))
+		copy(out, e.opportunitiesOverride)
+		return out
+	}
+	if e.discovery == nil {
+		return nil
+	}
+	return e.discovery.GetOpportunities()
+}
+
+func (e *Engine) approveOpportunity(
+	opp models.Opportunity,
+	reserved map[string]float64,
+	cache *risk.PrefetchCache,
+) (*models.RiskApproval, error) {
+	if e.approvePerpOverride != nil {
+		return e.approvePerpOverride(opp)
+	}
+	if e.risk == nil {
+		return nil, fmt.Errorf("risk manager not configured")
+	}
+	if cache != nil || reserved != nil {
+		return e.risk.ApproveWithReservedCached(opp, reserved, cache)
+	}
+	return e.risk.Approve(opp)
+}
+
+func (e *Engine) savePendingPerp(pos *models.ArbitragePosition) error {
+	if e.savePendingPerpOverride != nil {
+		return e.savePendingPerpOverride(pos)
+	}
+	return e.db.SavePosition(pos)
+}
+
+func (e *Engine) acquireOwnedLock(resource string, ttl time.Duration) (*database.OwnedLock, bool, error) {
+	if e.acquireLockOverride != nil {
+		return e.acquireLockOverride(resource, ttl)
+	}
+	return e.db.AcquireOwnedLock(resource, ttl)
 }
 
 // ---------------------------------------------------------------------------
@@ -294,7 +350,9 @@ func (e *Engine) SetLossLimiter(ll *risk.LossLimitChecker) {
 
 // SetSnapshotWriter injects the analytics snapshot writer for recording
 // position close events. The writer is optional; nil means analytics disabled.
-func (e *Engine) SetSnapshotWriter(sw interface{ RecordPerpClose(pos *models.ArbitragePosition) }) {
+func (e *Engine) SetSnapshotWriter(sw interface {
+	RecordPerpClose(pos *models.ArbitragePosition)
+}) {
 	e.snapshotWriter = sw
 }
 
@@ -389,7 +447,7 @@ func (e *Engine) ManualClose(posID string) error {
 // If force is true, risk approval is skipped (user override from dashboard).
 func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bool) error {
 	// 1. Find opportunity in scanner cache (thread-safe)
-	opps := e.discovery.GetOpportunities()
+	opps := e.currentOpportunities()
 	var opp *models.Opportunity
 	for i := range opps {
 		if opps[i].Symbol == symbol && opps[i].LongExchange == longExchange && opps[i].ShortExchange == shortExchange {
@@ -401,20 +459,20 @@ func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bo
 		return fmt.Errorf("opportunity not found in latest scan")
 	}
 
-	// 2. Hold global capacity lock to prevent concurrent requests from
+	// 2. Hold the shared admission lock to prevent concurrent requests from
 	//    over-subscribing MaxPositions. Released before async execution.
-	e.log.Info("ManualOpen %s: acquiring capacity lock...", symbol)
-	e.capacityMu.Lock()
-	e.log.Info("ManualOpen %s: capacity lock acquired", symbol)
+	e.log.Info("ManualOpen %s: acquiring admission lock...", symbol)
+	e.admissionMu.Lock()
+	e.log.Info("ManualOpen %s: admission lock acquired", symbol)
 
 	active, err := e.db.GetActivePositions()
 	if err != nil {
-		e.capacityMu.Unlock()
+		e.admissionMu.Unlock()
 		return fmt.Errorf("failed to check active positions")
 	}
 	for _, pos := range active {
 		if pos.Symbol == symbol {
-			e.capacityMu.Unlock()
+			e.admissionMu.Unlock()
 			return fmt.Errorf("position for %s already open", symbol)
 		}
 	}
@@ -422,26 +480,26 @@ func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bo
 	// 3. Check capacity
 	slots := e.cfg.MaxPositions - len(active)
 	if slots <= 0 {
-		e.capacityMu.Unlock()
+		e.admissionMu.Unlock()
 		return fmt.Errorf("at max capacity (%d/%d)", len(active), e.cfg.MaxPositions)
 	}
 
 	// 4. Acquire execution lock
 	lockResource := fmt.Sprintf("execute:%s", symbol)
-	lock, acquired, err := e.db.AcquireOwnedLock(lockResource, 5*time.Minute)
+	lock, acquired, err := e.acquireOwnedLock(lockResource, 5*time.Minute)
 	if err != nil {
-		e.capacityMu.Unlock()
+		e.admissionMu.Unlock()
 		return fmt.Errorf("failed to acquire lock for %s", symbol)
 	}
 	if !acquired {
-		e.capacityMu.Unlock()
+		e.admissionMu.Unlock()
 		return fmt.Errorf("execution already in progress for %s", symbol)
 	}
 
-	// 5. Risk approval (synchronous, under capacity lock to prevent races)
-	approval, err := e.risk.Approve(*opp)
+	// 5. Risk approval (synchronous, under the admission lock to prevent races)
+	approval, err := e.approveOpportunity(*opp, nil, nil)
 	if err != nil {
-		e.capacityMu.Unlock()
+		e.admissionMu.Unlock()
 		lock.Release()
 		return fmt.Errorf("risk check failed: %v", err)
 	}
@@ -449,7 +507,7 @@ func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bo
 		if force {
 			e.log.Info("ManualOpen %s: force=true, overriding risk rejection: %s", symbol, approval.Reason)
 		} else {
-			e.capacityMu.Unlock()
+			e.admissionMu.Unlock()
 			lock.Release()
 			return fmt.Errorf("risk rejected: %s", approval.Reason)
 		}
@@ -457,32 +515,36 @@ func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bo
 
 	// 6. Dry run check
 	if e.cfg.DryRun {
-		e.capacityMu.Unlock()
+		e.admissionMu.Unlock()
 		lock.Release()
 		return fmt.Errorf("dry run mode — trade not executed")
 	}
 
 	reservation, err := e.reservePerpCapital(*opp, approval, 0)
 	if err != nil {
-		e.capacityMu.Unlock()
+		e.admissionMu.Unlock()
 		lock.Release()
 		return fmt.Errorf("capital allocator rejected: %v", err)
 	}
 
 	// 7. Reserve a slot by persisting a pending position *after* risk approval
-	//    but *before* releasing the capacity mutex, so concurrent requests
+	//    but *before* releasing the admission mutex, so concurrent requests
 	//    see the occupied slot without the reservation self-rejecting.
 	pendingPos := e.createPendingPosition(*opp)
-	if err := e.db.SavePosition(pendingPos); err != nil {
+	if err := e.savePendingPerp(pendingPos); err != nil {
 		e.releasePerpReservation(reservation)
-		e.capacityMu.Unlock()
+		e.admissionMu.Unlock()
 		lock.Release()
 		return fmt.Errorf("failed to reserve position slot: %v", err)
 	}
-	e.api.BroadcastPositionUpdate(pendingPos)
+	if e.api != nil {
+		if e.api != nil {
+			e.api.BroadcastPositionUpdate(pendingPos)
+		}
+	}
 
-	// Slot reserved — release capacity mutex now.
-	e.capacityMu.Unlock()
+	// Slot reserved — release the admission mutex now.
+	e.admissionMu.Unlock()
 
 	// 8. Async execution (depth fill is slow — return 202 to user)
 	e.log.Info("manual open: executing trade for %s (L:%s S:%s) size=%.6f price=%.5f",
@@ -738,9 +800,9 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 	}
 
 	needs := map[string]float64{}
-	selectedSymbols := make(map[string]bool)     // prevent same-batch duplicates
-	reserved := map[string]float64{}             // cumulative margin reserved per exchange
-	plannedTransfers := map[string]float64{}     // cross-exchange transfer plan: recipient → amount
+	selectedSymbols := make(map[string]bool) // prevent same-batch duplicates
+	reserved := map[string]float64{}         // cumulative margin reserved per exchange
+	plannedTransfers := map[string]float64{} // cross-exchange transfer plan: recipient → amount
 	selected := 0
 
 	for _, opp := range opps {
@@ -1183,7 +1245,6 @@ func (e *Engine) applyAllocatorOverridesWithState(opps []models.Opportunity, ove
 	}
 	return filtered, true
 }
-
 
 // recordTransfer saves a transfer record to the database for dashboard display.
 func (e *Engine) recordTransfer(from, to, coin, chain, amount, fee, txID, status, reason string) {
@@ -2124,9 +2185,9 @@ func (e *Engine) SimExecuteTradeV2(opp models.Opportunity, size, price, gapBPS f
 // Phase 2 executes approved trades in parallel goroutines.
 // dynamicCap, when > 0, overrides the strategy cap for capital reservations (CA-04).
 func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64) {
-	e.log.Info("executeArbitrage: acquiring capacity lock...")
-	e.capacityMu.Lock()
-	e.log.Info("executeArbitrage: capacity lock acquired")
+	e.log.Info("executeArbitrage: acquiring admission lock...")
+	e.admissionMu.Lock()
+	e.log.Info("executeArbitrage: admission lock acquired")
 
 	// Loss limit pre-entry gate (per D-07: halt new entries only, existing positions continue)
 	if e.lossLimiter != nil && e.cfg.EnableLossLimits {
@@ -2141,14 +2202,14 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 					status.DailyLoss, status.DailyLimit,
 					status.WeeklyLoss, status.WeeklyLimit)
 			}
-			e.capacityMu.Unlock()
+			e.admissionMu.Unlock()
 			return
 		}
 	}
 
 	active, err := e.db.GetActivePositions()
 	if err != nil {
-		e.capacityMu.Unlock()
+		e.admissionMu.Unlock()
 		e.log.Error("failed to get active positions: %v", err)
 		return
 	}
@@ -2166,7 +2227,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 	}
 
 	if slots <= 0 {
-		e.capacityMu.Unlock()
+		e.admissionMu.Unlock()
 		e.log.Info("at max capacity (%d/%d), skipping", len(active), e.cfg.MaxPositions)
 		return
 	}
@@ -2342,7 +2403,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 		}
 
 		lockResource := fmt.Sprintf("execute:%s", opp.Symbol)
-		symLock, acquired, err := e.db.AcquireOwnedLock(lockResource, 5*time.Minute)
+		symLock, acquired, err := e.acquireOwnedLock(lockResource, 5*time.Minute)
 		if err != nil {
 			e.log.Error("failed to acquire lock for %s: %v", opp.Symbol, err)
 			continue
@@ -2353,7 +2414,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 		}
 
 		e.log.Info("executeArbitrage: risk.Approve %s...", opp.Symbol)
-		approval, err := e.risk.ApproveWithReservedCached(opp, reserved, prefetchCache)
+		approval, err := e.approveOpportunity(opp, reserved, prefetchCache)
 		if err != nil {
 			e.log.Error("risk approval error for %s: %v", opp.Symbol, err)
 			if e.rejStore != nil {
@@ -2389,7 +2450,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 		}
 
 		pendingPos := e.createPendingPosition(opp)
-		if err := e.db.SavePosition(pendingPos); err != nil {
+		if err := e.savePendingPerp(pendingPos); err != nil {
 			e.releasePerpReservation(reservation)
 			e.log.Error("failed to save pending position for %s: %v", opp.Symbol, err)
 			symLock.Release()
@@ -2421,10 +2482,10 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 		newSlotCandidates++
 	}
 
-	// Release capacity lock — candidates hold per-symbol locks and will
-	// create pending positions inside executeTradeV2.
-	e.log.Info("executeArbitrage: releasing capacity lock, %d candidates approved", len(candidates))
-	e.capacityMu.Unlock()
+	// Release the shared admission lock — candidates hold per-symbol locks and
+	// already reserved their pending slots under admission.
+	e.log.Info("executeArbitrage: releasing admission lock, %d candidates approved", len(candidates))
+	e.admissionMu.Unlock()
 
 	if len(candidates) == 0 {
 		return
@@ -4496,7 +4557,7 @@ func (e *Engine) attachStopLosses(pos *models.ArbitragePosition) {
 
 	// Compute SL trigger prices for both legs.
 	longSLTrigger := pos.LongEntry * (1 - distance)   // price drops → long loses
-	shortSLTrigger := pos.ShortEntry * (1 + distance)  // price rises → short loses
+	shortSLTrigger := pos.ShortEntry * (1 + distance) // price rises → short loses
 
 	// Long SL: trigger when price drops → sell to close.
 	if lok && pos.LongEntry > 0 {

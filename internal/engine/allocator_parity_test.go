@@ -2,10 +2,12 @@ package engine
 
 import (
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
 	"arb/internal/config"
+	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
 
@@ -44,6 +46,77 @@ func newTestEngineForParity(t *testing.T) *Engine {
 		exchanges: nil, // type assertion `IsUnified` will fail on nil — split path
 	}
 }
+
+type parityExchangeStub struct {
+	name    string
+	fee     float64
+	minWd   float64
+	unified bool
+	feeErr  error
+}
+
+func (s *parityExchangeStub) Name() string                                         { return s.name }
+func (s *parityExchangeStub) SetMetricsCallback(exchange.MetricsCallback)          {}
+func (s *parityExchangeStub) PlaceOrder(exchange.PlaceOrderParams) (string, error) { return "", nil }
+func (s *parityExchangeStub) CancelOrder(string, string) error                     { return nil }
+func (s *parityExchangeStub) GetPendingOrders(string) ([]exchange.Order, error)    { return nil, nil }
+func (s *parityExchangeStub) GetOrderFilledQty(string, string) (float64, error)    { return 0, nil }
+func (s *parityExchangeStub) GetPosition(string) ([]exchange.Position, error)      { return nil, nil }
+func (s *parityExchangeStub) GetAllPositions() ([]exchange.Position, error)        { return nil, nil }
+func (s *parityExchangeStub) SetLeverage(string, string, string) error             { return nil }
+func (s *parityExchangeStub) SetMarginMode(string, string) error                   { return nil }
+func (s *parityExchangeStub) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
+	return nil, nil
+}
+func (s *parityExchangeStub) GetFundingRate(string) (*exchange.FundingRate, error) { return nil, nil }
+func (s *parityExchangeStub) GetFundingInterval(string) (time.Duration, error)     { return 0, nil }
+func (s *parityExchangeStub) GetFuturesBalance() (*exchange.Balance, error) {
+	return &exchange.Balance{}, nil
+}
+func (s *parityExchangeStub) GetSpotBalance() (*exchange.Balance, error) {
+	return &exchange.Balance{}, nil
+}
+func (s *parityExchangeStub) Withdraw(exchange.WithdrawParams) (*exchange.WithdrawResult, error) {
+	return nil, nil
+}
+func (s *parityExchangeStub) WithdrawFeeInclusive() bool { return false }
+func (s *parityExchangeStub) GetWithdrawFee(string, string) (float64, float64, error) {
+	return s.fee, s.minWd, s.feeErr
+}
+func (s *parityExchangeStub) TransferToSpot(string, string) error                   { return nil }
+func (s *parityExchangeStub) TransferToFutures(string, string) error                { return nil }
+func (s *parityExchangeStub) GetOrderbook(string, int) (*exchange.Orderbook, error) { return nil, nil }
+func (s *parityExchangeStub) StartPriceStream([]string)                             {}
+func (s *parityExchangeStub) SubscribeSymbol(string) bool                           { return false }
+func (s *parityExchangeStub) GetBBO(string) (exchange.BBO, bool)                    { return exchange.BBO{}, false }
+func (s *parityExchangeStub) GetPriceStore() *sync.Map                              { return nil }
+func (s *parityExchangeStub) SubscribeDepth(string) bool                            { return false }
+func (s *parityExchangeStub) UnsubscribeDepth(string) bool                          { return false }
+func (s *parityExchangeStub) GetDepth(string) (*exchange.Orderbook, bool)           { return nil, false }
+func (s *parityExchangeStub) StartPrivateStream()                                   {}
+func (s *parityExchangeStub) GetOrderUpdate(string) (exchange.OrderUpdate, bool) {
+	return exchange.OrderUpdate{}, false
+}
+func (s *parityExchangeStub) SetOrderCallback(func(exchange.OrderUpdate))           {}
+func (s *parityExchangeStub) PlaceStopLoss(exchange.StopLossParams) (string, error) { return "", nil }
+func (s *parityExchangeStub) CancelStopLoss(string, string) error                   { return nil }
+func (s *parityExchangeStub) PlaceTakeProfit(exchange.TakeProfitParams) (string, error) {
+	return "", nil
+}
+func (s *parityExchangeStub) CancelTakeProfit(string, string) error { return nil }
+func (s *parityExchangeStub) GetUserTrades(string, time.Time, int) ([]exchange.Trade, error) {
+	return nil, nil
+}
+func (s *parityExchangeStub) GetFundingFees(string, time.Time) ([]exchange.FundingPayment, error) {
+	return nil, nil
+}
+func (s *parityExchangeStub) GetClosePnL(string, time.Time) ([]exchange.ClosePnL, error) {
+	return nil, nil
+}
+func (s *parityExchangeStub) EnsureOneWayMode() error      { return nil }
+func (s *parityExchangeStub) CancelAllOrders(string) error { return nil }
+func (s *parityExchangeStub) Close()                       {}
+func (s *parityExchangeStub) IsUnified() bool              { return s.unified }
 
 // parityFixture returns a deterministic 3-candidate allocator input.
 // Each candidate has a single choice with a distinct base value and a
@@ -250,5 +323,89 @@ func TestRunPoolAllocator_AfterRefactorSameOutputWithAlternatives(t *testing.T) 
 			t.Fatalf("BTCUSDT should prefer binance/bybit (best value), got %s/%s",
 				c.longExchange, c.shortExchange)
 		}
+	}
+}
+
+func TestAllocator_FrozenFixtureNonZeroTransferFees(t *testing.T) {
+	e := newTestEngineForParity(t)
+	e.cfg.ExchangeAddresses = map[string]map[string]string{
+		"bybit": {"BEP20": "bybit-usdt-address"},
+	}
+	e.exchanges = map[string]exchange.Exchange{
+		"binance": &parityExchangeStub{name: "binance", fee: 1.25, minWd: 5},
+		"bybit":   &parityExchangeStub{name: "bybit"},
+		"okx":     &parityExchangeStub{name: "okx"},
+		"gateio":  &parityExchangeStub{name: "gateio"},
+	}
+
+	candidates := []allocatorCandidate{
+		{
+			symbol: "BTCUSDT",
+			choices: []allocatorChoice{{
+				symbol:         "BTCUSDT",
+				longExchange:   "bybit",
+				shortExchange:  "okx",
+				requiredMargin: 60,
+				baseValue:      120,
+			}},
+		},
+		{
+			symbol: "ETHUSDT",
+			choices: []allocatorChoice{{
+				symbol:         "ETHUSDT",
+				longExchange:   "okx",
+				shortExchange:  "gateio",
+				requiredMargin: 40,
+				baseValue:      80,
+			}},
+		},
+	}
+	capacity := map[string]float64{
+		"binance": 250,
+		"bybit":   10,
+		"okx":     100,
+		"gateio":  100,
+	}
+	balances := map[string]rebalanceBalanceInfo{
+		"binance": {futures: 200, spot: 50, futuresTotal: 0},
+		"bybit":   {futures: 10, spot: 0, futuresTotal: 0},
+		"okx":     {futures: 100, spot: 0, futuresTotal: 0},
+		"gateio":  {futures: 100, spot: 0, futuresTotal: 0},
+	}
+	feeCache := map[string]feeEntry{}
+
+	choices := e.solveAllocator(candidates, capacity, balances, 2, 50*time.Millisecond, feeCache)
+	if len(choices) != 2 {
+		t.Fatalf("want 2 choices, got %d: %+v", len(choices), choices)
+	}
+	gotSyms := symbolSet(choices)
+	wantSyms := []string{"BTCUSDT", "ETHUSDT"}
+	for i := range wantSyms {
+		if gotSyms[i] != wantSyms[i] {
+			t.Fatalf("want symbols %v, got %v", wantSyms, gotSyms)
+		}
+	}
+
+	result := e.dryRunTransferPlan(choices, balances, feeCache)
+	if !result.Feasible {
+		t.Fatal("dryRunTransferPlan must stay feasible for the frozen fixture")
+	}
+	if len(result.Steps) != 1 {
+		t.Fatalf("transfer steps = %d, want 1", len(result.Steps))
+	}
+	step := result.Steps[0]
+	if step.From != "binance" || step.To != "bybit" || step.Amount != 50 || step.Fee != 1.25 || step.Chain != "BEP20" {
+		t.Fatalf("unexpected transfer step: %+v", step)
+	}
+	if result.TotalFee != 1.25 {
+		t.Fatalf("total fee = %.2f, want 1.25", result.TotalFee)
+	}
+
+	entry, ok := feeCache["binance|bybit|BEP20"]
+	if !ok || !entry.valid {
+		t.Fatalf("fee cache missing valid donor->recipient entry: %+v", feeCache)
+	}
+	if entry.fee != 1.25 || entry.minWd != 5 {
+		t.Fatalf("fee cache entry = %+v, want fee=1.25 minWd=5", entry)
 	}
 }

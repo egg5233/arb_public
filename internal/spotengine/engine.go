@@ -55,6 +55,9 @@ type SpotEngine struct {
 
 	// telegram sends trade lifecycle alerts. Nil if unconfigured.
 	telegram *notify.TelegramNotifier
+	// admissionMu is the shared cross-engine admission lock owned by Engine.
+	// SpotEngine stores a pointer so zero-value test literals remain valid.
+	admissionMu *sync.Mutex
 
 	// Analytics snapshot writer for recording position close events. Nil if disabled.
 	snapshotWriter interface {
@@ -77,6 +80,7 @@ func NewSpotEngine(
 	cfg *config.Config,
 	allocator *risk.CapitalAllocator,
 	telegram *notify.TelegramNotifier,
+	admissionMu *sync.Mutex,
 ) *SpotEngine {
 	sm := make(map[string]exchange.SpotMarginExchange)
 	for name, exc := range exchanges {
@@ -98,12 +102,27 @@ func NewSpotEngine(
 		lastSeen:       make(map[string]bool),
 		borrowVelocity: NewRateVelocityDetector(),
 		telegram:       telegram,
+		admissionMu:    admissionMu,
+	}
+}
+
+func (e *SpotEngine) admissionLock() {
+	if e != nil && e.admissionMu != nil {
+		e.admissionMu.Lock()
+	}
+}
+
+func (e *SpotEngine) admissionUnlock() {
+	if e != nil && e.admissionMu != nil {
+		e.admissionMu.Unlock()
 	}
 }
 
 // SetSnapshotWriter injects the analytics snapshot writer for recording
 // spot position close events. The writer is optional; nil means analytics disabled.
-func (e *SpotEngine) SetSnapshotWriter(sw interface{ RecordSpotClose(pos *models.SpotFuturesPosition) }) {
+func (e *SpotEngine) SetSnapshotWriter(sw interface {
+	RecordSpotClose(pos *models.SpotFuturesPosition)
+}) {
 	e.snapshotWriter = sw
 }
 

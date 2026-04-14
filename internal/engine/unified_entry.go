@@ -47,13 +47,15 @@ type perpDispatchRequest struct {
 // by selection_core (GroupKey dedup), ReserveBatch (key->reservation
 // mapping) and the dispatcher map.
 type unifiedEntryChoice struct {
-	Key       string
-	Symbol    string
-	Strategy  risk.Strategy
-	ValueUSDT float64
-	SlotCost  int
-	Perp      *perpDispatchRequest
-	Spot      *models.SpotEntryPlan
+	Key         string
+	Symbol      string
+	Strategy    risk.Strategy
+	ValueUSDT   float64
+	SlotCost    int
+	CapOverride float64
+	PendingPos  *models.ArbitragePosition
+	Perp        *perpDispatchRequest
+	Spot        *models.SpotEntryPlan
 }
 
 // runUnifiedEntrySelection is the top-level EntryScan handler when the
@@ -75,13 +77,13 @@ type unifiedEntryChoice struct {
 //  7. Load unifiedOccupancy snapshot and groupChoicesBySymbol. Symbols
 //     already occupied across either store are excluded.
 //  8. solveGroupedSearch with evaluate callback that enforces:
-//       - combined slot cap (GlobalSlotsRemaining)
-//       - spot sub-cap (SpotSlotsRemaining)
-//       - cumulative risk.checkCapsWithOverride (via ReserveBatch at
-//         prehold time; evaluate itself uses a cheap approximation)
+//     - combined slot cap (GlobalSlotsRemaining)
+//     - spot sub-cap (SpotSlotsRemaining)
+//     - cumulative risk.checkCapsWithOverride (via ReserveBatch at
+//     prehold time; evaluate itself uses a cheap approximation)
 //  9. ReserveBatch for all winners — atomic all-or-nothing prehold.
 //  10. Dispatch perp winners via runUnifiedPerpDispatch (which commits
-//      the preheld reservation on success, releases on failure).
+//     the preheld reservation on success, releases on failure).
 //  11. Dispatch spot winners via spotEntry.OpenSelectedEntry.
 //  12. ReleaseBatch for any reservation whose dispatch did not commit.
 func (e *Engine) runUnifiedEntrySelection() error {
@@ -110,7 +112,7 @@ func (e *Engine) runUnifiedEntrySelection() error {
 		nowMinute, e.cfg.EntryScanMinute)
 
 	// Step 3 — gather perp opps.
-	originalPerpOpps := e.discovery.GetOpportunities()
+	originalPerpOpps := e.currentOpportunities()
 
 	// Step 4 — consume overrides once and apply the stale-override tier-3
 	// fallback. The helper preserves the original scan so a stale override
@@ -152,7 +154,7 @@ func (e *Engine) runUnifiedEntrySelection() error {
 			if _, seen := occ.ActiveSymbols[opp.Symbol]; seen {
 				continue // legacy dup guard + cross-strategy dedup
 			}
-			approval, err := e.risk.ApproveWithReservedCached(opp, reserved, nil)
+			approval, err := e.approveOpportunity(opp, reserved, nil)
 			if err != nil || approval == nil || !approval.Approved || approval.Size <= 0 {
 				continue
 			}
@@ -184,89 +186,26 @@ func (e *Engine) runUnifiedEntrySelection() error {
 		return nil
 	}
 
-	// Step 7 — group by symbol and build searchChoice records.
-	groups, keyToChoice := e.groupChoicesBySymbol(perpReqs, spotPlans, occ)
-	if len(groups) == 0 {
-		e.log.Info("unified entry: no groups after dedup+feasibility")
+	admitted, admittedBatch, _, admitErr := e.admitUnifiedWinners(perpReqs, spotPlans)
+	if admitErr != nil {
+		return admitErr
+	}
+	if len(admitted) == 0 || admittedBatch == nil || len(admittedBatch.Items) == 0 {
 		return nil
 	}
 
-	// Step 8 — solve. Build a capacity snapshot once so the evaluator's
-	// per-exchange / per-strategy / total feasibility checks stay cheap
-	// (no per-evaluate Redis round-trip). The snapshot mirrors the caps
-	// allocator.checkCapsWithOverride enforces at ReserveBatch time, so
-	// sets admitted by the evaluator are also admitted by ReserveBatch.
-	snap, err := e.buildCapacitySnapshot()
-	if err != nil {
-		e.log.Warn("unified entry: buildCapacitySnapshot failed: %v", err)
-		// Fall through with a permissive snapshot; legacy evaluator
-		// would have run without this gate anyway.
-		snap = &unifiedCapacitySnapshot{}
-	}
-
-	timeout := time.Duration(e.cfg.AllocatorTimeoutMs) * time.Millisecond
-	if timeout <= 0 {
-		timeout = 30 * time.Millisecond
-	}
-	evaluate := e.makeUnifiedEvaluator(keyToChoice, occ, snap)
-	winnerKeys := solveGroupedSearch(groups, occ.GlobalSlotsRemaining, timeout, evaluate)
-	if len(winnerKeys) == 0 {
-		e.log.Info("unified entry: solver returned no winners")
-		return nil
-	}
-
-	winners := make([]*unifiedEntryChoice, 0, len(winnerKeys))
-	for _, k := range winnerKeys {
-		c, ok := keyToChoice[k]
-		if !ok || c == nil {
-			continue
-		}
-		winners = append(winners, c)
-	}
-	e.log.Info("unified entry: selected %d winners", len(winners))
-
-	// Step 9 — ReserveBatch all winners atomically.
-	items := make([]risk.BatchReservationItem, 0, len(winners))
-	for _, w := range winners {
-		exposures, cap := e.exposuresForChoice(w)
-		if len(exposures) == 0 {
-			continue
-		}
-		items = append(items, risk.BatchReservationItem{
-			Key:         w.Key,
-			Strategy:    w.Strategy,
-			Exposures:   exposures,
-			CapOverride: cap,
-		})
-	}
-	batch, err := e.allocator.ReserveBatch(items)
-	if err != nil {
-		e.log.Warn("unified entry: ReserveBatch failed: %v", err)
-		return nil
-	}
-	if batch == nil || len(batch.Items) == 0 {
-		// Allocator disabled or items emptied — nothing to commit.
-		e.log.Info("unified entry: ReserveBatch produced no items (allocator disabled or empty exposures)")
-		return nil
-	}
-
-	// Step 10/11 — dispatch winners in parallel. Each dispatcher is
-	// responsible for committing the preheld reservation on success;
-	// on error we leave the reservation in `batch` so the final
-	// ReleaseBatch cleans it up.
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	committed := make(map[string]struct{}, len(winners))
-	for _, w := range winners {
-		res, ok := batch.Items[w.Key]
+	var dispatchWG sync.WaitGroup
+	var dispatchMu sync.Mutex
+	committedKeys := make(map[string]struct{}, len(admitted))
+	for _, w := range admitted {
+		res, ok := admittedBatch.Items[w.Key]
 		if !ok || res == nil {
-			// No reservation for this winner (empty exposures, allocator
-			// disabled etc.) — skip dispatch; nothing to release either.
 			continue
 		}
-		wg.Add(1)
+		dispatchWG.Add(1)
 		go func(choice *unifiedEntryChoice, res *risk.CapitalReservation) {
-			defer wg.Done()
+			defer dispatchWG.Done()
+
 			var dispatchErr error
 			switch choice.Strategy {
 			case risk.StrategyPerpPerp:
@@ -281,22 +220,157 @@ func (e *Engine) runUnifiedEntrySelection() error {
 					choice.Key, choice.Symbol, dispatchErr)
 				return
 			}
-			mu.Lock()
-			committed[choice.Key] = struct{}{}
-			mu.Unlock()
+			dispatchMu.Lock()
+			committedKeys[choice.Key] = struct{}{}
+			dispatchMu.Unlock()
 		}(w, res)
 	}
-	wg.Wait()
+	dispatchWG.Wait()
 
-	// Step 12 — release any un-committed reservations. ReleaseBatch
-	// inspects Redis under WATCH and skips already-committed keys, so
-	// calling it with the full batch is always safe.
-	if err := e.allocator.ReleaseBatch(batch); err != nil {
+	if err := e.allocator.ReleaseBatch(admittedBatch); err != nil {
 		e.log.Warn("unified entry: ReleaseBatch cleanup failed: %v", err)
 	}
-	e.log.Info("unified entry: dispatch complete — committed=%d released=%d",
-		len(committed), len(batch.Items)-len(committed))
+	e.log.Info("unified entry: dispatch complete ??committed=%d released=%d",
+		len(committedKeys), len(admittedBatch.Items)-len(committedKeys))
 	return nil
+}
+
+func (e *Engine) admitUnifiedWinners(
+	perpReqs []*perpDispatchRequest,
+	spotPlans []*models.SpotEntryPlan,
+) ([]*unifiedEntryChoice, *risk.BatchReservation, map[string]*models.ArbitragePosition, error) {
+	e.admissionMu.Lock()
+	defer e.admissionMu.Unlock()
+
+	occ, err := e.loadUnifiedOccupancy()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("load occupancy: %w", err)
+	}
+	if occ.GlobalSlotsRemaining <= 0 {
+		e.log.Info("unified entry: no slots remaining (activePerp=%d activeSpot=%d)",
+			occ.ActivePerp, occ.ActiveSpot)
+		return nil, nil, nil, nil
+	}
+
+	groups, keyToChoice := e.groupChoicesBySymbol(perpReqs, spotPlans, occ)
+	if len(groups) == 0 {
+		e.log.Info("unified entry: no groups after dedup+feasibility")
+		return nil, nil, nil, nil
+	}
+
+	e.updateAllocation()
+	snap, err := e.buildCapacitySnapshot(len(perpReqs) > 0, len(spotPlans) > 0)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("build capacity snapshot: %w", err)
+	}
+
+	timeout := time.Duration(e.cfg.AllocatorTimeoutMs) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 30 * time.Millisecond
+	}
+	evaluate := e.makeUnifiedEvaluator(keyToChoice, occ, snap)
+	winnerKeys := solveGroupedSearch(groups, occ.GlobalSlotsRemaining, timeout, evaluate)
+	if len(winnerKeys) == 0 {
+		e.log.Info("unified entry: solver returned no winners")
+		return nil, nil, nil, nil
+	}
+
+	winners := make([]*unifiedEntryChoice, 0, len(winnerKeys))
+	for _, k := range winnerKeys {
+		c, ok := keyToChoice[k]
+		if !ok || c == nil {
+			continue
+		}
+		c.CapOverride = e.capOverrideForChoice(c, snap)
+		winners = append(winners, c)
+	}
+	e.log.Info("unified entry: selected %d winners", len(winners))
+
+	items := make([]risk.BatchReservationItem, 0, len(winners))
+	for _, w := range winners {
+		exposures, _ := e.exposuresForChoice(w)
+		if len(exposures) == 0 {
+			continue
+		}
+		items = append(items, risk.BatchReservationItem{
+			Key:         w.Key,
+			Strategy:    w.Strategy,
+			Exposures:   exposures,
+			CapOverride: w.CapOverride,
+		})
+	}
+	batch, err := e.allocator.ReserveBatch(items)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("reserve batch: %w", err)
+	}
+	if batch == nil || len(batch.Items) == 0 {
+		e.log.Info("unified entry: ReserveBatch produced no items (allocator disabled or empty exposures)")
+		return nil, nil, nil, nil
+	}
+
+	pendingByKey := make(map[string]*models.ArbitragePosition)
+	created := make([]*models.ArbitragePosition, 0, len(winners))
+	rollbackPending := func(reason string) {
+		for _, pos := range created {
+			e.abandonPendingPerp(pos, reason)
+		}
+		if err := e.allocator.ReleaseBatch(batch); err != nil {
+			e.log.Warn("unified entry: ReleaseBatch rollback failed: %v", err)
+		}
+	}
+
+	for _, w := range winners {
+		if w.Strategy != risk.StrategyPerpPerp || w.Perp == nil {
+			continue
+		}
+		pendingPos := e.createPendingPosition(w.Perp.Opp)
+		if err := e.savePendingPerp(pendingPos); err != nil {
+			rollbackPending(fmt.Sprintf("save pending: %v", err))
+			return nil, nil, nil, fmt.Errorf("save pending %s: %w", w.Symbol, err)
+		}
+		w.PendingPos = pendingPos
+		pendingByKey[w.Key] = pendingPos
+		created = append(created, pendingPos)
+		if e.api != nil {
+			e.api.BroadcastPositionUpdate(pendingPos)
+		}
+	}
+
+	return winners, batch, pendingByKey, nil
+}
+
+func (e *Engine) capOverrideForChoice(c *unifiedEntryChoice, snap *unifiedCapacitySnapshot) float64 {
+	if c == nil || snap == nil {
+		return 0
+	}
+	switch c.Strategy {
+	case risk.StrategySpotFutures:
+		return max(snap.effectiveSpotPct, snap.spotPctOverride)
+	default:
+		return max(snap.effectivePerpPct, snap.perpPctOverride)
+	}
+}
+
+func (e *Engine) abandonPendingPerp(pos *models.ArbitragePosition, reason string) {
+	if pos == nil {
+		return
+	}
+	pos.Status = models.StatusClosed
+	pos.FailureReason = reason
+	pos.FailureStage = deriveFailureStage(reason)
+	pos.ExitReason = "entry_failed: " + reason
+	pos.UpdatedAt = time.Now().UTC()
+	e.log.Info("[reconcile-debug] AddToHistory %s: LongTotalFees=%.6f ShortTotalFees=%.6f LongFunding=%.6f ShortFunding=%.6f LongClosePnL=%.6f ShortClosePnL=%.6f HasReconciled=%v",
+		pos.ID, pos.LongTotalFees, pos.ShortTotalFees, pos.LongFunding, pos.ShortFunding, pos.LongClosePnL, pos.ShortClosePnL, pos.HasReconciled)
+	if err := e.db.AddToHistory(pos); err != nil {
+		e.log.Error("abandonPendingPerp: AddToHistory failed for %s: %v", pos.ID, err)
+	}
+	if err := e.db.SavePosition(pos); err != nil {
+		e.log.Error("abandonPendingPerp: failed to save %s: %v", pos.ID, err)
+	}
+	if e.api != nil {
+		e.api.BroadcastPositionUpdate(pos)
+	}
 }
 
 // selectUnifiedPerpOpps consumes rebalance allocator overrides (via the
@@ -362,7 +436,7 @@ func (e *Engine) exposuresForChoice(c *unifiedEntryChoice) (map[string]float64, 
 		return map[string]float64{
 			c.Perp.Opp.LongExchange:  long,
 			c.Perp.Opp.ShortExchange: short,
-		}, 0
+		}, c.CapOverride
 	case risk.StrategySpotFutures:
 		if c.Spot == nil {
 			return nil, 0
@@ -372,7 +446,7 @@ func (e *Engine) exposuresForChoice(c *unifiedEntryChoice) (map[string]float64, 
 		}
 		return map[string]float64{
 			c.Spot.Candidate.Exchange: c.Spot.PlannedNotionalUSDT,
-		}, 0
+		}, c.CapOverride
 	}
 	return nil, 0
 }
@@ -570,32 +644,32 @@ func (e *Engine) dispatchUnifiedPerp(choice *unifiedEntryChoice, res *risk.Capit
 	}
 	approval := choice.Perp.Approval
 	opp := choice.Perp.Opp
+	pendingPos := choice.PendingPos
+	if pendingPos == nil {
+		return fmt.Errorf("perp dispatch: missing pending record for %s", choice.Key)
+	}
+
+	abandon := func(reason string) error {
+		e.abandonPendingPerp(pendingPos, reason)
+		return errors.New(reason)
+	}
 
 	// Acquire per-symbol execute lock — mirrors executeArbitrage's per
 	// candidate lock acquisition. 5-minute TTL matches the existing path.
 	lockResource := fmt.Sprintf("execute:%s", opp.Symbol)
-	symLock, acquired, err := e.db.AcquireOwnedLock(lockResource, 5*time.Minute)
+	symLock, acquired, err := e.acquireOwnedLock(lockResource, 5*time.Minute)
 	if err != nil {
-		return fmt.Errorf("acquire lock: %w", err)
+		return abandon(fmt.Sprintf("acquire lock: %v", err))
 	}
 	if !acquired {
-		return fmt.Errorf("execute lock busy for %s", opp.Symbol)
+		return abandon(fmt.Sprintf("execute lock busy for %s", opp.Symbol))
 	}
 	defer symLock.Release()
 
 	if e.cfg.DryRun {
 		e.log.Info("[DRY RUN] unified perp: would execute %s size=%.6f price=%.5f",
 			opp.Symbol, approval.Size, approval.Price)
-		return nil
-	}
-
-	// Persist pending position BEFORE dispatch so consolidator + dashboard see it.
-	pendingPos := e.createPendingPosition(opp)
-	if err := e.db.SavePosition(pendingPos); err != nil {
-		return fmt.Errorf("save pending: %w", err)
-	}
-	if e.api != nil {
-		e.api.BroadcastPositionUpdate(pendingPos)
+		return abandon("dry run mode - trade not executed")
 	}
 
 	err = e.executeTradeV2WithPos(opp, pendingPos, approval.Size, approval.Price, approval.GapBPS)
@@ -636,5 +710,5 @@ func (e *Engine) dispatchUnifiedSpot(choice *unifiedEntryChoice, res *risk.Capit
 	if e.spotEntry == nil {
 		return errors.New("spot dispatch: executor not installed")
 	}
-	return e.spotEntry.OpenSelectedEntry(choice.Spot, 0, res)
+	return e.spotEntry.OpenSelectedEntry(choice.Spot, choice.CapOverride, res)
 }

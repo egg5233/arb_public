@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"arb/internal/models"
+	"arb/internal/risk"
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
@@ -140,280 +141,271 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		}
 	}
 
-	// 1e. Check no duplicate symbol already open (any exchange).
-	active, err := e.db.GetActiveSpotPositions()
-	if err != nil {
-		return fmt.Errorf("failed to check active positions: %w", err)
-	}
-	for _, pos := range active {
-		if pos.Symbol == symbol {
-			return fmt.Errorf("position for %s already open on %s", symbol, pos.Exchange)
+	{
+		manualCapital := e.capitalForExchange(exchName)
+		baseCoin := opp.BaseCoin
+		now := time.Now().UTC()
+		entryPos := &models.SpotFuturesPosition{
+			ID:               utils.GenerateID("sf-"+symbol, now.UnixMilli()),
+			Symbol:           symbol,
+			BaseCoin:         baseCoin,
+			Exchange:         exchName,
+			Direction:        direction,
+			Status:           models.SpotStatusPending,
+			BorrowRateHourly: opp.BorrowAPR / 8760,
+			FundingAPR:       opp.FundingAPR,
+			FeePct:           opp.FeePct,
+			CurrentBorrowAPR: opp.BorrowAPR,
+			NotionalUSDT:     manualCapital,
+			CreatedAt:        now,
+			UpdatedAt:        now,
 		}
-	}
-
-	// 1f. Check capacity.
-	if len(active) >= e.cfg.SpotFuturesMaxPositions {
-		return fmt.Errorf("at max capacity (%d/%d)", len(active), e.cfg.SpotFuturesMaxPositions)
-	}
-
-	// 1f. Dry run check.
-	if e.cfg.SpotFuturesDryRun {
-		return fmt.Errorf("dry run mode — trade not executed")
-	}
-	if err := requireEntryLock("orderbook lookup"); err != nil {
-		return err
-	}
-
-	// ---------------------------------------------------------------
-	// 2. Get spot price via orderbook
-	// ---------------------------------------------------------------
-	ob, err := futExch.GetOrderbook(symbol, 5)
-	if err != nil {
-		return fmt.Errorf("failed to get orderbook for %s on %s: %w", symbol, exchName, err)
-	}
-	if len(ob.Bids) == 0 || len(ob.Asks) == 0 {
-		return fmt.Errorf("empty orderbook for %s on %s", symbol, exchName)
-	}
-	midPrice := (ob.Bids[0].Price + ob.Asks[0].Price) / 2
-	e.log.Info("ManualOpen: %s mid price = %.6f", symbol, midPrice)
-
-	// ---------------------------------------------------------------
-	// 3. Position sizing
-	// ---------------------------------------------------------------
-	capital := e.capitalForExchange(exchName)
-	baseCoin := opp.BaseCoin
-	rawSize := capital / midPrice
-
-	// For separate-account exchanges (Binance, Bitget), transfer USDT to the
-	// correct wallet BEFORE sizing. Dir A needs margin (for auto-borrow sell),
-	// Dir B needs spot (plain buy). Without this, MaxBorrowable is near-zero
-	// (Dir A) or spot has no USDT (Dir B).
-	if needsMarginTransfer(exchName) {
-		transferAmt := fmt.Sprintf("%.2f", capital*1.05) // 5% buffer for fees/slippage
 		if direction == "borrow_sell_long" {
-			// Dir A: USDT → margin account (for auto-borrow sell)
-			e.log.Info("ManualOpen: transferring %s USDT to margin (%s separate margin account)", transferAmt, exchName)
-			if tErr := smExch.TransferToMargin("USDT", transferAmt); tErr != nil {
-				e.log.Warn("ManualOpen: TransferToMargin(%s USDT): %v (may already have funds)", transferAmt, tErr)
-			}
+			entryPos.FuturesSide = "long"
 		} else {
-			// Dir B: USDT → spot account (plain spot buy, not margin)
-			e.log.Info("ManualOpen: transferring %s USDT to spot (%s separate accounts)", transferAmt, exchName)
-			if tErr := futExch.TransferToSpot("USDT", transferAmt); tErr != nil {
-				e.log.Warn("ManualOpen: TransferToSpot(%s USDT): %v (may already have funds)", transferAmt, tErr)
-			}
+			entryPos.FuturesSide = "short"
 		}
-	}
 
-	// For Direction A, cap by max borrowable.
-	// On separate-account exchanges, poll until the transferred collateral
-	// is reflected in MaxBorrowable (transfer settlement can lag).
-	if direction == "borrow_sell_long" {
-		var maxBorrow float64
-		if needsMarginTransfer(exchName) {
-			minExpected := rawSize * 0.5 // expect at least half the target to be borrowable
-			for poll := 0; poll < 10; poll++ {
-				mb, err := smExch.GetMarginBalance(baseCoin)
-				if err != nil {
-					e.log.Warn("ManualOpen: GetMarginBalance(%s) poll %d failed: %v", baseCoin, poll+1, err)
-					break
-				}
-				maxBorrow = mb.MaxBorrowable
-				if maxBorrow >= minExpected {
-					break
-				}
-				e.log.Info("ManualOpen: MaxBorrowable %.6f < expected %.6f — waiting for collateral settlement (%d/10)", maxBorrow, minExpected, poll+1)
-				time.Sleep(500 * time.Millisecond)
+		var admissionReservation *risk.CapitalReservation
+		admissionHeld := false
+		failAdmission := func(err error) error {
+			if admissionReservation != nil {
+				e.releaseSpotReservation(admissionReservation)
+				admissionReservation = nil
 			}
-		} else {
-			mb, err := smExch.GetMarginBalance(baseCoin)
-			if err != nil {
-				e.log.Warn("ManualOpen: GetMarginBalance(%s) failed: %v — proceeding with computed size", baseCoin, err)
-			} else {
-				maxBorrow = mb.MaxBorrowable
+			if admissionHeld {
+				e.admissionUnlock()
+				admissionHeld = false
 			}
-		}
-		if maxBorrow > 0 && rawSize > maxBorrow {
-			e.log.Info("ManualOpen: capping size from %.6f to MaxBorrowable %.6f", rawSize, maxBorrow)
-			rawSize = maxBorrow
-		}
-	}
-
-	// Round size to futures contract step size so both legs match exactly.
-	futStep, futMin, futDec := e.futuresStepSize(futExch, symbol)
-	var size float64
-	if futStep > 0 {
-		size = utils.RoundToStep(rawSize, futStep)
-	} else {
-		size = math.Floor(rawSize*1e6) / 1e6
-	}
-	if size <= 0 || (futMin > 0 && size < futMin) {
-		e.log.Warn("ManualOpen: computed size %.6f (raw=%.6f step=%.6f min=%.6f) too small for %s", size, rawSize, futStep, futMin, symbol)
-		return fmt.Errorf("computed size %.6f too small for %s (step=%.6f min=%.6f)", size, symbol, futStep, futMin)
-	}
-	sizeStr := utils.FormatSize(size, futDec)
-	plannedNotional := size * midPrice
-	// Reject if borrowable amount is less than 10% of the target capital —
-	// too small to be worth trading and likely to hit exchange minimums.
-	minNotional := capital * 0.10
-	if minNotional < 5.0 {
-		minNotional = 5.0
-	}
-	if plannedNotional < minNotional {
-		e.log.Warn("ManualOpen: notional %.2f USDT too small (min %.0f USDT) for %s — MaxBorrowable may be too low (size=%.6f price=%.6f)", plannedNotional, minNotional, symbol, size, midPrice)
-		return fmt.Errorf("notional %.2f USDT too small (min %.0f USDT) for %s (size=%.6f price=%.6f)", plannedNotional, minNotional, symbol, size, midPrice)
-	}
-	e.log.Info("ManualOpen: %s size=%.6f (%s) notional=%.2f USDT", symbol, size, sizeStr, plannedNotional)
-
-	now := time.Now().UTC()
-	posID := utils.GenerateID("sf-"+symbol, now.UnixMilli())
-	entryPos := &models.SpotFuturesPosition{
-		ID:               posID,
-		Symbol:           symbol,
-		BaseCoin:         baseCoin,
-		Exchange:         exchName,
-		Direction:        direction,
-		Status:           models.SpotStatusPending,
-		SpotSize:         size,
-		BorrowRateHourly: opp.BorrowAPR / 8760,
-		FundingAPR:       opp.FundingAPR,
-		FeePct:           opp.FeePct,
-		CurrentBorrowAPR: opp.BorrowAPR,
-		NotionalUSDT:     plannedNotional,
-		CreatedAt:        now,
-		UpdatedAt:        now,
-	}
-	if direction == "borrow_sell_long" {
-		entryPos.FuturesSide = "long"
-	} else {
-		entryPos.FuturesSide = "short"
-	}
-
-	if err := requireEntryLock("capital reservation"); err != nil {
-		return err
-	}
-	reservation, err := e.reserveSpotCapital(exchName, plannedNotional, 0)
-	if err != nil {
-		return fmt.Errorf("capital allocator rejected: %w", err)
-	}
-	if err := requireEntryLock("leverage setup"); err != nil {
-		e.releaseSpotReservation(reservation)
-		return err
-	}
-	if err := e.persistPendingEntry(entryPos, ""); err != nil {
-		e.releaseSpotReservation(reservation)
-		return fmt.Errorf("failed to persist pending entry before execution: %w", err)
-	}
-
-	// ---------------------------------------------------------------
-	// 4. Set leverage on futures
-	// ---------------------------------------------------------------
-	leverage := e.cfg.SpotFuturesLeverage
-	if leverage <= 0 {
-		leverage = 3
-	}
-	leverageStr := strconv.Itoa(leverage)
-	if err := futExch.SetLeverage(symbol, leverageStr, ""); err != nil {
-		e.log.Warn("ManualOpen: SetLeverage(%s, %s) warning: %v", symbol, leverageStr, err)
-		// Non-fatal — some exchanges return error if already set.
-	}
-
-	// (TransferToMargin moved to step 3, before MaxBorrowable check)
-
-	// ---------------------------------------------------------------
-	// 5. Execute based on direction
-	// ---------------------------------------------------------------
-	var spotEntryPrice, futuresEntryPrice float64
-	var spotFilledQty, futuresFilledQty float64
-	var futuresSide string
-	var borrowAmount float64
-
-	switch direction {
-	case "borrow_sell_long":
-		spotEntryPrice, futuresEntryPrice, spotFilledQty, futuresFilledQty, borrowAmount, err = e.executeBorrowSellLong(smExch, futExch, symbol, baseCoin, sizeStr, size, futStep, futMin, futDec, requireEntryLock, entryPos)
-		futuresSide = "long"
-	case "buy_spot_short":
-		spotEntryPrice, futuresEntryPrice, spotFilledQty, futuresFilledQty, err = e.executeBuySpotShort(smExch, futExch, symbol, sizeStr, size, plannedNotional, futStep, futMin, futDec, requireEntryLock, entryPos)
-		futuresSide = "short"
-	}
-
-	if err != nil {
-		var pendingErr *pendingSpotEntryError
-		if errors.As(err, &pendingErr) {
-			recoverySaveFailed := false
-			if pendingErr.pendingPos != nil {
-				if saveErr := e.db.SaveSpotPosition(pendingErr.pendingPos); saveErr != nil {
-					e.log.Error("ManualOpen: failed to save pending spot recovery %s: %v", pendingErr.posID, saveErr)
-					recoverySaveFailed = true
-				} else if e.api != nil {
-					e.api.BroadcastSpotPositionUpdate(pendingErr.pendingPos)
-				}
-			}
-			amount := plannedNotional
-			if pendingErr.capitalAmount > 0 {
-				amount = pendingErr.capitalAmount
-			}
-			if commitErr := e.commitSpotCapital(reservation, pendingErr.posID, amount); commitErr != nil {
-				e.log.Error("ManualOpen: capital commit failed for pending entry %s: %v", pendingErr.posID, commitErr)
-			}
-			if recoverySaveFailed {
-				return fmt.Errorf("%w (manual recovery position %s could not be persisted; existing pending record retained)", err, pendingErr.posID)
-			}
-			e.log.Error("ManualOpen: %s on %s — pending entry error: %v", symbol, exchName, err)
 			return err
 		}
-		e.abandonPendingEntry(entryPos, "entry_failed")
-		e.releaseSpotReservation(reservation)
-		e.log.Error("ManualOpen: %s on %s — execution failed: %v", symbol, exchName, err)
-		return fmt.Errorf("execution failed: %w", err)
-	}
 
-	actualNotional := spotFilledQty * spotEntryPrice
+		e.admissionLock()
+		admissionHeld = true
 
-	// Calculate entry fees (2 legs: spot + futures, taker rate).
-	takerFee := spotFees[exchName]
-	if takerFee == 0 {
-		takerFee = 0.0005 // default 0.05%
-	}
-	entryFees := (spotFilledQty * spotEntryPrice * takerFee) + (futuresFilledQty * futuresEntryPrice * takerFee)
-
-	// ---------------------------------------------------------------
-	// 6. Save position
-	// ---------------------------------------------------------------
-	pos := entryPos
-	pos.Status = models.SpotStatusActive
-	pos.SpotSize = spotFilledQty
-	pos.SpotEntryPrice = spotEntryPrice
-	pos.FuturesSize = futuresFilledQty
-	pos.FuturesEntry = futuresEntryPrice
-	pos.FuturesSide = futuresSide
-	pos.BorrowAmount = borrowAmount
-	pos.NotionalUSDT = actualNotional
-	pos.EntryFees = entryFees
-	pos.PendingEntryOrderID = ""
-	pos.UpdatedAt = time.Now().UTC()
-	if err := e.persistPendingCheckpoint(pos); err != nil {
-		if commitErr := e.commitSpotCapital(reservation, posID, actualNotional); commitErr != nil {
-			e.log.Error("ManualOpen: capital commit failed after pending checkpoint save error: %v", commitErr)
+		activePerp, activeSpot, occupiedSymbols, err := e.loadUnifiedAdmission()
+		if err != nil {
+			return failAdmission(fmt.Errorf("failed to check active positions: %w", err))
 		}
-		e.log.Error("ManualOpen: failed to checkpoint executed position: %v", err)
-		return fmt.Errorf("position executed but failed to checkpoint pending state: %w", err)
-	}
-	if err := e.commitSpotCapital(reservation, posID, actualNotional); err != nil {
-		e.log.Error("ManualOpen: capital commit failed: %v", err)
-	}
+		if _, exists := occupiedSymbols[symbol]; exists {
+			return failAdmission(fmt.Errorf("position for %s already open", symbol))
+		}
+		if activePerp+activeSpot >= e.cfg.MaxPositions {
+			return failAdmission(fmt.Errorf("at max combined capacity (%d/%d)", activePerp+activeSpot, e.cfg.MaxPositions))
+		}
+		if activeSpot >= e.cfg.SpotFuturesMaxPositions {
+			return failAdmission(fmt.Errorf("at max spot capacity (%d/%d)", activeSpot, e.cfg.SpotFuturesMaxPositions))
+		}
+		if e.cfg.SpotFuturesDryRun {
+			return failAdmission(fmt.Errorf("dry run mode ??trade not executed"))
+		}
+		if err := requireEntryLock("capital reservation"); err != nil {
+			return failAdmission(err)
+		}
+		admissionReservation, err = e.reserveSpotCapital(exchName, manualCapital, 0)
+		if err != nil {
+			return failAdmission(fmt.Errorf("capital allocator rejected: %w", err))
+		}
+		if err := requireEntryLock("persist pending entry"); err != nil {
+			return failAdmission(err)
+		}
+		if err := e.persistPendingEntry(entryPos, ""); err != nil {
+			return failAdmission(fmt.Errorf("failed to persist pending entry before execution: %w", err))
+		}
+		e.admissionUnlock()
+		admissionHeld = false
 
-	pos.Status = models.SpotStatusActive
-	if err := e.db.SaveSpotPosition(pos); err != nil {
-		e.log.Error("ManualOpen: failed to save position: %v", err)
-		return fmt.Errorf("position executed and pending checkpoint saved, but failed to promote active: %w", err)
+		failExecution := func(err error) error {
+			e.abandonPendingEntry(entryPos, "entry_failed")
+			e.releaseSpotReservation(admissionReservation)
+			return err
+		}
+
+		if err := requireEntryLock("orderbook lookup"); err != nil {
+			return failExecution(err)
+		}
+
+		ob, err := futExch.GetOrderbook(symbol, 5)
+		if err != nil {
+			return failExecution(fmt.Errorf("failed to get orderbook for %s on %s: %w", symbol, exchName, err))
+		}
+		if len(ob.Bids) == 0 || len(ob.Asks) == 0 {
+			return failExecution(fmt.Errorf("empty orderbook for %s on %s", symbol, exchName))
+		}
+		midPrice := (ob.Bids[0].Price + ob.Asks[0].Price) / 2
+		e.log.Info("ManualOpen: %s mid price = %.6f", symbol, midPrice)
+
+		rawSize := manualCapital / midPrice
+
+		if needsMarginTransfer(exchName) {
+			transferAmt := fmt.Sprintf("%.2f", manualCapital*1.05)
+			if direction == "borrow_sell_long" {
+				e.log.Info("ManualOpen: transferring %s USDT to margin (%s separate margin account)", transferAmt, exchName)
+				if tErr := smExch.TransferToMargin("USDT", transferAmt); tErr != nil {
+					e.log.Warn("ManualOpen: TransferToMargin(%s USDT): %v (may already have funds)", transferAmt, tErr)
+				}
+			} else {
+				e.log.Info("ManualOpen: transferring %s USDT to spot (%s separate accounts)", transferAmt, exchName)
+				if tErr := futExch.TransferToSpot("USDT", transferAmt); tErr != nil {
+					e.log.Warn("ManualOpen: TransferToSpot(%s USDT): %v (may already have funds)", transferAmt, tErr)
+				}
+			}
+		}
+
+		if direction == "borrow_sell_long" {
+			var maxBorrow float64
+			if needsMarginTransfer(exchName) {
+				minExpected := rawSize * 0.5
+				for poll := 0; poll < 10; poll++ {
+					mb, err := smExch.GetMarginBalance(baseCoin)
+					if err != nil {
+						e.log.Warn("ManualOpen: GetMarginBalance(%s) poll %d failed: %v", baseCoin, poll+1, err)
+						break
+					}
+					maxBorrow = mb.MaxBorrowable
+					if maxBorrow >= minExpected {
+						break
+					}
+					e.log.Info("ManualOpen: MaxBorrowable %.6f < expected %.6f ??waiting for collateral settlement (%d/10)", maxBorrow, minExpected, poll+1)
+					time.Sleep(500 * time.Millisecond)
+				}
+			} else {
+				mb, err := smExch.GetMarginBalance(baseCoin)
+				if err != nil {
+					e.log.Warn("ManualOpen: GetMarginBalance(%s) failed: %v ??proceeding with computed size", baseCoin, err)
+				} else {
+					maxBorrow = mb.MaxBorrowable
+				}
+			}
+			if maxBorrow > 0 && rawSize > maxBorrow {
+				e.log.Info("ManualOpen: capping size from %.6f to MaxBorrowable %.6f", rawSize, maxBorrow)
+				rawSize = maxBorrow
+			}
+		}
+
+		futStep, futMin, futDec := e.futuresStepSize(futExch, symbol)
+		var size float64
+		if futStep > 0 {
+			size = utils.RoundToStep(rawSize, futStep)
+		} else {
+			size = math.Floor(rawSize*1e6) / 1e6
+		}
+		if size <= 0 || (futMin > 0 && size < futMin) {
+			e.log.Warn("ManualOpen: computed size %.6f (raw=%.6f step=%.6f min=%.6f) too small for %s", size, rawSize, futStep, futMin, symbol)
+			return failExecution(fmt.Errorf("computed size %.6f too small for %s (step=%.6f min=%.6f)", size, symbol, futStep, futMin))
+		}
+		sizeStr := utils.FormatSize(size, futDec)
+		plannedNotional := size * midPrice
+		minNotional := manualCapital * 0.10
+		if minNotional < 5.0 {
+			minNotional = 5.0
+		}
+		if plannedNotional < minNotional {
+			e.log.Warn("ManualOpen: notional %.2f USDT too small (min %.0f USDT) for %s ??MaxBorrowable may be too low (size=%.6f price=%.6f)", plannedNotional, minNotional, symbol, size, midPrice)
+			return failExecution(fmt.Errorf("notional %.2f USDT too small (min %.0f USDT) for %s (size=%.6f price=%.6f)", plannedNotional, minNotional, symbol, size, midPrice))
+		}
+		e.log.Info("ManualOpen: %s size=%.6f (%s) notional=%.2f USDT", symbol, size, sizeStr, plannedNotional)
+		entryPos.SpotSize = size
+		entryPos.NotionalUSDT = plannedNotional
+
+		leverage := e.cfg.SpotFuturesLeverage
+		if leverage <= 0 {
+			leverage = 3
+		}
+		leverageStr := strconv.Itoa(leverage)
+		if err := futExch.SetLeverage(symbol, leverageStr, ""); err != nil {
+			e.log.Warn("ManualOpen: SetLeverage(%s, %s) warning: %v", symbol, leverageStr, err)
+		}
+
+		var spotEntryPrice, futuresEntryPrice float64
+		var spotFilledQty, futuresFilledQty float64
+		var futuresSide string
+		var borrowAmount float64
+
+		switch direction {
+		case "borrow_sell_long":
+			spotEntryPrice, futuresEntryPrice, spotFilledQty, futuresFilledQty, borrowAmount, err = e.executeBorrowSellLong(smExch, futExch, symbol, baseCoin, sizeStr, size, futStep, futMin, futDec, requireEntryLock, entryPos)
+			futuresSide = "long"
+		case "buy_spot_short":
+			spotEntryPrice, futuresEntryPrice, spotFilledQty, futuresFilledQty, err = e.executeBuySpotShort(smExch, futExch, symbol, sizeStr, size, plannedNotional, futStep, futMin, futDec, requireEntryLock, entryPos)
+			futuresSide = "short"
+		}
+
+		if err != nil {
+			var pendingErr *pendingSpotEntryError
+			if errors.As(err, &pendingErr) {
+				recoverySaveFailed := false
+				if pendingErr.pendingPos != nil {
+					if saveErr := e.db.SaveSpotPosition(pendingErr.pendingPos); saveErr != nil {
+						e.log.Error("ManualOpen: failed to save pending spot recovery %s: %v", pendingErr.posID, saveErr)
+						recoverySaveFailed = true
+					} else if e.api != nil {
+						e.api.BroadcastSpotPositionUpdate(pendingErr.pendingPos)
+					}
+				}
+				amount := plannedNotional
+				if pendingErr.capitalAmount > 0 {
+					amount = pendingErr.capitalAmount
+				}
+				if commitErr := e.commitSpotCapital(admissionReservation, pendingErr.posID, amount); commitErr != nil {
+					e.log.Error("ManualOpen: capital commit failed for pending entry %s: %v", pendingErr.posID, commitErr)
+				}
+				if recoverySaveFailed {
+					return fmt.Errorf("%w (manual recovery position %s could not be persisted; existing pending record retained)", err, pendingErr.posID)
+				}
+				e.log.Error("ManualOpen: %s on %s ??pending entry error: %v", symbol, exchName, err)
+				return err
+			}
+			e.abandonPendingEntry(entryPos, "entry_failed")
+			e.releaseSpotReservation(admissionReservation)
+			e.log.Error("ManualOpen: %s on %s ??execution failed: %v", symbol, exchName, err)
+			return fmt.Errorf("execution failed: %w", err)
+		}
+
+		actualNotional := spotFilledQty * spotEntryPrice
+		takerFee := spotFees[exchName]
+		if takerFee == 0 {
+			takerFee = 0.0005
+		}
+		entryFees := (spotFilledQty * spotEntryPrice * takerFee) + (futuresFilledQty * futuresEntryPrice * takerFee)
+
+		pos := entryPos
+		pos.Status = models.SpotStatusActive
+		pos.SpotSize = spotFilledQty
+		pos.SpotEntryPrice = spotEntryPrice
+		pos.FuturesSize = futuresFilledQty
+		pos.FuturesEntry = futuresEntryPrice
+		pos.FuturesSide = futuresSide
+		pos.BorrowAmount = borrowAmount
+		pos.NotionalUSDT = actualNotional
+		pos.EntryFees = entryFees
+		pos.PendingEntryOrderID = ""
+		pos.UpdatedAt = time.Now().UTC()
+		if err := e.persistPendingCheckpoint(pos); err != nil {
+			if commitErr := e.commitSpotCapital(admissionReservation, pos.ID, actualNotional); commitErr != nil {
+				e.log.Error("ManualOpen: capital commit failed after pending checkpoint save error: %v", commitErr)
+			}
+			e.log.Error("ManualOpen: failed to checkpoint executed position: %v", err)
+			return fmt.Errorf("position executed but failed to checkpoint pending state: %w", err)
+		}
+		if err := e.commitSpotCapital(admissionReservation, pos.ID, actualNotional); err != nil {
+			e.log.Error("ManualOpen: capital commit failed: %v", err)
+		}
+
+		pos.Status = models.SpotStatusActive
+		if err := e.db.SaveSpotPosition(pos); err != nil {
+			e.log.Error("ManualOpen: failed to save position: %v", err)
+			return fmt.Errorf("position executed and pending checkpoint saved, but failed to promote active: %w", err)
+		}
+
+		if e.api != nil {
+			e.api.BroadcastSpotPositionUpdate(pos)
+		}
+		e.log.Info("ManualOpen: SUCCESS ??%s on %s [%s] spot=%.6f@%.6f futures=%.6f@%.6f notional=%.2f",
+			symbol, exchName, direction, spotFilledQty, spotEntryPrice, futuresFilledQty, futuresEntryPrice, actualNotional)
+
+		return nil
 	}
-
-	e.api.BroadcastSpotPositionUpdate(pos)
-	e.log.Info("ManualOpen: SUCCESS — %s on %s [%s] spot=%.6f@%.6f futures=%.6f@%.6f notional=%.2f",
-		symbol, exchName, direction, spotFilledQty, spotEntryPrice, futuresFilledQty, futuresEntryPrice, actualNotional)
-
-	return nil
 }
 
 // executeBorrowSellLong handles Direction A: borrow coin, sell spot, long futures.

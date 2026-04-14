@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.33.1] - 2026-04-14
+
+### Fixed
+- fix: unified entry selection cap decisions now align with live allocator (dynamic strategyPct fallback + capOverride threading)
+- fix: admission-race close (`admissionMu` replaces `capacityMu`; shared between engine + spotengine)
+
+### Added
+- feat: spot ManualOpen + OpenSelectedEntry now enforce cross-strategy symbol exclusion + combined `cfg.MaxPositions` via `loadUnifiedAdmission` helper
+
+### Testing
+- test: Fix I E2E preheld reservation handoff + Fix J frozen allocator fixture with non-zero transfer fees
+
 ## [0.33.0] - 2026-04-14
 
 ### Added

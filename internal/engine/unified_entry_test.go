@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -30,12 +32,12 @@ import (
 type stubSpotEntryExecutor struct {
 	mu sync.Mutex
 
-	listResult    []models.SpotEntryCandidate
-	buildResultF  func(models.SpotEntryCandidate) (*models.SpotEntryPlan, error)
-	openResultF   func(*models.SpotEntryPlan, float64, *risk.CapitalReservation) error
-	openCallCount int
-	openCalledFor []string // plan symbols observed in OpenSelectedEntry
-	openWithPreheld []bool // whether each open call received a non-nil reservation
+	listResult      []models.SpotEntryCandidate
+	buildResultF    func(models.SpotEntryCandidate) (*models.SpotEntryPlan, error)
+	openResultF     func(*models.SpotEntryPlan, float64, *risk.CapitalReservation) error
+	openCallCount   int
+	openCalledFor   []string // plan symbols observed in OpenSelectedEntry
+	openWithPreheld []bool   // whether each open call received a non-nil reservation
 }
 
 func (s *stubSpotEntryExecutor) ListEntryCandidates(maxAge time.Duration) []models.SpotEntryCandidate {
@@ -66,14 +68,15 @@ func (s *stubSpotEntryExecutor) BuildEntryPlan(c models.SpotEntryCandidate) (*mo
 
 func (s *stubSpotEntryExecutor) OpenSelectedEntry(plan *models.SpotEntryPlan, capOverride float64, preheld *risk.CapitalReservation) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.openCallCount++
 	if plan != nil {
 		s.openCalledFor = append(s.openCalledFor, plan.Candidate.Symbol)
 	}
 	s.openWithPreheld = append(s.openWithPreheld, preheld != nil)
-	if s.openResultF != nil {
-		return s.openResultF(plan, capOverride, preheld)
+	openResultF := s.openResultF
+	s.mu.Unlock()
+	if openResultF != nil {
+		return openResultF(plan, capOverride, preheld)
 	}
 	return nil
 }
@@ -94,21 +97,21 @@ func newTestEngineForUnified(t *testing.T) (*Engine, *database.Client, *miniredi
 	t.Cleanup(func() { _ = db.Close() })
 
 	cfg := &config.Config{
-		EnableCapitalAllocator:       true,
-		EnableUnifiedEntrySelection:  true,
-		MaxTotalExposureUSDT:         1000,
-		MaxPerpPerpPct:               0.80,
-		MaxSpotFuturesPct:            0.80,
-		MaxPerExchangePct:            0.80,
-		ReservationTTLSec:            60,
-		Leverage:                     5,
-		MinHoldTime:                  16 * time.Hour,
-		SpotFuturesScanIntervalMin:   10,
-		SpotFuturesLeverage:          3,
-		MaxPositions:                 3,
-		SpotFuturesMaxPositions:      2,
-		AllocatorTimeoutMs:           30,
-		EntryScanMinute:              40,
+		EnableCapitalAllocator:      true,
+		EnableUnifiedEntrySelection: true,
+		MaxTotalExposureUSDT:        1000,
+		MaxPerpPerpPct:              0.80,
+		MaxSpotFuturesPct:           0.80,
+		MaxPerExchangePct:           0.80,
+		ReservationTTLSec:           60,
+		Leverage:                    5,
+		MinHoldTime:                 16 * time.Hour,
+		SpotFuturesScanIntervalMin:  10,
+		SpotFuturesLeverage:         3,
+		MaxPositions:                3,
+		SpotFuturesMaxPositions:     2,
+		AllocatorTimeoutMs:          30,
+		EntryScanMinute:             40,
 	}
 	allocator := risk.NewCapitalAllocator(db, cfg)
 
@@ -354,7 +357,7 @@ func TestUnifiedEntry_RespectsMaxPositionsCombinedCap(t *testing.T) {
 
 	mkPerp := func(sym, long, short string, spread float64) *perpDispatchRequest {
 		return &perpDispatchRequest{
-			Opp: models.Opportunity{Symbol: sym, LongExchange: long, ShortExchange: short, Spread: spread},
+			Opp:      models.Opportunity{Symbol: sym, LongExchange: long, ShortExchange: short, Spread: spread},
 			Approval: &models.RiskApproval{Approved: true, Size: 1, Price: 100, RequiredMargin: 50},
 		}
 	}
@@ -387,11 +390,11 @@ func TestUnifiedEntry_RespectsMaxPositionsCombinedCap(t *testing.T) {
 // spot} candidates where capacity fits only 2. Values are tuned so
 // that per USDT-over-horizon scoring the ranking is:
 //
-//   #1 spot S1  — very large FundingAPR and notional → biggest NetValueUSDT
-//   #2 perp P2  — high spread * large notional → highest perp baseValue
-//   #3 perp P3
-//   #4 perp P4
-//   #5 spot S5  — tiny notional and low APR
+//	#1 spot S1  — very large FundingAPR and notional → biggest NetValueUSDT
+//	#2 perp P2  — high spread * large notional → highest perp baseValue
+//	#3 perp P3
+//	#4 perp P4
+//	#5 spot S5  — tiny notional and low APR
 //
 // Both strategies' scoring formulas are applied verbatim via
 // scoreSpotEntry + computeAllocatorBaseValue, so the test is also a
@@ -731,7 +734,7 @@ func TestUnifiedEntry_EvaluatorRejectsPerExchangeCapBreach(t *testing.T) {
 	occ := &unifiedOccupancy{GlobalSlotsRemaining: 5, SpotSlotsRemaining: 0}
 	_, keyToChoice := e.groupChoicesBySymbol([]*perpDispatchRequest{perpA, perpB}, nil, occ)
 
-	snap, err := e.buildCapacitySnapshot()
+	snap, err := e.buildCapacitySnapshot(true, false)
 	if err != nil {
 		t.Fatalf("buildCapacitySnapshot: %v", err)
 	}
@@ -790,7 +793,7 @@ func TestUnifiedEntry_EvaluatorRejectsStrategyCapBreach(t *testing.T) {
 	occ := &unifiedOccupancy{GlobalSlotsRemaining: 5, SpotSlotsRemaining: 0}
 	_, keyToChoice := e.groupChoicesBySymbol([]*perpDispatchRequest{perpA, perpB}, nil, occ)
 
-	snap, err := e.buildCapacitySnapshot()
+	snap, err := e.buildCapacitySnapshot(true, false)
 	if err != nil {
 		t.Fatalf("buildCapacitySnapshot: %v", err)
 	}
@@ -851,7 +854,7 @@ func TestUnifiedEntry_SolverPicksFeasibleSubsetNotHighestValue(t *testing.T) {
 	occ := &unifiedOccupancy{GlobalSlotsRemaining: 2, SpotSlotsRemaining: 0}
 	groups, keyToChoice := e.groupChoicesBySymbol([]*perpDispatchRequest{fatA, fatB, thin}, nil, occ)
 
-	snap, err := e.buildCapacitySnapshot()
+	snap, err := e.buildCapacitySnapshot(true, false)
 	if err != nil {
 		t.Fatalf("buildCapacitySnapshot: %v", err)
 	}
@@ -890,11 +893,11 @@ func TestUnifiedEntry_PerpValueDeductsFees(t *testing.T) {
 	occ := &unifiedOccupancy{GlobalSlotsRemaining: 5, SpotSlotsRemaining: 0}
 
 	lowFee := &perpDispatchRequest{
-		Opp: models.Opportunity{Symbol: "AAA", LongExchange: "binance", ShortExchange: "okx", Spread: 100},
+		Opp:      models.Opportunity{Symbol: "AAA", LongExchange: "binance", ShortExchange: "okx", Spread: 100},
 		Approval: &models.RiskApproval{Approved: true, Size: 1, Price: 100_000, RequiredMargin: 100},
 	}
 	highFee := &perpDispatchRequest{
-		Opp: models.Opportunity{Symbol: "BBB", LongExchange: "bitget", ShortExchange: "bingx", Spread: 100},
+		Opp:      models.Opportunity{Symbol: "BBB", LongExchange: "bitget", ShortExchange: "bingx", Spread: 100},
 		Approval: &models.RiskApproval{Approved: true, Size: 1, Price: 100_000, RequiredMargin: 100},
 	}
 
@@ -927,5 +930,293 @@ func TestUnifiedEntry_PerpValueDeductsFees(t *testing.T) {
 	// these values — spread=100 bps over 16h on 100k notional dominates).
 	if lowScore <= 0 || highScore <= 0 {
 		t.Fatalf("scores unexpectedly non-positive: low=%.4f high=%.4f", lowScore, highScore)
+	}
+}
+
+func TestUnifiedEntry_EvaluatorHonorsPctOverride(t *testing.T) {
+	e, _, _ := newTestEngineForUnified(t)
+	occ := &unifiedOccupancy{GlobalSlotsRemaining: 1, SpotSlotsRemaining: 0}
+	req := &perpDispatchRequest{
+		Opp: models.Opportunity{Symbol: "BTCUSDT", LongExchange: "binance", ShortExchange: "bybit", Spread: 100},
+		Approval: &models.RiskApproval{
+			Approved: true, Size: 1, Price: 100,
+			LongMarginNeeded: 450, ShortMarginNeeded: 450,
+		},
+	}
+	_, keyToChoice := e.groupChoicesBySymbol([]*perpDispatchRequest{req}, nil, occ)
+	var key string
+	for k := range keyToChoice {
+		key = k
+	}
+
+	overrideSnap := &unifiedCapacitySnapshot{
+		committedByStrategy: map[risk.Strategy]float64{},
+		committedByExchange: map[string]float64{},
+		totalCap:            1000,
+		effectivePerpPct:    0.60,
+		perpPctOverride:     1.0,
+	}
+	if _, ok := e.makeUnifiedEvaluator(keyToChoice, occ, overrideSnap)([]string{key}); !ok {
+		t.Fatal("override snapshot should admit the 900 USDT perp request")
+	}
+
+	staticSnap := &unifiedCapacitySnapshot{
+		committedByStrategy: map[risk.Strategy]float64{},
+		committedByExchange: map[string]float64{},
+		totalCap:            1000,
+		effectivePerpPct:    0.60,
+	}
+	if _, ok := e.makeUnifiedEvaluator(keyToChoice, occ, staticSnap)([]string{key}); ok {
+		t.Fatal("static snapshot should reject the 900 USDT perp request")
+	}
+}
+
+func TestUnifiedEntry_BatchReservationItemThreadsPctOverride(t *testing.T) {
+	e, _, _ := newTestEngineForUnified(t)
+	e.cfg.EnableUnifiedCapital = true
+	e.cfg.MaxTotalExposureUSDT = 1000
+	e.cfg.MaxPerpPerpPct = 0.60
+	e.cfg.MaxSpotFuturesPct = 0.40
+	e.cfg.AllocationCeilingPct = 1.0
+	e.allocator.SetEffectiveAllocation(0.60, 0.40)
+
+	req := &perpDispatchRequest{
+		Opp: models.Opportunity{Symbol: "BTCUSDT", LongExchange: "binance", ShortExchange: "bybit", Spread: 100},
+		Approval: &models.RiskApproval{
+			Approved: true, Size: 1, Price: 100,
+			LongMarginNeeded: 350, ShortMarginNeeded: 350,
+		},
+	}
+
+	admitted, batch, _, err := e.admitUnifiedWinners([]*perpDispatchRequest{req}, nil)
+	if err != nil {
+		t.Fatalf("admitUnifiedWinners: %v", err)
+	}
+	if len(admitted) != 1 || batch == nil {
+		t.Fatalf("admission result = (%d winners, batch=%v), want 1 winner and batch", len(admitted), batch != nil)
+	}
+	if admitted[0].CapOverride != 1.0 {
+		t.Fatalf("CapOverride = %.2f, want 1.00", admitted[0].CapOverride)
+	}
+	if batch.Items[admitted[0].Key] == nil {
+		t.Fatalf("batch missing winner reservation for key %q", admitted[0].Key)
+	}
+}
+
+func TestUnifiedEntry_PendingPositionRollbackOnPartialFailure(t *testing.T) {
+	e, db, _ := newTestEngineForUnified(t)
+	e.cfg.EnableUnifiedCapital = true
+	e.cfg.MaxTotalExposureUSDT = 1000
+	e.cfg.MaxPerpPerpPct = 1.0
+	e.cfg.MaxSpotFuturesPct = 0.0
+	e.cfg.AllocationCeilingPct = 1.0
+	e.allocator.SetEffectiveAllocation(1.0, 0.0)
+
+	reqs := []*perpDispatchRequest{
+		{
+			Opp:      models.Opportunity{Symbol: "AAA", LongExchange: "binance", ShortExchange: "bybit", Spread: 100},
+			Approval: &models.RiskApproval{Approved: true, Size: 1, Price: 100, LongMarginNeeded: 10, ShortMarginNeeded: 10},
+		},
+		{
+			Opp:      models.Opportunity{Symbol: "BBB", LongExchange: "okx", ShortExchange: "gateio", Spread: 100},
+			Approval: &models.RiskApproval{Approved: true, Size: 1, Price: 100, LongMarginNeeded: 10, ShortMarginNeeded: 10},
+		},
+	}
+	saveCalls := 0
+	e.savePendingPerpOverride = func(pos *models.ArbitragePosition) error {
+		saveCalls++
+		if saveCalls == 2 {
+			return errors.New("boom")
+		}
+		return db.SavePosition(pos)
+	}
+
+	if _, _, _, err := e.admitUnifiedWinners(reqs, nil); err == nil {
+		t.Fatal("expected admitUnifiedWinners to fail on second pending save")
+	}
+	active, err := db.GetActivePositions()
+	if err != nil {
+		t.Fatalf("GetActivePositions: %v", err)
+	}
+	if len(active) != 0 {
+		t.Fatalf("active positions after rollback = %d, want 0", len(active))
+	}
+	history, err := db.GetHistory(10)
+	if err != nil {
+		t.Fatalf("GetHistory: %v", err)
+	}
+	if len(history) == 0 {
+		t.Fatal("rollback should move the already-created pending record into history")
+	}
+}
+
+func TestUnifiedEntry_DispatchUsesPreCreatedPendingNotNew(t *testing.T) {
+	e, db, _ := newTestEngineForUnified(t)
+	pending := e.createPendingPosition(models.Opportunity{Symbol: "BTCUSDT", LongExchange: "binance", ShortExchange: "bybit"})
+	if err := db.SavePosition(pending); err != nil {
+		t.Fatalf("SavePosition: %v", err)
+	}
+	saveCalls := 0
+	e.savePendingPerpOverride = func(*models.ArbitragePosition) error {
+		saveCalls++
+		return nil
+	}
+	e.acquireLockOverride = func(string, time.Duration) (*database.OwnedLock, bool, error) {
+		return nil, false, nil
+	}
+
+	choice := &unifiedEntryChoice{
+		Key:        "perp:btc",
+		Symbol:     "BTCUSDT",
+		Strategy:   risk.StrategyPerpPerp,
+		PendingPos: pending,
+		Perp: &perpDispatchRequest{
+			Opp:      models.Opportunity{Symbol: "BTCUSDT", LongExchange: "binance", ShortExchange: "bybit"},
+			Approval: &models.RiskApproval{Approved: true, Size: 1, Price: 100},
+		},
+	}
+
+	if err := e.dispatchUnifiedPerp(choice, nil); err == nil {
+		t.Fatal("expected busy-lock dispatch failure")
+	}
+	if saveCalls != 0 {
+		t.Fatalf("dispatch should not create a new pending record, savePendingPerpOverride called %d times", saveCalls)
+	}
+}
+
+func TestUnifiedEntry_EarlyReturnPathsCleanupPendingRecord(t *testing.T) {
+	e, db, _ := newTestEngineForUnified(t)
+	pending := e.createPendingPosition(models.Opportunity{Symbol: "ETHUSDT", LongExchange: "okx", ShortExchange: "gateio"})
+	if err := db.SavePosition(pending); err != nil {
+		t.Fatalf("SavePosition: %v", err)
+	}
+	e.acquireLockOverride = func(string, time.Duration) (*database.OwnedLock, bool, error) {
+		return nil, false, nil
+	}
+
+	choice := &unifiedEntryChoice{
+		Key:        "perp:eth",
+		Symbol:     "ETHUSDT",
+		Strategy:   risk.StrategyPerpPerp,
+		PendingPos: pending,
+		Perp: &perpDispatchRequest{
+			Opp:      models.Opportunity{Symbol: "ETHUSDT", LongExchange: "okx", ShortExchange: "gateio"},
+			Approval: &models.RiskApproval{Approved: true, Size: 1, Price: 100},
+		},
+	}
+
+	err := e.dispatchUnifiedPerp(choice, nil)
+	if err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Fatalf("dispatch error = %v, want busy lock cleanup path", err)
+	}
+	stored, err := db.GetPosition(pending.ID)
+	if err != nil {
+		t.Fatalf("GetPosition: %v", err)
+	}
+	if stored.Status != models.StatusClosed {
+		t.Fatalf("pending status = %s, want closed", stored.Status)
+	}
+	if !strings.Contains(stored.ExitReason, "entry_failed") {
+		t.Fatalf("ExitReason = %q, want entry_failed marker", stored.ExitReason)
+	}
+}
+
+func TestUnifiedEntry_E2ESpotPreheldHandoff(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		commitFinal bool
+	}{
+		{name: "release", commitFinal: false},
+		{name: "commit", commitFinal: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, db, _ := newTestEngineForUnified(t)
+			e.cfg.EnableUnifiedCapital = true
+			e.cfg.AllocationCeilingPct = 1.0
+
+			releaseCh := make(chan struct{})
+			reservedCh := make(chan *risk.CapitalReservation, 1)
+			stub := &stubSpotEntryExecutor{
+				listResult: []models.SpotEntryCandidate{{
+					Symbol:     "BTCUSDT",
+					BaseCoin:   "BTC",
+					Exchange:   "binance",
+					Direction:  "buy_spot_short",
+					FundingAPR: 0.50,
+					BorrowAPR:  0.01,
+					Timestamp:  time.Now().UTC(),
+				}},
+			}
+			stub.openResultF = func(plan *models.SpotEntryPlan, capOverride float64, preheld *risk.CapitalReservation) error {
+				reservedCh <- preheld
+				<-releaseCh
+				if tc.commitFinal {
+					return e.allocator.Commit(preheld, "spot-pos", map[string]float64{
+						plan.Candidate.Exchange: plan.PlannedNotionalUSDT,
+					})
+				}
+				return nil
+			}
+			e.SetSpotEntryExecutor(stub)
+
+			errCh := make(chan error, 1)
+			go func() {
+				errCh <- e.runUnifiedEntrySelection()
+			}()
+
+			preheld := <-reservedCh
+			if preheld == nil {
+				t.Fatal("expected preheld reservation during dispatch")
+			}
+			reservedKey := "risk:capital:reserved:" + preheld.ID
+			keys, err := db.Redis().Keys(context.Background(), "risk:capital:*").Result()
+			if err != nil {
+				t.Fatalf("redis keys: %v", err)
+			}
+			foundReserved := false
+			foundCommitted := false
+			for _, key := range keys {
+				if key == reservedKey {
+					foundReserved = true
+				}
+				if strings.HasPrefix(key, "risk:capital:committed:") {
+					foundCommitted = true
+				}
+			}
+			if !foundReserved {
+				t.Fatalf("mid-dispatch reserved key %q not found in %v", reservedKey, keys)
+			}
+			if foundCommitted {
+				t.Fatalf("committed keys should not exist mid-dispatch: %v", keys)
+			}
+
+			close(releaseCh)
+			if err := <-errCh; err != nil {
+				t.Fatalf("runUnifiedEntrySelection: %v", err)
+			}
+
+			keys, err = db.Redis().Keys(context.Background(), "risk:capital:*").Result()
+			if err != nil {
+				t.Fatalf("redis keys: %v", err)
+			}
+			for _, key := range keys {
+				if key == reservedKey {
+					t.Fatalf("reserved key %q should be gone after dispatch", reservedKey)
+				}
+			}
+
+			committedCount := 0
+			for _, key := range keys {
+				if strings.HasPrefix(key, "risk:capital:committed:") {
+					committedCount++
+				}
+			}
+			if tc.commitFinal && committedCount == 0 {
+				t.Fatal("commit case should leave committed allocator keys behind")
+			}
+			if !tc.commitFinal && committedCount != 0 {
+				t.Fatalf("release case should not leave committed allocator keys, got %d", committedCount)
+			}
+		})
 	}
 }

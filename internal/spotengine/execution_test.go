@@ -83,9 +83,11 @@ func (s *closeTestExchange) SetMetricsCallback(exchange.MetricsCallback) {}
 func (s *closeTestExchange) PlaceStopLoss(exchange.StopLossParams) (string, error) {
 	return "", nil
 }
-func (s *closeTestExchange) CancelStopLoss(string, string) error                      { return nil }
-func (s *closeTestExchange) PlaceTakeProfit(exchange.TakeProfitParams) (string, error) { return "", nil }
-func (s *closeTestExchange) CancelTakeProfit(string, string) error                     { return nil }
+func (s *closeTestExchange) CancelStopLoss(string, string) error { return nil }
+func (s *closeTestExchange) PlaceTakeProfit(exchange.TakeProfitParams) (string, error) {
+	return "", nil
+}
+func (s *closeTestExchange) CancelTakeProfit(string, string) error { return nil }
 func (s *closeTestExchange) GetUserTrades(string, time.Time, int) ([]exchange.Trade, error) {
 	return nil, nil
 }
@@ -99,9 +101,9 @@ func (s *closeTestExchange) WithdrawFeeInclusive() bool { return false }
 func (s *closeTestExchange) GetWithdrawFee(string, string) (float64, float64, error) {
 	return 0, 0, nil
 }
-func (s *closeTestExchange) EnsureOneWayMode() error  { return nil }
+func (s *closeTestExchange) EnsureOneWayMode() error      { return nil }
 func (s *closeTestExchange) CancelAllOrders(string) error { return nil }
-func (s *closeTestExchange) Close()                   {}
+func (s *closeTestExchange) Close()                       {}
 
 type closeTestSpotMargin struct {
 	placeCalls   int
@@ -267,6 +269,124 @@ func TestClosePosition_ReusesPendingSpotExitOrderAfterQueryFailure(t *testing.T)
 	}
 }
 
+func TestSpotManualOpen_CrossStrategySymbolExclusion(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	engine.cfg.MaxPositions = 5
+	engine.cfg.SpotFuturesMaxPositions = 5
+	engine.latestOpps = []SpotArbOpportunity{{
+		Symbol:    "BTCUSDT",
+		BaseCoin:  "BTC",
+		Exchange:  "stub",
+		Direction: "buy_spot_short",
+		Timestamp: time.Now().UTC(),
+	}}
+	engine.exchanges = map[string]exchange.Exchange{"stub": &closeTestExchange{}}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{"stub": &closeTestSpotMargin{}}
+
+	if err := engine.db.SavePosition(&models.ArbitragePosition{
+		ID:            "perp-1",
+		Symbol:        "BTCUSDT",
+		LongExchange:  "binance",
+		ShortExchange: "bybit",
+		Status:        models.StatusActive,
+		CreatedAt:     time.Now().UTC(),
+		UpdatedAt:     time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("SavePosition: %v", err)
+	}
+
+	err := engine.ManualOpen("BTCUSDT", "stub", "buy_spot_short")
+	if err == nil || !strings.Contains(err.Error(), "already open") {
+		t.Fatalf("ManualOpen error = %v, want cross-strategy duplicate rejection", err)
+	}
+}
+
+func TestSpotManualOpen_CombinedGlobalCapacity(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	engine.cfg.MaxPositions = 1
+	engine.cfg.SpotFuturesMaxPositions = 5
+	engine.latestOpps = []SpotArbOpportunity{{
+		Symbol:    "ETHUSDT",
+		BaseCoin:  "ETH",
+		Exchange:  "stub",
+		Direction: "buy_spot_short",
+		Timestamp: time.Now().UTC(),
+	}}
+	engine.exchanges = map[string]exchange.Exchange{"stub": &closeTestExchange{}}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{"stub": &closeTestSpotMargin{}}
+
+	if err := engine.db.SavePosition(&models.ArbitragePosition{
+		ID:            "perp-1",
+		Symbol:        "BTCUSDT",
+		LongExchange:  "binance",
+		ShortExchange: "bybit",
+		Status:        models.StatusActive,
+		CreatedAt:     time.Now().UTC(),
+		UpdatedAt:     time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("SavePosition: %v", err)
+	}
+
+	err := engine.ManualOpen("ETHUSDT", "stub", "buy_spot_short")
+	if err == nil || !strings.Contains(err.Error(), "combined capacity") {
+		t.Fatalf("ManualOpen error = %v, want combined capacity rejection", err)
+	}
+}
+
+func TestSpotManualOpen_AdmissionLockBlocksStaleReads(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	admissionMu := &sync.Mutex{}
+	engine.admissionMu = admissionMu
+	engine.cfg.MaxPositions = 5
+	engine.cfg.SpotFuturesMaxPositions = 5
+	engine.latestOpps = []SpotArbOpportunity{{
+		Symbol:    "SOLUSDT",
+		BaseCoin:  "SOL",
+		Exchange:  "stub",
+		Direction: "buy_spot_short",
+		Timestamp: time.Now().UTC(),
+	}}
+	engine.exchanges = map[string]exchange.Exchange{"stub": &closeTestExchange{}}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{"stub": &closeTestSpotMargin{}}
+
+	admissionMu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		done <- engine.ManualOpen("SOLUSDT", "stub", "buy_spot_short")
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case err := <-done:
+		t.Fatalf("ManualOpen returned before admission lock released: %v", err)
+	default:
+	}
+
+	if err := engine.db.SavePosition(&models.ArbitragePosition{
+		ID:            "perp-1",
+		Symbol:        "SOLUSDT",
+		LongExchange:  "binance",
+		ShortExchange: "bybit",
+		Status:        models.StatusActive,
+		CreatedAt:     time.Now().UTC(),
+		UpdatedAt:     time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("SavePosition: %v", err)
+	}
+	admissionMu.Unlock()
+
+	err := <-done
+	if err == nil || !strings.Contains(err.Error(), "already open") {
+		t.Fatalf("ManualOpen error = %v, want duplicate rejection after admission lock release", err)
+	}
+}
+
 func TestClosePosition_RetriesOnlyRemainingSpotQtyAfterPartialExit(t *testing.T) {
 	engine, mr := newExecutionTestEngine(t)
 	defer mr.Close()
@@ -367,6 +487,7 @@ func TestManualOpen_RejectsConcurrentEntry(t *testing.T) {
 	defer mr.Close()
 
 	engine.cfg = &config.Config{
+		MaxPositions:              10,
 		SpotFuturesMaxPositions:   1,
 		SpotFuturesLeverage:       3,
 		SpotFuturesCapitalUnified: 100,
@@ -465,6 +586,7 @@ func TestManualOpen_FailsClosedWhenEntryLockIsLost(t *testing.T) {
 	})
 
 	engine.cfg = &config.Config{
+		MaxPositions:              10,
 		SpotFuturesMaxPositions:   1,
 		SpotFuturesLeverage:       3,
 		SpotFuturesCapitalUnified: 100,
@@ -551,6 +673,7 @@ func TestManualOpen_PersistsPendingEntryUntilSpotConfirmationRecovers(t *testing
 	defer mr.Close()
 
 	engine.cfg = &config.Config{
+		MaxPositions:              10,
 		SpotFuturesMaxPositions:   1,
 		SpotFuturesLeverage:       3,
 		SpotFuturesCapitalUnified: 100,
@@ -651,6 +774,7 @@ func TestManualOpen_PendingEntryReconcilesAllocatorExposureToActualNotional(t *t
 		MaxSpotFuturesPct:         1,
 		MaxPerExchangePct:         1,
 		ReservationTTLSec:         300,
+		MaxPositions:              10,
 		SpotFuturesMaxPositions:   1,
 		SpotFuturesLeverage:       3,
 		SpotFuturesCapitalUnified: 100,
@@ -733,6 +857,7 @@ func TestManualOpen_CleansUpAcceptedSpotOrderWhenPendingEntrySaveFails(t *testin
 	failRedis.Close()
 
 	engine.cfg = &config.Config{
+		MaxPositions:              10,
 		SpotFuturesMaxPositions:   1,
 		SpotFuturesLeverage:       3,
 		SpotFuturesCapitalUnified: 100,
@@ -818,6 +943,7 @@ func TestManualOpen_ReversesAndRepaysBorrowWhenPendingEntrySaveFails(t *testing.
 	failRedis.Close()
 
 	engine.cfg = &config.Config{
+		MaxPositions:              10,
 		SpotFuturesMaxPositions:   1,
 		SpotFuturesLeverage:       3,
 		SpotFuturesCapitalUnified: 100,
@@ -905,6 +1031,7 @@ func TestManualOpen_ReportsManualInterventionWhenCleanupOrderOnlyPartiallyFills(
 	failRedis.Close()
 
 	engine.cfg = &config.Config{
+		MaxPositions:              10,
 		SpotFuturesMaxPositions:   1,
 		SpotFuturesLeverage:       3,
 		SpotFuturesCapitalUnified: 100,
@@ -986,6 +1113,7 @@ func TestManualOpen_PersistsManualRecoveryPositionWhenCleanupOnlyPartiallyFills(
 		MaxSpotFuturesPct:         1,
 		MaxPerExchangePct:         1,
 		ReservationTTLSec:         300,
+		MaxPositions:              10,
 		SpotFuturesMaxPositions:   1,
 		SpotFuturesLeverage:       3,
 		SpotFuturesCapitalUnified: 100,
@@ -1103,6 +1231,7 @@ func TestManualOpen_RetainsPendingRecordWhenManualRecoverySaveFails(t *testing.T
 	failRedis.Close()
 
 	engine.cfg = &config.Config{
+		MaxPositions:              10,
 		SpotFuturesMaxPositions:   1,
 		SpotFuturesLeverage:       3,
 		SpotFuturesCapitalUnified: 100,
