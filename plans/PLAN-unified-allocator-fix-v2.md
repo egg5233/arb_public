@@ -1,10 +1,11 @@
 # PLAN: Unified Allocator Post-Impl Fix v2
 
-**Status:** DRAFT v3 — applies Codex v2 5 required changes
+**Status:** DRAFT v4 — applies Codex v3 5 required changes
 **Revision history:**
 - v1 → Codex NEEDS REVISION: cap unit mismatch, missing strategyPct fallback, non-existent helper references, capacityMu insufficient (spot race), dispatchUnifiedPerp pending double-create, wrong parity framing, Summary not cached.
 - v2 → applied 8 v1 changes; Codex re-review found 5 plan-to-code mismatches.
-- v3 → fixes: (1) dynamicStrategyPct signature `(strategy, perpHasOpps, spotHasOpps)`; (2) explicit `NewSpotEngine` + `cmd/main.go` plumbing for admissionMu sharing; (3) pending-save rollback cleans previously-written records on partial failure; (4) Sections 4/7/8 cleared of stale v1 references; (5) files-changed lists actual spot-engine plumbing.
+- v3 → applied 5 v2 changes; Codex re-review found 5 internal inconsistencies.
+- v4 → fixes: (1) admitUnifiedWinners pseudocode threads (perpHasOpps, spotHasOpps) and handles Summary error return; (2) NewSpotEngine documented signature uses real `*notify.TelegramNotifier`; only cmd/main.go is the live caller (no test grep hits); (3) pending rollback uses real existing API — `SavePosition(pos)` with `Status=Closed` + `FailureReason="batch_admission_rollback"` + `ExitReason="entry_failed: ..."` + `AddToHistory(pos)` matching legacy abandon at engine.go:2695-2710; no new db helpers needed; (4) Section 5 picks single chosen path: replace `capacityMu` field entirely; (5) Section 8 — db layer untouched (uses existing SavePosition + AddToHistory).
 **Author:** claude
 **Date:** 2026-04-14
 **Trigger:** Codex post-fix review (#30b7ce58) found 2 blocking issues in v0.33.0 implementation that i5's review missed.
@@ -77,8 +78,12 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
    //
    // NOT a 1-arg version. v3 must thread perpHasOpps/spotHasOpps through.
    
-   func (e *Engine) buildCapacitySnapshot(perpHasOpps, spotHasOpps bool) *unifiedCapacitySnapshot {
-       summary := e.allocator.Summary()
+   func (e *Engine) buildCapacitySnapshot(perpHasOpps, spotHasOpps bool) (*unifiedCapacitySnapshot, error) {
+       // Summary() returns (*CapitalSummary, error) per allocator.go:346-357 — must handle both.
+       summary, err := e.allocator.Summary()
+       if err != nil {
+           return nil, fmt.Errorf("allocator summary: %w", err)
+       }
        
        // Reproduce strategyPct() fallback: if dynamic is 0, fall back to static config
        effectivePerp := summary.EffectivePerpPct
@@ -99,7 +104,7 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
            EffectiveSpotPct: effectiveSpot,
            PerpPctOverride:  perpOverride,
            SpotPctOverride:  spotOverride,
-       }
+       }, nil
    }
    ```
    
@@ -156,16 +161,15 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
 
 1. **Cross-strategy admission lock — concrete plumbing.** Single `admissionMu` shared across perp + spot admission paths.
 
-   **Live spot-engine constructor signature (verified):**
+   **Live spot-engine constructor signature (verified at internal/spotengine/engine.go:73-80):**
    ```go
-   // internal/spotengine/engine.go:73-102
    func NewSpotEngine(
        exchanges map[string]exchange.Exchange,
        db *database.Client,
        apiSrv *api.Server,
        cfg *config.Config,
        allocator *risk.CapitalAllocator,
-       telegram *notify.Telegram,
+       telegram *notify.TelegramNotifier,  // NOT *notify.Telegram
    ) *SpotEngine
    ```
    `SpotEngine` has NO `*Engine` reference. Plumbing must add one.
@@ -192,7 +196,7 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
      // cmd/main.go:432:
      spotEng = spotengine.NewSpotEngine(exchanges, db, apiSrv, cfg, allocator, tg, eng.AdmissionMutex())
      ```
-   - **All test callers of `NewSpotEngine` and Engine constructors** — audit + update signatures. Existing tests with stub allocators must construct a `*sync.Mutex` to pass.
+   - **Test callers of `NewSpotEngine`:** grep confirms only `cmd/main.go:432` is the live caller; no test file constructs `NewSpotEngine` directly. If the implementation later adds new spotengine tests that need a real `NewSpotEngine`, they must construct `&sync.Mutex{}` to pass. Existing spotengine tests use direct struct construction with stub fields, NOT `NewSpotEngine` — verify before assuming wider impact.
 
    **Lock ordering invariant:** all admission paths acquire `admissionMu` at TOP level, no nesting. Unified `runUnifiedEntrySelection` releases BEFORE dispatch goroutines spawn (matches legacy `executeArbitrage` releasing before exec at `engine.go:2424-2455`).
 
@@ -218,7 +222,12 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
        defer e.admissionMu.Unlock()
        
        occupancy, _ := e.loadUnifiedOccupancy()
-       snapshot := e.buildCapacitySnapshot()
+       perpHasOpps := len(perpOpps) > 0
+       spotHasOpps := len(spotCands) > 0
+       snapshot, snapErr := e.buildCapacitySnapshot(perpHasOpps, spotHasOpps)
+       if snapErr != nil {
+           return nil, nil, nil, fmt.Errorf("buildCapacitySnapshot: %w", snapErr)
+       }
        choices := e.buildUnifiedChoices(perpOpps, spotCands, occupancy, snapshot)
        
        winnerKeys := solveGroupedSearch(choices, occupancy.GlobalSlotsRemaining, 30*time.Second, makeUnifiedEvaluator(choices, occupancy, snapshot))
@@ -229,19 +238,29 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
        batch, err = e.allocator.ReserveBatch(items)
        if err != nil { return nil, nil, nil, err }
        
-       // Create and persist perp pending records INSIDE the lock (moved from dispatchUnifiedPerp)
+       // Create and persist perp pending records INSIDE the lock (moved from dispatchUnifiedPerp).
+       // Uses existing db.SavePosition (writes any status including Pending) — no new helpers.
        pending = make(map[string]*models.ArbitragePosition)
        for _, w := range winners {
            if w.Strategy == risk.StrategyPerpPerp {
                pos := newPendingPerpPosition(w)  // extracted from unified_entry.go:592-599
-               if err := e.db.SavePendingPosition(pos); err != nil {
-                   // Rollback ALL pending records already saved this batch.
-                   // Without this, persisted pending positions become orphans
-                   // (no dispatch will run, batch reservation is released, but
-                   // the pending records would still occupy slot accounting).
+               // pos.Status = StatusPending set by newPendingPerpPosition
+               if err := e.db.SavePosition(pos); err != nil {
+                   // Rollback: mark previously-saved pending records as failed using
+                   // the legacy abandon pattern (engine.go:2695-2710): set Status=Closed
+                   // + FailureReason + ExitReason, AddToHistory, then SavePosition.
+                   // Without this, the pending records would orphan in the active set
+                   // and falsely consume slot accounting.
                    for prevKey, prevPos := range pending {
-                       if delErr := e.db.DeletePendingPosition(prevPos.ID); delErr != nil {
-                           e.log.Error("admit rollback: failed to delete pending %s (%s): %v", prevKey, prevPos.ID, delErr)
+                       prevPos.Status = models.StatusClosed
+                       prevPos.FailureReason = "batch_admission_rollback: peer save failed"
+                       prevPos.ExitReason = "entry_failed: batch_admission_rollback"
+                       prevPos.UpdatedAt = time.Now().UTC()
+                       if histErr := e.db.AddToHistory(prevPos); histErr != nil {
+                           e.log.Error("admit rollback: history write failed for %s (%s): %v", prevKey, prevPos.ID, histErr)
+                       }
+                       if saveErr := e.db.SavePosition(prevPos); saveErr != nil {
+                           e.log.Error("admit rollback: close-state save failed for %s (%s): %v", prevKey, prevPos.ID, saveErr)
                        }
                    }
                    e.allocator.ReleaseBatch(batch)
@@ -348,7 +367,7 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
 
 All 4 fixes are additive or local — no schema changes. Rollback = `git revert <fix commit>`. Flag-gated behavior unchanged; legacy path unaffected.
 
-Note: Fix H renames `capacityMu` → `admissionMu` OR adds `admissionMu` alongside. Either way, legacy perp callers (`ManualOpen`, `executeArbitrage`) must update. Single-commit atomic refactor to keep lock-ordering safe.
+Note: Fix H **replaces** `capacityMu` field with `admissionMu *sync.Mutex` (single chosen path — not "rename or add alongside"). Legacy perp callers `ManualOpen` (`engine.go:407-485`) and `executeArbitrage` (`engine.go:2126-2427`) update in the same commit. No coexistence period.
 
 ---
 
@@ -390,17 +409,19 @@ Note: Fix H renames `capacityMu` → `admissionMu` OR adds `admissionMu` alongsi
 - `internal/engine/unified_capacity_test.go` — Fix G snapshot tests
 
 **Modified:**
-- `internal/engine/unified_capacity.go` — snapshot carries percentages (`EffectivePerpPct`, `EffectiveSpotPct`, `PerpPctOverride`, `SpotPctOverride`); strategyPct() fallback; takes `(perpHasOpps, spotHasOpps)`
-- `internal/engine/unified_entry.go` — `admissionMu` wrap (was capacityMu); pct override threading via `BatchReservationItem.CapOverride`; `admitUnifiedWinners` helper returns `pending map`; pending rollback on partial failure; `dispatchUnifiedPerp` consumes pre-created pending instead of creating new
-- `internal/engine/engine.go` — replace `capacityMu` field with `admissionMu *sync.Mutex` (pointer for sharing); `AdmissionMutex()` accessor; update all `capacityMu.Lock/Unlock` call sites at `:407-485` (`ManualOpen`) and `:2126-2427` (`executeArbitrage`)
-- `internal/spotengine/engine.go` — `NewSpotEngine` adds `admissionMu *sync.Mutex` parameter; SpotEngine struct stores it; `admissionLock()/admissionUnlock()` helpers
+- `internal/engine/unified_capacity.go` — snapshot carries percentages (`EffectivePerpPct`, `EffectiveSpotPct`, `PerpPctOverride`, `SpotPctOverride`); strategyPct() fallback; `buildCapacitySnapshot(perpHasOpps, spotHasOpps) (*unifiedCapacitySnapshot, error)` handles Summary error
+- `internal/engine/unified_entry.go` — `admissionMu` wrap (replaces capacityMu); pct override threading via `BatchReservationItem.CapOverride`; `admitUnifiedWinners` helper returns `pending map`; pending rollback uses existing `SavePosition + AddToHistory` (legacy abandon pattern engine.go:2695-2710); `dispatchUnifiedPerp` consumes pre-created pending instead of creating new
+- `internal/engine/engine.go` — REPLACE `capacityMu` field with `admissionMu *sync.Mutex` (pointer for sharing); `AdmissionMutex()` accessor; update all call sites at `:407-485` (`ManualOpen`) and `:2126-2427` (`executeArbitrage`)
+- `internal/spotengine/engine.go` — `NewSpotEngine` adds `admissionMu *sync.Mutex` parameter (after existing `*notify.TelegramNotifier`); SpotEngine struct stores it; `admissionLock()/admissionUnlock()` helpers
 - `internal/spotengine/execution.go` — `ManualOpen` (`:143-157,292-306`) wraps admission window with `admissionLock()`; audit `spotEntryLock` for scope overlap
 - `internal/spotengine/selected_entry.go` — `OpenSelectedEntry` (`:237-305`) acquires `admissionLock()` for its own admission (NOT nested with caller's lock — caller releases first)
-- `cmd/main.go:432` — pass `eng.AdmissionMutex()` to `NewSpotEngine` constructor
-- All test files constructing `NewSpotEngine` directly — add `*sync.Mutex` arg
+- `cmd/main.go:432` — pass `eng.AdmissionMutex()` to `NewSpotEngine` constructor (only live caller; no test callers per grep)
 - `internal/engine/unified_entry_test.go` — 7 new tests (see Section 4 table)
 - `internal/engine/allocator_parity_test.go` — 1 new test (`TestAllocator_FrozenFixtureNonZeroTransferFees`)
 - `VERSION` → `0.33.1` (patch)
 - `CHANGELOG.md` — 0.33.1 entry
 
-Estimated ~800 LoC delta (up from 600 due to admissionMu plumbing across spotengine).
+**NOT modified (uses existing APIs):**
+- `internal/database/state.go` — pending rollback uses existing `SavePosition` + `AddToHistory` per legacy abandon at `engine.go:2695-2710`. No new persistence helpers needed.
+
+Estimated ~800 LoC delta (admissionMu plumbing across spotengine + tests).
