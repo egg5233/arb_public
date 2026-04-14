@@ -1,6 +1,6 @@
 # PLAN: Unified Allocator Post-Impl Fix v2
 
-**Status:** DRAFT v7 — applies Codex v6 6 required changes
+**Status:** DRAFT v8 — applies Codex v7 3 required changes
 **Revision history:**
 - v1 → Codex NEEDS REVISION: cap unit mismatch, missing strategyPct fallback, non-existent helper references, capacityMu insufficient (spot race), dispatchUnifiedPerp pending double-create, wrong parity framing, Summary not cached.
 - v2 → applied 8 v1 changes; Codex re-review found 5 plan-to-code mismatches.
@@ -8,7 +8,8 @@
 - v4 → applied 5 v3 changes; Codex re-review found 3 spec inconsistencies.
 - v5 → applied 3 v4 changes; Codex re-review found 5 deeper issues.
 - v6 → applied 5 v5 changes; Codex re-review found 6 residuals.
-- v7 → fixes per codex v6 verbatim: (1) admissionMu wording consistent value-everywhere (no `*sync.Mutex` leftovers); (2) restore `selectUnifiedPerpOpps` wrapper call (tier-3 override salvage); (3) spot flow: `ListEntryCandidates` → `BuildEntryPlan` (before or inside admission) → plans; pseudocode signatures consistent; (4) `DynamicStrategyPct` uses real signature `(strategy, perpHasOpps, spotHasOpps, committed)`, committed from the one Summary call — no allocator API churn; (5) all new `BroadcastPositionUpdate` calls guarded `if e.api != nil`; rollback loop broadcasts each rolled-back position; (6) Fix I test re-scoped to observable Redis reservation state, no spy-call-count.
+- v7 → applied 6 v6 changes; Codex re-review found 3 residuals.
+- v8 → fixes per codex v7 verbatim: (1) remaining stale `spotCands` names renamed to `spotPlans` at :121/:255/:269/:274; (2) Fix I Redis assertions corrected — keys are `risk:capital:reserved:{reservationID}` (not candidate key), `batch.Items` keys by candidate key; test design handles ReleaseBatch lifecycle (stub blocks or stub explicitly calls Commit); (3) admissionMu note: Engine field is value, but SpotEngine still holds `*sync.Mutex` by design (cross-engine share), so revision history clarified.
 **Author:** claude
 **Date:** 2026-04-14
 **Trigger:** Codex post-fix review (#30b7ce58) found 2 blocking issues in v0.33.0 implementation that i5's review missed.
@@ -118,7 +119,7 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
    
    Caller in `runUnifiedEntrySelection` MUST call `e.updateAllocation()` BEFORE `buildCapacitySnapshot` (matches legacy non-unified path at `engine.go:1276-1288` — without this, dynamic pcts stay 0/stale).
    
-   Caller must supply `perpHasOpps = len(perpOpps) > 0` and `spotHasOpps = len(spotCands) > 0` from `runUnifiedEntrySelection` before calling `buildCapacitySnapshot`.
+   Caller must supply `perpHasOpps = len(perpOpps) > 0` and `spotHasOpps = len(spotPlans) > 0` from `runUnifiedEntrySelection` before calling `buildCapacitySnapshot`.
 
 3. `makeUnifiedEvaluator.evaluate(keys)` computes caps using percentage math matching `checkCapsWithOverride:578-583`:
    ```go
@@ -252,7 +253,7 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
    ) (winners []*unifiedEntryChoice, batch *risk.BatchReservation, pending map[string]*models.ArbitragePosition, err error) {
        // CRITICAL: all admission decisions (occupancy, approval revalidation, solver,
        // reserve, pending-save) must happen under this lock. Candidate gathering
-       // BEFORE admissionMu is OK (opps/spotCands are read-only), but any
+       // BEFORE admissionMu is OK (opps/spotPlans are read-only), but any
        // feasibility check that reads the active set or allocator state must be
        // in-lock.
        e.admissionMu.Lock()
@@ -266,12 +267,12 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
            return nil, nil, nil, fmt.Errorf("loadUnifiedOccupancy: %w", occErr)
        }
        perpHasOpps := len(perpOpps) > 0
-       spotHasOpps := len(spotCands) > 0
+       spotHasOpps := len(spotPlans) > 0
        snapshot, snapErr := e.buildCapacitySnapshot(perpHasOpps, spotHasOpps)
        if snapErr != nil {
            return nil, nil, nil, fmt.Errorf("buildCapacitySnapshot: %w", snapErr)
        }
-       choices := e.buildUnifiedChoices(perpOpps, spotCands, occupancy, snapshot)
+       choices := e.buildUnifiedChoices(perpOpps, spotPlans, occupancy, snapshot)
        
        // Use live allocator timeout (cfg.AllocatorTimeoutMs with 30ms fallback),
        // NOT hardcoded 30s. Matches current unified_entry.go:207-212.
@@ -397,18 +398,35 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
 ```go
 // Setup:
 //   - miniredis-backed CapitalAllocator (real implementation — enables Redis key inspection)
-//   - stubSpotEntryExecutor records (plan, capOverride, preheld) per OpenSelectedEntry call
+//   - stubSpotEntryExecutor blocks inside OpenSelectedEntry on a channel (so the test
+//     can snapshot Redis BEFORE runUnifiedEntrySelection reaches ReleaseBatch)
 //   - 1 or more spot candidates, 0 perp (or perp disabled) to isolate the handoff
-// Run: e.runUnifiedEntrySelection()
-// Assert via OBSERVABLE REDIS STATE (no spy on concrete *risk.CapitalAllocator internals):
-//   1. After admission: miniredis has exactly len(winners) reservation keys
-//      (allocatorReservationPref prefix per risk/allocator.go:30) with the expected
-//      strategy tag and exposures. One key per winner, keyed by candidate key.
-//   2. Each OpenSelectedEntry record has preheld != nil, and preheld.ID matches
-//      one of the Redis reservation keys from step 1.
-//   3. After dispatch: the Redis reservation count is UNCHANGED (no secondary Reserve
-//      happened). Commit (if executor calls Commit) transitions Reserved → Committed
-//      via the existing committed key prefix, NOT a new Reserve key.
+//
+// Run runUnifiedEntrySelection in a goroutine.
+//
+// Key fact: Redis reserved keys are `risk:capital:reserved:{reservationID}` where
+// reservationID is generated (not candidate key). Only batch.Items is keyed by
+// candidate key. Reservations are created on ReserveBatch and DELETED by
+// ReleaseBatch (allocator.go:195-223) which runUnifiedEntrySelection calls at
+// unified_entry.go:291-295 after dispatch.
+//
+// Test lifecycle (two snapshot points):
+//   MID-DISPATCH (inside blocked OpenSelectedEntry):
+//     1. miniredis has exactly len(winners) keys matching prefix
+//        `risk:capital:reserved:` (allocatorReservationPref per allocator.go:30).
+//     2. Stub recorded preheld != nil for each winner.
+//     3. For each recorded preheld.ID, a Redis key `risk:capital:reserved:{preheld.ID}`
+//        exists. batch.Items[candidateKey].ID equals preheld.ID (links candidate to reservation).
+//     4. NO committed keys (prefix `risk:capital:committed:`) for these reservations yet.
+//   After unblocking the stub + waiting for runUnifiedEntrySelection to return:
+//     5a. If stub returned without calling Commit:
+//         All reserved keys from snapshot 1 are GONE (ReleaseBatch deleted them).
+//         No committed keys exist.
+//     5b. If stub explicitly called allocator.Commit(preheld, fakePosID, exposures):
+//         Reserved keys are GONE (Commit deletes the reserved key per
+//         allocator.go:148-200). Committed totals under
+//         `risk:capital:committed:{strategy}:{exchange}` increased by exposure amounts.
+//
 // Why observable Redis vs spy: Engine/SpotEngine hold concrete *risk.CapitalAllocator
 // fields (not interfaces), so a spy would require an interface refactor. Redis state
 // is already observable via miniredis and matches the live contract.
