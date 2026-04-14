@@ -1,6 +1,6 @@
 # PLAN: Unified Allocator Post-Impl Fix v2
 
-**Status:** DRAFT v9 — applies Codex v8 3 required changes
+**Status:** DRAFT v10 — applies Codex v9 5 required changes
 **Revision history:**
 - v1 → Codex NEEDS REVISION: cap unit mismatch, missing strategyPct fallback, non-existent helper references, capacityMu insufficient (spot race), dispatchUnifiedPerp pending double-create, wrong parity framing, Summary not cached.
 - v2 → applied 8 v1 changes; Codex re-review found 5 plan-to-code mismatches.
@@ -10,7 +10,8 @@
 - v6 → applied 5 v5 changes; Codex re-review found 6 residuals.
 - v7 → applied 6 v6 changes; Codex re-review found 3 residuals.
 - v8 → applied 3 v7 changes; Codex re-review found 2 blockers + 3 citation drifts.
-- v9 → fixes per codex v8 verbatim: (1) Fix H spot-side lock scope EXPANDED — `admissionMu` acquired BEFORE duplicate-symbol + capacity checks in `spotengine/execution.go:143-157` `ManualOpen` and `spotengine/selected_entry.go:272-289` `OpenSelectedEntry` (NOT just the reserve+save window); (2) Spot admission now uses UNIFIED OCCUPANCY — new helper mirrors `loadUnifiedOccupancy()` (union perp+spot non-closed symbols, combined `cfg.MaxPositions`, `SpotFuturesMaxPositions` as sub-cap); applied in both `ManualOpen` and `OpenSelectedEntry`; added cross-strategy regressions; (3) citation drift corrected — Fix I `ReleaseBatch` is `internal/risk/batch_reservation.go:195-240`; Fix J `buildAllocatorCandidates()` is `internal/engine/allocator.go:416-508` (`runPoolAllocator` at `:195-243`); `AGENTS.md` added to files-changed list for `capacityMu` concurrency-note update.
+- v9 → applied 5 v8 changes (2 blockers + 3 citation drifts); Codex re-review found 5 plan-text inconsistencies.
+- v10 → fixes per codex v9 verbatim: (1) flag-off claim clarified — perp unified path stays flag-gated; spot `ManualOpen` behavior changes regardless of flag (cross-strategy exclusion + combined cap); (2) admission timeout claim corrected to `30ms` fallback (was incorrectly `30s` in Section 6); (3) lock-ordering invariant rewritten — `admissionMu` not nested across callers (no claim of global non-nesting since `spotEntryLock` remains outer in spot paths); (4) citation drift at line 579 replaced with real exclusion sites (`unified_state.go:89-92,109-112` + `unified_entry.go:152-153,168-169,428-430,472-474`); (5) 3 named tests added to Section 4/7 for `occupancy_test.go`.
 **Author:** claude
 **Date:** 2026-04-14
 **Trigger:** Codex post-fix review (#30b7ce58) found 2 blocking issues in v0.33.0 implementation that i5's review missed.
@@ -33,7 +34,9 @@ v0.33.0 shipped unified cross-strategy allocator on branch `feat/unified-entry-s
 
 ## 2. Goal
 
-Align unified selection's cap decisions with the live allocator's actual cap enforcement, and close the entry-admission race window. No user-visible behavior change when flag is OFF.
+Align unified selection's cap decisions with the live allocator's actual cap enforcement, and close the entry-admission race window.
+
+**Flag-off behavior note (v10 clarification):** The unified entry selection path (`runUnifiedEntrySelection`) remains flag-gated behind `EnableUnifiedEntrySelection` and has NO user-visible behavior change when the flag is OFF. However, Fix H's spot-side admission changes apply to `SpotEngine.ManualOpen` and `OpenSelectedEntry` REGARDLESS of the unified flag, because they are wired independently of unified selection (`cmd/main.go:432-438`). Those changes are documented as intentional behavior changes in Section 6 (Risks).
 
 ---
 
@@ -288,7 +291,9 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
      ```
    - **Test callers of `NewSpotEngine`:** grep confirms only `cmd/main.go:432` is the live caller; no test file constructs `NewSpotEngine` directly. If the implementation later adds new spotengine tests that need a real `NewSpotEngine`, they must construct `&sync.Mutex{}` to pass. Existing spotengine tests use direct struct construction with stub fields, NOT `NewSpotEngine` — verify before assuming wider impact.
 
-   **Lock ordering invariant:** all admission paths acquire `admissionMu` at TOP level, no nesting. Unified `runUnifiedEntrySelection` releases BEFORE dispatch goroutines spawn (matches legacy `executeArbitrage` releasing before exec at `engine.go:2424-2455`).
+   **Lock ordering invariant (v10 clarification):** `admissionMu` is NEVER nested across callers. No caller that holds `admissionMu` invokes a function that re-acquires it. `runUnifiedEntrySelection` releases `admissionMu` BEFORE dispatch goroutines spawn (matches legacy `executeArbitrage` releasing before exec at `engine.go:2424-2455`); dispatched `OpenSelectedEntry` re-acquires on its own.
+   
+   **Interaction with existing `spotEntryLock`:** The pre-existing `spotEntryLock` (per-symbol orderbook / entry dedup in `internal/spotengine/execution.go:67-78` and `selected_entry.go:237-248`) remains the OUTER lock in spot paths — effective acquisition order is `spotEntryLock` → `admissionMu`. This is safe: no caller holds `admissionMu` while trying to acquire `spotEntryLock` (the inverse order would require a perp path to call into spot, which does not happen). `spotEntryLock`'s purpose (per-symbol orderbook dedup inside `requireEntryLock`) is orthogonal to `admissionMu`'s purpose (cross-strategy admission atomicity), so both coexist without deadlock risk.
 
 2. `runUnifiedEntrySelection` structure with helper:
    ```go
@@ -550,6 +555,9 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
 | `TestSpotManualOpen_CombinedGlobalCapacity` | `internal/spotengine/execution_test.go` | active perp consumes last global slot (`cfg.MaxPositions`); spot `ManualOpen` rejected with "at global capacity" even when `SpotFuturesMaxPositions` has headroom |
 | `TestSpotManualOpen_AdmissionLockBlocksStaleReads` | `internal/spotengine/execution_test.go` | concurrent goroutine holds `admissionMu` + inserts a perp position mid-lock; spot `ManualOpen` starting AFTER lock release observes the new perp position and rejects (no stale pre-lock admission read) |
 | `TestSpotOpenSelectedEntry_CrossStrategySymbolExclusion` | `internal/spotengine/selected_entry_test.go` | active perp on `BTCUSDT` blocks `OpenSelectedEntry(plan[BTCUSDT], preheld)` even if preheld reservation is valid; error bubbles up before reservation state mutated |
+| `TestLoadUnifiedAdmission_PerpOnly` | `internal/spotengine/occupancy_test.go` | with only perp positions (mix of closed + non-closed), `loadUnifiedAdmission()` returns correct `activePerp`, `activeSpot=0`, and `occupiedSymbols` matching non-closed perp symbols |
+| `TestLoadUnifiedAdmission_SpotOnly` | `internal/spotengine/occupancy_test.go` | with only spot positions (mix of closed + non-closed), returns `activePerp=0`, correct `activeSpot`, `occupiedSymbols` matching non-closed spot symbols |
+| `TestLoadUnifiedAdmission_CrossStrategyUnion` | `internal/spotengine/occupancy_test.go` | with perp BTCUSDT + spot ETHUSDT both active, returns `activePerp=1`, `activeSpot=1`, `occupiedSymbols = {BTCUSDT, ETHUSDT}` — mirrors `engine.loadUnifiedOccupancy` semantics |
 | `TestUnifiedEntry_PendingPositionRollbackOnPartialFailure` | `unified_entry_test.go` | when 2 perp pending saves succeed and 3rd fails, the 2 prior records get close-and-history rollback (Status=Closed + FailureReason + FailureStage + ExitReason + AddToHistory + SavePosition), batch released, no orphans in active set |
 | `TestUnifiedEntry_DispatchUsesPreCreatedPendingNotNew` | `unified_entry_test.go` | `dispatchUnifiedPerp` consumes `pending[w.Key]`; never calls `db.SavePosition` for a NEW pending record itself (spy on SavePosition counts only the admission-time saves) |
 | `TestUnifiedEntry_EarlyReturnPathsCleanupPendingRecord` | `unified_entry_test.go` | pre-execute early-return paths (acquire-lock error / lock busy / `cfg.DryRun`) all call `abandonPendingPerp` — no orphan pending row survives in the active set |
@@ -560,7 +568,7 @@ Align unified selection's cap decisions with the live allocator's actual cap enf
 
 ## 5. Rollback
 
-All 4 fixes are additive or local — no schema changes. Rollback = `git revert <fix commit>`. Flag-gated behavior unchanged; legacy path unaffected.
+All 4 fixes are additive or local — no schema changes. Rollback = `git revert <fix commit>`. Unified entry selection (`runUnifiedEntrySelection`) remains flag-gated and unchanged when flag is OFF. Note: Fix H's spot admission changes (`ManualOpen` / `OpenSelectedEntry` now enforce cross-strategy exclusion + combined cap) apply regardless of flag — rollback via revert restores the spot-only admission semantics.
 
 Note: Fix H **replaces** `capacityMu` field with `admissionMu sync.Mutex` VALUE (single chosen path — not "rename or add alongside"; not a pointer). `AdmissionMutex() *sync.Mutex` accessor returns `&e.admissionMu`. Legacy perp callers `ManualOpen` (`engine.go:407-485`) and `executeArbitrage` (`engine.go:2126-2427`) update in the same commit. No coexistence period.
 
@@ -571,12 +579,12 @@ Note: Fix H **replaces** `capacityMu` field with `admissionMu sync.Mutex` VALUE 
 | Risk | Mitigation |
 |---|---|
 | Dynamic pct query adds Redis latency (per-tick) | `Summary()` is NOT cached today (`risk/allocator.go:346-357` — corrected from v1 which wrongly claimed 1s cache). Each call re-computes via `loadState()`. Snapshot built ONCE per EntryScan tick, so latency impact = 1× `loadState()` per tick. Measure in practice; if > 500ms, add explicit per-tick cache. |
-| `admissionMu` held longer than legacy `capacityMu` (admission covers B&B) | B&B has 30s timeout; realistic admission < 3s. Legacy admission ~500ms. Worst-case 6× longer. Acceptable for 10-minute EntryScan cadence. Measure post-deploy; add candidate count cap if > 5s. |
-| `admissionMu` replaces `capacityMu` — lock-ordering mistakes | No nested locks (single admission lock at top level). All callers must acquire at same logical level. Enforced by removing `capacityMu` field from Engine and replacing all call sites atomically in one commit. |
+| `admissionMu` held longer than legacy `capacityMu` (admission covers B&B) | B&B uses `cfg.AllocatorTimeoutMs` with `30ms` fallback (live: `internal/engine/unified_entry.go:207-212`). Realistic admission dominated by Redis I/O (Summary + ReserveBatch + pending-save) typically < 200ms. Legacy admission ~500ms. Comparable order-of-magnitude. Measure post-deploy; add candidate count cap if p95 > 2s. |
+| `admissionMu` replaces `capacityMu` — lock-ordering mistakes | Invariant: `admissionMu` is NEVER nested across callers (no caller holding `admissionMu` invokes a function that re-acquires it). Unified dispatcher releases `admissionMu` before calling `OpenSelectedEntry`, which re-acquires for its own admission window. NOTE: `spotEntryLock` (pre-existing per-symbol orderbook/entry dedup) remains the OUTER lock in spot paths (`internal/spotengine/execution.go:67-78`, `internal/spotengine/selected_entry.go:237-248`); actual spot acquisition order is `spotEntryLock` → `admissionMu`. This is safe because no caller holds `admissionMu` while trying to acquire `spotEntryLock` (no inverse order possible). |
 | Cross-engine admission requires `Engine` → `SpotEngine` lock sharing | CHOSEN: pass `*sync.Mutex` into `NewSpotEngine` constructor (`internal/spotengine/engine.go:73-80`). Engine exposes `AdmissionMutex()` accessor; cmd/main.go:432 wires it. Avoids `*Engine` reference cycle. Grep confirms only cmd/main.go is the live caller — no test callers to update. |
 | `dispatchUnifiedPerp` pending-removal breaks existing callers | Audit: only the unified path calls `dispatchUnifiedPerp`; legacy perp uses different dispatch. Single caller — low risk. |
 | Frozen fixture parity test (Fix J) requires concrete exchange/risk stubs | Use existing test-doubles in `internal/engine/*_test.go`. If stubs don't exist for `SimulateApprovalForPair`, add a thin test-only interface override OR test `dryRunTransferPlan` directly. |
-| Spot admission now blocks cross-strategy symbol duplicates (BEHAVIOR CHANGE) | Previously `spotengine/execution.go:143-152` only blocked same-symbol spot-vs-spot. v9 adds perp-vs-spot exclusion via `loadUnifiedAdmission()`. Ops note: if a user manually opens perp `BTCUSDT`, spot `ManualOpen(BTCUSDT)` now rejects (was allowed). Unified selector already applies this exclusion (`unified_state.go:37`), so unified entry is unaffected. Document in CHANGELOG + release notes. |
+| Spot admission now blocks cross-strategy symbol duplicates (BEHAVIOR CHANGE) | Previously `spotengine/execution.go:143-152` only blocked same-symbol spot-vs-spot. v9 adds perp-vs-spot exclusion via `loadUnifiedAdmission()`. Ops note: if a user manually opens perp `BTCUSDT`, spot `ManualOpen(BTCUSDT)` now rejects (was allowed). Unified selector already populates the occupancy set at `internal/engine/unified_state.go:89-92` (perp symbols) and `:109-112` (spot symbols), and applies exclusion at `internal/engine/unified_entry.go:152-153,168-169,428-430,472-474`; so unified entry is unaffected. Document in CHANGELOG + release notes. |
 | Spot admission now enforces combined global `cfg.MaxPositions` (BEHAVIOR CHANGE) | Previously spot paths only checked `cfg.SpotFuturesMaxPositions`. v9 adds combined `cfg.MaxPositions` check matching unified admission. Ops note: if perp + spot total already at `cfg.MaxPositions`, new spot `ManualOpen` rejects (was allowed). Intentional — aligns with plan Section 9 occupancy model. |
 
 ---
@@ -594,6 +602,9 @@ Note: Fix H **replaces** `capacityMu` field with `admissionMu sync.Mutex` VALUE 
 - [ ] `TestSpotManualOpen_CombinedGlobalCapacity` pass
 - [ ] `TestSpotManualOpen_AdmissionLockBlocksStaleReads` pass
 - [ ] `TestSpotOpenSelectedEntry_CrossStrategySymbolExclusion` pass
+- [ ] `TestLoadUnifiedAdmission_PerpOnly` pass
+- [ ] `TestLoadUnifiedAdmission_SpotOnly` pass
+- [ ] `TestLoadUnifiedAdmission_CrossStrategyUnion` pass
 - [ ] `TestUnifiedEntry_PendingPositionRollbackOnPartialFailure` pass
 - [ ] `TestUnifiedEntry_DispatchUsesPreCreatedPendingNotNew` pass
 - [ ] `TestUnifiedEntry_EarlyReturnPathsCleanupPendingRecord` pass
