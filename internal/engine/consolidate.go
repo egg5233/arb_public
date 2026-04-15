@@ -258,11 +258,21 @@ func (e *Engine) consolidatePositions(missCount map[string]int, dustIgnore map[s
 //     (pending/active/exiting). Used for orphan-detection exclusion so PP
 //     doesn't mistake SF legs mid-exit for orphans and close them.
 //
-//   - sfSizeOffset: aggregated FuturesSize values for positions that are
-//     genuinely SpotStatusActive only. Used to subtract SF futures-leg
+//   - sfSizeOffset: aggregated FuturesSize values for ALL non-closed SF
+//     positions (pending/active/exiting). Used to subtract SF futures-leg
 //     sizes from exchange-reported totals when the PP engine queries
-//     getExchangePositionSize or GetAllPositions. Pending positions have
-//     no fill yet; exiting positions may have a flat or stale FuturesSize.
+//     getExchangePositionSize or GetAllPositions.
+//
+//     The status gate is intentionally NOT restricted to SpotStatusActive:
+//     SF marks a position SpotStatusExiting BEFORE the futures leg actually
+//     closes on the exchange (spotengine/exit_manager.go:441-467), so
+//     excluding exiting positions would leave PP blind to SF hedges that
+//     are still live during the exit window. sfSubtract's zero-clamp
+//     handles the rare stuck-exit edge case where FuturesSize overstates
+//     the remainder.
+//
+//     Pending positions have no fill yet so FuturesSize=0, contributing
+//     harmlessly.
 //
 // Callers must treat the returned values as read-only.
 func (e *Engine) buildSpotFuturesMaps() (map[string]bool, map[string]float64) {
@@ -279,9 +289,10 @@ func (e *Engine) buildSpotFuturesMaps() (map[string]bool, map[string]float64) {
 		}
 		key := fmt.Sprintf("%s:%s:%s", sp.Exchange, sp.Symbol, side)
 		spotFuturesKeys[key] = true
-		if sp.Status == models.SpotStatusActive {
-			sfSizeOffset[key] += sp.FuturesSize
-		}
+		// Include all non-closed statuses (pending/active/exiting) — the
+		// exiting window still has the futures leg open on the exchange
+		// until ClosePosition completes.
+		sfSizeOffset[key] += sp.FuturesSize
 	}
 	return spotFuturesKeys, sfSizeOffset
 }

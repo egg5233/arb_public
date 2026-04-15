@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.15] - 2026-04-15
+
+### Fixed
+- **sfSizeOffset missed SF positions in SpotStatusExiting window** (codex review of v0.32.14, dispatch task `cbcc7ff8`) — `buildSpotFuturesMaps()` only counted `SpotStatusActive` positions toward the size offset, inherited from codex's v0.32.13 review ("pending/exiting may have flat or stale FuturesSize"). But SF flips `pos.Status = SpotStatusExiting` at `spotengine/exit_manager.go:446` BEFORE calling `ClosePosition(pos)` at `:467`, so during the exit execution window (seconds to minutes) the futures leg is still open on the exchange but excluded from the offset. Every v0.32.14 patched PP site then gets `sfSubtract = size - 0` and mishandles SF's still-live hedge — consolidator could close it, verifier could import its size into PP's record, entry fallback could absorb it as PP size. The two codex reviews gave contradictory advice: v0.32.13 (conservative — exclude exiting) opened a window the v0.32.14 findings aimed to close. Fix: remove the `SpotStatusActive` gate in `buildSpotFuturesMaps()` (`internal/engine/consolidate.go:283`) — include all non-closed SF positions (pending/active/exiting). `sfSubtract`'s zero-clamp handles the rare stuck-exit edge case (FuturesSize > exchange remainder) safely. Pending positions have `FuturesSize=0` so contribute harmlessly. This is a release blocker for v0.32.14 — without it, the 7 HIGH fixes have a timing gap that hits on every SF exit.
+
 ## [0.32.14] - 2026-04-15
 
 ### Fixed
