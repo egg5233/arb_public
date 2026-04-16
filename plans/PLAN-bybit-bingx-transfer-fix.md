@@ -1,6 +1,6 @@
 # Plan: Fix Bybit 131212 and BingX 100437 Rebalance Transfer Bugs
 
-Version: v5 (MINIMAL — supersedes v1-v4)
+Version: v6 (MINIMAL — supersedes v1-v5)
 Date: 2026-04-16
 Status: DRAFT
 
@@ -36,38 +36,57 @@ if err := recipientExch.TransferToFutures("USDT", transferStr); err != nil {
 }
 ```
 
-**After (v5)**:
+**After (v6 — fixes v5 scope bug and benign-path side effects)**:
 ```go
 transferStr := fmt.Sprintf("%.4f", totalPending)
-if err := recipientExch.TransferToFutures("USDT", transferStr); err != nil {
-    // Bybit 131212 special case: deposit may have auto-routed to UNIFIED
-    // via user's Set Deposit Account setting. If trading balance already
-    // holds the expected amount, treat the redundant FUND->UNIFIED failure
-    // as benign and proceed.
-    if strings.Contains(err.Error(), "131212") {
-        if bal, berr := recipientExch.GetFuturesBalance(); berr == nil && bal != nil {
-            if bal.Available >= startBal + totalPending*0.9 {
-                e.log.Info("rebalance: %s 131212 benign — deposit already in trading pool (bal=%.2f)", recipient, bal.Available)
-                err = nil  // treat as success
-            }
+err := recipientExch.TransferToFutures("USDT", transferStr)
+
+// Bybit 131212 benign-error handling: deposit may have auto-routed to
+// UNIFIED via user's Set Deposit Account. In that case the FUND->UNIFIED
+// transfer has nothing to move, but the funds are already trading-usable.
+// Verify by checking the trading balance; if it holds the expected amount,
+// treat the error as benign (no transfer occurred, but no transfer was needed).
+benign := false
+if err != nil && strings.Contains(err.Error(), "131212") {
+    if bal, berr := recipientExch.GetFuturesBalance(); berr == nil && bal != nil {
+        if bal.Available >= startBal + totalPending*0.9 {
+            e.log.Info("rebalance: %s 131212 benign — deposit already in trading pool (bal=%.2f)", recipient, bal.Available)
+            benign = true
         }
     }
-    if err != nil {
-        e.log.Error("rebalance: %s spot->futures failed: %v", recipient, err)
-    }
 }
-if err == nil {
+
+if err != nil && !benign {
+    e.log.Error("rebalance: %s spot->futures failed: %v", recipient, err)
+    continue
+}
+
+// Successful transfer path
+if !benign {
     e.log.Info("rebalance: %s spot->futures %s USDT (rebalance deposit)", recipient, transferStr)
     e.recordTransfer(recipient+" spot", recipient, "USDT", "internal", transferStr, "0", "", "completed", "rebalance-recv")
-    // balance accounting (unchanged)
-    bi := balances[recipient]
-    bi.futures += totalPending
-    bi.futuresTotal += totalPending
+}
+// else: benign-131212 path — no actual FUND->UNIFIED transfer happened, so do NOT recordTransfer.
+
+// Balance accounting:
+bi := balances[recipient]
+bi.futures += totalPending
+bi.futuresTotal += totalPending
+if !benign {
+    // Real transfer drained spot→futures; decrement spot.
     bi.spot -= totalPending
     if bi.spot < 0 { bi.spot = 0 }
-    balances[recipient] = bi
 }
+// In benign path, spot was never credited (deposit went straight to UNIFIED),
+// so no spot decrement is needed.
+balances[recipient] = bi
 ```
+
+**v6 changes vs v5** (addresses codex v5 #1):
+- Removed invalid scope — `err` is now a plain local, usable after `if`
+- `benign` flag captures the special path cleanly
+- `recordTransfer` no longer called on benign path (no internal transfer actually happened)
+- Balance accounting split: real transfer decrements spot, benign path does not (spot was never credited)
 
 **Why this is enough**:
 - The expensive part (cross-exchange withdraw + on-chain deposit) already succeeded
@@ -203,9 +222,15 @@ e.log.Info("rebalance: all deposits confirmed on %s (fundBal=%.2f, startBal=%.2f
 ### 5. Tests (~60 lines, 2 files)
 
 **New file `internal/engine/allocator_bybit_131212_test.go`**:
-- Test 1: TransferToFutures fails with 131212 but UNIFIED has the expected delta → treated as success, balance accounting correct
-- Test 2: TransferToFutures fails with 131212 and UNIFIED does NOT have delta → error propagated
-- Test 3: TransferToFutures fails with a non-131212 error → error propagated unchanged
+- Test 1: TransferToFutures fails with 131212 but UNIFIED has the expected delta → treated as benign, balance accounting correct (futures +=, spot NOT decremented, no recordTransfer call)
+- Test 2: TransferToFutures fails with 131212 and UNIFIED does NOT have delta → error propagated, continue triggered
+- Test 3: TransferToFutures fails with a non-131212 error → error propagated unchanged, not treated as benign
+- Test 4: TransferToFutures succeeds → normal path, futures +=, spot -=, recordTransfer called
+
+**New file `internal/engine/allocator_bingx_visibility_test.go`** (v6 addition per codex #5):
+- Test A: BingX donor `TransferToSpot` returns success, `GetSpotBalance` reports fund delta within timeout → poll passes, continues to withdraw path
+- Test B: BingX donor `TransferToSpot` returns success, `GetSpotBalance` fails to show delta within 15s → visibility timeout, rollback called, donor skipped (surplus=0, movedToSpot=0, continue)
+- Test C: Non-BingX donor → poll block entirely skipped, existing behavior preserved
 
 **New file `pkg/exchange/bingx/adapter_transfer_test.go`**:
 - Test A: `TransferToSpot` POSTs to `/openApi/api/asset/v1/transfer` with `fromAccount=USDTMPerp`, `toAccount=fund`
@@ -219,9 +244,10 @@ Use existing mock HTTP client pattern if available; otherwise table-driven test 
 |------|--------|-------|
 | `internal/engine/allocator.go` | Bybit 131212 handler + BingX donor post-transfer poll + observability | ~30 |
 | `pkg/exchange/bingx/adapter.go` | Replace legacy endpoint in TransferToSpot + TransferToFutures | ~20 |
-| `internal/engine/allocator_bybit_131212_test.go` | **new** | ~40 |
-| `pkg/exchange/bingx/adapter_transfer_test.go` | **new** | ~40 |
-| **Total** | | **~130** |
+| `internal/engine/allocator_bybit_131212_test.go` | **new** | ~50 (4 test cases) |
+| `internal/engine/allocator_bingx_visibility_test.go` | **new** (v6) | ~40 (3 test cases) |
+| `pkg/exchange/bingx/adapter_transfer_test.go` | **new** | ~40 (2 test cases) |
+| **Total** | | **~180** |
 
 ## What's NOT in v5 (deferred/rejected)
 
@@ -256,5 +282,8 @@ Use existing mock HTTP client pattern if available; otherwise table-driven test 
 Single release — no staged flag rollout. Deploy directly after Phase 5 (post-implementation review) passes.
 
 ## Review History
-- v1–v4: progressively reviewed by codex; eventually ALL PASS at v4 but user flagged v4 as over-engineered
-- v5: **this version** — reduced to minimum viable fix per codex dispatch `dcb2f822` recommendation
+- v1–v4: progressively reviewed by codex; ALL PASS at v4 but user flagged as over-engineered
+- v5: reduced to minimum viable fix per codex dispatch `dcb2f822` recommendation — codex review at `009934aa` returned NEEDS-REVISION on 2 items (#1 compile/scope bug in Bybit snippet + `recordTransfer` incorrect on benign path; #5 missing regression test for BingX visibility gate)
+- v6: **this version** — fixes both v5 findings:
+  - Bybit snippet rewritten with flat `err` scope; `benign` flag gates both `recordTransfer` and `spot` decrement
+  - Added `internal/engine/allocator_bingx_visibility_test.go` with 3 cases (success, timeout-rollback, non-bingx path)
