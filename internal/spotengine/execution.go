@@ -280,6 +280,7 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		FeePct:           opp.FeePct,
 		CurrentBorrowAPR: opp.BorrowAPR,
 		NotionalUSDT:     plannedNotional,
+		HedgeIntact:      true,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
@@ -1273,6 +1274,12 @@ func (e *SpotEngine) retryLeg(name string, maxRetries int, delay time.Duration, 
 // The method updates pos.SpotExitPrice and pos.FuturesExit in place on success.
 func (e *SpotEngine) ClosePosition(pos *models.SpotFuturesPosition, reason string, isEmergency bool) error {
 	e.log.Info("ClosePosition: %s on %s reason=%s emergency=%v", pos.Symbol, pos.Exchange, reason, isEmergency)
+	pos.SyncHedgeState()
+	if pos.HedgeBroken {
+		e.log.Error("ClosePosition: refusing to close %s on %s because hedge is broken", pos.Symbol, pos.Exchange)
+		e.telegram.NotifySpotCloseBlocked(pos, reason)
+		return fmt.Errorf("hedge broken for %s on %s", pos.Symbol, pos.Exchange)
+	}
 
 	futExch, ok := e.exchanges[pos.Exchange]
 	if !ok {

@@ -427,6 +427,13 @@ func (e *SpotEngine) estimateUnwindSlippage(pos *models.SpotFuturesPosition) flo
 // initiateExit runs the full exit sequence for a position. It should be called
 // in a goroutine for automated exits, or synchronously for manual closes.
 func (e *SpotEngine) initiateExit(pos *models.SpotFuturesPosition, reason string, isEmergency bool) {
+	pos.SyncHedgeState()
+	if pos.HedgeBroken {
+		e.log.Error("initiateExit: refusing exit for %s on %s — hedge broken (reason=%s)", pos.ID, pos.Exchange, reason)
+		e.telegram.NotifySpotCloseBlocked(pos, reason)
+		return
+	}
+
 	// Mark as exiting (prevent double-trigger).
 	e.exitMu.Lock()
 	e.exitState.exiting[pos.ID] = true

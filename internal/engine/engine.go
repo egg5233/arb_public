@@ -569,7 +569,6 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			activeSymbols[p.Symbol] = true
 		}
 	}
-
 	// Pre-filter: remove opps whose symbol already has an active position or is blacklisted.
 	var newOpps []models.Opportunity
 	for _, opp := range opps {
@@ -2119,6 +2118,15 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 			activeSymbols[p.Symbol] = true
 		}
 	}
+	spotFuturesKeys, _ := e.buildSpotFuturesMaps()
+	spotFuturesOccupied := make(map[string]bool, len(spotFuturesKeys))
+	for key := range spotFuturesKeys {
+		parts := strings.SplitN(key, ":", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		spotFuturesOccupied[parts[0]+":"+parts[1]] = true
+	}
 
 	if slots <= 0 {
 		e.capacityMu.Unlock()
@@ -2136,6 +2144,10 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 	symbolPairs := map[prefetchKey]bool{}
 	for _, opp := range opps {
 		if activeSymbols[opp.Symbol] {
+			continue
+		}
+		if blockedExchange, blocked := ppCrossEngineBlocked(opp, spotFuturesOccupied); blocked {
+			e.log.Info("[engine] entry filter: %s skipped — SF active on %s (cross-engine block)", opp.Symbol, blockedExchange)
 			continue
 		}
 		exchangeSet[opp.LongExchange] = true
@@ -2284,6 +2296,10 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 	for _, opp := range opps {
 		if activeSymbols[opp.Symbol] {
 			continue // skip — symbol already has an active position
+		}
+		if blockedExchange, blocked := ppCrossEngineBlocked(opp, spotFuturesOccupied); blocked {
+			e.log.Info("[engine] entry filter: %s skipped — SF active on %s (cross-engine block)", opp.Symbol, blockedExchange)
+			continue
 		}
 		// Check blacklist
 		if blocked, err := e.db.IsBlacklisted(opp.Symbol); err == nil && blocked {
@@ -3138,6 +3154,16 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 	go e.queryEntryFees(&posCopy)
 
 	return nil
+}
+
+func ppCrossEngineBlocked(opp models.Opportunity, occupied map[string]bool) (string, bool) {
+	if occupied[opp.LongExchange+":"+opp.Symbol] {
+		return opp.LongExchange, true
+	}
+	if occupied[opp.ShortExchange+":"+opp.Symbol] {
+		return opp.ShortExchange, true
+	}
+	return "", false
 }
 
 // formatSize rounds a size to the contract step size for a given exchange/symbol.

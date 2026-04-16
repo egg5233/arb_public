@@ -22,6 +22,8 @@ type SpotFuturesPosition struct {
 	FuturesEntry float64 `json:"futures_entry"`
 	FuturesExit  float64 `json:"futures_exit"`
 	FuturesSide  string  `json:"futures_side"` // "long" or "short"
+	HedgeIntact  bool    `json:"-"`
+	HedgeBroken  bool    `json:"hedge_broken,omitempty"`
 
 	// Borrow (Direction A only)
 	BorrowAmount     float64 `json:"borrow_amount"`
@@ -76,3 +78,18 @@ const (
 	SpotStatusExiting = "exiting"
 	SpotStatusClosed  = "closed"
 )
+
+func (p *SpotFuturesPosition) SyncHedgeState() {
+	if p == nil {
+		return
+	}
+	p.HedgeIntact = !p.HedgeBroken
+}
+
+func (p *SpotFuturesPosition) MarkHedgeBroken() {
+	if p == nil {
+		return
+	}
+	p.HedgeBroken = true
+	p.HedgeIntact = false
+}
