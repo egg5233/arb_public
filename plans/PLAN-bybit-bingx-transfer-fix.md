@@ -1,8 +1,21 @@
 # Plan: Fix Bybit 131212 and BingX 100437 Rebalance Transfer Bugs
 
-Version: v1
+Version: v2
 Date: 2026-04-16
-Status: DRAFT
+Status: DRAFT (addressing v1 review findings)
+
+## Review History
+
+- **v1** (2026-04-16 10:45 UTC): codex review — NEEDS-REVISION items 3, 4, 6, 7, 8, 9, 10, 11, 12
+  - #3 BingX migration insufficient (soft-poll then withdraw anyway)
+  - #4 Feature flag wiring incomplete (missing API handlers + config round-trip tests)
+  - #6 `pendingStartBal` should be removed not kept
+  - #7 **Highest severity**: removing `IsUnified()` branch unsafe for OKX — OKX unified still requires explicit funding→trading transfer (`pkg/exchange/okx/adapter.go:995-1011`)
+  - #8 R6 accounting invariant broken for OKX unified
+  - #9 Post-transfer poll policy under-specified (hard gate vs telemetry)
+  - #10 `pkg/exchange/bingx/adapter_test.go` doesn't exist — can't "append"
+  - #11 Missing dashboard/API exposure + hot-reload wiring via `internal/engine/exchange_manager.go`
+  - #12 R3 references nonexistent 100437 retry logic; R5 false claim about 6-exchange safety
 
 ## Context
 
@@ -14,165 +27,173 @@ Two production incidents on 2026-04-16 05:45-05:48 UTC during rebalance cycle fo
 
 Both bugs traced to commit `0d1e286d` (2026-03-28).
 
-Prior investigation: docs/research at dispatch task `a3b1aa13` verified by codex.
+Prior investigation: dispatch tasks f5c8a824, 654c4f02, 88f6b368, a3b1aa13 all closed with codex verification.
+
+## Per-Exchange Semantic Table (NEW — addresses v1 #7, #8, #12)
+
+Before the fix we must distinguish what deposits do on each exchange:
+
+| Exchange | IsUnified() | Deposit lands in | TransferToFutures required after deposit? | Implications for allocator |
+|----------|-------------|------------------|-------------------------------------------|----------------------------|
+| Bybit    | true        | FUND by default; UNIFIED if Set Deposit Account configured | **Only if deposit landed in FUND** | Needs dual-bucket detection |
+| Gate.io  | true (dynamic) | Unified shared pool | No — `TransferToFutures` is no-op (`pkg/exchange/gateio/adapter.go:972-994`) | Current flow fine; observation optional |
+| OKX      | true (dynamic above 10k USDT) | Funding account (type 6) | **Yes, always** — unified trading still separate from funding (`pkg/exchange/okx/adapter.go:995-1003`) | **Must keep current flow**; do NOT skip transfer |
+| Binance  | true (dynamic, portfolio margin) | Spot wallet | Yes | Current flow correct |
+| Bitget   | false       | Spot account | Yes | Current flow correct |
+| BingX    | false       | Fund account | Yes | Current flow correct; fix is on donor-side (endpoint + post-transfer poll) |
+
+**Conclusion**: dual-bucket skip-transfer logic is Bybit-specific. For all other exchanges the existing single-bucket poll + always-transfer flow is correct.
 
 ## Changes
 
-### 1. internal/engine/allocator.go (Bybit fix — allocator-local)
+### 1. Bybit-specific dual-bucket detection (v2 — narrower scope)
 
-- `allocator.go:1888-1899` — replace single-bucket baseline capture with dual-bucket capture
-- `allocator.go:1909-1954` — replace single-bucket poll with dual-bucket poll; decide whether to call `TransferToFutures` based on which bucket gained the delta
+**File**: `internal/engine/allocator.go` lines 1888-1954
 
-### 2. pkg/exchange/bingx/adapter.go (BingX fix — adapter migration)
-
-- `adapter.go:734-747` — rewrite `TransferToSpot` to use documented endpoint `POST /openApi/api/asset/v1/transfer` with `fromAccount=USDTMPerp toAccount=fund` (behind feature flag; old path retained as fallback)
-- `adapter.go:749-762` — rewrite `TransferToFutures` similarly with `fromAccount=fund toAccount=USDTMPerp`
-- `adapter.go:764-788` — add post-transfer fund balance poll inside `Withdraw` (or let caller handle — see decision in Risk section)
-
-### 3. internal/config/config.go (feature flag)
-
-- Add `EnableBingXNewTransferAPI bool` field (default `false` for safe rollout)
-- JSON tag: `enable_bingx_new_transfer_api`
-- Env var: `ENABLE_BINGX_NEW_TRANSFER_API`
-
-### 4. Observability (log both bucket deltas)
-
-- `allocator.go` confirmation loop: log `fundDelta` and `unifiedDelta` on each successful confirmation so we can diagnose future mismatches from logs alone
-
-### 5. Unit tests
-
-- `internal/engine/allocator_deposit_test.go` (new file): tests for dual-bucket detection with fake exchange stub
-- `pkg/exchange/bingx/adapter_test.go` (append): tests verifying new endpoint path/params when flag enabled
-
-## Why
-
-### Bybit 131212 root cause (confidence ~95% on fix direction, ~85% on mechanism)
-
-- Allocator code assumes `IsUnified()=true` means deposit lands in the unified/trading pool (`allocator.go:1914` comment: "Unified accounts: deposits land in unified pool, poll via GetFuturesBalance").
-- For this user's account, cross-exchange deposits land in UNIFIED directly (likely because Set Deposit Account was configured to UNIFIED, but Bybit provides NO API to query this setting — verified 2026-04-16 that `query-deposit-acct` endpoint returns 404; only `set-deposit-acct` exists).
-- Allocator confirms via UNIFIED delta (correct observation), but then unconditionally calls `TransferToFutures` which always moves FUND→UNIFIED (`pkg/exchange/bybit/adapter.go:885-893`). FUND is empty → 131212.
-
-Fix: stop assuming static deposit destination; sample both FUND and UNIFIED pre-deposit, poll both during wait, only call `TransferToFutures` if delta appeared in FUND.
-
-### BingX 100437 root cause (confidence ~85% on fix direction, ~55% on specific "legacy bucket" mechanism)
-
-- Code uses `POST /openApi/api/v3/post/asset/transfer` with `type=PFUTURES_FUND`/`FUND_PFUTURES`. This endpoint is NOT in the current BingX live SPA docs bundle (verified 2026-04-16).
-- Documented current endpoint is `POST /openApi/api/asset/v1/transfer` using `fromAccount`/`toAccount` string names (e.g., `USDTMPerp`, `fund`, `spot`).
-- Withdraw uses `walletType=1` (Fund Account per `doc/bingx/bingx-spot-api-docs.md:964`).
-- Two unresolved alternatives:
-  1. v3 transfer credits a different bucket than walletType=1
-  2. pure visibility lag (2.2s between transfer and withdraw)
-- Either way, migrating to documented endpoint + adding post-transfer poll addresses both.
-
-Fix: migrate endpoint (guarded by feature flag for safe rollout) + add post-transfer fund balance poll before withdraw.
-
-### Observability rationale
-
-Current logs show only one bucket's balance, making it impossible to retroactively distinguish Bybit Set Deposit Account routing vs BingX bucket mismatch. Logging both deltas is zero-risk and lets us diagnose future incidents from logs alone.
-
-## How
-
-### 1. allocator.go — dual-bucket deposit confirmation
-
-Replace lines 1888-1954 pseudocode:
+**Approach change (addresses v1 #7, #8)**: do NOT remove the `IsUnified()` branch universally. Add a new narrow marker interface for exchanges where "deposit may land directly in trading account" (currently only Bybit). Non-matching exchanges use existing logic unchanged.
 
 ```go
-// New type (local to function or file-level helper)
+// New interface (pkg/exchange/exchange.go, alongside existing marker interfaces)
+type DepositMayCreditTradingDirectly interface {
+    // Returns true if this exchange can credit incoming deposits directly
+    // into the trading/unified account, bypassing the separate funding/spot
+    // bucket that TransferToFutures normally drains.
+    DepositMayCreditTradingDirectly() bool
+}
+```
+
+**Adapter wiring**:
+- `pkg/exchange/bybit/adapter.go`: add `func (a *Adapter) DepositMayCreditTradingDirectly() bool { return true }`
+- `pkg/exchange/gateio/adapter.go`: add `func (a *Adapter) DepositMayCreditTradingDirectly() bool { return a.isUnified }` — unified shared pool also treats deposit as directly usable; transfer is no-op
+- No additions needed for binance/okx/bitget/bingx — absence of method means `false` via type assertion
+
+**Allocator poll logic** (replaces existing lines 1888-1954):
+
+```go
 type bucketBaseline struct {
-    fund, unified float64
+    fund    float64  // GetSpotBalance / funding account
+    trading float64  // GetFuturesBalance / unified trading account
 }
 
-// Baseline capture (replaces 1888-1899)
-if _, exists := pendingStartBal[bw.recipient]; !exists {
-    fundBal, fErr := e.exchanges[bw.recipient].GetSpotBalance()
-    futBal, uErr := e.exchanges[bw.recipient].GetFuturesBalance()
+// ... in the baseline capture loop:
+if _, exists := pendingBaselines[bw.recipient]; !exists {
     baseline := bucketBaseline{}
-    if fErr == nil && fundBal != nil {
-        baseline.fund = fundBal.Available
-    } else {
-        baseline.fund = balances[bw.recipient].spot
+    // Trading balance (always available for unified detection)
+    if fb, err := e.exchanges[bw.recipient].GetFuturesBalance(); err == nil && fb != nil {
+        baseline.trading = fb.Available
     }
-    if uErr == nil && futBal != nil {
-        baseline.unified = futBal.Available
+    // Fund balance (always available; used by non-unified path and dual-bucket detection)
+    if sb, err := e.exchanges[bw.recipient].GetSpotBalance(); err == nil && sb != nil {
+        baseline.fund = sb.Available
     }
     pendingBaselines[bw.recipient] = baseline
-    pendingStartBal[bw.recipient] = baseline.fund  // preserve old field for existing log
 }
 pendingDeposits[bw.recipient] += recipientReceives
 
-// Confirmation loop (replaces 1909-1954)
+// ... in the confirmation loop:
 for recipient, totalPending := range pendingDeposits {
     if totalPending <= 0 { continue }
     recipientExch := e.exchanges[recipient]
     baseline := pendingBaselines[recipient]
     threshold := totalPending * 0.9
-    e.log.Info("rebalance: waiting for %.2f USDT total deposits on %s (fundStart=%.2f unifiedStart=%.2f)...",
-        totalPending, recipient, baseline.fund, baseline.unified)
-
-    var arrivedBucket string  // "fund" or "unified" or ""
-    var fundDelta, unifiedDelta float64
+    
+    // Determine if this exchange can skip transfer when delta appears in trading
+    canSkipTransfer := false
+    if probe, ok := recipientExch.(interface { DepositMayCreditTradingDirectly() bool }); ok {
+        canSkipTransfer = probe.DepositMayCreditTradingDirectly()
+    }
+    
+    e.log.Info("rebalance: waiting for %.2f USDT on %s (fundStart=%.2f tradingStart=%.2f canSkipTransfer=%v)...",
+        totalPending, recipient, baseline.fund, baseline.trading, canSkipTransfer)
+    
+    arrivedIn := ""  // "fund" | "trading" | ""
+    var fundDelta, tradingDelta float64
     pollDeadline := time.Now().Add(5 * time.Minute)
+    
     for time.Now().Before(pollDeadline) {
         time.Sleep(5 * time.Second)
-        fundNow, fErr := recipientExch.GetSpotBalance()
-        futNow, uErr := recipientExch.GetFuturesBalance()
-        if fErr != nil && uErr != nil { continue }
-        if fundNow != nil { fundDelta = fundNow.Available - baseline.fund }
-        if futNow != nil { unifiedDelta = futNow.Available - baseline.unified }
-        if fundDelta >= threshold {
-            arrivedBucket = "fund"; break
+        fundDelta, tradingDelta = 0, 0
+        if fb, err := recipientExch.GetFuturesBalance(); err == nil && fb != nil {
+            tradingDelta = fb.Available - baseline.trading
         }
-        if unifiedDelta >= threshold {
-            arrivedBucket = "unified"; break
+        if sb, err := recipientExch.GetSpotBalance(); err == nil && sb != nil {
+            fundDelta = sb.Available - baseline.fund
+        }
+        if fundDelta >= threshold {
+            arrivedIn = "fund"; break
+        }
+        if canSkipTransfer && tradingDelta >= threshold {
+            arrivedIn = "trading"; break
         }
     }
-
-    if arrivedBucket == "" {
-        e.log.Warn("rebalance: deposits on %s not confirmed within 5min (fundDelta=%.2f unifiedDelta=%.2f), skipping",
-            recipient, fundDelta, unifiedDelta)
+    
+    if arrivedIn == "" {
+        e.log.Warn("rebalance: deposits on %s not confirmed within 5min (fundDelta=%.2f tradingDelta=%.2f), skipping",
+            recipient, fundDelta, tradingDelta)
         continue
     }
-
-    e.log.Info("rebalance: deposits confirmed on %s via %s bucket (fundDelta=%.2f unifiedDelta=%.2f)",
-        recipient, arrivedBucket, fundDelta, unifiedDelta)
-
-    if arrivedBucket == "fund" {
-        transferStr := fmt.Sprintf("%.4f", totalPending)
-        if err := recipientExch.TransferToFutures("USDT", transferStr); err != nil {
-            e.log.Error("rebalance: %s spot->futures failed: %v", recipient, err)
-        } else {
-            e.log.Info("rebalance: %s spot->futures %s USDT (rebalance deposit)", recipient, transferStr)
-            e.recordTransfer(recipient+" spot", recipient, "USDT", "internal", transferStr, "0", "", "completed", "rebalance-recv")
-            bi := balances[recipient]
-            bi.futures += totalPending
-            bi.futuresTotal += totalPending
-            bi.spot -= totalPending
-            if bi.spot < 0 { bi.spot = 0 }
-            balances[recipient] = bi
-        }
-    } else {
-        // arrivedBucket == "unified" — deposit already available for trading, skip transfer
-        e.log.Info("rebalance: %s deposit already in unified pool, skipping spot->futures", recipient)
+    
+    e.log.Info("rebalance: deposits confirmed on %s via %s bucket (fundDelta=%.2f tradingDelta=%.2f)",
+        recipient, arrivedIn, fundDelta, tradingDelta)
+    
+    if arrivedIn == "trading" {
+        // Deposit already in trading account — skip transfer
+        // (only reachable when canSkipTransfer=true, i.e., Bybit with Set Deposit Account, or Gate unified shared pool)
+        e.log.Info("rebalance: %s deposit already in trading pool, skipping spot->futures", recipient)
         bi := balances[recipient]
         bi.futures += totalPending
         bi.futuresTotal += totalPending
+        // NOTE: do NOT debit bi.spot — spot was never credited for this path (addresses v1 #8)
+        balances[recipient] = bi
+        continue
+    }
+    
+    // arrivedIn == "fund" — normal transfer path
+    transferStr := fmt.Sprintf("%.4f", totalPending)
+    if err := recipientExch.TransferToFutures("USDT", transferStr); err != nil {
+        e.log.Error("rebalance: %s spot->futures failed: %v", recipient, err)
+    } else {
+        e.log.Info("rebalance: %s spot->futures %s USDT (rebalance deposit)", recipient, transferStr)
+        e.recordTransfer(recipient+" spot", recipient, "USDT", "internal", transferStr, "0", "", "completed", "rebalance-recv")
+        bi := balances[recipient]
+        bi.futures += totalPending
+        bi.futuresTotal += totalPending
+        bi.spot -= totalPending
+        if bi.spot < 0 { bi.spot = 0 }
         balances[recipient] = bi
     }
 }
 ```
 
-Supporting structural changes:
-- Add `pendingBaselines map[string]bucketBaseline` alongside `pendingStartBal`/`pendingDeposits`
-- Keep `pendingStartBal` for backward compat with any other reader (only `bucketBaseline.fund` path uses it now)
+**Behavior verification per exchange**:
+- Bybit (canSkipTransfer=true): deposits via Set Deposit Account→UNIFIED will show tradingDelta ≥ threshold → skip transfer → fixes 131212.
+- Bybit (deposit to FUND): shows fundDelta → normal transfer path (unchanged from current behavior).
+- OKX (canSkipTransfer=false): deposits always land in funding → fundDelta shows first → normal transfer (current behavior preserved).
+- Gate unified (canSkipTransfer=true): tradingDelta shows (shared pool) → skip transfer (matches existing no-op semantics).
+- Binance/Bitget/BingX: canSkipTransfer=false → fund/spot poll → normal transfer (unchanged).
 
-### 2. bingx/adapter.go — endpoint migration
+### 2. Remove `pendingStartBal` (addresses v1 #6)
 
-Feature-flagged migration:
+Replace all references with `pendingBaselines[recipient].fund` (or `.trading` for unified path). Grep confirmed only uses are in the deposit confirmation block (`internal/engine/allocator.go:1381, 1830-1851`). Delete the variable and its declaration.
+
+### 3. BingX endpoint migration + HARD-GATE post-transfer poll (addresses v1 #3, #9, #12)
+
+**Decision on v1 #9**: post-transfer poll is a **HARD GATE**, not telemetry. If fund balance doesn't reflect the transfer within timeout, do NOT proceed to withdraw. Set a distinct skip reason. Addresses v1 #3 (no silent fallback).
+
+**File**: `pkg/exchange/bingx/adapter.go`
 
 ```go
-// Adapter has access to config via existing pattern (check how other flags are wired).
-// If not already available, pass flag via Adapter struct field populated at construction.
+// Adapter struct field (existing struct)
+type Adapter struct {
+    // ... existing fields
+    useNewTransferAPI bool  // set via SetUseNewTransferAPI
+}
 
+func (a *Adapter) SetUseNewTransferAPI(enabled bool) {
+    a.useNewTransferAPI = enabled
+}
+
+// TransferToSpot — migrate to documented v1 endpoint when flag enabled
 func (a *Adapter) TransferToSpot(coin string, amount string) error {
     if a.useNewTransferAPI {
         params := map[string]string{
@@ -187,7 +208,7 @@ func (a *Adapter) TransferToSpot(coin string, amount string) error {
         }
         return nil
     }
-    // Legacy path (default until flag enabled in production)
+    // Legacy path (default)
     params := map[string]string{
         "type":   "PFUTURES_FUND",
         "asset":  coin,
@@ -195,160 +216,189 @@ func (a *Adapter) TransferToSpot(coin string, amount string) error {
     }
     _, err := a.client.Post("/openApi/api/v3/post/asset/transfer", params)
     if err != nil {
-        return fmt.Errorf("bingx TransferToSpot: %w", err)
+        return fmt.Errorf("bingx TransferToSpot (legacy): %w", err)
     }
     return nil
 }
 
-// Symmetric change for TransferToFutures:
-// new: fromAccount=fund, toAccount=USDTMPerp
-// legacy: type=FUND_PFUTURES
+// TransferToFutures — symmetric migration
+func (a *Adapter) TransferToFutures(coin string, amount string) error {
+    if a.useNewTransferAPI {
+        params := map[string]string{
+            "fromAccount": "fund",
+            "toAccount":   "USDTMPerp",
+            "asset":       coin,
+            "amount":      amount,
+        }
+        _, err := a.client.Post("/openApi/api/asset/v1/transfer", params)
+        if err != nil {
+            return fmt.Errorf("bingx TransferToFutures (v1): %w", err)
+        }
+        return nil
+    }
+    params := map[string]string{
+        "type":   "FUND_PFUTURES",
+        "asset":  coin,
+        "amount": amount,
+    }
+    _, err := a.client.Post("/openApi/api/v3/post/asset/transfer", params)
+    if err != nil {
+        return fmt.Errorf("bingx TransferToFutures (legacy): %w", err)
+    }
+    return nil
+}
 ```
 
-**Post-transfer poll (callers side, not inside adapter)**:
+**File**: `internal/engine/allocator.go` — donor-side hard-gate poll before withdraw
 
-The allocator's withdraw path (upstream of `TransferToSpot` call for BingX donor) should add a short fund balance check before withdrawing. Exact location: in the rebalance donor-processing path where `TransferToSpot` is called before `Withdraw`. Pseudocode:
+Add in the donor-processing path after `TransferToSpot` succeeds and before `Withdraw` is called (approximate location: around lines 1577-1596 where `TransferToSpot` is invoked; exact location TBD by inspection):
 
 ```go
-// After TransferToSpot succeeds on BingX:
+// After successful TransferToSpot on BingX donor, HARD-GATE poll for fund visibility.
+// If poll times out, abort the withdraw and record a skip reason.
 if donor == "bingx" {
+    required := movedToSpot * 0.99  // 1% tolerance
+    startFund := balances[donor].spot  // baseline BEFORE transfer
     pollDeadline := time.Now().Add(15 * time.Second)
+    visible := false
     for time.Now().Before(pollDeadline) {
         time.Sleep(2 * time.Second)
-        if fb, err := e.exchanges[donor].GetSpotBalance(); err == nil {
-            if fb.Available >= movedAmount*0.99 {
+        if fb, err := e.exchanges[donor].GetSpotBalance(); err == nil && fb != nil {
+            if fb.Available - startFund >= required {
+                visible = true
                 break
             }
         }
     }
+    if !visible {
+        e.log.Warn("rebalance: bingx fund balance not visible after transfer (expected +%.4f); aborting withdraw to avoid 100437", movedToSpot)
+        result.SkipReasons[bw.recipient] = "bingx fund visibility timeout"
+        result.Unfunded[bw.recipient] = bw.netTotal
+        // Rollback the futures→spot move
+        if rbErr := e.exchanges[donor].TransferToFutures("USDT", fmt.Sprintf("%.4f", movedToSpot)); rbErr != nil {
+            e.log.Error("rebalance: bingx rollback after visibility timeout failed: %v", rbErr)
+        }
+        continue  // skip this withdraw iteration
+    }
 }
 ```
 
-**Decision**: the post-transfer poll belongs in the allocator's batched-withdraw orchestration, not inside the adapter. Adapter stays thin. Exact location TBD during implementation — need to inspect the withdraw pipeline around `allocator.go:1855` area and co-locate with existing futures→spot tracking.
+### 4. Feature flag wiring — full stack (addresses v1 #4, #11)
 
-### 3. config.go — feature flag
+**File**: `internal/config/config.go`
+- Add field `EnableBingXNewTransferAPI bool` with `json:"enable_bingx_new_transfer_api"` tag
+- Add env var parsing: `ENABLE_BINGX_NEW_TRANSFER_API`
+- Default: `false`
 
-Follow existing pattern (see `EnablePoolAllocator`, `EnableLiqTrendTracking`):
+**File**: `internal/api/handlers.go`
+- In GET `/api/config` response builder (~line 519-620): include `enable_bingx_new_transfer_api` field
+- In POST `/api/config` parser (~line 829-972): accept and persist the field
+- In config-to-Redis persistence path (~line 1518-1560): include field
 
-```go
-// In Config struct (appropriate section)
-EnableBingXNewTransferAPI bool `json:"enable_bingx_new_transfer_api"`
+**File**: `internal/api/config_handlers_test.go`
+- Extend `TestConfigRoundTrip` (or similar) at ~line 528-620 to include `enable_bingx_new_transfer_api` in both GET and POST roundtrip
 
-// In Load() env var mapping
-if v := os.Getenv("ENABLE_BINGX_NEW_TRANSFER_API"); v != "" {
-    c.EnableBingXNewTransferAPI = v == "true" || v == "1"
-}
+**File**: `internal/engine/exchange_manager.go`
+- Field `bingxNewTransferAPI bool` in snapshot struct (~line 20-23)
+- In reload comparison (~line 157-205): detect change in this field
+- On change: call `adapter.SetUseNewTransferAPI(newValue)` without full adapter rebuild (it's a runtime-adjustable flag, not a credential)
+- Wire initial value in `cmd/main.go newExchange()` and BingX-specific construction (~line 371-379, 518-531)
 
-// Default: false (unset)
-```
+**Dashboard UI** (`web/src/pages/Config.tsx` or equivalent — exact file TBD):
+- Add toggle "Enable BingX New Transfer API (migrate from legacy v3 endpoint)"
+- Default OFF
+- Save via existing config POST handler
 
-Wire flag into BingX adapter at construction (in `cmd/main.go` `newExchange` switch):
-```go
-case "bingx":
-    adapter := bingx.NewAdapter(...)
-    adapter.SetUseNewTransferAPI(cfg.EnableBingXNewTransferAPI)
-    return adapter
-```
+### 5. Observability (v1 unchanged)
 
-Or pass via constructor — whichever matches existing adapter pattern.
+- Log both `fundDelta` and `tradingDelta` at confirmation (already shown in code above)
+- One INFO line per confirmation event (not per-poll iteration) to keep log volume bounded
 
-### 4. Tests
+### 6. Tests (addresses v1 #10)
 
-New file `internal/engine/allocator_deposit_test.go`:
+**New file `internal/engine/allocator_deposit_test.go`**:
+- Test 1: Bybit deposit lands in FUND → TransferToFutures called, balance mutation correct
+- Test 2: Bybit deposit lands in UNIFIED (canSkipTransfer=true) → TransferToFutures NOT called, futures balance credited without spot debit
+- Test 3: OKX deposit lands in funding (canSkipTransfer=false for OKX) → TransferToFutures called, normal path
+- Test 4: Deposit never arrives → timeout, no transfer, unfunded recorded
+- Test 5: Partial delta below threshold → continues polling
+- Test 6: Gate unified deposit → shows up in trading pool → skip transfer (no-op path)
 
-```go
-// Fake exchange with scripted balance progression
-type fakeDepositExchange struct {
-    fundBalances    []float64  // progression
-    unifiedBalances []float64
-    transferCalled  bool
-    pollIdx         int
-}
+**New file `pkg/exchange/bingx/adapter_test.go`** (codex confirmed this file does NOT exist — create, do not "append"):
+- Test A: `TransferToSpot` with `useNewTransferAPI=true` POSTs to `/openApi/api/asset/v1/transfer` with correct `fromAccount`/`toAccount`
+- Test B: `TransferToSpot` with `useNewTransferAPI=false` (default) POSTs to `/openApi/api/v3/post/asset/transfer` with `type=PFUTURES_FUND`
+- Test C-D: Symmetric for `TransferToFutures`
+- Test E: `Withdraw` always includes `walletType=1` (already in place, regression guard)
 
-// Test cases:
-// 1. Deposit lands in FUND → TransferToFutures called, unified delta matches post-transfer
-// 2. Deposit lands in UNIFIED → TransferToFutures NOT called, unified balance already has funds
-// 3. Deposit never arrives → timeout, no transfer attempt, position marked unfunded
-// 4. Partial delta (below threshold) → continues polling
-```
+**Extend `internal/api/config_handlers_test.go`** (addresses v1 #10):
+- Round-trip test for `enable_bingx_new_transfer_api` field (GET → POST → GET)
 
-New tests in `pkg/exchange/bingx/adapter_test.go`:
+**Extend exchange_manager tests** (`internal/engine/exchange_manager_test.go` or similar, exact file TBD):
+- Test reload flips the BingX new transfer API flag without full rebuild
+- Test flag change is propagated to the live adapter instance
 
-```go
-// Use mock client (existing test pattern):
-// 1. TransferToSpot with useNewTransferAPI=true sends fromAccount=USDTMPerp toAccount=fund
-// 2. TransferToSpot with useNewTransferAPI=false sends type=PFUTURES_FUND (legacy)
-// 3. Symmetric for TransferToFutures
-// 4. Verify request path is /openApi/api/asset/v1/transfer when flag on
-```
+### 7. Risk table (v2 — rewritten, addresses v1 #12)
 
-## Risk
+| ID | Risk | Mitigation |
+|----|------|-----------|
+| R1 | Bybit dual-bucket race: auto-move happens between polls | 90% threshold + canSkipTransfer=true branch handles either ordering; observe both deltas so either case leads to correct outcome |
+| R2 | BingX new endpoint migration breaks something else | Feature flag default `false`, manual VPS test before enabling, logs show chosen path |
+| R3 | BingX post-transfer poll times out legitimately | **Hard gate** — abort withdraw, rollback futures→spot, record skip reason. Do NOT proceed. (v1 mentioned nonexistent "100437 retry logic" — removed.) |
+| R4 | allocator.go structural change affects other paths | Grep confirms only rebalance allocator uses this deposit-confirm loop; spot-futures engine has own flows |
+| R5 | IsUnified semantics leak | **Retained IsUnified branch**. Only narrow `DepositMayCreditTradingDirectly` marker added for Bybit + Gate unified. OKX explicitly opts out. Verified per-exchange in the semantic table above. |
+| R6 | skip-transfer accounting invariant | Only active when `canSkipTransfer=true` (Bybit + Gate unified). For these, spot was never credited, so not debiting spot is correct. OKX and others always go through the fund branch which debits spot correctly. |
+| R7 | Observability log spam | INFO only at confirmation event (once per recipient); DEBUG for per-poll iterations if needed |
 
-### R1. Bybit dual-bucket poll race condition
+## Testing Plan (v2)
 
-If user's Bybit auto-routes deposits via a transient FUND → UNIFIED hop (e.g., deposit briefly appears in FUND then quickly moves), the 5-second polling interval might catch it in FUND, trigger TransferToFutures, which then races with Bybit's own auto-move.
+1. **Unit tests** (Phase 4): new `allocator_deposit_test.go` + new `bingx/adapter_test.go` + extended `config_handlers_test.go` + extended exchange_manager tests
+2. **Compile check**: `go build ./cmd/main.go`
+3. **Live smoke test on VPS (post-Phase 5)**:
+   - Deploy with `EnableBingXNewTransferAPI=false` (default)
+   - Trigger manual rebalance targeting Bybit recipient
+   - Verify: new log lines show both bucket deltas
+   - Verify: if UNIFIED delta appears, transfer SKIPPED with new log line
+   - Verify: no 131212 error
+   - Set flag true via dashboard toggle
+   - Trigger rebalance with BingX donor
+   - Verify: BingX transfer uses new endpoint path
+   - Verify: hard-gate poll visible in logs
+   - Verify: if poll succeeds, withdraw proceeds normally
+4. **Regression check**: manually trigger rebalance against binance/okx/gate/bitget recipients to confirm unchanged behavior
 
-**Mitigation**: threshold check requires ≥90% of deposit amount in the bucket. If auto-move happens faster than 5s poll, we'll likely see delta in UNIFIED (post-move state) and skip TransferToFutures. Safe either way.
-
-### R2. BingX endpoint migration breaks something else
-
-The old endpoint may still work for non-rebalance paths (e.g., spot-futures engine). Feature flag keeps old path default.
-
-**Mitigation**:
-- Default `EnableBingXNewTransferAPI=false`
-- Manual test on VPS with flag enabled before making default
-- Log which path was used on every transfer so we can diff behavior
-
-### R3. BingX post-transfer poll timeout too short
-
-15-second poll may not catch eventual consistency delays beyond that window.
-
-**Mitigation**: if poll times out but no error, still attempt withdraw — existing 100437 retry logic can catch actual failures. Poll is a soft guard, not a hard gate.
-
-### R4. allocator.go structural change affects other paths
-
-The deposit confirmation loop is used only by the rebalance allocator. Other engines (spot-futures) have their own transfer flows.
-
-**Mitigation**: grep confirms only `allocator.go` has this pattern. Other callsites use direct `TransferToFutures` without the poll-and-confirm wrapper.
-
-### R5. IsUnified() branch removal affects non-Bybit exchanges
-
-Current code treats only Bybit/Gate as `IsUnified()=true`. Gate.io's `TransferToFutures` is documented as a no-op (per codex verification). Removing the `IsUnified` branch and always running dual-bucket detection is safe because:
-- Gate unified will see delta in "futures" (shared pool) → arrivedBucket="unified" → skip TransferToFutures → correct
-- Non-unified exchanges (binance/okx/bitget/bingx) have distinct FUND/SPOT → arrivedBucket="fund" → TransferToFutures called → correct
-
-**Mitigation**: verify each of the 6 exchanges' `GetSpotBalance` / `GetFuturesBalance` semantics in adapter code before implementation. Document each exchange's mapping in a comment.
-
-### R6. Side effect on `balances[recipient]` accounting
-
-Currently the code credits `bi.futures += totalPending` and debits `bi.spot -= totalPending` post-TransferToFutures. The new "skip transfer" path credits `bi.futures` but doesn't debit `bi.spot` (because spot was never debited — deposit bypassed it).
-
-**Mitigation**: ensure the new branch's balance accounting matches observed reality. Add an invariant assertion or log for `bi.spot < 0` cases.
-
-### R7. Observability log spam
-
-Adding fund/unified delta logs on every rebalance could add noise.
-
-**Mitigation**: use INFO only for confirmation event (once per recipient per rebalance), DEBUG for per-poll iterations.
-
-## Testing Plan
-
-1. **Unit tests** (Phase 4): allocator_deposit_test.go + bingx/adapter_test.go
-2. **Compile check** (Phase 4): `go build ./cmd/main.go`
-3. **Live smoke test** (post-Phase 5):
-   - Deploy to VPS with `EnableBingXNewTransferAPI=false`
-   - Trigger a manual rebalance; verify Bybit path logs both bucket deltas
-   - Verify Bybit fix: expect log line showing UNIFIED delta, no 131212
-   - Flip flag to `true` and trigger rebalance involving BingX donor
-   - Verify BingX new endpoint succeeds; no 100437
-4. **Regression check**: ensure other 4 exchanges (binance/okx/gate/bitget) still work via existing paths
-
-## Rollout
+## Rollout (v2)
 
 1. Merge with `EnableBingXNewTransferAPI=false` (default)
-2. Live test Bybit fix on VPS (high priority — currently broken)
-3. Enable `EnableBingXNewTransferAPI=true` after confirming no regressions
-4. If new BingX path stable for 24h, remove legacy path in v0.33.x
+2. Live test Bybit fix on VPS (HIGH priority — Bybit rebalance currently broken)
+3. After 24h stable, enable `EnableBingXNewTransferAPI=true` via dashboard
+4. Monitor logs for hard-gate timeouts and new-endpoint success rate
+5. If stable for 1 week, remove legacy path (v0.34.x)
+
+## Files Modified Summary
+
+| File | Type | What |
+|------|------|------|
+| `pkg/exchange/exchange.go` | interface | Add `DepositMayCreditTradingDirectly` marker interface |
+| `pkg/exchange/bybit/adapter.go` | method add | Implement `DepositMayCreditTradingDirectly() bool { return true }` |
+| `pkg/exchange/gateio/adapter.go` | method add | Implement `DepositMayCreditTradingDirectly() bool { return a.isUnified }` |
+| `pkg/exchange/bingx/adapter.go` | field + 2 methods modified | Feature-flagged TransferToSpot/TransferToFutures + SetUseNewTransferAPI |
+| `internal/engine/allocator.go` | replace 1888-1954 + add donor hard-gate poll | Dual-bucket detection + BingX poll |
+| `internal/config/config.go` | field add | `EnableBingXNewTransferAPI` |
+| `internal/api/handlers.go` | wiring | GET/POST `/api/config` includes new field |
+| `internal/engine/exchange_manager.go` | snapshot + reload | Propagate flag to live BingX adapter without rebuild |
+| `cmd/main.go` | construction | Pass initial flag value to BingX adapter |
+| `web/src/pages/Config.tsx` (or equiv) | UI toggle | Dashboard toggle for new transfer API |
+| `internal/engine/allocator_deposit_test.go` | new | 6 allocator test cases |
+| `pkg/exchange/bingx/adapter_test.go` | **new** (does not currently exist) | 5 adapter test cases |
+| `internal/api/config_handlers_test.go` | extend | Round-trip for new field |
+| `internal/engine/exchange_manager_test.go` | extend (if exists) | Flag reload without rebuild |
+
+## Open Questions
+
+1. Exact location in allocator for donor-side hard-gate poll — need to inspect `internal/engine/allocator.go:1577-1596` and `:1721-1735` during implementation. Plan assumes post-`TransferToSpot` before `Withdraw`.
+2. Dashboard config file — need to confirm `web/src/pages/Config.tsx` path and i18n structure for new toggle label.
+3. Whether `exchange_manager.go` reload path supports in-place flag update or requires adapter rebuild. If rebuild needed, fall back to restart-only rollout and document it.
 
 ## Review History
-- v1: initial draft — pending codex review
+- v1: initial draft — codex returned NEEDS-REVISION (items 3, 4, 6, 7, 8, 9, 10, 11, 12)
+- v2: **this version** — addresses all 9 findings: narrowed scope with marker interface, removed pendingStartBal, hard-gate BingX poll, full config wiring, corrected R3/R5, new test file for bingx (not append), added exchange_manager hot-reload, per-exchange semantic table, corrected skip-transfer accounting
