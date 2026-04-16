@@ -1,8 +1,8 @@
 # Plan: Fix Bybit 131212 and BingX 100437 Rebalance Transfer Bugs
 
-Version: v3
+Version: v4
 Date: 2026-04-16
-Status: DRAFT (addressing v2 review findings)
+Status: DRAFT (addressing v3 review findings)
 
 ## Review History
 
@@ -359,14 +359,34 @@ Concrete changes:
    }
    ```
 
-6. **cmd/main.go** (`:518-531`): no change needed because `exchange.ExchangeConfig` is built from `cfg` via existing `buildExchangeConfig` path. Just need to add the field to the initial config struct when `ExchangeManager` isn't used on cold start — verify during implementation.
+6. **cmd/main.go** (v4 fix per codex #11 — explicit cold-start change required):
 
-**Dashboard UI** (v3 fix per codex #4 — adds i18n files):
-- `web/src/pages/Config.tsx` — add toggle component
-- `web/src/i18n/en.ts` — add key `config.bingxNewTransferAPI.label` = "Use BingX new transfer API (v1 endpoint)"
-- `web/src/i18n/en.ts` — add key `config.bingxNewTransferAPI.help` = "Migrates TransferToSpot / TransferToFutures to documented /openApi/api/asset/v1/transfer endpoint. Leave OFF unless tested."
-- `web/src/i18n/zh-TW.ts` — add same two keys with Traditional Chinese translations
-- Toggle default OFF
+   Hot reload path goes through `internal/engine/exchange_manager.go:138-205 → buildExchangeConfig` ✓. But **cold start does NOT use buildExchangeConfig** — it uses `exchangeConfig(cfg, name)` at `cmd/main.go:537-580`. If we only update the reload path, the flag is silently dropped on fresh process start and only activates after the first config reload.
+
+   Required change in `cmd/main.go:571-576` (bingx case in `exchangeConfig`):
+   ```go
+   case "bingx":
+       return exchange.ExchangeConfig{
+           Exchange:               "bingx",
+           ApiKey:                 cfg.BingXAPIKey,
+           SecretKey:              cfg.BingXSecretKey,
+           BingXUseNewTransferAPI: cfg.EnableBingXNewTransferAPI,  // v4
+       }
+   ```
+
+**Dashboard UI** (v4 fix per codex #4 — correct `cfg.*` namespace):
+
+Existing convention per `web/src/i18n/en.ts:300, :407, :456` and `web/src/pages/Config.tsx:537, :1729-1730, :1756`:
+- Labels: `cfg.field.<camelCaseFieldName>`
+- Descriptions: `cfg.desc.<camelCaseFieldName>`
+
+v4 keys:
+- `cfg.field.enableBingxNewTransferAPI` = "Use BingX new transfer API (v1 endpoint)"
+- `cfg.desc.enableBingxNewTransferAPI` = "Migrates TransferToSpot / TransferToFutures to documented /openApi/api/asset/v1/transfer endpoint. Leave OFF unless tested."
+
+Add both keys to both locale files (`web/src/i18n/en.ts` and `web/src/i18n/zh-TW.ts`).
+
+`web/src/pages/Config.tsx` — add toggle component referencing these keys via `t('cfg.field.enableBingxNewTransferAPI')` / `t('cfg.desc.enableBingxNewTransferAPI')`. Default OFF.
 
 ### 5. Observability (v1 unchanged)
 
@@ -447,9 +467,9 @@ Concrete changes:
 | `internal/config/config.go` | field + env + load wiring (~line 63-83, 723-780, 1344-1390) | `EnableBingXNewTransferAPI` |
 | `internal/api/handlers.go` | GET/POST wiring (~line 519-620, 829-980, 1518-1560) | `/api/config` response/update includes new field; Redis persistence |
 | `internal/engine/exchange_manager.go` | snapshot + buildExchangeConfig (`:18-23, 188-192, 198-205`) | Capture flag, pass through to adapter; rebuild on flag change |
-| `cmd/main.go` | verify no change needed | ExchangeConfig already flows from cfg via buildExchangeConfig |
-| `web/src/pages/Config.tsx` | UI toggle | Dashboard toggle (default OFF) |
-| `web/src/i18n/en.ts` | i18n keys | `config.bingxNewTransferAPI.label` + `.help` |
+| `cmd/main.go` | edit `:571-576` (bingx case in `exchangeConfig`) | Add `BingXUseNewTransferAPI: cfg.EnableBingXNewTransferAPI` to cold-start ExchangeConfig |
+| `web/src/pages/Config.tsx` | UI toggle | Dashboard toggle using `t('cfg.field.enableBingxNewTransferAPI')` and `cfg.desc.*` (default OFF) |
+| `web/src/i18n/en.ts` | i18n keys | `cfg.field.enableBingxNewTransferAPI` + `cfg.desc.enableBingxNewTransferAPI` |
 | `web/src/i18n/zh-TW.ts` | i18n keys | Same two keys (TW) |
 | `internal/engine/allocator_deposit_test.go` | **new** | 6 allocator test cases |
 | `pkg/exchange/bingx/adapter_test.go` | **new** | 5 adapter test cases |
@@ -465,8 +485,7 @@ Concrete changes:
 ## Review History
 - v1: initial draft — codex NEEDS-REVISION (items 3, 4, 6, 7, 8, 9, 10, 11, 12)
 - v2: addressed 9 findings — codex NEEDS-REVISION (items 3, 4, 7, 11) — 7 PASS
-- v3: **this version** — addresses remaining 4 findings:
-  - #3: exact BingX hard-gate insertion at `allocator.go:1586`, with matching rollback/continue semantics to existing error paths
-  - #4: i18n file additions in `web/src/i18n/{en,zh-TW}.ts`
-  - #7: marker interface moved to `pkg/exchange/types.go` alongside existing marker interfaces
-  - #11: rebuild-on-flag-change design (matches existing snapshot pattern); extend `ExchangeConfig` struct; new `exchange_manager_test.go`
+- v3: addressed 4 findings — codex NEEDS-REVISION (items 4, 11) — 10 PASS
+- v4: **this version** — addresses final 2 findings:
+  - #4: i18n namespace corrected from `config.*` to `cfg.field.*` / `cfg.desc.*` (matches existing convention at `web/src/i18n/en.ts:300, :407, :456`)
+  - #11: explicit cold-start wiring added — edit `cmd/main.go:571-576` bingx case in `exchangeConfig()`; hot reload path via `buildExchangeConfig` is separate and already covered in v3
