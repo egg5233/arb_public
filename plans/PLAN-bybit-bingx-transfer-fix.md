@@ -1,21 +1,19 @@
 # Plan: Fix Bybit 131212 and BingX 100437 Rebalance Transfer Bugs
 
-Version: v2
+Version: v3
 Date: 2026-04-16
-Status: DRAFT (addressing v1 review findings)
+Status: DRAFT (addressing v2 review findings)
 
 ## Review History
 
 - **v1** (2026-04-16 10:45 UTC): codex review — NEEDS-REVISION items 3, 4, 6, 7, 8, 9, 10, 11, 12
-  - #3 BingX migration insufficient (soft-poll then withdraw anyway)
-  - #4 Feature flag wiring incomplete (missing API handlers + config round-trip tests)
-  - #6 `pendingStartBal` should be removed not kept
-  - #7 **Highest severity**: removing `IsUnified()` branch unsafe for OKX — OKX unified still requires explicit funding→trading transfer (`pkg/exchange/okx/adapter.go:995-1011`)
-  - #8 R6 accounting invariant broken for OKX unified
-  - #9 Post-transfer poll policy under-specified (hard gate vs telemetry)
-  - #10 `pkg/exchange/bingx/adapter_test.go` doesn't exist — can't "append"
-  - #11 Missing dashboard/API exposure + hot-reload wiring via `internal/engine/exchange_manager.go`
-  - #12 R3 references nonexistent 100437 retry logic; R5 false claim about 6-exchange safety
+- **v2** (2026-04-16 12:55 UTC): codex review — **7 PASS / 4 NEEDS-REVISION**
+  - PASS: #1, #2, #5, #6, #8, #9, #10, #12
+  - NEEDS-REVISION:
+    - #3 BingX hard-gate insertion point still vague (must name exact line in allocator.go:1577-1586 area)
+    - #4 Dashboard toggle plan missing i18n updates in `web/src/i18n/en.ts` and `web/src/i18n/zh-TW.ts`
+    - #7 Marker interface should go in `pkg/exchange/types.go:267-405` (where other marker interfaces live), not `exchange.go`
+    - #11 exchange_manager hot-reload story doesn't match real code: `:18-23, 188-192, 207-221` snapshot creds only; `cmd/main.go:518-531` passes only ExchangeConfig. Must choose: rebuild-on-flag-change OR add concrete interface/snapshot/wiring. Also `exchange_manager_test.go` doesn't exist — say "new file".
 
 ## Context
 
@@ -53,7 +51,9 @@ Before the fix we must distinguish what deposits do on each exchange:
 **Approach change (addresses v1 #7, #8)**: do NOT remove the `IsUnified()` branch universally. Add a new narrow marker interface for exchanges where "deposit may land directly in trading account" (currently only Bybit). Non-matching exchanges use existing logic unchanged.
 
 ```go
-// New interface (pkg/exchange/exchange.go, alongside existing marker interfaces)
+// New interface — place in pkg/exchange/types.go (alongside SpotMarginExchange,
+// TradingFeeProvider, FlashRepayer at lines 267-405, where all other optional/marker
+// interfaces live — v3 fix per codex #7).
 type DepositMayCreditTradingDirectly interface {
     // Returns true if this exchange can credit incoming deposits directly
     // into the trading/unified account, bypassing the separate funding/spot
@@ -249,39 +249,46 @@ func (a *Adapter) TransferToFutures(coin string, amount string) error {
 }
 ```
 
-**File**: `internal/engine/allocator.go` — donor-side hard-gate poll before withdraw
+**File**: `internal/engine/allocator.go` — donor-side HARD-GATE poll (v3 fix per codex #3 — exact insertion point named)
 
-Add in the donor-processing path after `TransferToSpot` succeeds and before `Withdraw` is called (approximate location: around lines 1577-1596 where `TransferToSpot` is invoked; exact location TBD by inspection):
+**Exact insertion point**: immediately after `movedToSpot = moveAmt` on `allocator.go:1585`, BEFORE the donor-balance read at `:1588-1596` which builds the withdraw request. This is inside the per-donor `for` loop, so rollback and `continue` only affect this donor iteration.
+
+The withdraw itself happens later in the batched path at `allocator.go:1721-1746` — but the hard-gate must fire IMMEDIATELY after `TransferToSpot` so that `donorSpotBal` at :1593/:1595 reflects the actual settled balance, not a pending one. That prevents the batched withdraw from being built against phantom balance.
 
 ```go
-// After successful TransferToSpot on BingX donor, HARD-GATE poll for fund visibility.
-// If poll times out, abort the withdraw and record a skip reason.
-if donor == "bingx" {
-    required := movedToSpot * 0.99  // 1% tolerance
-    startFund := balances[donor].spot  // baseline BEFORE transfer
+// Insert at allocator.go after line 1585 (movedToSpot = moveAmt), before line 1587 (blank line + line 1588 Unified accounts comment).
+//
+// HARD-GATE (addresses v1 #3, #9 and v2 #3): BingX donor fund visibility must
+// match the spot transfer before we proceed to build the withdraw. If poll
+// times out, we rollback futures→spot and mark this donor unusable for this
+// rebalance cycle.
+if bestDonor == "bingx" && movedToSpot > 0 {
     pollDeadline := time.Now().Add(15 * time.Second)
+    required := movedToSpot * 0.99  // 1% tolerance for fee truncation
+    baselineFund := balances[bestDonor].spot  // snapshot BEFORE the transfer above
     visible := false
     for time.Now().Before(pollDeadline) {
         time.Sleep(2 * time.Second)
-        if fb, err := e.exchanges[donor].GetSpotBalance(); err == nil && fb != nil {
-            if fb.Available - startFund >= required {
+        if fb, err := e.exchanges[bestDonor].GetSpotBalance(); err == nil && fb != nil {
+            if fb.Available-baselineFund >= required {
                 visible = true
                 break
             }
         }
     }
     if !visible {
-        e.log.Warn("rebalance: bingx fund balance not visible after transfer (expected +%.4f); aborting withdraw to avoid 100437", movedToSpot)
-        result.SkipReasons[bw.recipient] = "bingx fund visibility timeout"
-        result.Unfunded[bw.recipient] = bw.netTotal
-        // Rollback the futures→spot move
-        if rbErr := e.exchanges[donor].TransferToFutures("USDT", fmt.Sprintf("%.4f", movedToSpot)); rbErr != nil {
+        e.log.Warn("rebalance: bingx fund not visible after futures->spot %.4f; rolling back", movedToSpot)
+        if rbErr := e.exchanges[bestDonor].TransferToFutures("USDT", fmt.Sprintf("%.4f", movedToSpot)); rbErr != nil {
             e.log.Error("rebalance: bingx rollback after visibility timeout failed: %v", rbErr)
         }
-        continue  // skip this withdraw iteration
+        surplus[bestDonor] = 0
+        movedToSpot = 0
+        continue  // skip this donor for this rebalance cycle
     }
 }
 ```
+
+Note: the `continue` matches the existing error-handling pattern at `:1581-1583` and `:1598-1601`. The later batched-withdraw stage at `:1721-1746` will simply not see this donor (zeroed surplus + movedToSpot=0).
 
 ### 4. Feature flag wiring — full stack (addresses v1 #4, #11)
 
@@ -298,16 +305,68 @@ if donor == "bingx" {
 **File**: `internal/api/config_handlers_test.go`
 - Extend `TestConfigRoundTrip` (or similar) at ~line 528-620 to include `enable_bingx_new_transfer_api` in both GET and POST roundtrip
 
-**File**: `internal/engine/exchange_manager.go`
-- Field `bingxNewTransferAPI bool` in snapshot struct (~line 20-23)
-- In reload comparison (~line 157-205): detect change in this field
-- On change: call `adapter.SetUseNewTransferAPI(newValue)` without full adapter rebuild (it's a runtime-adjustable flag, not a credential)
-- Wire initial value in `cmd/main.go newExchange()` and BingX-specific construction (~line 371-379, 518-531)
+**File**: `internal/engine/exchange_manager.go` (v3 fix per codex #11 — concrete wiring chosen)
 
-**Dashboard UI** (`web/src/pages/Config.tsx` or equivalent — exact file TBD):
-- Add toggle "Enable BingX New Transfer API (migrate from legacy v3 endpoint)"
-- Default OFF
-- Save via existing config POST handler
+**Design decision**: **rebuild-on-flag-change**, NOT in-place mutation. Rationale:
+- Existing snapshot pattern at `:18-23` already treats any snapshot-field change as "rebuild the adapter". Adding the flag to the snapshot matches this convention exactly.
+- Mutating a live adapter mid-request would require mutex on every transfer call path, which is scope creep for a one-flag feature.
+- Rebuild is cheap (no connection pools inside `bingx.NewAdapter`).
+
+Concrete changes:
+
+1. **Snapshot struct** (`:18-23`):
+   ```go
+   type adapterSnapshot struct {
+       apiKey, secretKey, passphrase string
+       enabled                       bool
+       bingxUseNewTransferAPI        bool  // v3: only meaningful for bingx
+   }
+   ```
+
+2. **Snapshot capture for bingx** (`:188-192`):
+   ```go
+   case "bingx":
+       return adapterSnapshot{
+           apiKey: m.cfg.BingXAPIKey, secretKey: m.cfg.BingXSecretKey,
+           enabled:                m.cfg.IsExchangeEnabled("bingx"),
+           bingxUseNewTransferAPI: m.cfg.EnableBingXNewTransferAPI,
+       }
+   ```
+
+3. **Snapshot equality check** (existing reload logic, inspect and update): ensure the new field is compared so a flag flip triggers rebuild.
+
+4. **buildExchangeConfig** (`:198-205`): pass the flag through the new field of `exchange.ExchangeConfig` (requires adding `BingXUseNewTransferAPI bool` to `pkg/exchange/types.go` ExchangeConfig struct):
+   ```go
+   func buildExchangeConfig(name string, snap adapterSnapshot) exchange.ExchangeConfig {
+       return exchange.ExchangeConfig{
+           Exchange:               name,
+           ApiKey:                 snap.apiKey,
+           SecretKey:              snap.secretKey,
+           Passphrase:             snap.passphrase,
+           BingXUseNewTransferAPI: snap.bingxUseNewTransferAPI,  // v3
+       }
+   }
+   ```
+
+5. **BingX adapter construction** — no separate SetUseNewTransferAPI method needed; adapter reads from the config struct it's already passed:
+   ```go
+   // In pkg/exchange/bingx/adapter.go NewAdapter (existing):
+   func NewAdapter(cfg exchange.ExchangeConfig) *Adapter {
+       return &Adapter{
+           // ... existing fields
+           useNewTransferAPI: cfg.BingXUseNewTransferAPI,  // v3
+       }
+   }
+   ```
+
+6. **cmd/main.go** (`:518-531`): no change needed because `exchange.ExchangeConfig` is built from `cfg` via existing `buildExchangeConfig` path. Just need to add the field to the initial config struct when `ExchangeManager` isn't used on cold start — verify during implementation.
+
+**Dashboard UI** (v3 fix per codex #4 — adds i18n files):
+- `web/src/pages/Config.tsx` — add toggle component
+- `web/src/i18n/en.ts` — add key `config.bingxNewTransferAPI.label` = "Use BingX new transfer API (v1 endpoint)"
+- `web/src/i18n/en.ts` — add key `config.bingxNewTransferAPI.help` = "Migrates TransferToSpot / TransferToFutures to documented /openApi/api/asset/v1/transfer endpoint. Leave OFF unless tested."
+- `web/src/i18n/zh-TW.ts` — add same two keys with Traditional Chinese translations
+- Toggle default OFF
 
 ### 5. Observability (v1 unchanged)
 
@@ -333,9 +392,11 @@ if donor == "bingx" {
 **Extend `internal/api/config_handlers_test.go`** (addresses v1 #10):
 - Round-trip test for `enable_bingx_new_transfer_api` field (GET → POST → GET)
 
-**Extend exchange_manager tests** (`internal/engine/exchange_manager_test.go` or similar, exact file TBD):
-- Test reload flips the BingX new transfer API flag without full rebuild
-- Test flag change is propagated to the live adapter instance
+**New file `internal/engine/exchange_manager_test.go`** (v3 fix per codex #11 — file does NOT exist, create fresh):
+- Test: snapshot captures `bingxUseNewTransferAPI`
+- Test: config flip triggers rebuild (adapter instance pointer differs before/after)
+- Test: non-flag changes do NOT trigger rebuild (preserve existing snapshot equality semantics)
+- Test: BingX adapter's `useNewTransferAPI` field reflects the config value post-rebuild
 
 ### 7. Risk table (v2 — rewritten, addresses v1 #12)
 
@@ -374,31 +435,38 @@ if donor == "bingx" {
 4. Monitor logs for hard-gate timeouts and new-endpoint success rate
 5. If stable for 1 week, remove legacy path (v0.34.x)
 
-## Files Modified Summary
+## Files Modified Summary (v3)
 
 | File | Type | What |
 |------|------|------|
-| `pkg/exchange/exchange.go` | interface | Add `DepositMayCreditTradingDirectly` marker interface |
+| `pkg/exchange/types.go` | interface add (line 267-405 area) | Add `DepositMayCreditTradingDirectly` marker interface + extend `ExchangeConfig` with `BingXUseNewTransferAPI bool` |
 | `pkg/exchange/bybit/adapter.go` | method add | Implement `DepositMayCreditTradingDirectly() bool { return true }` |
 | `pkg/exchange/gateio/adapter.go` | method add | Implement `DepositMayCreditTradingDirectly() bool { return a.isUnified }` |
-| `pkg/exchange/bingx/adapter.go` | field + 2 methods modified | Feature-flagged TransferToSpot/TransferToFutures + SetUseNewTransferAPI |
-| `internal/engine/allocator.go` | replace 1888-1954 + add donor hard-gate poll | Dual-bucket detection + BingX poll |
-| `internal/config/config.go` | field add | `EnableBingXNewTransferAPI` |
-| `internal/api/handlers.go` | wiring | GET/POST `/api/config` includes new field |
-| `internal/engine/exchange_manager.go` | snapshot + reload | Propagate flag to live BingX adapter without rebuild |
-| `cmd/main.go` | construction | Pass initial flag value to BingX adapter |
-| `web/src/pages/Config.tsx` (or equiv) | UI toggle | Dashboard toggle for new transfer API |
-| `internal/engine/allocator_deposit_test.go` | new | 6 allocator test cases |
-| `pkg/exchange/bingx/adapter_test.go` | **new** (does not currently exist) | 5 adapter test cases |
-| `internal/api/config_handlers_test.go` | extend | Round-trip for new field |
-| `internal/engine/exchange_manager_test.go` | extend (if exists) | Flag reload without rebuild |
+| `pkg/exchange/bingx/adapter.go` | field add + 2 methods modified | `useNewTransferAPI` field read from `ExchangeConfig`; feature-flagged `TransferToSpot`/`TransferToFutures` paths |
+| `internal/engine/allocator.go` | replace `:1888-1954` + insert at `:1586` | Dual-bucket detection + BingX donor hard-gate poll |
+| `internal/config/config.go` | field + env + load wiring (~line 63-83, 723-780, 1344-1390) | `EnableBingXNewTransferAPI` |
+| `internal/api/handlers.go` | GET/POST wiring (~line 519-620, 829-980, 1518-1560) | `/api/config` response/update includes new field; Redis persistence |
+| `internal/engine/exchange_manager.go` | snapshot + buildExchangeConfig (`:18-23, 188-192, 198-205`) | Capture flag, pass through to adapter; rebuild on flag change |
+| `cmd/main.go` | verify no change needed | ExchangeConfig already flows from cfg via buildExchangeConfig |
+| `web/src/pages/Config.tsx` | UI toggle | Dashboard toggle (default OFF) |
+| `web/src/i18n/en.ts` | i18n keys | `config.bingxNewTransferAPI.label` + `.help` |
+| `web/src/i18n/zh-TW.ts` | i18n keys | Same two keys (TW) |
+| `internal/engine/allocator_deposit_test.go` | **new** | 6 allocator test cases |
+| `pkg/exchange/bingx/adapter_test.go` | **new** | 5 adapter test cases |
+| `internal/api/config_handlers_test.go` | extend | Round-trip test for new field |
+| `internal/engine/exchange_manager_test.go` | **new** | 4 snapshot/reload test cases |
 
-## Open Questions
+## Open Questions (v3 — all resolved)
 
-1. Exact location in allocator for donor-side hard-gate poll — need to inspect `internal/engine/allocator.go:1577-1596` and `:1721-1735` during implementation. Plan assumes post-`TransferToSpot` before `Withdraw`.
-2. Dashboard config file — need to confirm `web/src/pages/Config.tsx` path and i18n structure for new toggle label.
-3. Whether `exchange_manager.go` reload path supports in-place flag update or requires adapter rebuild. If rebuild needed, fall back to restart-only rollout and document it.
+1. ~~Exact BingX hard-gate location~~ → resolved: insert at `allocator.go:1586` (after `movedToSpot = moveAmt`, before donor-balance read)
+2. ~~Dashboard config path~~ → `web/src/pages/Config.tsx` confirmed; i18n files `web/src/i18n/{en,zh-TW}.ts` added to plan
+3. ~~exchange_manager reload design~~ → resolved: **rebuild-on-flag-change** (matches existing snapshot pattern, simpler than in-place mutation)
 
 ## Review History
-- v1: initial draft — codex returned NEEDS-REVISION (items 3, 4, 6, 7, 8, 9, 10, 11, 12)
-- v2: **this version** — addresses all 9 findings: narrowed scope with marker interface, removed pendingStartBal, hard-gate BingX poll, full config wiring, corrected R3/R5, new test file for bingx (not append), added exchange_manager hot-reload, per-exchange semantic table, corrected skip-transfer accounting
+- v1: initial draft — codex NEEDS-REVISION (items 3, 4, 6, 7, 8, 9, 10, 11, 12)
+- v2: addressed 9 findings — codex NEEDS-REVISION (items 3, 4, 7, 11) — 7 PASS
+- v3: **this version** — addresses remaining 4 findings:
+  - #3: exact BingX hard-gate insertion at `allocator.go:1586`, with matching rollback/continue semantics to existing error paths
+  - #4: i18n file additions in `web/src/i18n/{en,zh-TW}.ts`
+  - #7: marker interface moved to `pkg/exchange/types.go` alongside existing marker interfaces
+  - #11: rebuild-on-flag-change design (matches existing snapshot pattern); extend `ExchangeConfig` struct; new `exchange_manager_test.go`
