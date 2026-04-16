@@ -71,6 +71,9 @@ func (e *SpotEngine) monitorTick() {
 			continue
 		}
 		if pos.Status == models.SpotStatusExiting && !pos.PendingRepay {
+			if pos.HedgeBroken {
+				continue
+			}
 			if pos.ExitTriggeredAt != nil && time.Since(*pos.ExitTriggeredAt) > 2*time.Minute {
 				if e.isExiting(pos.ID) {
 					// Exit goroutine still running — don't double-trigger.
@@ -97,7 +100,11 @@ func (e *SpotEngine) monitorTick() {
 		// emergency exit. Same key as the perp engine — single source of
 		// truth for delist signals across both engines.
 		if e.cfg.DelistFilterEnabled && e.db.IsDelisted(pos.Symbol) {
-			if !e.isExiting(pos.ID) {
+			if pos.HedgeBroken {
+				e.log.Error("monitor: %s on %s flagged for delist but hedge broken — manual intervention required (%s)",
+					pos.Symbol, pos.Exchange, pos.ID)
+				e.telegram.NotifySpotCloseBlocked(pos, "delist_"+pos.Symbol)
+			} else if !e.isExiting(pos.ID) {
 				e.log.Warn("monitor: %s on %s flagged for delist, triggering emergency exit (%s)",
 					pos.Symbol, pos.Exchange, pos.ID)
 				e.launchExit(pos, "delist_"+pos.Symbol, true)
