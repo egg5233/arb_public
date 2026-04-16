@@ -3,6 +3,7 @@ package spotengine
 import (
 	"fmt"
 
+	"arb/internal/models"
 	"arb/pkg/exchange"
 )
 
@@ -36,6 +37,17 @@ func (e *SpotEngine) checkRiskGate(opp SpotArbOpportunity) RiskGateResult {
 		if pos.Symbol == symbol {
 			return RiskGateResult{Allowed: false, Reason: fmt.Sprintf("duplicate_%s_on_%s", symbol, pos.Exchange)}
 		}
+	}
+
+	perpPositions, err := e.db.GetActivePositions()
+	if err != nil {
+		e.log.Error("risk-gate: failed to get perp positions: %v", err)
+		return RiskGateResult{Allowed: false, Reason: "db_error"}
+	}
+	if leg, blocked := spotEntryBlockedByPerp(perpPositions, exchName, symbol); blocked {
+		e.log.Info("[spot-engine] risk-gate: %s blocked — PP active on %s:%s (%s leg) (cross-engine block)",
+			symbol, exchName, symbol, leg)
+		return RiskGateResult{Allowed: false, Reason: fmt.Sprintf("cross_engine_pp_%s_%s:%s", leg, exchName, symbol)}
 	}
 
 	// 3. Cooldown: no arb:spot_cooldown:{symbol} key in Redis.
@@ -201,4 +213,19 @@ func getFuturesBBO(exch exchange.Exchange, symbol string) (exchange.BBO, error) 
 		return exchange.BBO{}, fmt.Errorf("invalid futures bid/ask for %s", symbol)
 	}
 	return exchange.BBO{Bid: ob.Bids[0].Price, Ask: ob.Asks[0].Price}, nil
+}
+
+func spotEntryBlockedByPerp(positions []*models.ArbitragePosition, exchName, symbol string) (string, bool) {
+	for _, pos := range positions {
+		if pos == nil || pos.Status == models.StatusClosed || pos.Symbol != symbol {
+			continue
+		}
+		if pos.LongExchange == exchName {
+			return "long", true
+		}
+		if pos.ShortExchange == exchName {
+			return "short", true
+		}
+	}
+	return "", false
 }

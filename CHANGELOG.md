@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.16] - 2026-04-16
+
+### Fixed
+- **Cross-engine entry gate: prevent PP/SF from opening on same (exchange, symbol)** — v0.32.13–15 added post-execution `sfSubtract` at 20 reconciliation sites, but all are *same-side only* and *after PlaceOrder*. Neither engine's entry path consulted the other. Incident: SF dir-A held LONG 648.1 BARDUSDT on Bybit; PP discovery scored a short-Bybit opportunity and opened SHORT 991. Bybit's one-way mode (forced at startup via `EnsureOneWayMode()` on all 6 exchanges) netted `+648.1 − 991 = −342.9`, silently consuming SF's futures hedge. Consolidator's side-keyed `sfSubtract` returned 0 for the short-side query, synced PP to 342.9, and trimmed OKX long from 991→343. PP became internally consistent, but SF's record (648.1 long) became a time-bomb — its next `ClosePosition` would sell 648.1 into the −342.9 net, driving Bybit to −991 and re-corrupting PP. Three coordinated fixes:
+  - **Fix A — Bidirectional entry gates** (`engine.go:2118-2128,2146-2153,2297-2304` + `spotengine/risk_gate.go:39-49,214-228`): PP's `executeArbitrage` now builds a `spotFuturesOccupied` map from `buildSpotFuturesMaps()` (stripping the side suffix), and `ppCrossEngineBlocked()` rejects any opportunity whose long or short exchange+symbol overlaps an active SF position. SF's `checkRiskGate` now queries `GetActivePositions()` (PP) and `spotEntryBlockedByPerp()` refuses entry when PP holds a leg on the target exchange+symbol. Both gates are hard blocks — no size offset, no cooldown needed (Redis reads are ~1ms, filter naturally clears when the other engine exits).
+  - **Fix B — SF futures-size reality check** (`spotengine/monitor.go:113-124,197-280`): new `reconcileHedge()` piggy-backs the per-position monitor loop (~60s cadence). Calls `GetPosition(symbol)` on the exchange adapter, matches against `pos.FuturesSide`, and flags divergence when: (a) exchange reports opposite side, (b) exchange reports zero/flat, or (c) `|exchange − recorded| > max(1%×FuturesSize, stepSize)`. On detection: `MarkHedgeBroken()` persists `hedge_broken=true` via `lockedUpdatePosition`, logs ERROR, fires Telegram alert (`NotifySpotHedgeBroken`). New `HedgeBroken bool` field on `SpotFuturesPosition` (`models/spot_position.go`) — JSON-persisted with `omitempty` (absent = false = intact). In-memory mirror `HedgeIntact` (`json:"-"`) synced via `SyncHedgeState()` called on every DB read/write.
+  - **Fix C — SF close-path guard** (`spotengine/execution.go:1274-1280`, `spotengine/monitor.go:184-189`): `ClosePosition` and the yield-exit dispatch both check `pos.HedgeBroken` before issuing the futures close order. If broken: abort with ERROR log + Telegram (`NotifySpotCloseBlocked`), preventing the time-bomb sell that would further corrupt exchange state. Manual intervention required to recover.
+
 ## [0.32.15] - 2026-04-15
 
 ### Fixed

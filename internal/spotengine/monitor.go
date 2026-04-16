@@ -2,6 +2,7 @@ package spotengine
 
 import (
 	"errors"
+	"math"
 	"time"
 
 	"arb/internal/models"
@@ -112,6 +113,17 @@ func (e *SpotEngine) monitorTick() {
 // triggers, and broadcasts health for one position. Both Direction A and B
 // are evaluated for exit triggers; only Direction A updates borrow rates.
 func (e *SpotEngine) monitorPosition(pos *models.SpotFuturesPosition) {
+	broken, err := e.reconcileHedge(pos)
+	if err != nil {
+		e.log.Warn("monitor: reconcile hedge failed for %s: %v", pos.ID, err)
+	}
+	if broken {
+		if updated, getErr := e.db.GetSpotPosition(pos.ID); getErr == nil {
+			e.broadcastHealth(updated)
+		}
+		return
+	}
+
 	isDirA := pos.Direction == "borrow_sell_long"
 
 	// ---------------------------------------------------------------
@@ -172,10 +184,95 @@ func (e *SpotEngine) monitorPosition(pos *models.SpotFuturesPosition) {
 	}
 
 	if reason != "" {
+		if latest.HedgeBroken {
+			e.log.Error("monitor: refusing auto-exit for %s (%s) because hedge is broken", latest.ID, reason)
+			e.telegram.NotifySpotCloseBlocked(latest, reason)
+			return
+		}
 		if !e.isExiting(latest.ID) {
 			e.launchExit(latest, reason, isEmergency)
 		}
 	}
+}
+
+func (e *SpotEngine) reconcileHedge(pos *models.SpotFuturesPosition) (bool, error) {
+	if pos == nil {
+		return false, nil
+	}
+	if pos.HedgeBroken {
+		pos.SyncHedgeState()
+		return true, nil
+	}
+	futExch, ok := e.exchanges[pos.Exchange]
+	if !ok {
+		return false, nil
+	}
+	positions, err := futExch.GetPosition(pos.Symbol)
+	if err != nil {
+		return false, err
+	}
+	stepSize, _, _ := e.futuresStepSize(futExch, pos.Symbol)
+	tolerance := math.Max(pos.FuturesSize*0.01, stepSize)
+	if tolerance < spotQtyTolerance {
+		tolerance = spotQtyTolerance
+	}
+
+	var matchedSize float64
+	var matched bool
+	var oppositeSize float64
+	var opposite bool
+
+	for _, p := range positions {
+		qty, qtyErr := utils.ParseFloat(p.Total)
+		if qtyErr != nil || math.Abs(qty) <= spotQtyTolerance {
+			continue
+		}
+		if p.HoldSide == pos.FuturesSide {
+			matchedSize += math.Abs(qty)
+			matched = true
+			continue
+		}
+		oppositeSize += math.Abs(qty)
+		opposite = true
+	}
+
+	broken := false
+	actualSide := pos.FuturesSide
+	actualSize := matchedSize
+	switch {
+	case opposite:
+		broken = true
+		if pos.FuturesSide == "long" {
+			actualSide = "short"
+		} else {
+			actualSide = "long"
+		}
+		actualSize = oppositeSize
+	case !matched || matchedSize <= spotQtyTolerance:
+		broken = true
+		actualSide = "flat"
+		actualSize = 0
+	case math.Abs(matchedSize-pos.FuturesSize) > tolerance:
+		broken = true
+	}
+	if !broken {
+		return false, nil
+	}
+
+	if err := e.lockedUpdatePosition(pos.ID, func(p *models.SpotFuturesPosition) bool {
+		if p.HedgeBroken {
+			return false
+		}
+		p.MarkHedgeBroken()
+		return true
+	}); err != nil {
+		return false, err
+	}
+	pos.MarkHedgeBroken()
+	e.log.Error("monitor: hedge broken for %s on %s recorded=%s %.6f exchange=%s %.6f",
+		pos.Symbol, pos.Exchange, pos.FuturesSide, pos.FuturesSize, actualSide, actualSize)
+	e.telegram.NotifySpotHedgeBroken(pos, actualSide, actualSize)
+	return true, nil
 }
 
 // updateBorrowCost refreshes the borrow rate and accrues cost for a Direction A position.
