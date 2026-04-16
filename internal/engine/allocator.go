@@ -1583,6 +1583,27 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				}
 				e.recordTransfer(bestDonor, bestDonor+" spot", "USDT", "internal", moveStr, "0", "", "completed", "rebalance-prep")
 				movedToSpot = moveAmt
+
+				// BingX donor visibility gate: the v1 asset/transfer API may take a
+				// moment for fund balance to reflect the moved amount. Poll fund
+				// balance before proceeding to build the withdraw; on timeout,
+				// rollback and skip this donor so we don't hit 100437 downstream.
+				if bestDonor == "bingx" && movedToSpot > 0 {
+					baselineFund := balances[bestDonor].spot
+					visible := pollBingXFundVisibility(
+						e.exchanges[bestDonor].GetSpotBalance,
+						baselineFund, movedToSpot, 15*time.Second, 2*time.Second,
+					)
+					if !visible {
+						e.log.Warn("rebalance: bingx fund not visible after futures->spot %.4f; rolling back", movedToSpot)
+						if rbErr := e.exchanges[bestDonor].TransferToFutures("USDT", fmt.Sprintf("%.4f", movedToSpot)); rbErr != nil {
+							e.log.Error("rebalance: bingx rollback failed: %v", rbErr)
+						}
+						surplus[bestDonor] = 0
+						movedToSpot = 0
+						continue
+					}
+				}
 			}
 
 			// Unified accounts: spot balance is 0 (same pool as futures).
@@ -1878,26 +1899,93 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 			continue
 		}
 		transferStr := fmt.Sprintf("%.4f", totalPending)
-		if err := recipientExch.TransferToFutures("USDT", transferStr); err != nil {
+		err := recipientExch.TransferToFutures("USDT", transferStr)
+
+		// Bybit 131212 benign-error handling: when the user has configured Set
+		// Deposit Account to route deposits directly into UNIFIED (the trading
+		// pool), the FUND→UNIFIED transfer has nothing to move even though the
+		// funds are already trading-usable. Verify the trading balance; if it
+		// already holds the expected amount, treat the error as benign.
+		benign := isBenignBybit131212(err, recipientExch.GetFuturesBalance, startBal, totalPending)
+		if benign {
+			bal, _ := recipientExch.GetFuturesBalance()
+			if bal != nil {
+				e.log.Info("rebalance: %s 131212 benign — deposit already in trading pool (bal=%.2f)", recipient, bal.Available)
+			} else {
+				e.log.Info("rebalance: %s 131212 benign — deposit already in trading pool", recipient)
+			}
+		}
+
+		if err != nil && !benign {
 			e.log.Error("rebalance: %s spot->futures failed: %v", recipient, err)
-		} else {
+			continue
+		}
+
+		if !benign {
 			e.log.Info("rebalance: %s spot->futures %s USDT (rebalance deposit)", recipient, transferStr)
 			e.recordTransfer(recipient+" spot", recipient, "USDT", "internal", transferStr, "0", "", "completed", "rebalance-recv")
-			// Update PostBalances so keepFundedChoices sees the recipient's real
-			// funded state. spot->futures is atomic, so we can credit immediately.
-			bi := balances[recipient]
-			bi.futures += totalPending
-			bi.futuresTotal += totalPending
+		}
+		// benign path: no actual FUND→UNIFIED transfer occurred, so no recordTransfer.
+
+		// Update PostBalances so keepFundedChoices sees the recipient's real
+		// funded state. Real transfer decrements spot; benign path does not
+		// (deposit bypassed spot and landed directly in trading).
+		bi := balances[recipient]
+		bi.futures += totalPending
+		bi.futuresTotal += totalPending
+		if !benign {
 			bi.spot -= totalPending
 			if bi.spot < 0 {
 				bi.spot = 0
 			}
-			balances[recipient] = bi
 		}
+		balances[recipient] = bi
 	}
 
 	e.log.Info("rebalance: complete (unfunded=%d skipReasons=%d)", len(result.Unfunded), len(result.SkipReasons))
 	return result
+}
+
+// pollBingXFundVisibility polls the fund balance until the delta from baseline
+// meets 99% of the moved amount, or until timeout. Returns true if visible.
+// Extracted as a standalone helper for unit testability; see
+// allocator_bingx_visibility_test.go.
+func pollBingXFundVisibility(getBal func() (*exchange.Balance, error), baseline, moved float64, timeout, interval time.Duration) bool {
+	if moved <= 0 {
+		return true
+	}
+	required := moved * 0.99
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(interval)
+		fb, err := getBal()
+		if err == nil && fb != nil && fb.Available-baseline >= required {
+			return true
+		}
+	}
+	return false
+}
+
+// isBenignBybit131212 returns true when a TransferToFutures error is Bybit's
+// 131212 "insufficient balance" code AND the recipient's trading balance
+// already holds the expected post-deposit amount. This handles accounts that
+// route incoming deposits directly into UNIFIED via Set Deposit Account,
+// making the FUND→UNIFIED transfer a no-op that the exchange rejects.
+//
+// Extracted as a standalone helper for unit testability; see
+// allocator_bybit_131212_test.go.
+func isBenignBybit131212(err error, getBal func() (*exchange.Balance, error), startBal, totalPending float64) bool {
+	if err == nil {
+		return false
+	}
+	if !strings.Contains(err.Error(), "131212") {
+		return false
+	}
+	bal, berr := getBal()
+	if berr != nil || bal == nil {
+		return false
+	}
+	return bal.Available >= startBal+totalPending*0.9
 }
 
 func findOppBySymbol(opps []models.Opportunity, symbol string) *models.Opportunity {

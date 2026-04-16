@@ -732,14 +732,18 @@ func (a *Adapter) GetSpotBalance() (*exchange.Balance, error) {
 // ---------- Withdraw & Transfer ----------
 
 // TransferToSpot moves funds from perpetual futures to fund account.
-// Uses the asset transfer API (innerTransfer is for inter-user transfers).
+// Uses the documented asset transfer API POST /openApi/api/asset/v1/transfer
+// with explicit fromAccount/toAccount names. The legacy v3 endpoint with
+// type=PFUTURES_FUND credited a bucket that Withdraw(walletType=1) could
+// not see, causing 100437 errors during donor-side rebalance.
 func (a *Adapter) TransferToSpot(coin string, amount string) error {
 	params := map[string]string{
-		"type":   "PFUTURES_FUND",
-		"asset":  coin,
-		"amount": amount,
+		"fromAccount": "USDTMPerp",
+		"toAccount":   "fund",
+		"asset":       coin,
+		"amount":      amount,
 	}
-	_, err := a.client.Post("/openApi/api/v3/post/asset/transfer", params)
+	_, err := a.client.Post("/openApi/api/asset/v1/transfer", params)
 	if err != nil {
 		return fmt.Errorf("bingx TransferToSpot: %w", err)
 	}
@@ -747,14 +751,15 @@ func (a *Adapter) TransferToSpot(coin string, amount string) error {
 }
 
 // TransferToFutures moves funds from fund account to perpetual futures.
-// Uses the asset transfer API (innerTransfer is for inter-user transfers).
+// See TransferToSpot comment for endpoint rationale.
 func (a *Adapter) TransferToFutures(coin string, amount string) error {
 	params := map[string]string{
-		"type":   "FUND_PFUTURES",
-		"asset":  coin,
-		"amount": amount,
+		"fromAccount": "fund",
+		"toAccount":   "USDTMPerp",
+		"asset":       coin,
+		"amount":      amount,
 	}
-	_, err := a.client.Post("/openApi/api/v3/post/asset/transfer", params)
+	_, err := a.client.Post("/openApi/api/asset/v1/transfer", params)
 	if err != nil {
 		return fmt.Errorf("bingx TransferToFutures: %w", err)
 	}
