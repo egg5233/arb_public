@@ -30,6 +30,22 @@ type ExchangeManager struct {
 	snapshots map[string]adapterSnapshot
 	cfg       *config.Config
 	log       *utils.Logger
+
+	// reloadHandlers are invoked after Reload rebuilds an adapter, so callers
+	// (main.go scorer wiring, engine SL/algo callbacks) can re-attach their
+	// per-adapter callbacks. Handlers are invoked outside m.mu to avoid
+	// deadlock if a handler calls back into ExchangeManager.
+	reloadHandlersMu sync.Mutex
+	reloadHandlers   []func(name string, adapter exchange.Exchange)
+}
+
+// AddReloadHandler registers a function to be invoked for every adapter that
+// Reload rebuilds. Safe to call at any time; handlers are stored behind a
+// dedicated mutex so they can be invoked outside m.mu.
+func (m *ExchangeManager) AddReloadHandler(fn func(name string, adapter exchange.Exchange)) {
+	m.reloadHandlersMu.Lock()
+	m.reloadHandlers = append(m.reloadHandlers, fn)
+	m.reloadHandlersMu.Unlock()
 }
 
 // NewExchangeManager creates an ExchangeManager. Call SetExchanges to provide
@@ -95,8 +111,13 @@ func (m *ExchangeManager) Reload() {
 	}
 	m.cfg.RUnlock()
 
+	type rebuilt struct {
+		name    string
+		adapter exchange.Exchange
+	}
+	var rebuiltAdapters []rebuilt
+
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	// 1. Remove disabled exchanges.
 	for name, exc := range m.exchanges {
@@ -150,7 +171,23 @@ func (m *ExchangeManager) Reload() {
 
 		m.exchanges[name] = adapter
 		m.snapshots[name] = newSnap
+		rebuiltAdapters = append(rebuiltAdapters, rebuilt{name: name, adapter: adapter})
 		m.log.Info("Exchange %s adapter reloaded", name)
+	}
+	m.mu.Unlock()
+
+	// Dispatch reload handlers OUTSIDE m.mu to avoid deadlock if a handler
+	// calls back into ExchangeManager (Get/GetExchange grab m.mu).
+	if len(rebuiltAdapters) == 0 {
+		return
+	}
+	m.reloadHandlersMu.Lock()
+	handlers := append([]func(string, exchange.Exchange){}, m.reloadHandlers...)
+	m.reloadHandlersMu.Unlock()
+	for _, rb := range rebuiltAdapters {
+		for _, h := range handlers {
+			h(rb.name, rb.adapter)
+		}
 	}
 }
 

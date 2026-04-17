@@ -43,6 +43,8 @@ type Adapter struct {
 	orderCallback        func(exchange.OrderUpdate)
 	wsMetricsCallback    exchange.WSMetricsCallback
 	orderMetricsCallback exchange.OrderMetricsCallback
+	algoRemapCallback    exchange.AlgoRemapCallback
+	algoRemapMu          sync.Mutex
 
 	isUnified bool // true when Portfolio Margin is enabled
 }
@@ -63,6 +65,21 @@ func (b *Adapter) SetOrderMetricsCallback(fn exchange.OrderMetricsCallback) {
 
 func (b *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
 	b.orderCallback = fn
+}
+
+// SetAlgoRemapCallback registers a callback that fires when a Binance algo order
+// (TAKE_PROFIT / STOP_MARKET conditional) is triggered and mapped to a matching-engine order ID.
+func (b *Adapter) SetAlgoRemapCallback(fn exchange.AlgoRemapCallback) {
+	b.algoRemapMu.Lock()
+	b.algoRemapCallback = fn
+	b.algoRemapMu.Unlock()
+}
+
+// getAlgoRemapCallback returns the current algoRemapCallback under the mutex.
+func (b *Adapter) getAlgoRemapCallback() exchange.AlgoRemapCallback {
+	b.algoRemapMu.Lock()
+	defer b.algoRemapMu.Unlock()
+	return b.algoRemapCallback
 }
 
 func (b *Adapter) SignTradFi() error {

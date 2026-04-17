@@ -404,3 +404,20 @@ type TradingFeeProvider interface {
 type FlashRepayer interface {
 	FlashRepay(coin string) (repayID string, err error)
 }
+
+// AlgoRemap carries an exchange's mapping from a previously-stored algo/conditional order ID
+// to the matching-engine order ID that appears when the algo is triggered.
+type AlgoRemap struct {
+	AlgoID string // the ID we stored at placement time (e.g. Binance algoId)
+	RealID string // the matching-engine order ID now active (e.g. Binance order i)
+	Symbol string // symbol, for defensive filtering
+}
+
+// AlgoRemapCallback consumes ID-remap events so callers can alias stored IDs to live IDs.
+type AlgoRemapCallback func(AlgoRemap)
+
+// AlgoRemapCallbackSetter is implemented by adapters that expose algo-trigger remap events
+// (currently Binance; other exchanges either use same ID on trigger or N/A).
+type AlgoRemapCallbackSetter interface {
+	SetAlgoRemapCallback(fn AlgoRemapCallback)
+}

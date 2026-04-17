@@ -109,8 +109,10 @@ func (b *Adapter) handlePrivateMessage(msg []byte) {
 				OrderID       int64  `json:"i"`
 				AvgPrice      string `json:"ap"`
 				FilledQty     string `json:"z"`
-				ReduceOnly    bool   `json:"ro"`
+				ReduceOnly    bool   `json:"R"`
 				OrigQty       string `json:"q"`
+				ClosePosition bool   `json:"cp"`
+				OrigOrderType string `json:"ot"`
 			} `json:"o"`
 		}
 		if json.Unmarshal(msg, &evt) != nil {
@@ -122,8 +124,14 @@ func (b *Adapter) handlePrivateMessage(msg []byte) {
 		filledVol, _ := strconv.ParseFloat(o.FilledQty, 64)
 		avgPrice, _ := strconv.ParseFloat(o.AvgPrice, 64)
 
-		wsPrivLog.Info("order update: %s %s %s status=%s filled=%.6f avg=%.8f reduceOnly=%v symbol=%s",
-			o.Symbol, o.Side, oid, o.OrderStatus, filledVol, avgPrice, o.ReduceOnly, o.Symbol)
+		// ReduceOnly is true when the exchange explicitly marks the fill as reducing position,
+		// OR when it results from a TRIGGERED conditional order with closePosition=true.
+		// Do NOT broadly classify by orderType alone (STOP_MARKET without cp=true could be opening).
+		isCloseFill := o.ReduceOnly ||
+			(o.ClosePosition && (o.OrigOrderType == "STOP_MARKET" || o.OrigOrderType == "TAKE_PROFIT_MARKET"))
+
+		wsPrivLog.Info("order update: %s %s %s status=%s filled=%.6f avg=%.8f R=%v cp=%v ot=%s isClose=%v",
+			o.Symbol, o.Side, oid, o.OrderStatus, filledVol, avgPrice, o.ReduceOnly, o.ClosePosition, o.OrigOrderType, isCloseFill)
 
 		upd := exchange.OrderUpdate{
 			OrderID:      oid,
@@ -132,7 +140,7 @@ func (b *Adapter) handlePrivateMessage(msg []byte) {
 			FilledVolume: filledVol,
 			AvgPrice:     avgPrice,
 			Symbol:       o.Symbol,
-			ReduceOnly:   o.ReduceOnly,
+			ReduceOnly:   isCloseFill,
 		}
 		b.orderStore.Store(oid, upd)
 		if upd.Status == "filled" && upd.FilledVolume > 0 && b.orderMetricsCallback != nil {
@@ -145,6 +153,32 @@ func (b *Adapter) handlePrivateMessage(msg []byte) {
 		}
 		if upd.Status == "filled" && upd.FilledVolume > 0 && b.orderCallback != nil {
 			b.orderCallback(upd)
+		}
+		return
+	}
+
+	if base.EventType == "ALGO_UPDATE" {
+		var algo struct {
+			Order struct {
+				AlgoID     int64  `json:"aid"`
+				RealID     string `json:"ai"`
+				Symbol     string `json:"s"`
+				AlgoStatus string `json:"X"`
+			} `json:"o"`
+		}
+		if json.Unmarshal(msg, &algo) != nil {
+			return
+		}
+		if algo.Order.AlgoStatus == "TRIGGERED" && algo.Order.RealID != "" {
+			remap := exchange.AlgoRemap{
+				AlgoID: strconv.FormatInt(algo.Order.AlgoID, 10),
+				RealID: algo.Order.RealID,
+				Symbol: algo.Order.Symbol,
+			}
+			wsPrivLog.Info("algo remap: %s algoID=%s → realID=%s", algo.Order.Symbol, remap.AlgoID, remap.RealID)
+			if cb := b.getAlgoRemapCallback(); cb != nil {
+				cb(remap)
+			}
 		}
 	}
 }

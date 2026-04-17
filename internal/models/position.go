@@ -54,6 +54,13 @@ type ArbitragePosition struct {
 	RotationHistory    []RotationRecord `json:"rotation_history,omitempty"`
 	HasReconciled      bool             `json:"has_reconciled,omitempty"`      // true once PnL reconciliation has run (exit or consolidate)
 	PartialReconcile   bool             `json:"partial_reconcile,omitempty"`   // true when closed with incomplete PnL data
+
+	// LongCloseSize / ShortCloseSize — current intended full close size.
+	// Set at entry-fill completion. Updated on legitimate size-changing active paths
+	// (partial-close revert, rotation partial, startup merge).
+	// NOT modified by depth-exit zeroing. Used by reconcile completeness gate.
+	LongCloseSize  float64 `json:"long_close_size,omitempty"`
+	ShortCloseSize float64 `json:"short_close_size,omitempty"`
 }
 
 // InferHasReconciled back-fills HasReconciled for legacy positions that were

@@ -251,8 +251,8 @@ func (ws *PrivateWS) handleMessage(msg []byte) {
 	// Convert BingX symbol format "BTC-USDT" → "BTCUSDT"
 	symbol := strings.ReplaceAll(o.Symbol, "-", "")
 
-	// reduceOnly: explicit flag or inferred from STOP_MARKET order type
-	reduceOnly := o.ReduceOnly || o.OrderType == "STOP_MARKET"
+	// reduceOnly: explicit flag or inferred from STOP_MARKET / TAKE_PROFIT_MARKET order type
+	reduceOnly := o.ReduceOnly || o.OrderType == "STOP_MARKET" || o.OrderType == "TAKE_PROFIT_MARKET"
 
 	update := exchange.OrderUpdate{
 		OrderID:      o.OrderID,

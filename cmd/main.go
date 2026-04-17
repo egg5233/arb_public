@@ -179,7 +179,9 @@ func main() {
 		}()
 	}
 	scorer := risk.NewExchangeScorer(cfg)
-	for name, exch := range exchanges {
+	// attachScorerCallbacks wires REST/WS/order metrics on a single adapter.
+	// Called at startup (initial wiring) and on ExchangeManager reload events.
+	attachScorerCallbacks := func(name string, exch exchange.Exchange) {
 		exchangeName := name
 		exch.SetMetricsCallback(func(endpoint string, latency time.Duration, err error) {
 			scorer.RecordLatency(exchangeName, endpoint, latency, err)
@@ -194,6 +196,9 @@ func main() {
 				scorer.RecordOrderEvent(exchangeName, event)
 			})
 		}
+	}
+	for name, exch := range exchanges {
+		attachScorerCallbacks(name, exch)
 	}
 	riskMgr := risk.NewManager(exchanges, db, cfg, allocator)
 	riskMgr.SetSpreadHistoryProvider(scanner.GetSpreadHistorySnapshot)
@@ -371,6 +376,12 @@ func main() {
 	// Exchange hot-reload: rebuild adapters when API keys or enabled state change.
 	exchMgr := engine.NewExchangeManager(cfg)
 	exchMgr.SetExchanges(exchanges)
+	// Re-attach callbacks after a reload. Scorer wiring (main-owned) and engine
+	// wiring (SL/TP fill + algo-remap) must both re-fire or reload silently drops
+	// them on the new adapter — a latent bug for all existing *CallbackSetter
+	// implementations.
+	exchMgr.AddReloadHandler(attachScorerCallbacks)
+	exchMgr.AddReloadHandler(eng.AttachAdapterCallbacks)
 	go func() {
 		ch := notifier.Subscribe()
 		for range ch {

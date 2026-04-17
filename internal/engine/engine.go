@@ -98,10 +98,10 @@ type Engine struct {
 	apiErrMu     sync.Mutex
 	apiErrCounts map[string]int // exchange name -> consecutive failure count
 
-	// SL fill detection: reverse index from (exchange:orderID) → (posID, leg).
+	// SL/TP fill detection: reverse index from (exchange:orderID) → (posID, leg, kind).
 	slIndexMu sync.RWMutex
-	slIndex   map[string]slEntry // "exchange:orderID" → posID + leg
-	slFillCh  chan slFillEvent   // buffered channel for non-blocking WS callbacks
+	slIndex   map[string]stopOrderEntry // "exchange:orderID" → posID + leg + kind
+	slFillCh  chan slFillEvent          // buffered channel for non-blocking WS callbacks
 
 	// ownOrders tracks order IDs placed by the engine itself.
 	// Used by handleSLFill method 2 to avoid false-triggering on our own
@@ -128,10 +128,11 @@ type Engine struct {
 	prewarmedKeys  []string             // keys acquired by prewarmDepthForEntry
 }
 
-// slEntry maps a stop-loss order to its position and leg.
-type slEntry struct {
+// stopOrderEntry maps a stop-loss or take-profit order to its position, leg, and kind.
+type stopOrderEntry struct {
 	PosID string
 	Leg   string // "long" or "short"
+	Kind  string // "sl" or "tp"
 }
 
 // depthRef tracks reference count for a depth subscription.
@@ -168,7 +169,7 @@ func NewEngine(
 		exitDone:        make(map[string]chan struct{}),
 		preSettleActive: make(map[string]bool),
 		entryActive:     make(map[string]string),
-		slIndex:         make(map[string]slEntry),
+		slIndex:         make(map[string]stopOrderEntry),
 		slFillCh:        make(chan slFillEvent, 64),
 		apiErrCounts:       make(map[string]int),
 		consolidateRetries: make(map[string]int),
@@ -509,9 +510,9 @@ func (e *Engine) Start() {
 		}
 	}
 
-	// Set up SL fill detection callbacks on all exchanges.
+	// Set up SL/TP fill detection callbacks on all exchanges.
 	e.setupSLCallbacks()
-	e.rebuildSLIndex()
+	e.rebuildStopIndex()
 	go e.consumeSLFills()
 
 	go e.run()
@@ -1476,22 +1477,26 @@ func (e *Engine) checkDelistPositions() {
 	}
 }
 
-// registerSLOrders adds stop-loss order IDs to the SL index for instant fill detection.
-func (e *Engine) registerSLOrders(pos *models.ArbitragePosition) {
+// registerStopOrders adds stop-loss and take-profit order IDs to the SL/TP index
+// for instant fill detection. Registers all 4 IDs: long/short × sl/tp.
+func (e *Engine) registerStopOrders(pos *models.ArbitragePosition) {
 	e.slIndexMu.Lock()
 	defer e.slIndexMu.Unlock()
-	if pos.LongSLOrderID != "" {
-		key := pos.LongExchange + ":" + pos.LongSLOrderID
-		e.slIndex[key] = slEntry{PosID: pos.ID, Leg: "long"}
+	regs := []struct{ ex, oid, leg, kind string }{
+		{pos.LongExchange, pos.LongSLOrderID, "long", "sl"},
+		{pos.ShortExchange, pos.ShortSLOrderID, "short", "sl"},
+		{pos.LongExchange, pos.LongTPOrderID, "long", "tp"},
+		{pos.ShortExchange, pos.ShortTPOrderID, "short", "tp"},
 	}
-	if pos.ShortSLOrderID != "" {
-		key := pos.ShortExchange + ":" + pos.ShortSLOrderID
-		e.slIndex[key] = slEntry{PosID: pos.ID, Leg: "short"}
+	for _, r := range regs {
+		if r.oid != "" {
+			e.slIndex[r.ex+":"+r.oid] = stopOrderEntry{PosID: pos.ID, Leg: r.leg, Kind: r.kind}
+		}
 	}
 }
 
-// unregisterSLOrders removes stop-loss order IDs from the SL index.
-func (e *Engine) unregisterSLOrders(pos *models.ArbitragePosition) {
+// unregisterStopOrders removes stop-loss and take-profit order IDs from the SL/TP index.
+func (e *Engine) unregisterStopOrders(pos *models.ArbitragePosition) {
 	e.slIndexMu.Lock()
 	defer e.slIndexMu.Unlock()
 	if pos.LongSLOrderID != "" {
@@ -1499,6 +1504,12 @@ func (e *Engine) unregisterSLOrders(pos *models.ArbitragePosition) {
 	}
 	if pos.ShortSLOrderID != "" {
 		delete(e.slIndex, pos.ShortExchange+":"+pos.ShortSLOrderID)
+	}
+	if pos.LongTPOrderID != "" {
+		delete(e.slIndex, pos.LongExchange+":"+pos.LongTPOrderID)
+	}
+	if pos.ShortTPOrderID != "" {
+		delete(e.slIndex, pos.ShortExchange+":"+pos.ShortTPOrderID)
 	}
 }
 
@@ -1604,10 +1615,10 @@ func (e *Engine) triggerEmergencyClose(exchName, posID, leg string, upd exchange
 		return
 	}
 
-	e.unregisterSLOrders(pos)
+	e.unregisterStopOrders(pos)
 	e.cancelExitGoroutine(pos.ID)
 
-	e.log.Warn("SL TRIGGERED: order %s on %s filled (pos=%s leg=%s size=%.6f)",
+	e.log.Warn("SL/TP TRIGGERED: order %s on %s filled (pos=%s leg=%s size=%.6f)",
 		upd.OrderID, exchName, posID, leg, upd.FilledVolume)
 
 	e.api.BroadcastAlert(map[string]string{
@@ -1644,34 +1655,63 @@ func (e *Engine) consumeSLFills() {
 
 // setupSLCallbacks registers non-blocking SL fill callbacks on all exchange adapters.
 // Sends events to slFillCh which is consumed by consumeSLFills goroutine.
+// Also registers algo-remap callbacks on adapters that implement AlgoRemapCallbackSetter.
 func (e *Engine) setupSLCallbacks() {
 	for name, exch := range e.exchanges {
-		exchName := name // capture for closure
-		exch.SetOrderCallback(func(upd exchange.OrderUpdate) {
-			// Non-blocking send — drop if channel full (consumeSLFills will catch up).
-			select {
-			case e.slFillCh <- slFillEvent{Exchange: exchName, Update: upd}:
-			default:
-				e.log.Warn("SL fill channel full, dropping event for %s on %s", upd.OrderID, exchName)
-			}
+		e.AttachAdapterCallbacks(name, exch)
+	}
+}
+
+// AttachAdapterCallbacks wires engine-owned callbacks (order fills, algo remap)
+// onto a single exchange adapter. Safe to call on initial startup and on
+// ExchangeManager reload events.
+func (e *Engine) AttachAdapterCallbacks(name string, exch exchange.Exchange) {
+	exchName := name
+	// SL/TP fill event callback.
+	exch.SetOrderCallback(func(upd exchange.OrderUpdate) {
+		// Non-blocking send — drop if channel full (consumeSLFills will catch up).
+		select {
+		case e.slFillCh <- slFillEvent{Exchange: exchName, Update: upd}:
+		default:
+			e.log.Warn("SL fill channel full, dropping event for %s on %s", upd.OrderID, exchName)
+		}
+	})
+	// Algo-trigger remap callback (Binance uses algoId at placement and a different
+	// matching-engine orderID on trigger; without this alias, slIndex lookups miss).
+	if setter, ok := exch.(exchange.AlgoRemapCallbackSetter); ok {
+		setter.SetAlgoRemapCallback(func(remap exchange.AlgoRemap) {
+			e.handleAlgoRemap(exchName, remap)
 		})
 	}
 }
 
-// rebuildSLIndex loads all active positions and registers their SL orders.
-func (e *Engine) rebuildSLIndex() {
+// handleAlgoRemap aliases a previously-stored algo order ID to the new
+// matching-engine order ID so subsequent ORDER_TRADE_UPDATE events map
+// back to the correct position leg/kind.
+func (e *Engine) handleAlgoRemap(exchName string, remap exchange.AlgoRemap) {
+	e.slIndexMu.Lock()
+	defer e.slIndexMu.Unlock()
+	if entry, ok := e.slIndex[exchName+":"+remap.AlgoID]; ok {
+		e.slIndex[exchName+":"+remap.RealID] = entry
+		e.log.Info("algoRemap %s: %s → %s (leg=%s kind=%s)",
+			exchName, remap.AlgoID, remap.RealID, entry.Leg, entry.Kind)
+	}
+}
+
+// rebuildStopIndex loads all active positions and registers their SL/TP orders.
+func (e *Engine) rebuildStopIndex() {
 	positions, err := e.db.GetActivePositions()
 	if err != nil {
-		e.log.Error("rebuildSLIndex: %v", err)
+		e.log.Error("rebuildStopIndex: %v", err)
 		return
 	}
 	for _, pos := range positions {
-		e.registerSLOrders(pos)
+		e.registerStopOrders(pos)
 	}
 	e.slIndexMu.RLock()
 	count := len(e.slIndex)
 	e.slIndexMu.RUnlock()
-	e.log.Info("SL index rebuilt: %d entries from %d positions", count, len(positions))
+	e.log.Info("SL/TP index rebuilt: %d entries from %d positions", count, len(positions))
 }
 
 func (e *Engine) handleReduce(action risk.HealthAction) {
@@ -2601,6 +2641,10 @@ func (e *Engine) MergeExistingDuplicates() {
 				}
 				fresh.LongSize = totalLong
 				fresh.ShortSize = totalShort
+				// H2.2: update CloseSize to match merged size so reconcile gate
+				// still knows the post-merge intended close size.
+				fresh.LongCloseSize = totalLong
+				fresh.ShortCloseSize = totalShort
 				fresh.FundingCollected += p.FundingCollected
 				fresh.RotationPnL += p.RotationPnL
 				fresh.EntryFees += p.EntryFees
@@ -2706,6 +2750,21 @@ func deriveFailureStage(reason string) string {
 	}
 }
 
+// queryAvgFillPrice attempts to read the real average fill price for an order
+// from the adapter's WS-populated order store. Falls back to a 200ms retry if
+// the first read shows AvgPrice==0 (WS may lag slightly). Returns 0 if no
+// average price is yet available — caller decides the fallback.
+func (e *Engine) queryAvgFillPrice(exch exchange.Exchange, orderID string) float64 {
+	if upd, ok := exch.GetOrderUpdate(orderID); ok && upd.AvgPrice > 0 {
+		return upd.AvgPrice
+	}
+	time.Sleep(200 * time.Millisecond)
+	if upd, ok := exch.GetOrderUpdate(orderID); ok && upd.AvgPrice > 0 {
+		return upd.AvgPrice
+	}
+	return 0
+}
+
 // retrySecondLeg retries the second leg of a trade with escalating slippage.
 // Attempts 0-1 use normal slippage, 2-3 use double slippage. If IOC attempts
 // fail, switches to market orders and retries until filled or margin error.
@@ -2721,7 +2780,13 @@ func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol 
 		}
 
 		bbo, ok := exch.GetBBO(symbol)
-		if !ok {
+		// H1B: symmetric ±20% BBO sanity clamp against refPrice. Reject garbage
+		// BBO snapshots (e.g. stale or corrupted feed) by falling back to refPrice.
+		if !ok || bbo.Bid <= 0 || bbo.Ask <= 0 ||
+			bbo.Bid > refPrice*1.20 || bbo.Bid < refPrice*0.80 ||
+			bbo.Ask > refPrice*1.20 || bbo.Ask < refPrice*0.80 {
+			e.log.Warn("retrySecondLeg: BBO sanity failed (bid=%.6f ask=%.6f ref=%.6f) — fallback to refPrice",
+				bbo.Bid, bbo.Ask, refPrice)
 			bbo = exchange.BBO{Bid: refPrice, Ask: refPrice}
 		}
 
@@ -2767,11 +2832,20 @@ func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol 
 			continue
 		}
 		if filledQty > 0 {
+			// H1A: use the adapter's WS-reported AvgPrice; fall back to
+			// orderPrice (limit price, reasonable approximation for filled IOC)
+			// if WS hasn't populated yet after two attempts.
+			avgPrice := e.queryAvgFillPrice(exch, orderID)
+			if avgPrice <= 0 {
+				avgPrice = orderPrice
+				e.log.Warn("retrySecondLeg[IOC-%d] %s: avgPrice unavailable, using orderPrice=%.6f",
+					attempt, exchName, orderPrice)
+			}
 			totalFilled += filledQty
-			totalNotional += filledQty * orderPrice
+			totalNotional += filledQty * avgPrice
 			remainingSize -= filledQty
-			e.log.Info("retrySecondLeg[IOC-%d] %s %s: filled=%.6f remaining=%.6f",
-				attempt, exchName, symbol, filledQty, remainingSize)
+			e.log.Info("retrySecondLeg[IOC-%d] %s %s: filled=%.6f avg=%.6f remaining=%.6f",
+				attempt, exchName, symbol, filledQty, avgPrice, remainingSize)
 		} else {
 			e.log.Info("retrySecondLeg[IOC-%d] %s %s: no fill", attempt, exchName, symbol)
 		}
@@ -2782,11 +2856,6 @@ func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol 
 	for mktAttempt := 0; remainingSize > 0 && mktAttempt < 10; mktAttempt++ {
 		if mktAttempt > 0 {
 			time.Sleep(500 * time.Millisecond)
-		}
-
-		bbo, ok := exch.GetBBO(symbol)
-		if !ok {
-			bbo = exchange.BBO{Bid: refPrice, Ask: refPrice}
 		}
 
 		sizeStr := e.formatSize(exchName, symbol, remainingSize)
@@ -2815,12 +2884,20 @@ func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol 
 			continue
 		}
 		if filledQty > 0 {
-			fillPrice := (bbo.Bid + bbo.Ask) / 2
+			// H1A: use real AvgPrice; fall back to refPrice (last known good
+			// reference price) rather than a synthetic BBO-mid. BBO-mid is the
+			// root cause of the SIRENUSDT VWAP inflation incident.
+			avgPrice := e.queryAvgFillPrice(exch, orderID)
+			if avgPrice <= 0 {
+				avgPrice = refPrice
+				e.log.Warn("retrySecondLeg[MKT-%d] %s: avgPrice unavailable, using refPrice=%.6f",
+					mktAttempt, exchName, refPrice)
+			}
 			totalFilled += filledQty
-			totalNotional += filledQty * fillPrice
+			totalNotional += filledQty * avgPrice
 			remainingSize -= filledQty
-			e.log.Info("retrySecondLeg[MKT-%d] %s %s: filled=%.6f remaining=%.6f",
-				mktAttempt, exchName, symbol, filledQty, remainingSize)
+			e.log.Info("retrySecondLeg[MKT-%d] %s %s: filled=%.6f avg=%.6f remaining=%.6f",
+				mktAttempt, exchName, symbol, filledQty, avgPrice, remainingSize)
 		} else {
 			e.log.Info("retrySecondLeg[MKT-%d] %s %s: no fill", mktAttempt, exchName, symbol)
 		}
@@ -3122,6 +3199,10 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 	// Activate as new position.
 	pos.LongSize = minFill
 	pos.ShortSize = minFill
+	// H2.2: CloseSize tracks the position's intended full close size. Set at
+	// entry completion; NOT zeroed by depth-exit. Reconcile gate uses this.
+	pos.LongCloseSize = minFill
+	pos.ShortCloseSize = minFill
 	pos.LongEntry = finalLongEntry
 	pos.ShortEntry = finalShortEntry
 
@@ -4265,6 +4346,10 @@ fillLoop:
 	// Activate position
 	pos.LongSize = minFill
 	pos.ShortSize = minFill
+	// H2.2: CloseSize tracks the position's intended full close size. Set at
+	// entry completion; NOT zeroed by depth-exit. Reconcile gate uses this.
+	pos.LongCloseSize = minFill
+	pos.ShortCloseSize = minFill
 	pos.LongEntry = finalLongEntry
 	pos.ShortEntry = finalShortEntry
 	pos.EntryNotional = math.Max(pos.LongEntry*pos.LongSize, pos.ShortEntry*pos.ShortSize)
@@ -4596,15 +4681,15 @@ func (e *Engine) attachStopLosses(pos *models.ArbitragePosition) {
 		pos.ShortTPOrderID = shortTPID
 	}
 
-	// Register in SL index for instant fill detection.
-	e.registerSLOrders(pos)
+	// Register in SL/TP index for instant fill detection.
+	e.registerStopOrders(pos)
 }
 
 // cancelStopLosses cancels any active stop-loss and take-profit orders on both legs.
 // Logs errors but does not block exit.
 func (e *Engine) cancelStopLosses(pos *models.ArbitragePosition) {
-	// Unregister from SL index first to prevent stale triggers.
-	e.unregisterSLOrders(pos)
+	// Unregister from SL/TP index first to prevent stale triggers.
+	e.unregisterStopOrders(pos)
 
 	if pos.LongSLOrderID != "" {
 		if exch, ok := e.exchanges[pos.LongExchange]; ok {
