@@ -231,6 +231,127 @@ const SpotRow: FC<SpotRowProps> = ({ opp, index, compact, t, onSpotOpen, gapResu
 };
 
 // ---------------------------------------------------------------------------
+// SpotCard — mobile (< md) card rendering of a spot opportunity
+// ---------------------------------------------------------------------------
+const SpotCard: FC<SpotRowProps> = ({ opp, index, t, onSpotOpen, gapResult, borrowResult, spotOpening, setSpotOpening, setSpotError }) => {
+  const filtered = !!opp.filter_status;
+  const isA = opp.direction === 'borrow_sell_long';
+  const oppKey = `${opp.symbol}-${opp.exchange}-${opp.direction}`;
+  const dirLabel = isA ? t('spot.dirA') : t('spot.dirB');
+  const borrowWarn = isA && borrowResult && !borrowResult.error && borrowResult.max_borrowable <= 0;
+
+  const handleOpen = async () => {
+    if (!onSpotOpen) return;
+    setSpotOpening(oppKey);
+    setSpotError(null);
+    try {
+      await onSpotOpen(opp.symbol, opp.exchange, opp.direction);
+    } catch (err: unknown) {
+      setSpotError(err instanceof Error ? err.message : 'Open failed');
+    } finally {
+      setSpotOpening(null);
+    }
+  };
+
+  return (
+    <div
+      className={`rounded-lg border px-3 py-2.5 ${
+        filtered
+          ? 'border-gray-800/50 bg-gray-900/30 opacity-60'
+          : borrowWarn
+          ? 'border-red-500/30 bg-red-500/5'
+          : 'border-gray-800 bg-gray-900'
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2 mb-1.5">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="font-mono text-[10px] text-gray-500 shrink-0">{index + 1}</span>
+          <span className="font-mono font-semibold text-gray-100 truncate">{opp.symbol}</span>
+          <span className={`shrink-0 px-1.5 py-0.5 text-[10px] font-bold rounded ${
+            filtered ? 'bg-gray-700/40 text-gray-500' : isA ? 'bg-blue-500/15 text-blue-400' : 'bg-purple-500/15 text-purple-400'
+          }`}>{dirLabel}</span>
+        </div>
+        <span className={`font-mono font-bold tabular-nums shrink-0 ${
+          filtered ? 'text-gray-500' : opp.net_apr >= 0 ? 'text-emerald-400' : 'text-red-400'
+        }`}>{(opp.net_apr * 100).toFixed(1)}%</span>
+      </div>
+
+      <div className="flex items-center gap-2 text-xs mb-2">
+        <span className="text-gray-500 uppercase tracking-wider text-[10px]">{t('spot.exchange')}:</span>
+        {filtered ? (
+          <span className="text-gray-500 capitalize">{opp.exchange}</span>
+        ) : (
+          <ExchangeLink exchange={opp.exchange} symbol={opp.symbol} className="text-gray-200" />
+        )}
+      </div>
+
+      <div className="grid grid-cols-4 gap-2 text-[11px]">
+        <div>
+          <div className="text-gray-500 text-[9px] uppercase tracking-wide">{t('spot.funding')}</div>
+          <div className={`font-mono tabular-nums ${filtered ? 'text-gray-500' : 'text-emerald-400'}`}>{(opp.funding_apr * 100).toFixed(1)}%</div>
+        </div>
+        <div>
+          <div className="text-gray-500 text-[9px] uppercase tracking-wide">{t('spot.borrow')}</div>
+          <div className={`font-mono tabular-nums ${filtered ? 'text-gray-500' : 'text-amber-400'}`}>{opp.borrow_apr > 0 ? `${(opp.borrow_apr * 100).toFixed(1)}%` : '-'}</div>
+        </div>
+        <div>
+          <div className="text-gray-500 text-[9px] uppercase tracking-wide">{t('spot.fees')}</div>
+          <div className="font-mono tabular-nums text-gray-400">{(opp.fee_pct * 100).toFixed(2)}%</div>
+        </div>
+        <div>
+          <div className="text-gray-500 text-[9px] uppercase tracking-wide" title={t('spot.maintenanceRateTooltip')}>MR</div>
+          <div className="font-mono tabular-nums">
+            {opp.maintenance_rate > 0 ? (
+              <span className={opp.maintenance_rate >= 0.10 ? 'text-red-400' : opp.maintenance_rate >= 0.05 ? 'text-amber-400' : 'text-gray-400'}>
+                {(opp.maintenance_rate * 100).toFixed(1)}%
+              </span>
+            ) : <span className="text-gray-600">-</span>}
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-2 mt-2 pt-2 border-t border-gray-800/50">
+        <div className="flex items-center gap-3 text-[11px]">
+          {!filtered && (
+            <>
+              <span>
+                <span className="text-gray-500 text-[9px] uppercase tracking-wide mr-1">Gap</span>
+                {gapResult ? (
+                  gapResult.gap_pct <= -999 ? <span className="text-gray-600">N/A</span>
+                  : <span className={`font-mono tabular-nums ${gapResult.gap_pct <= 0 ? 'text-emerald-400' : gapResult.gap_pct < 0.5 ? 'text-amber-400' : 'text-red-400'}`}>{gapResult.gap_pct.toFixed(3)}%</span>
+                ) : <span className="text-gray-600">-</span>}
+              </span>
+              {isA && (
+                <span>
+                  <span className="text-gray-500 text-[9px] uppercase tracking-wide mr-1">Bor</span>
+                  {borrowResult ? (
+                    borrowResult.error ? <span className="text-gray-600" title={borrowResult.error}>err</span>
+                    : borrowResult.max_borrowable <= 0 ? <span className="text-red-400 font-mono">0</span>
+                    : <span className="text-emerald-400 font-mono tabular-nums">{borrowResult.max_borrowable.toFixed(2)}</span>
+                  ) : <span className="text-gray-600">-</span>}
+                </span>
+              )}
+            </>
+          )}
+          {filtered && <span className="text-gray-500 text-[10px]">{opp.filter_status}</span>}
+        </div>
+        {onSpotOpen && !filtered && !borrowWarn && (
+          <button
+            disabled={spotOpening === oppKey}
+            onClick={handleOpen}
+            className={`px-3 py-1 text-xs font-semibold rounded transition-colors ${
+              spotOpening === oppKey ? 'bg-gray-700 text-gray-400 cursor-wait' : 'bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/40'
+            }`}
+          >
+            {spotOpening === oppKey ? '...' : 'Open'}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // SpotSection — renders a panel of spot opportunities (full or compact)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -356,33 +477,48 @@ const SpotSection: FC<SpotSectionProps & { compact?: boolean; accent?: 'emerald'
             </div>
           </div>
         </div>
-        <div className="px-3 py-2 overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-gray-500 text-left border-b border-gray-800/50">
-                <th className="pb-1.5 pr-2">#</th>
-                <th className="pb-1.5 pr-2">{t('spot.symbol')}</th>
-                <th className="pb-1.5 pr-2">{t('spot.exchange')}</th>
-                <th className="pb-1.5 pr-2">Dir</th>
-                <th className="pb-1.5 pr-2 text-right">{t('spot.netApr')}</th>
-                <th className="pb-1.5 pr-2 text-right" title={t('spot.maintenanceRateTooltip')}>MR</th>
-                <th className="pb-1.5 pr-2 text-right">Gap</th>
-                <th className="pb-1.5 pr-2 text-right">Borrow</th>
-                <th className="pb-1.5 text-right"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-800/30">
-              {pageOpps.map((opp, i) => {
-                const oppKey = `${opp.symbol}-${opp.exchange}-${opp.direction}`;
-                const borrowKey = `${opp.symbol}-${opp.exchange}`;
-                return <SpotRow key={oppKey} opp={opp} index={page * PAGE_SIZE + i} compact t={t}
-                  gapResult={gapResults[oppKey]} borrowResult={borrowResults[borrowKey]} {...rowProps} />;
-              })}
-              {pageOpps.length === 0 && (
-                <tr><td colSpan={9} className="py-6 text-center text-gray-600 text-xs">{t('spot.noOpportunities')}</td></tr>
-              )}
-            </tbody>
-          </table>
+        <div className="px-3 py-2">
+          {/* Desktop table */}
+          <div className="hidden md:block overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-gray-500 text-left border-b border-gray-800/50">
+                  <th className="pb-1.5 pr-2">#</th>
+                  <th className="pb-1.5 pr-2">{t('spot.symbol')}</th>
+                  <th className="pb-1.5 pr-2">{t('spot.exchange')}</th>
+                  <th className="pb-1.5 pr-2">Dir</th>
+                  <th className="pb-1.5 pr-2 text-right">{t('spot.netApr')}</th>
+                  <th className="pb-1.5 pr-2 text-right" title={t('spot.maintenanceRateTooltip')}>MR</th>
+                  <th className="pb-1.5 pr-2 text-right">Gap</th>
+                  <th className="pb-1.5 pr-2 text-right">Borrow</th>
+                  <th className="pb-1.5 text-right"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-800/30">
+                {pageOpps.map((opp, i) => {
+                  const oppKey = `${opp.symbol}-${opp.exchange}-${opp.direction}`;
+                  const borrowKey = `${opp.symbol}-${opp.exchange}`;
+                  return <SpotRow key={oppKey} opp={opp} index={page * PAGE_SIZE + i} compact t={t}
+                    gapResult={gapResults[oppKey]} borrowResult={borrowResults[borrowKey]} {...rowProps} />;
+                })}
+                {pageOpps.length === 0 && (
+                  <tr><td colSpan={9} className="py-6 text-center text-gray-600 text-xs">{t('spot.noOpportunities')}</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          {/* Mobile card list */}
+          <div className="md:hidden space-y-2">
+            {pageOpps.length === 0 && (
+              <div className="py-6 text-center text-gray-600 text-xs">{t('spot.noOpportunities')}</div>
+            )}
+            {pageOpps.map((opp, i) => {
+              const oppKey = `${opp.symbol}-${opp.exchange}-${opp.direction}`;
+              const borrowKey = `${opp.symbol}-${opp.exchange}`;
+              return <SpotCard key={oppKey} opp={opp} index={page * PAGE_SIZE + i} t={t}
+                gapResult={gapResults[oppKey]} borrowResult={borrowResults[borrowKey]} {...rowProps} />;
+            })}
+          </div>
           <Pagination page={page} total={opportunities.length} setPage={setPage} />
         </div>
       </div>
@@ -391,9 +527,9 @@ const SpotSection: FC<SpotSectionProps & { compact?: boolean; accent?: 'emerald'
 
   // Full-width single-source view
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 overflow-x-auto">
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-4 text-xs text-gray-500">
+    <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
+        <div className="flex items-center gap-4 text-xs text-gray-500 flex-wrap">
           {title && <h3 className="text-sm font-semibold text-gray-100 uppercase tracking-wide">{title}</h3>}
           <span><span className="inline-block w-2 h-2 rounded-full bg-emerald-400 mr-1.5" />{actionableCount} {t('spot.actionable')}</span>
           <span><span className="inline-block w-2 h-2 rounded-full bg-gray-600 mr-1.5" />{opportunities.length - actionableCount} {t('spot.filtered')}</span>
@@ -401,36 +537,51 @@ const SpotSection: FC<SpotSectionProps & { compact?: boolean; accent?: 'emerald'
         </div>
         {actionBar}
       </div>
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="text-gray-400 text-left border-b border-gray-800">
-            <th className="pb-2">#</th>
-            <th className="pb-2">{t('spot.symbol')}</th>
-            <th className="pb-2">{t('spot.exchange')}</th>
-            <th className="pb-2">{t('spot.direction')}</th>
-            <th className="pb-2 text-right">{t('spot.funding')}</th>
-            <th className="pb-2 text-right">{t('spot.borrow')}</th>
-            <th className="pb-2 text-right">{t('spot.fees')}</th>
-            <th className="pb-2 text-right">{t('spot.netApr')}</th>
-            <th className="pb-2 text-right" title={t('spot.maintenanceRateTooltip')}>{t('spot.maintenanceRate')}</th>
-            <th className="pb-2 text-right">Gap</th>
-            <th className="pb-2 text-right">Borrow</th>
-            <th className="pb-2">{t('spot.status')}</th>
-            <th className="pb-2"></th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-gray-800/50">
-          {pageOpps.map((opp, i) => {
-            const oppKey = `${opp.symbol}-${opp.exchange}-${opp.direction}`;
-            const borrowKey = `${opp.symbol}-${opp.exchange}`;
-            return <SpotRow key={oppKey} opp={opp} index={page * PAGE_SIZE + i} t={t}
-              gapResult={gapResults[oppKey]} borrowResult={borrowResults[borrowKey]} {...rowProps} />;
-          })}
-          {pageOpps.length === 0 && (
-            <tr><td colSpan={13} className="py-8 text-center text-gray-500">{t('spot.noOpportunities')}</td></tr>
-          )}
-        </tbody>
-      </table>
+      {/* Desktop table */}
+      <div className="hidden md:block overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-gray-400 text-left border-b border-gray-800">
+              <th className="pb-2">#</th>
+              <th className="pb-2">{t('spot.symbol')}</th>
+              <th className="pb-2">{t('spot.exchange')}</th>
+              <th className="pb-2">{t('spot.direction')}</th>
+              <th className="pb-2 text-right">{t('spot.funding')}</th>
+              <th className="pb-2 text-right">{t('spot.borrow')}</th>
+              <th className="pb-2 text-right">{t('spot.fees')}</th>
+              <th className="pb-2 text-right">{t('spot.netApr')}</th>
+              <th className="pb-2 text-right" title={t('spot.maintenanceRateTooltip')}>{t('spot.maintenanceRate')}</th>
+              <th className="pb-2 text-right">Gap</th>
+              <th className="pb-2 text-right">Borrow</th>
+              <th className="pb-2">{t('spot.status')}</th>
+              <th className="pb-2"></th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-800/50">
+            {pageOpps.map((opp, i) => {
+              const oppKey = `${opp.symbol}-${opp.exchange}-${opp.direction}`;
+              const borrowKey = `${opp.symbol}-${opp.exchange}`;
+              return <SpotRow key={oppKey} opp={opp} index={page * PAGE_SIZE + i} t={t}
+                gapResult={gapResults[oppKey]} borrowResult={borrowResults[borrowKey]} {...rowProps} />;
+            })}
+            {pageOpps.length === 0 && (
+              <tr><td colSpan={13} className="py-8 text-center text-gray-500">{t('spot.noOpportunities')}</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      {/* Mobile card list */}
+      <div className="md:hidden space-y-2">
+        {pageOpps.length === 0 && (
+          <div className="py-8 text-center text-gray-500">{t('spot.noOpportunities')}</div>
+        )}
+        {pageOpps.map((opp, i) => {
+          const oppKey = `${opp.symbol}-${opp.exchange}-${opp.direction}`;
+          const borrowKey = `${opp.symbol}-${opp.exchange}`;
+          return <SpotCard key={oppKey} opp={opp} index={page * PAGE_SIZE + i} t={t}
+            gapResult={gapResults[oppKey]} borrowResult={borrowResults[borrowKey]} {...rowProps} />;
+        })}
+      </div>
       <Pagination page={page} total={opportunities.length} setPage={setPage} />
     </div>
   );
@@ -527,77 +678,157 @@ const Opportunities: FC<OpportunitiesProps> = ({
       </div>
 
       {tab === 'perp' && (
-        <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-gray-400 text-left border-b border-gray-800">
-                <th className="pb-2">#</th>
-                <th className="pb-2">{t('opp.symbol')}</th>
-                <th className="pb-2">{t('opp.long')}</th>
-                <th className="pb-2">{t('opp.short')}</th>
-                <th className="pb-2 text-right">{t('opp.longRate')}</th>
-                <th className="pb-2 text-right">{t('opp.shortRate')}</th>
-                <th className="pb-2 text-right">{t('opp.spread')}</th>
-                <th className="pb-2 text-right">{t('opp.interval')}</th>
-                <th className="pb-2 text-right">{t('opp.nextFund')}</th>
-                <th className="pb-2 text-right">{t('opp.oi')}</th>
-                <th className="pb-2 text-right">{t('opp.updated')}</th>
-                <th className="pb-2"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-800">
-              {sorted.map((opp, i) => (
-                <tr key={`${opp.symbol}-${opp.long_exchange}-${opp.short_exchange}`} className={`text-gray-100 ${scoreColor(opp.score)}`}>
-                  <td className="py-2 font-mono text-gray-500">{i + 1}</td>
-                  <td className="py-2 font-mono">
-                    {opp.symbol}
-                    {blacklist.includes(opp.symbol) && (
-                      <span className="ml-1.5 text-xs text-yellow-500" title={t('opp.blocked')}>BAN</span>
-                    )}
-                  </td>
-                  <td className="py-2 text-green-400"><ExchangeLink exchange={opp.long_exchange} symbol={opp.symbol} /></td>
-                  <td className="py-2 text-red-400"><ExchangeLink exchange={opp.short_exchange} symbol={opp.symbol} /></td>
-                  <td className="py-2 text-right font-mono text-gray-400">{opp.long_rate.toFixed(2)}</td>
-                  <td className="py-2 text-right font-mono text-gray-400">{opp.short_rate.toFixed(2)}</td>
-                  <td className="py-2 text-right font-mono font-semibold">{opp.spread.toFixed(1)} bps/h</td>
-                  <td className="py-2 text-right font-mono text-gray-400">{formatInterval(opp.interval_hours)}</td>
-                  <td className="py-2 text-right font-mono text-gray-400 text-xs">{formatFundingCountdown(opp.next_funding)}</td>
-                  <td className="py-2 text-right font-mono">{opp.oi_rank}</td>
-                  <td className="py-2 text-right font-mono text-gray-500 text-xs">{formatTimestamp(opp.timestamp)}</td>
-                  <td className="px-2 py-1 whitespace-nowrap">
-                    {onBlacklistToggle && (
-                      <button
-                        onClick={() => onBlacklistToggle(opp.symbol)}
-                        className={`px-2 py-0.5 text-xs rounded mr-1 ${
-                          blacklist.includes(opp.symbol)
-                            ? 'bg-yellow-600/20 text-yellow-400 hover:bg-yellow-600/40'
-                            : 'bg-gray-600/20 text-gray-400 hover:bg-gray-600/40'
-                        }`}
-                        title={blacklist.includes(opp.symbol) ? t('opp.unblock') : t('opp.block')}
-                      >
-                        {blacklist.includes(opp.symbol) ? t('opp.unblock') : t('opp.block')}
-                      </button>
-                    )}
-                    {onOpen && (
-                      <button
-                        onClick={() => { setOpeningOpp(opp); setOpenError(null); }}
-                        disabled={opening}
-                        className="px-2 py-0.5 text-xs bg-green-600/20 text-green-400 rounded hover:bg-green-600/40 disabled:opacity-50"
-                      >
-                        {t('opp.open')}
-                      </button>
-                    )}
-                  </td>
+        <>
+          {/* Desktop table */}
+          <div className="hidden md:block bg-gray-900 border border-gray-800 rounded-lg p-4 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-gray-400 text-left border-b border-gray-800">
+                  <th className="pb-2">#</th>
+                  <th className="pb-2">{t('opp.symbol')}</th>
+                  <th className="pb-2">{t('opp.long')}</th>
+                  <th className="pb-2">{t('opp.short')}</th>
+                  <th className="pb-2 text-right">{t('opp.longRate')}</th>
+                  <th className="pb-2 text-right">{t('opp.shortRate')}</th>
+                  <th className="pb-2 text-right">{t('opp.spread')}</th>
+                  <th className="pb-2 text-right">{t('opp.interval')}</th>
+                  <th className="pb-2 text-right">{t('opp.nextFund')}</th>
+                  <th className="pb-2 text-right">{t('opp.oi')}</th>
+                  <th className="pb-2 text-right">{t('opp.updated')}</th>
+                  <th className="pb-2"></th>
                 </tr>
-              ))}
-              {sorted.length === 0 && (
-                <tr>
-                  <td colSpan={12} className="py-8 text-center text-gray-500">{t('opp.noOpportunities')}</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-gray-800">
+                {sorted.map((opp, i) => (
+                  <tr key={`${opp.symbol}-${opp.long_exchange}-${opp.short_exchange}`} className={`text-gray-100 ${scoreColor(opp.score)}`}>
+                    <td className="py-2 font-mono text-gray-500">{i + 1}</td>
+                    <td className="py-2 font-mono">
+                      {opp.symbol}
+                      {blacklist.includes(opp.symbol) && (
+                        <span className="ml-1.5 text-xs text-yellow-500" title={t('opp.blocked')}>BAN</span>
+                      )}
+                    </td>
+                    <td className="py-2 text-green-400"><ExchangeLink exchange={opp.long_exchange} symbol={opp.symbol} /></td>
+                    <td className="py-2 text-red-400"><ExchangeLink exchange={opp.short_exchange} symbol={opp.symbol} /></td>
+                    <td className="py-2 text-right font-mono text-gray-400">{opp.long_rate.toFixed(2)}</td>
+                    <td className="py-2 text-right font-mono text-gray-400">{opp.short_rate.toFixed(2)}</td>
+                    <td className="py-2 text-right font-mono font-semibold">{opp.spread.toFixed(1)} bps/h</td>
+                    <td className="py-2 text-right font-mono text-gray-400">{formatInterval(opp.interval_hours)}</td>
+                    <td className="py-2 text-right font-mono text-gray-400 text-xs">{formatFundingCountdown(opp.next_funding)}</td>
+                    <td className="py-2 text-right font-mono">{opp.oi_rank}</td>
+                    <td className="py-2 text-right font-mono text-gray-500 text-xs">{formatTimestamp(opp.timestamp)}</td>
+                    <td className="px-2 py-1 whitespace-nowrap">
+                      {onBlacklistToggle && (
+                        <button
+                          onClick={() => onBlacklistToggle(opp.symbol)}
+                          className={`px-2 py-0.5 text-xs rounded mr-1 ${
+                            blacklist.includes(opp.symbol)
+                              ? 'bg-yellow-600/20 text-yellow-400 hover:bg-yellow-600/40'
+                              : 'bg-gray-600/20 text-gray-400 hover:bg-gray-600/40'
+                          }`}
+                          title={blacklist.includes(opp.symbol) ? t('opp.unblock') : t('opp.block')}
+                        >
+                          {blacklist.includes(opp.symbol) ? t('opp.unblock') : t('opp.block')}
+                        </button>
+                      )}
+                      {onOpen && (
+                        <button
+                          onClick={() => { setOpeningOpp(opp); setOpenError(null); }}
+                          disabled={opening}
+                          className="px-2 py-0.5 text-xs bg-green-600/20 text-green-400 rounded hover:bg-green-600/40 disabled:opacity-50"
+                        >
+                          {t('opp.open')}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {sorted.length === 0 && (
+                  <tr>
+                    <td colSpan={12} className="py-8 text-center text-gray-500">{t('opp.noOpportunities')}</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          {/* Mobile card list */}
+          <div className="md:hidden space-y-2">
+            {sorted.length === 0 && (
+              <div className="bg-gray-900 border border-gray-800 rounded-lg p-6 text-center text-gray-500 text-sm">
+                {t('opp.noOpportunities')}
+              </div>
+            )}
+            {sorted.map((opp, i) => {
+              const banned = blacklist.includes(opp.symbol);
+              return (
+                <div
+                  key={`${opp.symbol}-${opp.long_exchange}-${opp.short_exchange}`}
+                  className={`rounded-lg border px-3 py-2.5 ${scoreColor(opp.score)} ${banned ? 'border-yellow-500/30' : 'border-gray-800'} bg-gray-900`}
+                >
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="font-mono text-[10px] text-gray-500 shrink-0">{i + 1}</span>
+                      <span className="font-mono font-semibold text-gray-100 truncate">{opp.symbol}</span>
+                      {banned && (
+                        <span className="shrink-0 px-1.5 py-0.5 text-[10px] font-bold rounded bg-yellow-500/15 text-yellow-400">BAN</span>
+                      )}
+                    </div>
+                    <span className="font-mono font-bold text-gray-100 tabular-nums shrink-0">{opp.spread.toFixed(1)} bps/h</span>
+                  </div>
+
+                  <div className="space-y-1 text-xs mb-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-bold text-green-500 uppercase tracking-wider w-10 shrink-0">Long</span>
+                        <span className="text-green-400"><ExchangeLink exchange={opp.long_exchange} symbol={opp.symbol} /></span>
+                      </div>
+                      <span className="font-mono tabular-nums text-gray-400">{opp.long_rate.toFixed(2)} bps/h</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-bold text-red-500 uppercase tracking-wider w-10 shrink-0">Short</span>
+                        <span className="text-red-400"><ExchangeLink exchange={opp.short_exchange} symbol={opp.symbol} /></span>
+                      </div>
+                      <span className="font-mono tabular-nums text-gray-400">{opp.short_rate.toFixed(2)} bps/h</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 text-[11px] text-gray-500 border-t border-gray-800/50 pt-1.5">
+                    <span>{t('opp.interval')}: <span className="font-mono text-gray-400">{formatInterval(opp.interval_hours)}</span></span>
+                    <span>{t('opp.nextFund')}: <span className="font-mono text-gray-400">{formatFundingCountdown(opp.next_funding)}</span></span>
+                    <span>OI: <span className="font-mono text-gray-400">{opp.oi_rank}</span></span>
+                  </div>
+
+                  {(onBlacklistToggle || onOpen) && (
+                    <div className="flex gap-2 mt-2">
+                      {onBlacklistToggle && (
+                        <button
+                          onClick={() => onBlacklistToggle(opp.symbol)}
+                          className={`flex-1 px-3 py-1.5 text-xs font-medium rounded transition-colors ${
+                            banned
+                              ? 'bg-yellow-600/20 text-yellow-400 hover:bg-yellow-600/40'
+                              : 'bg-gray-700/40 text-gray-300 hover:bg-gray-700/60'
+                          }`}
+                        >
+                          {banned ? t('opp.unblock') : t('opp.block')}
+                        </button>
+                      )}
+                      {onOpen && (
+                        <button
+                          onClick={() => { setOpeningOpp(opp); setOpenError(null); }}
+                          disabled={opening}
+                          className="flex-1 px-3 py-1.5 text-xs font-semibold bg-green-600/20 text-green-400 rounded hover:bg-green-600/40 disabled:opacity-50 transition-colors"
+                        >
+                          {t('opp.open')}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
       )}
 
       {tab === 'spot' && (

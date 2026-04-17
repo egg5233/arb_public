@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.17] - 2026-04-16
+
+### Changed
+- **Mobile UX overhaul for Opportunities / Positions / History pages** — all three used single wide tables with `overflow-x-auto` as the sole mobile strategy. Quantified audit at 390×844 (iPhone 14 Pro): Opportunities table 634px (1.6× viewport), Positions 795px (2.0×), History 1317px (3.4×). On Positions specifically, only 3 of 12 columns were visible — the close button, PnL, and next-funding countdown all off-screen, making the page functionally unusable on a phone. Replaced with dual-layout pattern via Tailwind `md:` breakpoint (≥768px keeps the existing table unchanged; <768px renders a card list):
+  - **`web/src/pages/Positions.tsx`** (+260 lines): per-position card with symbol+rotation+SL badge header, long/short leg rows (exchange+size@price), 2×2 metric grid (Entry, Current, Funding Collected, Rot PnL), meta row (Age, Next Fund, fees), full-width Block/Close action buttons. Expand reveals Unrealized PnL per leg and grouped Funding History (per-day `<details>` with per-event rows).
+  - **`web/src/pages/History.tsx`** (+171 lines): per-trade card with symbol+status badge+PnL (color-coded, prominent top-right), long→short exchanges+duration, 3-col grid (Entry Spread, Funding Collected, Rot PnL), red border+failure-reason preview on failed trades. Expand reveals full timestamps, entry/exit prices per leg, exit reason, and PnLBreakdown table.
+  - **`web/src/pages/Opportunities.tsx`** (+491 lines): new `SpotCard` component + mobile card lists on both Perp tab and all Spot sections (compact split-view and full single-source). Perp cards show rank+symbol+spread, long/short exchanges with rates, interval/next-fund/OI meta row, and full-width Block+Open actions. Spot cards show direction badge, net APR prominent, 4-col metric grid (funding/borrow/fees/MR), Gap+Borrow lazy-check results inline.
+- No desktop (≥md) visual changes — existing tables render identically. Mobile cards and desktop tables share the same state (expand, pagination, filter), rendered from the same source data.
+- Verified at 390×844 (iPhone 14 Pro) via Playwright: all three pages now report `documentOverflow=false` (was 1.6–3.4× viewport before). Expand interactions confirmed working (PnLBreakdown, funding history).
+
 ## [0.32.16] - 2026-04-16
 
 ### Fixed

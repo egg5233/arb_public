@@ -122,7 +122,9 @@ const Positions: FC<PositionsProps> = ({ positions, onClose, onFetchFunding, bla
   return (
     <div className="space-y-6">
       <h2 className="text-xl font-bold text-gray-100">{t('pos.title')}</h2>
-      <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 overflow-x-auto">
+
+      {/* Desktop (≥ md) — full table */}
+      <div className="hidden md:block bg-gray-900 border border-gray-800 rounded-lg p-4 overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-gray-400 text-left border-b border-gray-800">
@@ -339,6 +341,262 @@ const Positions: FC<PositionsProps> = ({ positions, onClose, onFetchFunding, bla
             )}
           </tbody>
         </table>
+      </div>
+
+      {/* Mobile (< md) — card list */}
+      <div className="md:hidden space-y-3">
+        {positions.length === 0 && (
+          <div className="bg-gray-900 border border-gray-800 rounded-lg p-6 text-center text-gray-500 text-sm">
+            {t('pos.noPositions')}
+          </div>
+        )}
+        {positions.map((p) => {
+          const expanded = expandedId === p.id;
+          const isRotated = (p.rotation_count ?? 0) > 0;
+          const hasSL = !!(p.long_sl_order_id || p.short_sl_order_id);
+          return (
+            <div
+              key={p.id}
+              className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden"
+            >
+              {/* Header: symbol + rotation badge + close button */}
+              <button
+                type="button"
+                onClick={() => toggleExpand(p.id)}
+                className="w-full flex items-center justify-between gap-2 px-4 py-3 text-left hover:bg-gray-800/40 active:bg-gray-800/60 transition-colors"
+                aria-expanded={expanded}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-gray-500 text-xs">{expanded ? '▼' : '▶'}</span>
+                  <span className="font-mono font-semibold text-gray-100 truncate">{p.symbol}</span>
+                  {isRotated && (
+                    <span
+                      className="shrink-0 px-1.5 py-0.5 text-[10px] font-bold rounded bg-yellow-500/15 text-yellow-400"
+                      title={`Rotated ${p.rotation_count}x${p.last_rotated_from ? `, last from ${p.last_rotated_from}` : ''}`}
+                    >
+                      R{p.rotation_count}
+                    </span>
+                  )}
+                </div>
+                {hasSL && (
+                  <span className="shrink-0 text-[10px] font-bold text-green-500 tracking-wide" title="Stop-loss orders placed">
+                    SL
+                  </span>
+                )}
+              </button>
+
+              {/* Body — always visible on mobile */}
+              <div className="px-4 pb-3 space-y-3">
+                {/* Leg rows */}
+                <div className="space-y-1.5 text-sm">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-bold text-green-500 uppercase tracking-wider w-12 shrink-0">Long</span>
+                    <a
+                      href={tradingUrl(p.long_exchange, p.symbol)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-green-400 hover:underline"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {p.long_exchange}
+                    </a>
+                    <span className="font-mono text-xs text-gray-300 ml-auto tabular-nums">
+                      {p.long_size.toFixed(4)} @ {formatPrice(p.long_entry)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-bold text-red-500 uppercase tracking-wider w-12 shrink-0">Short</span>
+                    <a
+                      href={tradingUrl(p.short_exchange, p.symbol)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-red-400 hover:underline"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {p.short_exchange}
+                    </a>
+                    <span className="font-mono text-xs text-gray-300 ml-auto tabular-nums">
+                      {p.short_size.toFixed(4)} @ {formatPrice(p.short_entry)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Spread + money grid */}
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs border-t border-gray-800 pt-2.5">
+                  <div>
+                    <div className="text-gray-500 text-[10px] uppercase tracking-wide">{t('pos.entry')}</div>
+                    <div className="font-mono text-gray-200 tabular-nums">{p.entry_spread.toFixed(1)} bps/h</div>
+                  </div>
+                  <div>
+                    <div className="text-gray-500 text-[10px] uppercase tracking-wide">{t('pos.current')}</div>
+                    <div className={`font-mono tabular-nums ${(p.current_spread ?? 0) > 0 ? 'text-green-400' : (p.current_spread ?? 0) < 0 ? 'text-red-400' : 'text-gray-400'}`}>
+                      {p.current_spread != null ? `${p.current_spread.toFixed(1)} bps/h` : '-'}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-gray-500 text-[10px] uppercase tracking-wide">{t('pos.fundingCollected')}</div>
+                    <div className={`font-mono tabular-nums ${p.funding_collected > 0 ? 'text-green-400' : p.funding_collected < 0 ? 'text-red-400' : 'text-gray-400'}`}>
+                      ${p.funding_collected.toFixed(2)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-gray-500 text-[10px] uppercase tracking-wide">{t('pos.rotPnl')}</div>
+                    <div className={`font-mono tabular-nums ${(p.rotation_pnl ?? 0) >= 0 ? 'text-gray-400' : 'text-red-400'}`}>
+                      {(p.rotation_pnl ?? 0) !== 0 ? `$${(p.rotation_pnl ?? 0).toFixed(2)}` : '-'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Meta row */}
+                <div className="flex items-center justify-between gap-3 text-[11px] text-gray-500 border-t border-gray-800 pt-2">
+                  <span className="font-mono">{t('pos.age')}: {formatAge(p.created_at)}</span>
+                  <span className="font-mono">{t('pos.nextFund')}: {formatFundingCountdown(p.next_funding)}</span>
+                  {(p.entry_fees ?? 0) > 0 && (
+                    <span className="font-mono text-red-400/70">-${(p.entry_fees ?? 0).toFixed(2)}</span>
+                  )}
+                </div>
+
+                {/* Actions */}
+                {p.status === 'active' && (onClose || onBlacklistToggle) && (
+                  <div className="flex gap-2">
+                    {onBlacklistToggle && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onBlacklistToggle(p.symbol); }}
+                        className={`flex-1 px-3 py-2 text-xs font-medium rounded transition-colors ${
+                          blacklist.includes(p.symbol)
+                            ? 'bg-yellow-600/20 text-yellow-400 hover:bg-yellow-600/40'
+                            : 'bg-gray-700/40 text-gray-300 hover:bg-gray-700/60'
+                        }`}
+                      >
+                        {blacklist.includes(p.symbol) ? t('opp.unblock') : t('opp.block')}
+                      </button>
+                    )}
+                    {onClose && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setClosingId(p.id); }}
+                        disabled={closing}
+                        className="flex-1 px-3 py-2 text-xs font-semibold bg-red-600/20 text-red-400 rounded hover:bg-red-600/40 disabled:opacity-50 transition-colors"
+                      >
+                        {t('pos.close')}
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Expanded details */}
+                {expanded && (
+                  <div className="space-y-4 text-sm border-t border-gray-800 pt-3">
+                    <div>
+                      <div className="text-gray-400 text-xs mb-1">
+                        {t('pos.openTime')}: <span className="text-gray-200">{formatDateTime(p.created_at)}</span>
+                      </div>
+                      <div className="text-gray-400 text-xs space-y-0.5">
+                        <div>
+                          {t('pos.unrealizedPnl')}:
+                        </div>
+                        <div className="pl-2">
+                          <span className={pnlColor(p.long_unrealized_pnl ?? 0)}>
+                            {t('pos.long')}: ${(p.long_unrealized_pnl ?? 0).toFixed(2)} ({p.long_exchange})
+                          </span>
+                        </div>
+                        <div className="pl-2">
+                          <span className={pnlColor(p.short_unrealized_pnl ?? 0)}>
+                            {t('pos.short')}: ${(p.short_unrealized_pnl ?? 0).toFixed(2)} ({p.short_exchange})
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Funding history */}
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-gray-300 text-xs font-semibold tracking-wide uppercase">{t('pos.fundingHistory')}</span>
+                        <span className={`text-xs font-mono ${pnlColor(p.funding_collected)}`}>
+                          ${p.funding_collected.toFixed(4)}
+                        </span>
+                      </div>
+                      {fundingLoading ? (
+                        <div className="text-gray-500 text-xs py-3 text-center">{t('pos.loading')}</div>
+                      ) : fundingHistory.length === 0 ? (
+                        <div className="text-gray-500 text-xs">-</div>
+                      ) : (() => {
+                        const groups: Record<string, FundingEvent[]> = {};
+                        for (const f of fundingHistory) {
+                          const d = new Date(f.time);
+                          const key = isNaN(d.getTime()) ? 'Unknown' : d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Taipei' });
+                          (groups[key] ??= []).push(f);
+                        }
+                        const sortedDates = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+                        return (
+                          <div className="space-y-1 max-h-64 overflow-y-auto pr-1">
+                            {sortedDates.map((date) => {
+                              const items = groups[date];
+                              const dayTotal = items.reduce((s, f) => s + f.amount, 0);
+                              return (
+                                <details key={date} open={date === sortedDates[sortedDates.length - 1]} className="group">
+                                  <summary className="flex items-center justify-between cursor-pointer select-none py-1.5 px-2 rounded bg-gray-800/50 hover:bg-gray-800 transition-colors">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-[10px] text-gray-500 group-open:rotate-90 transition-transform">▶</span>
+                                      <span className="text-xs font-mono text-gray-300">{date}</span>
+                                      <span className="text-[10px] text-gray-500">{items.length}</span>
+                                    </div>
+                                    <span className={`text-xs font-mono ${pnlColor(dayTotal)}`}>
+                                      {dayTotal >= 0 ? '+' : ''}{dayTotal.toFixed(4)}
+                                    </span>
+                                  </summary>
+                                  <div className="mt-0.5 ml-3 border-l border-gray-700/50 pl-2">
+                                    {items.map((f, i) => {
+                                      const time = new Date(f.time);
+                                      const utcStr = isNaN(time.getTime()) ? '-' : time.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
+                                      return (
+                                        <div key={i} className="flex items-center justify-between py-0.5 text-xs">
+                                          <div className="flex items-center gap-1.5 min-w-0">
+                                            <span className="font-mono text-gray-500 text-[11px]">{utcStr}</span>
+                                            <span className={`px-1 py-0 rounded text-[9px] font-medium ${
+                                              f.side === 'long' ? 'bg-green-500/15 text-green-400' : 'bg-red-500/15 text-red-400'
+                                            }`}>{f.side}</span>
+                                            <span className="text-gray-400 text-[11px] truncate">{f.exchange}</span>
+                                          </div>
+                                          <span className={`font-mono shrink-0 ${pnlColor(f.amount)}`}>
+                                            {f.amount >= 0 ? '+' : ''}{f.amount.toFixed(4)}
+                                          </span>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </details>
+                              );
+                            })}
+                          </div>
+                        );
+                      })()}
+                    </div>
+
+                    {/* Rotation history */}
+                    {p.rotation_history && p.rotation_history.length > 0 && (
+                      <div>
+                        <div className="text-gray-300 text-xs font-semibold mb-1 uppercase tracking-wide">{t('pos.rotationHistory')}</div>
+                        <div className="space-y-1">
+                          {p.rotation_history.map((r, i) => (
+                            <div key={i} className="flex items-center justify-between gap-2 text-xs px-2 py-1 bg-gray-800/50 rounded">
+                              <div className="min-w-0">
+                                <div className="font-mono text-gray-400 text-[10px]">{formatDateTime(r.timestamp)}</div>
+                                <div className="text-gray-300 text-[11px]">{r.from} → {r.to} <span className="text-gray-500">({r.leg_side})</span></div>
+                              </div>
+                              <span className={`font-mono shrink-0 ${pnlColor(r.pnl ?? 0)}`}>
+                                {r.pnl != null ? `$${r.pnl.toFixed(2)}` : '-'}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       {closingId && (
