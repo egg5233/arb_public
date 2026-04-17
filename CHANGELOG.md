@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.19] - 2026-04-17
+
+### Fixed
+- **Bybit `GetClosePnL` had two PnL bugs — one sign flip + one missing funding term** (`pkg/exchange/bybit/adapter.go`). Reported against `nomusdt-1776033907476`; dashboard Close P/L showed `-73.26` and trade Total P/L showed `35.38`, both wrong. Live reconcile logs (`[reconcile-debug] ... shortAgg Fees=0.294327 Funding=-28.451038 PricePnL=-73.259710 NetPnL=72.965383`) confirmed both issues.
+  - **Bug 1 — `PricePnL` sign-flipped for shorts**: `pricePnL := cumExit - cumEntry` is only correct for longs. Bybit's `cumEntryValue` / `cumExitValue` are unsigned notionals (no direction), so winning shorts had `ShortClosePnL` stored with the wrong sign (right magnitude). All other adapters (Bitget / Gate / BingX / OKX / Binance) pull a pre-signed PnL directly from their respective endpoints — only Bybit re-derived from cumulative notionals. Fix: flip sign after side normalization when `side == "short"`. Downstream field affected: `BasisGainLoss` (`exit.go:1255`, `consolidate.go:678` — sum of long + short PricePnL).
+  - **Bug 2 — `NetPnL` missing funding**: prior code and comments ("closedPnl already includes funding") were wrong. Empirically `closedPnl = pricePnL − openFee − closeFee` with no funding term, but every other adapter returns `NetPnL = price + fees + funding`. The reconcile formula `long.NetPnL + short.NetPnL` therefore silently dropped Bybit's funding leg for *every* position where Bybit was a leg — regardless of long/short. For `nomusdt-...907476`: stored `RealizedPnL = 35.38 = −37.58 (Binance) + 72.97 (Bybit, no funding) + 0`; correct is `35.38 + (−28.45) = 6.93`. Fix: `NetPnL: closedPnl + totalFunding`, with matching comment/doc correction.
+  - Backfill: `scripts/backfill_bybit_short_pnl.py` corrects existing `arb:history` entries in place for **both** bugs — flips `short_close_pnl` sign + recomputes `basis_gain_loss` for Bybit-short entries, and adjusts `realized_pnl` by `+bybit_leg_funding` for any reconciled entry where Bybit is a leg (either side). Dry-run by default; pass `--apply` to write. On current prod state: 3 Bybit-short + 6 Bybit-long reconciled entries affected for the `realized_pnl` adjustment; 3 Bybit-short entries additionally need the sign flip.
+
 ## [0.32.18] - 2026-04-17
 
 ### Changed

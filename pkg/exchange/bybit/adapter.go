@@ -1296,7 +1296,9 @@ func (a *Adapter) GetFundingFees(symbol string, since time.Time) ([]exchange.Fun
 }
 
 // GetClosePnL returns exchange-reported position-level PnL for recently closed positions.
-// Bybit's closedPnl already includes funding fees.
+// Bybit's closedPnl = (cumExitValue − cumEntryValue signed) − openFee − closeFee. Funding
+// settlements are NOT included and must be queried + added separately for NetPnL to match
+// the other adapters (Binance / Gate / Bitget / BingX / OKX all return funding-inclusive NetPnL).
 func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.ClosePnL, error) {
 	params := map[string]string{
 		"category":  "linear",
@@ -1327,8 +1329,10 @@ func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 		return nil, fmt.Errorf("GetClosePnL unmarshal: %w", err)
 	}
 
-	// Query funding fees separately — closedPnl already includes funding,
-	// but we still need the Funding field for FundingCollected reconciliation.
+	// Query funding fees — closedPnl does NOT include funding (empirically verified
+	// via live reconcile logs: closedPnl == pricePnL − openFee − closeFee, no funding term).
+	// Sum is used for (a) FundingCollected reconciliation and (b) making NetPnL
+	// funding-inclusive so it matches the semantics of the other adapters.
 	var totalFunding float64
 	fundingFees, fErr := a.GetFundingFees(symbol, since)
 	if fErr != nil {
@@ -1358,16 +1362,23 @@ func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 		}
 
 		// closedPnl = (cumExitValue - cumEntryValue) - openFee - closeFee (net of fees)
-		// pricePnL = cumExitValue - cumEntryValue (raw price movement)
+		// pricePnL = signed price-movement PnL.
+		// Bybit's cumEntryValue/cumExitValue are unsigned notionals — they carry
+		// no direction. For a long, pricePnL = cumExit − cumEntry; for a short,
+		// the sign flips (profit when cumExit < cumEntry).
 		pricePnL := cumExit - cumEntry
+		if side == "short" {
+			pricePnL = -pricePnL
+		}
 
-		// closedPnl already includes funding, so NetPnL = closedPnl as-is.
-		// Funding is queried separately for FundingCollected reconciliation.
+		// NetPnL must include funding to match Binance/Gate/Bitget/BingX/OKX semantics
+		// (reconcile in engine/exit.go sums long.NetPnL + short.NetPnL as the position total).
+		// Bybit's closedPnl excludes funding, so add it here.
 		out = append(out, exchange.ClosePnL{
 			PricePnL:   pricePnL,
 			Fees:       openFee + closeFee,
 			Funding:    totalFunding,
-			NetPnL:     closedPnl,
+			NetPnL:     closedPnl + totalFunding,
 			EntryPrice: entryPrice,
 			ExitPrice:  exitPrice,
 			CloseSize:  closeSize,
