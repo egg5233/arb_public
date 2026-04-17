@@ -1,5 +1,328 @@
 @import "tailwindcss";
 
+/*
+ * Binance-inspired design tokens.
+ *
+ * Tailwind v4 reads colors from the @theme CSS variables. Remapping the
+ * gray / blue / purple / violet / green / red / yellow / amber / emerald /
+ * orange / teal scales here rebrands every existing utility class across
+ * the app without touching page code. The dashboard keeps its dark-first
+ * trading-terminal posture, with Binance Yellow (#F0B90B) as the single
+ * accent and Crypto Green / Crypto Red for PnL semantics.
+ */
+
+@theme {
+  /* Typography — BinancePlex is proprietary, so we fall back to a tight,
+     data-dense system stack. Tabular numerals keep price columns aligned. */
+  --font-sans: "BinancePlex", "Inter", "Helvetica Neue", Arial, ui-sans-serif,
+    system-ui, sans-serif;
+  --font-mono: "BinancePlex Mono", "JetBrains Mono", "SF Mono", ui-monospace,
+    Menlo, Monaco, Consolas, monospace;
+
+  /* Neutrals — dark canvas, panels, text.
+     gray-950 → deepest canvas (Ink+)
+     gray-900 → Binance Dark primary panel
+     gray-800 → Dark Card
+     gray-700 → border on dark card
+     gray-400 → Slate (workhorse secondary text)
+     gray-100 → near-white body text on dark */
+  --color-gray-50: #f5f5f5;
+  --color-gray-100: #fafafa;
+  --color-gray-200: #eaecef;
+  --color-gray-300: #b7bdc6;
+  --color-gray-400: #848e9c;
+  --color-gray-500: #707a8a;
+  --color-gray-600: #5e6673;
+  --color-gray-700: #3a3e45;
+  --color-gray-800: #2b2f36;
+  --color-gray-850: #232529;
+  --color-gray-900: #1e2026;
+  --color-gray-950: #0b0e11;
+
+  /* Slate & zinc & neutral mirror gray so incidental uses track the brand. */
+  --color-slate-100: #fafafa;
+  --color-slate-200: #eaecef;
+  --color-slate-300: #b7bdc6;
+  --color-slate-400: #848e9c;
+  --color-slate-500: #707a8a;
+  --color-slate-600: #5e6673;
+  --color-slate-700: #3a3e45;
+  --color-slate-800: #2b2f36;
+  --color-slate-900: #1e2026;
+  --color-slate-950: #0b0e11;
+
+  --color-zinc-100: #fafafa;
+  --color-zinc-200: #eaecef;
+  --color-zinc-300: #b7bdc6;
+  --color-zinc-400: #848e9c;
+  --color-zinc-500: #707a8a;
+  --color-zinc-600: #5e6673;
+  --color-zinc-700: #3a3e45;
+  --color-zinc-800: #2b2f36;
+  --color-zinc-900: #1e2026;
+  --color-zinc-950: #0b0e11;
+
+  --color-neutral-100: #fafafa;
+  --color-neutral-200: #eaecef;
+  --color-neutral-300: #b7bdc6;
+  --color-neutral-400: #848e9c;
+  --color-neutral-500: #707a8a;
+  --color-neutral-600: #5e6673;
+  --color-neutral-700: #3a3e45;
+  --color-neutral-800: #2b2f36;
+  --color-neutral-900: #1e2026;
+  --color-neutral-950: #0b0e11;
+
+  /* Blue — remapped to Binance Yellow family. Yellow is the only accent. */
+  --color-blue-100: #fef3c4;
+  --color-blue-200: #fde68a;
+  --color-blue-300: #f8d12f;
+  --color-blue-400: #f0b90b;
+  --color-blue-500: #f0b90b;
+  --color-blue-600: #d0980b;
+  --color-blue-700: #a87c09;
+  --color-blue-800: #6e5206;
+  --color-blue-900: #3a2b03;
+  --color-blue-950: #1e1602;
+
+  /* Purple / Violet — collapse into the Binance gold family with a soft tint. */
+  --color-purple-100: #fff3c4;
+  --color-purple-200: #ffe08a;
+  --color-purple-300: #ffd000;
+  --color-purple-400: #f0b90b;
+  --color-purple-500: #f0b90b;
+  --color-purple-600: #d0980b;
+  --color-purple-700: #a87c09;
+  --color-purple-800: #6e5206;
+  --color-purple-900: #3a2b03;
+
+  --color-violet-100: #fff3c4;
+  --color-violet-200: #ffe08a;
+  --color-violet-300: #ffd000;
+  --color-violet-400: #f0b90b;
+  --color-violet-500: #f0b90b;
+  --color-violet-600: #d0980b;
+  --color-violet-700: #6e5206;
+  --color-violet-800: #3a2b03;
+  --color-violet-900: #1e1602;
+
+  /* Yellow — canonical Binance Yellow anchored at 400. */
+  --color-yellow-100: #fff3c4;
+  --color-yellow-200: #ffe08a;
+  --color-yellow-300: #f8d12f;
+  --color-yellow-400: #f0b90b;
+  --color-yellow-500: #d0980b;
+  --color-yellow-600: #a87c09;
+  --color-yellow-700: #6e5206;
+  --color-yellow-800: #3a2b03;
+  --color-yellow-900: #1e1602;
+  --color-yellow-950: #120c01;
+
+  --color-amber-100: #fef3c4;
+  --color-amber-200: #fde68a;
+  --color-amber-300: #f8d12f;
+  --color-amber-400: #f0b90b;
+  --color-amber-500: #d0980b;
+  --color-amber-600: #a87c09;
+  --color-amber-700: #6e5206;
+  --color-amber-800: #3a2b03;
+  --color-amber-900: #1e1602;
+
+  /* Green — Crypto Green for positive PnL and success states. */
+  --color-green-100: #c4f5df;
+  --color-green-200: #87ecbd;
+  --color-green-300: #3edd9c;
+  --color-green-400: #0ecb81;
+  --color-green-500: #0ecb81;
+  --color-green-600: #0eb871;
+  --color-green-700: #0a9f5f;
+  --color-green-800: #085d38;
+  --color-green-900: #062d1c;
+  --color-green-950: #03170e;
+
+  --color-emerald-100: #c4f5df;
+  --color-emerald-200: #87ecbd;
+  --color-emerald-300: #3edd9c;
+  --color-emerald-400: #0ecb81;
+  --color-emerald-500: #0ecb81;
+  --color-emerald-600: #0eb871;
+  --color-emerald-700: #0a9f5f;
+  --color-emerald-800: #085d38;
+  --color-emerald-900: #062d1c;
+
+  --color-teal-300: #3edd9c;
+  --color-teal-400: #0ecb81;
+  --color-teal-500: #0ecb81;
+  --color-teal-600: #0eb871;
+
+  /* Red — Crypto Red for negative PnL and error states. */
+  --color-red-100: #fbd4d9;
+  --color-red-200: #f8a8b3;
+  --color-red-300: #f66b7a;
+  --color-red-400: #f6465d;
+  --color-red-500: #f6465d;
+  --color-red-600: #e5374e;
+  --color-red-700: #b82b3d;
+  --color-red-800: #8a1f2e;
+  --color-red-900: #4d1119;
+  --color-red-950: #2a0a0f;
+
+  --color-pink-300: #f66b7a;
+  --color-pink-400: #f6465d;
+  --color-pink-500: #f6465d;
+  --color-pink-600: #e5374e;
+
+  /* Orange — pending/intervention banners (kept distinct from pure yellow). */
+  --color-orange-400: #ffa724;
+  --color-orange-500: #ff9332;
+  --color-orange-600: #d97316;
+  --color-orange-700: #b45c0c;
+  --color-orange-900: #3f1f03;
+
+  /* Indigo & cyan — any stray uses fall back to the yellow accent. */
+  --color-indigo-400: #f0b90b;
+  --color-indigo-500: #f0b90b;
+  --color-indigo-600: #d0980b;
+  --color-cyan-400: #1eaedb;
+  --color-cyan-500: #1eaedb;
+
+  /* Borders & shadows. */
+  --radius-pill: 9999px;
+  --shadow-card: 0 3px 5px 0 rgba(32, 32, 37, 0.05);
+  --shadow-card-hover: 0 3px 5px 5px rgba(8, 8, 8, 0.05);
+  --shadow-pill: 0 2px 10px -3px rgb(153, 153, 153);
+}
+
+/* Global base — tabular numerals make price columns line up, smooth fonts,
+   and a Binance Dark canvas so pages feel like a trading terminal. */
+html,
+body,
+#root {
+  background-color: var(--color-gray-950);
+  color: #eaecef;
+  font-family: var(--font-sans);
+  font-feature-settings: "tnum" 1, "ss01" 1, "cv01" 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Monospace columns should also use tabular numerals. */
+.font-mono,
+code,
+kbd,
+samp,
+pre {
+  font-feature-settings: "tnum" 1;
+}
+
+/* Binance-style focus ring — subtle yellow outline instead of browser blue. */
+*:focus-visible {
+  outline: 2px solid #f0b90b;
+  outline-offset: 2px;
+}
+
+/* ───── Component utility classes ──────────────────────────────────────── */
+
+/* Primary pill CTA — Binance Yellow fill, Ink text. */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1.25rem;
+  border-radius: 9999px;
+  background-color: #f0b90b;
+  color: #0b0e11;
+  font-weight: 600;
+  font-size: 0.875rem;
+  letter-spacing: 0.01em;
+  border: 1px solid transparent;
+  box-shadow: 0 2px 10px -3px rgba(240, 185, 11, 0.45);
+  transition: background-color 200ms ease, color 200ms ease,
+    box-shadow 200ms ease;
+}
+.btn-primary:hover:not(:disabled) {
+  background-color: #fcd535;
+}
+.btn-primary:active:not(:disabled) {
+  background-color: #d0980b;
+}
+.btn-primary:disabled {
+  background-color: #3a3e45;
+  color: #848e9c;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+/* Secondary ghost button — Ink surface, Slate text, yellow on hover. */
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 9999px;
+  background-color: transparent;
+  color: #eaecef;
+  font-weight: 600;
+  font-size: 0.875rem;
+  border: 1px solid #3a3e45;
+  transition: border-color 200ms ease, color 200ms ease,
+    background-color 200ms ease;
+}
+.btn-secondary:hover:not(:disabled) {
+  border-color: #f0b90b;
+  color: #f0b90b;
+}
+.btn-secondary:disabled {
+  color: #5e6673;
+  border-color: #2b2f36;
+  cursor: not-allowed;
+}
+
+/* Data card — subtle border on dark panel, tight radius for data density. */
+.card-surface {
+  background-color: #1e2026;
+  border: 1px solid #2b2f36;
+  border-radius: 12px;
+}
+
+/* Tag/pill for status badges on dark panels. */
+.pill-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* Scrollbar refinement — Binance-style thin dark scrollbar. */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: #2b2f36;
+  border-radius: 9999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #3a3e45;
+}
+
+/* Selection uses Binance Yellow. */
+::selection {
+  background-color: rgba(240, 185, 11, 0.35);
+  color: #fafafa;
+}
+
+/* ───── Animations ────────────────────────────────────────────────────── */
+
 @keyframes slide-in-left {
   from {
     transform: translateX(-100%);

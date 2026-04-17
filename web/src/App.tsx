@@ -266,7 +266,7 @@ function App() {
 
   return (
     <LocaleContext.Provider value={{ locale, setLocale, t }}>
-      <div className="flex flex-col md:flex-row min-h-screen bg-gray-950 text-gray-100">
+      <div className="flex flex-col md:flex-row min-h-screen bg-[#0b0e11] text-gray-100">
         <Sidebar
           page={page}
           onNavigate={(p) => setPage(p as Page)}
@@ -278,84 +278,108 @@ function App() {
 
         <div className="flex-1 flex flex-col overflow-auto">
           {/* Mobile header bar */}
-          <div className="flex md:hidden items-center gap-3 px-4 py-3 bg-gray-900 border-b border-gray-800 sticky top-0 z-40">
+          <div className="flex md:hidden items-center gap-3 px-4 py-3 bg-[#1e2026] border-b border-[#2b2f36] sticky top-0 z-40">
             <button
               onClick={() => setSidebarOpen(true)}
-              className="text-gray-300 hover:text-gray-100 p-1"
+              className="text-gray-300 hover:text-[#f0b90b] p-1 transition-colors"
               aria-label="Open menu"
             >
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
               </svg>
             </button>
-            <h1 className="text-base font-semibold text-gray-100">{pageTitle}</h1>
+            <span aria-hidden className="inline-block w-5 h-5 rotate-45 bg-[#f0b90b] rounded-[2px]" />
+            <h1 className="text-sm font-bold uppercase tracking-wide text-gray-100">{pageTitle}</h1>
           </div>
 
-          {/* Update banner */}
+          {/* Update banner — Binance Yellow strip, Ink text */}
           {updateInfo && (
-            <div className="bg-blue-600 text-white px-4 py-2 flex items-center justify-between text-sm">
+            <div className="bg-[#f0b90b] text-[#0b0e11] px-4 py-2 flex items-center justify-between text-sm font-semibold">
               <button
                 onClick={() => setShowUpdateModal(true)}
-                className="hover:underline"
+                className="hover:underline decoration-2 underline-offset-2 text-left"
               >
                 {t('update.available').replace('{version}', updateInfo.latestVersion)}
               </button>
               <button
                 onClick={dismissUpdate}
-                className="ml-4 text-white/70 hover:text-white"
+                className="ml-4 w-6 h-6 flex items-center justify-center rounded-full hover:bg-[#0b0e11]/10"
+                aria-label="Dismiss"
               >
                 ✕
               </button>
             </div>
           )}
-          {/* TradFi signing banner */}
+          {/* TradFi signing banner — amber warning strip */}
           {tradfiUnsigned && (
-            <div className="bg-orange-600 text-white px-4 py-2 flex items-center justify-between text-sm">
-              <span>{t('tradfi.banner')}</span>
+            <div className="bg-[#2a1f02] border-b border-[#f0b90b]/40 text-[#f0b90b] px-4 py-2 flex items-center justify-between text-sm">
+              <span className="font-medium">{t('tradfi.banner')}</span>
               <div className="flex items-center gap-2">
-                <button onClick={handleSignTradFi} className="bg-white/20 hover:bg-white/30 px-3 py-1 rounded text-xs font-medium">
+                <button
+                  onClick={handleSignTradFi}
+                  className="bg-[#f0b90b] text-[#0b0e11] hover:bg-[#fcd535] px-3 py-1 rounded-full text-xs font-semibold transition-colors"
+                >
                   {t('tradfi.sign')}
                 </button>
-                <button onClick={() => { sessionStorage.setItem('arb_tradfi_dismissed', '1'); setTradfiUnsigned(false); }}
-                  className="text-white/70 hover:text-white">✕</button>
+                <button
+                  onClick={() => { sessionStorage.setItem('arb_tradfi_dismissed', '1'); setTradfiUnsigned(false); }}
+                  className="w-6 h-6 flex items-center justify-center rounded-full text-[#f0b90b]/70 hover:text-[#f0b90b] hover:bg-[#f0b90b]/10"
+                  aria-label="Dismiss"
+                >
+                  ✕
+                </button>
               </div>
             </div>
           )}
-          <main className="flex-1 p-3 md:p-6">
+          <main className="flex-1 p-4 md:p-8">
             {renderPage()}
           </main>
         </div>
 
         {/* Update modal */}
         {showUpdateModal && updateInfo && (
-          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-            <div className="bg-gray-900 rounded-lg shadow-xl w-full max-w-lg mx-4 max-h-[80vh] flex flex-col">
-              <div className="p-4 border-b border-gray-700 flex justify-between items-center">
-                <h2 className="text-lg font-semibold">{t('update.title')} — v{updateInfo.latestVersion}</h2>
-                <button onClick={() => setShowUpdateModal(false)} className="text-gray-400 hover:text-white">✕</button>
+          <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-[#1e2026] border border-[#2b2f36] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.5)] w-full max-w-lg max-h-[80vh] flex flex-col overflow-hidden">
+              <div className="px-6 py-4 border-b border-[#2b2f36] flex justify-between items-center">
+                <h2 className="text-lg font-bold text-gray-100">
+                  {t('update.title')} <span className="text-[#f0b90b]">v{updateInfo.latestVersion}</span>
+                </h2>
+                <button
+                  onClick={() => setShowUpdateModal(false)}
+                  className="w-8 h-8 flex items-center justify-center rounded-full text-gray-400 hover:text-gray-100 hover:bg-[#2b2f36] transition-colors"
+                  aria-label="Close"
+                >
+                  ✕
+                </button>
               </div>
               {updateInfo.changelog && (
-                <div className="p-4 border-b border-gray-700 overflow-auto flex-1">
-                  <h3 className="text-sm font-medium text-gray-400 mb-2">{t('update.changelog')}</h3>
-                  <pre className="text-xs text-gray-300 whitespace-pre-wrap">{updateInfo.changelog}</pre>
+                <div className="px-6 py-4 border-b border-[#2b2f36] overflow-auto flex-1">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">
+                    {t('update.changelog')}
+                  </h3>
+                  <pre className="text-xs text-gray-300 font-mono whitespace-pre-wrap leading-relaxed">
+                    {updateInfo.changelog}
+                  </pre>
                 </div>
               )}
               {updateOutput && (
-                <div className="p-4 border-b border-gray-700">
-                  <pre className="text-xs text-green-400 bg-gray-950 p-3 rounded whitespace-pre-wrap max-h-40 overflow-auto">{updateOutput}</pre>
+                <div className="px-6 py-4 border-b border-[#2b2f36]">
+                  <pre className="text-xs text-[#0ecb81] bg-[#0b0e11] border border-[#2b2f36] p-3 rounded-lg whitespace-pre-wrap max-h-40 overflow-auto font-mono">
+                    {updateOutput}
+                  </pre>
                 </div>
               )}
-              <div className="p-4 flex justify-end gap-3">
+              <div className="px-6 py-4 flex justify-end gap-3 bg-[#17181b]">
                 <button
                   onClick={() => setShowUpdateModal(false)}
-                  className="px-4 py-2 text-sm bg-gray-700 hover:bg-gray-600 rounded"
+                  className="btn-secondary"
                   disabled={updating}
                 >
                   {t('update.cancel')}
                 </button>
                 <button
                   onClick={handleUpdate}
-                  className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 rounded disabled:opacity-50"
+                  className="btn-primary"
                   disabled={updating}
                 >
                   {updating ? t('update.updating') : t('update.confirm')}

@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.18] - 2026-04-17
+
+### Changed
+- **Binance-inspired design system (Phase 1 — foundation)** — establishes the visual/typographic contract documented in `DESIGN.md` (new, 500+ lines) and installs it via Tailwind v4 `@theme` tokens in `web/src/index.css`. The dashboard keeps its dark-first trading-terminal posture but rebrands to Binance's two-tone foundation: Binance Yellow (`#F0B90B`) as the singular accent for primary actions, Binance Dark (`#222126`) panels on deep-ink (`#0b0e11`) canvas, Crypto Green (`#0ECB81`) / Crypto Red (`#F6465D`) preserved for PnL semantics.
+  - **`web/src/index.css`** (+323 lines): remapped Tailwind `gray` / `slate` / `zinc` / `neutral` scales to the Binance neutral palette via `@theme`, so existing utility classes (`bg-gray-900`, `text-gray-400`, etc.) automatically pick up the new brand without page-level rewrites. Also installs `--font-sans` / `--font-mono` stacks preferring `BinancePlex` with data-dense system fallbacks (Inter, JetBrains Mono).
+  - **`web/src/components/Sidebar.tsx`** (+56/−30): yellow diamond brand mark, active-nav indicator rail (3px yellow bar on the left edge), pill-shaped locale switcher, uppercase-tracked nav labels. Connected/disconnected status dot shifts from generic green/red to Crypto Green / Crypto Red.
+  - **`web/src/pages/Login.tsx`** (+61/−22): ambient gold radial glows on the dark canvas, brand-mark diamond + wordmark lockup, Binance-Dark card with `#f0b90b` focus ring on inputs.
+  - **`web/src/App.tsx`** (+52/−28): mobile top-bar (`< md` only) with hamburger, brand diamond, and page title in the deep-ink surface; integrates with the Sidebar's drawer.
+  - **`web/src/components/StatusBadge.tsx`** (+21/−7) + **`TimeRangeSelector.tsx`** (+7/−3): restyled to the new accent + neutral system.
+- This is a **foundation-only** pass — remaining pages (Overview, Config, Analytics, Exchanges, Risk, Safety, Allocation, Spot Positions, Transfers, Rejections, Logs, Permissions, Trade History) still render through auto-remapped token colors but haven't been touched component-by-component. Their look is noticeably improved "for free" via the `@theme` scale remap, but follow-up passes are expected.
+- No behavior changes, no new npm dependencies (respecting the axios lockdown), no backend changes.
+
 ## [0.32.17] - 2026-04-16
 
 ### Changed
