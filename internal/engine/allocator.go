@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,12 +37,13 @@ var allocatorExchangeFees = map[string]allocatorFeeSchedule{
 }
 
 type rebalanceBalanceInfo struct {
-	futures        float64
-	spot           float64
-	futuresTotal   float64
-	marginRatio    float64
-	maxTransferOut float64
-	hasPositions   bool // true if this exchange has active perp-perp legs
+	futures                     float64
+	spot                        float64
+	futuresTotal                float64
+	marginRatio                 float64
+	maxTransferOut              float64
+	maxTransferOutAuthoritative bool
+	hasPositions                bool // true if this exchange has active perp-perp legs
 }
 
 // rebalanceDeficit records that an exchange needs additional funding from
@@ -77,6 +79,10 @@ type rebalanceExecutionResult struct {
 	PostBalances map[string]rebalanceBalanceInfo
 	Unfunded     map[string]float64
 	SkipReasons  map[string]string
+	// FundedReceivers: exchanges that received a cross-exchange deposit AND
+	// successfully moved it to futures this cycle. Used as a trigger for the
+	// live-balance recheck in keepFundedChoices — not a bias for entry scan.
+	FundedReceivers map[string]float64
 }
 
 // cloneRebalanceBalances returns a shallow copy of the map. rebalanceBalanceInfo
@@ -152,16 +158,55 @@ func (e *Engine) reserveAllocatorChoice(work map[string]rebalanceBalanceInfo, c 
 // post-execution balances, reserving capacity per kept choice. Choices that
 // cannot be satisfied after real transfers are dropped so stale overrides do
 // not leak into the next entry scan.
-func (e *Engine) keepFundedChoices(choices []allocatorChoice, post map[string]rebalanceBalanceInfo) map[string]allocatorChoice {
+func (e *Engine) keepFundedChoices(choices []allocatorChoice, post map[string]rebalanceBalanceInfo, funded map[string]float64) map[string]allocatorChoice {
 	work := cloneRebalanceBalances(post)
 	kept := make(map[string]allocatorChoice, len(choices))
+
 	for _, c := range choices {
-		if !e.canReserveAllocatorChoice(work, c) {
+		if e.canReserveAllocatorChoice(work, c) {
+			e.reserveAllocatorChoice(work, c)
+			kept[c.symbol] = c
 			continue
 		}
-		e.reserveAllocatorChoice(work, c)
+
+		_, longFunded := funded[c.longExchange]
+		_, shortFunded := funded[c.shortExchange]
+		if !longFunded && !shortFunded {
+			continue
+		}
+
+		// Start from the CURRENT reserved working view so any prior kept choices
+		// remain deducted. Refresh only the two legs involved in this choice.
+		liveWork := cloneRebalanceBalances(work)
+
+		longBal, okLong := e.fetchLiveRebalanceBalance(c.longExchange)
+		if !okLong {
+			continue
+		}
+		shortBal, okShort := e.fetchLiveRebalanceBalance(c.shortExchange)
+		if !okShort {
+			continue
+		}
+
+		liveWork[c.longExchange] = longBal
+		liveWork[c.shortExchange] = shortBal
+
+		if !e.canReserveAllocatorChoice(liveWork, c) {
+			continue
+		}
+
+		// Reserve against LIVE refreshed balances, then promote that reserved
+		// live view to be the new working state for subsequent choices.
+		e.reserveAllocatorChoice(liveWork, c)
+		work = liveWork
 		kept[c.symbol] = c
+
+		e.log.Info(
+			"allocator: override %s retained via live-balance recheck (funded receiver: long=%v short=%v)",
+			c.symbol, longFunded, shortFunded,
+		)
 	}
+
 	return kept
 }
 
@@ -695,6 +740,13 @@ func (e *Engine) allocatorDonorGrossCapacity(name string, bal rebalanceBalanceIn
 	} else {
 		futuresAvail = bal.maxTransferOut
 		if futuresAvail <= 0 {
+			if bal.maxTransferOutAuthoritative {
+				// Exchange authoritatively reports zero withdrawable. Don't
+				// override with an estimate; skip this donor.
+				e.log.Debug("allocator: donorGross %s split-account authoritative maxTransferOut=0, treating as unavailable", name)
+				return 0
+			}
+			// Field not populated — fall back to raw futures with L4-safety estimate.
 			futuresAvail = bal.futures
 			if bal.marginRatio > 0 && bal.futuresTotal > 0 && e.cfg.MarginL4Threshold > 0 {
 				safeMax := bal.futuresTotal * (1.0 - bal.marginRatio/e.cfg.MarginL4Threshold)
@@ -1013,6 +1065,12 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 					// Subtract own margin needs first, then cap (executor pattern at allocator.go:1348-1364)
 					maxMove := donorBal.maxTransferOut
 					if maxMove <= 0 {
+						if donorBal.maxTransferOutAuthoritative {
+							// Exchange authoritatively reports zero transferable collateral.
+							// Do not synthesize a donor budget from raw futures.
+							triedDonors[bestDonor] = true
+							continue
+						}
 						maxMove = donorBal.futures
 					}
 					maxMove -= needs[bestDonor]
@@ -1536,6 +1594,11 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				moveAmt := requiredSpot - donorBal.spot
 				maxMove := donorBal.maxTransferOut
 				if maxMove <= 0 {
+					if donorBal.maxTransferOutAuthoritative {
+						e.log.Info("rebalance: %s donor skipped — authoritative maxTransferOut=0", bestDonor)
+						surplus[bestDonor] = 0
+						continue
+					}
 					maxMove = donorBal.futures - needs[bestDonor]
 					if donorBal.marginRatio > 0 && donorBal.futuresTotal > 0 && e.cfg.MarginL4Threshold > 0 {
 						safeMax := donorBal.futuresTotal * (1.0 - donorBal.marginRatio/e.cfg.MarginL4Threshold)
@@ -1575,6 +1638,14 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 					continue
 				}
 				moveStr := fmt.Sprintf("%.4f", moveAmt)
+				// Post-format zero guard: moveAmt can be a tiny positive (e.g. 0.00003)
+				// that passes float checks but rounds to "0.0000" via %.4f. Exchanges
+				// reject zero-amount transfers (bitget code=40020).
+				if parsed, _ := strconv.ParseFloat(moveStr, 64); parsed <= 0 {
+					e.log.Warn("rebalance: %s moveAmt %.6f rounds to zero string, skipping", bestDonor, moveAmt)
+					surplus[bestDonor] = 0
+					continue
+				}
 				e.log.Info("rebalance: %s futures->spot %s USDT", bestDonor, moveStr)
 				if err := e.exchanges[bestDonor].TransferToSpot("USDT", moveStr); err != nil {
 					e.log.Error("rebalance: %s futures->spot failed: %v", bestDonor, err)
@@ -1893,6 +1964,10 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				bi.spot = 0
 			}
 			balances[recipient] = bi
+			if result.FundedReceivers == nil {
+				result.FundedReceivers = make(map[string]float64)
+			}
+			result.FundedReceivers[recipient] += totalPending
 		}
 	}
 

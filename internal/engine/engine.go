@@ -611,6 +611,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			bi.futuresTotal = futBal.Total
 			bi.marginRatio = futBal.MarginRatio
 			bi.maxTransferOut = futBal.MaxTransferOut
+			bi.maxTransferOutAuthoritative = futBal.MaxTransferOutAuthoritative
 		}
 		if spotBal, err := exch.GetSpotBalance(); err == nil {
 			bi.spot = spotBal.Available
@@ -635,7 +636,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			// against PostBalances and drop any whose required legs are no
 			// longer funded, so the next :55 entry scan cannot be steered
 			// onto unfunded exchanges.
-			kept := e.keepFundedChoices(allocSel.choices, result.PostBalances)
+			kept := e.keepFundedChoices(allocSel.choices, result.PostBalances, result.FundedReceivers)
 
 			e.allocOverrideMu.Lock()
 			e.allocOverrides = kept
@@ -1014,6 +1015,55 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 	_ = e.executeRebalanceFundingPlan(needs, balances, precomputed)
 
 	e.log.Info("rebalance: complete")
+}
+
+// fetchLiveRebalanceBalance queries a single exchange's current balances and
+// returns a rebalanceBalanceInfo populated in the same way as the rebalance
+// snapshot site (edit 4a). Returns false if any required call fails.
+func (e *Engine) fetchLiveRebalanceBalance(name string) (rebalanceBalanceInfo, bool) {
+	exch, ok := e.exchanges[name]
+	if !ok {
+		return rebalanceBalanceInfo{}, false
+	}
+
+	// Mirror the rebalance snapshot site exactly:
+	// - always read GetFuturesBalance()
+	// - always read GetSpotBalance()
+	// - no unified-vs-split special case here
+	futBal, err := exch.GetFuturesBalance()
+	if err != nil {
+		return rebalanceBalanceInfo{}, false
+	}
+
+	spotBal, err := exch.GetSpotBalance()
+	if err != nil {
+		return rebalanceBalanceInfo{}, false
+	}
+
+	hasPositions := false
+	active, err := e.db.GetActivePositions()
+	if err != nil {
+		return rebalanceBalanceInfo{}, false
+	}
+	for _, p := range active {
+		if p.Status == models.StatusClosed {
+			continue
+		}
+		if p.LongExchange == name || p.ShortExchange == name {
+			hasPositions = true
+			break
+		}
+	}
+
+	return rebalanceBalanceInfo{
+		futures:                     futBal.Available,
+		spot:                        spotBal.Available,
+		futuresTotal:                futBal.Total,
+		marginRatio:                 futBal.MarginRatio,
+		maxTransferOut:              futBal.MaxTransferOut,
+		maxTransferOutAuthoritative: futBal.MaxTransferOutAuthoritative,
+		hasPositions:                hasPositions,
+	}, true
 }
 
 // applyAllocatorOverrides consumes stored allocator choices and uses them to

@@ -734,12 +734,13 @@ func (b *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 			maxTransferOut, _ := strconv.ParseFloat(asset.MaxWithdrawAmount, 64)
 
 			return &exchange.Balance{
-				Total:          total,
-				Available:      available,
-				Frozen:         total - available,
-				Currency:       "USDT",
-				MarginRatio:    marginRatio,
-				MaxTransferOut: maxTransferOut,
+				Total:                       total,
+				Available:                   available,
+				Frozen:                      total - available,
+				Currency:                    "USDT",
+				MarginRatio:                 marginRatio,
+				MaxTransferOut:              maxTransferOut,
+				MaxTransferOutAuthoritative: true,
 			}, nil
 		}
 	}

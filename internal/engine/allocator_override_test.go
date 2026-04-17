@@ -37,7 +37,7 @@ func TestKeepFundedChoices_AllFunded(t *testing.T) {
 		"okx":    {futures: 200, futuresTotal: 500},
 		"gateio": {futures: 200, futuresTotal: 500},
 	}
-	kept := e.keepFundedChoices(choices, post)
+	kept := e.keepFundedChoices(choices, post, nil)
 	if len(kept) != 2 {
 		t.Fatalf("want 2 kept, got %d: %+v", len(kept), kept)
 	}
@@ -66,7 +66,7 @@ func TestKeepFundedChoices_UnfundedRecipient(t *testing.T) {
 		"okx":    {futures: 200, futuresTotal: 500},
 		"gateio": {futures: 200, futuresTotal: 500},
 	}
-	kept := e.keepFundedChoices(choices, post)
+	kept := e.keepFundedChoices(choices, post, nil)
 	if len(kept) != 1 {
 		t.Fatalf("want 1 kept, got %d: %+v", len(kept), kept)
 	}
@@ -95,7 +95,7 @@ func TestKeepFundedChoices_SharedRecipientPartialFunding(t *testing.T) {
 		"bingx":  {futures: 200, futuresTotal: 500},
 		"okx":    {futures: 200, futuresTotal: 500},
 	}
-	kept := e.keepFundedChoices(choices, post)
+	kept := e.keepFundedChoices(choices, post, nil)
 	if len(kept) != 1 {
 		t.Fatalf("want 1 kept (order-dependent), got %d: %+v", len(kept), kept)
 	}
@@ -123,7 +123,7 @@ func TestKeepFundedChoices_LocalReliefKept(t *testing.T) {
 		"bitget": {futures: 100, futuresTotal: 200}, // post-relief, ratio=0.50 ok; after margin debit 30 → 70 → 0.65 ok
 		"bingx":  {futures: 200, futuresTotal: 500},
 	}
-	kept := e.keepFundedChoices(choices, post)
+	kept := e.keepFundedChoices(choices, post, nil)
 	if _, ok := kept["LOCAL"]; !ok {
 		t.Error("LOCAL override should survive because post-relief balances cover the buffered need")
 	}

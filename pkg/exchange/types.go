@@ -140,7 +140,12 @@ type Balance struct {
 	// trusted maintenance-style risk ratio and should not synthesize one from
 	// available/equity heuristics for global L3/L4/L5 health decisions.
 	MarginRatioUnavailable bool
-	MaxTransferOut float64 // max amount that can be transferred out; 0 = unknown (use Available as fallback)
+	MaxTransferOut float64 // max amount that can be transferred out; 0 = unknown unless MaxTransferOutAuthoritative=true
+	// MaxTransferOutAuthoritative: when true, MaxTransferOut=0 means the
+	// exchange has explicitly reported no withdrawable collateral (e.g. all
+	// equity reserved as position margin), not "field missing". Only adapters
+	// that always populate the underlying exchange field should set this.
+	MaxTransferOutAuthoritative bool
 }
 
 // Orderbook represents order book depth.
