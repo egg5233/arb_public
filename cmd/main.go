@@ -221,8 +221,14 @@ func main() {
 	eng.SetLossLimiter(lossLimiter)
 
 	// Ensure all exchanges are in cross-margin one-way mode.
+	// gateio EnsureOneWayMode currently returns MISSING_REQUIRED_PARAM due to
+	// an API shape issue (tracked); soft-warn until fixed to avoid crash loop.
 	for name, exch := range exchanges {
 		if err := exch.EnsureOneWayMode(); err != nil {
+			if name == "gateio" {
+				log.Error("EnsureOneWayMode on %s (soft-warn; see adapter.go:1560): %v", name, err)
+				continue
+			}
 			log.Error("FATAL: EnsureOneWayMode on %s failed: %v", name, err)
 			os.Exit(1)
 		}
