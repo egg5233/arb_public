@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.22] - 2026-04-18
+
+### Fixed
+- **Gate.io `EnsureOneWayMode` used JSON body; Gate.io actually requires query parameter.** After v0.32.21 hard-failed startup on `EnsureOneWayMode` error, the bot entered a crash loop because Gate.io returned `MISSING_REQUIRED_PARAM: dual_mode` every call. Investigation: `/futures/{settle}/dual_mode` endpoint rejects JSON body and expects `dual_mode` as a query parameter. Previous adapter comment/test asserting "JSON body" was a wrong assumption (doc spec did not match runtime behavior). Fix: pass `dual_mode=false` in query string, empty body. Test renamed `UsesJSONBody` → `UsesQueryParam` and asserts query + empty body. Verified in production: all 6 exchanges now report "one-way mode confirmed".
+
+### Integration
+- Merged `origin/main` (egg's v0.32.20 Appearance toggle, frontend-only) into branch. VERSION bumped to 0.32.22 to resolve duplicate v0.32.20 commit collision (both branches had diverging v0.32.20 tags). CHANGELOG consolidates both v0.32.20 entries under the same section below.
+
 ## [0.32.21] - 2026-04-18
 
 ### Fixed
@@ -22,6 +30,16 @@ All notable changes to this project will be documented in this file.
   - **Bug 1 — Binance split-account donor ignored authoritative `maxWithdrawAmount=0`.** Log showed `futuresAvail=187.66 maxTransferOut=0.00` yet `TransferToSpot 24.79` returned `code=-5013 insufficient`. Allocator's fallback-to-L4-safety-estimate path is intended for adapters that don't populate the field at all; Binance's `maxWithdrawAmount=0` with open positions is authoritative ("no withdrawable collateral"). Added `MaxTransferOutAuthoritative bool` to `exchange.Balance` (pkg/exchange/types.go), set `true` by Binance (always populated) and by Bybit (only when `/v5/account/withdrawal` endpoint succeeds — preserves v0.32.10 fallback for endpoint failures). Three allocator sites now gate on the flag: `allocatorDonorGrossCapacity` scan-time capacity (internal/engine/allocator.go), `dryRunTransferPlan` feasibility path, and executor pre-withdraw re-cap. Non-authoritative adapters keep the existing `0 = unknown` contract.
   - **Bug 2 — `moveAmt` formatted to `"0.0000"` string triggered bitget `code=40020`.** `freshBal.MaxTransferOut` could be a tiny positive (e.g. 0.00003) that passed `> 0` and `moveAmt <= 0` guards but rounded to `"0.0000"` via `%.4f`. Added post-format reparse guard before `TransferToSpot` — if the formatted string parses back to zero, skip with warning.
   - **Bug 3 — Override pair dropped despite receiver leg funded cross-exchange.** `keepFundedChoices` replayed choices against executor's `PostBalances`, which under-reflects reality when receiver's `spot→futures` has been applied but the post-balance projection lags. Once `kept=0`, entry scan fell to scanner's fresh ranking (SOONUSDT re-picked as gateio/bingx), ignoring that bingx just received 33.84 USDT via APT. Extended `rebalanceExecutionResult` with `FundedReceivers map[string]float64` populated after successful receiver `TransferToFutures`. `keepFundedChoices` now takes a third `funded` param; when a pair would drop AND either leg is in `funded`, re-fetches live balance via new `fetchLiveRebalanceBalance` helper (mirrors snapshot site — `GetFuturesBalance + GetSpotBalance + db.GetActivePositions()`) and re-runs the reservation check against live data. If feasible, retains the override — existing `applyAllocatorOverrides` then uses `opp.Alternatives` to patch the current scan back to the funded pair (binance/bingx), preventing cross-scan capital stranding.
+
+### Changed
+- **Dashboard design toggle — users can choose Classic (pre-v0.32.18) or New (Binance-inspired) design.** Default is now **Classic**, preserving the look that predates the v0.32.18 redesign for users who didn't like the rebrand. The New design is opt-in via Config → **Appearance** tab.
+  - **`web/src/theme/index.ts`** (new): `ThemeContext` + `useTheme()` hook, mirrors the `LocaleContext` pattern. localStorage-backed (`arb-theme` key), default `'classic'`. No backend config — UI preference is per-browser, not per-deployment.
+  - **`web/src/index.css`**: Binance color tokens moved out of global `@theme` into `:root[data-theme="new"]`, so Tailwind v4 utility classes (`bg-gray-400`, `text-gray-900`, etc.) resolve to Binance values only when the new theme is active. When `data-theme="classic"` (default), the Tailwind v4 built-in palette applies — restoring the pre-v0.32.18 look. `.btn-primary` / `.btn-secondary` / focus rings / body background all gate on `[data-theme]`.
+  - **`web/src/App.tsx`**: wraps the app in `<ThemeContext.Provider>`, syncs `document.documentElement.dataset.theme` on every theme change via `useEffect` (no page reload needed). Mobile header, update banner, TradFi banner, and update modal each branch on theme to match the classic palette.
+  - **`web/src/components/{Sidebar,StatusBadge,TimeRangeSelector}.tsx` + `pages/Login.tsx`**: each component reads `useTheme()` and renders the classic (pre-ae8c563) or new markup accordingly. Props and behavior identical — only visuals differ.
+  - **`web/src/pages/Config.tsx`**: new rightmost strategy tab `Appearance` with a two-option toggle (Classic / New Design). Theme switches live on click.
+  - **i18n**: 5 new keys synced in `en.ts` and `zh-TW.ts` (`cfg.tab.appearance`, `cfg.appearance.theme`, `cfg.appearance.theme.{new,classic,desc}`).
+  - **Frontend-only change** — no Go code, backend, or `config.json` touched. No new npm dependencies.
 
 ## [0.32.19] - 2026-04-17
 

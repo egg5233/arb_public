@@ -724,6 +724,13 @@ const en = {
   'cfg.analytics.enableAnalyticsDesc': 'Enable SQLite-backed performance analytics (PnL charts, strategy comparison, exchange metrics). Requires restart.',
   'cfg.analytics.dbPath': 'Database Path',
   'cfg.analytics.dbPathDesc': 'Path to the SQLite analytics database file',
+
+  // Config - Appearance
+  'cfg.tab.appearance': 'Appearance',
+  'cfg.appearance.theme': 'Dashboard Theme',
+  'cfg.appearance.theme.new': 'New Design',
+  'cfg.appearance.theme.classic': 'Classic',
+  'cfg.appearance.theme.desc': 'Changes apply immediately. Stored in your browser.',
 } as const;
 
 export type TranslationKey = keyof typeof en;

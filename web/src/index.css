@@ -1,17 +1,15 @@
 @import "tailwindcss";
 
 /*
- * Binance-inspired design tokens.
+ * Binance-inspired design tokens — scoped to [data-theme="new"].
  *
- * Tailwind v4 reads colors from the @theme CSS variables. Remapping the
- * gray / blue / purple / violet / green / red / yellow / amber / emerald /
- * orange / teal scales here rebrands every existing utility class across
- * the app without touching page code. The dashboard keeps its dark-first
- * trading-terminal posture, with Binance Yellow (#F0B90B) as the single
- * accent and Crypto Green / Crypto Red for PnL semantics.
+ * When data-theme="new" is set on <html>, Tailwind color utilities resolve
+ * to Binance palette values via CSS custom-property overrides.
+ * When data-theme="classic" (or absent), the Tailwind v4 built-in default
+ * palette applies — which is what the classic design used.
  */
 
-@theme {
+:root[data-theme="new"] {
   /* Typography — BinancePlex is proprietary, so we fall back to a tight,
      data-dense system stack. Tabular numerals keep price columns aligned. */
   --font-sans: "BinancePlex", "Inter", "Helvetica Neue", Arial, ui-sans-serif,
@@ -19,13 +17,7 @@
   --font-mono: "BinancePlex Mono", "JetBrains Mono", "SF Mono", ui-monospace,
     Menlo, Monaco, Consolas, monospace;
 
-  /* Neutrals — dark canvas, panels, text.
-     gray-950 → deepest canvas (Ink+)
-     gray-900 → Binance Dark primary panel
-     gray-800 → Dark Card
-     gray-700 → border on dark card
-     gray-400 → Slate (workhorse secondary text)
-     gray-100 → near-white body text on dark */
+  /* Neutrals — dark canvas, panels, text. */
   --color-gray-50: #f5f5f5;
   --color-gray-100: #fafafa;
   --color-gray-200: #eaecef;
@@ -193,15 +185,32 @@
   --shadow-pill: 0 2px 10px -3px rgb(153, 153, 153);
 }
 
-/* Global base — tabular numerals make price columns line up, smooth fonts,
-   and a Binance Dark canvas so pages feel like a trading terminal. */
-html,
-body,
-#root {
-  background-color: var(--color-gray-950);
+/* ───── Theme-scoped base styles ──────────────────────────────────────────── */
+
+/* New design: Binance Dark canvas + BinancePlex font. */
+:root[data-theme="new"] html,
+:root[data-theme="new"] body,
+:root[data-theme="new"] #root,
+html[data-theme="new"],
+html[data-theme="new"] body,
+html[data-theme="new"] #root {
+  background-color: #0b0e11;
   color: #eaecef;
   font-family: var(--font-sans);
   font-feature-settings: "tnum" 1, "ss01" 1, "cv01" 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Classic design: Tailwind gray-950 canvas, system font. */
+:root[data-theme="classic"] html,
+:root[data-theme="classic"] body,
+:root[data-theme="classic"] #root,
+html[data-theme="classic"],
+html[data-theme="classic"] body,
+html[data-theme="classic"] #root {
+  background-color: #030712; /* Tailwind gray-950 */
+  color: #f3f4f6;            /* Tailwind gray-100 */
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -215,16 +224,24 @@ pre {
   font-feature-settings: "tnum" 1;
 }
 
-/* Binance-style focus ring — subtle yellow outline instead of browser blue. */
-*:focus-visible {
+/* ───── Theme-scoped focus ring ────────────────────────────────────────── */
+
+/* New design: Binance Yellow focus ring. */
+html[data-theme="new"] *:focus-visible {
   outline: 2px solid #f0b90b;
+  outline-offset: 2px;
+}
+
+/* Classic design: default browser blue focus ring. */
+html[data-theme="classic"] *:focus-visible {
+  outline: 2px solid #3b82f6;
   outline-offset: 2px;
 }
 
 /* ───── Component utility classes ──────────────────────────────────────── */
 
-/* Primary pill CTA — Binance Yellow fill, Ink text. */
-.btn-primary {
+/* Primary pill CTA — new design: Binance Yellow fill. */
+html[data-theme="new"] .btn-primary {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -241,21 +258,44 @@ pre {
   transition: background-color 200ms ease, color 200ms ease,
     box-shadow 200ms ease;
 }
-.btn-primary:hover:not(:disabled) {
+html[data-theme="new"] .btn-primary:hover:not(:disabled) {
   background-color: #fcd535;
 }
-.btn-primary:active:not(:disabled) {
+html[data-theme="new"] .btn-primary:active:not(:disabled) {
   background-color: #d0980b;
 }
-.btn-primary:disabled {
+html[data-theme="new"] .btn-primary:disabled {
   background-color: #3a3e45;
   color: #848e9c;
   box-shadow: none;
   cursor: not-allowed;
 }
 
-/* Secondary ghost button — Ink surface, Slate text, yellow on hover. */
-.btn-secondary {
+/* Primary button — classic design: blue fill. */
+html[data-theme="classic"] .btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1.25rem;
+  border-radius: 0.375rem;
+  background-color: #2563eb;
+  color: #ffffff;
+  font-weight: 600;
+  font-size: 0.875rem;
+  border: 1px solid transparent;
+  transition: background-color 200ms ease;
+}
+html[data-theme="classic"] .btn-primary:hover:not(:disabled) {
+  background-color: #1d4ed8;
+}
+html[data-theme="classic"] .btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Secondary ghost button — new design. */
+html[data-theme="new"] .btn-secondary {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -270,21 +310,51 @@ pre {
   transition: border-color 200ms ease, color 200ms ease,
     background-color 200ms ease;
 }
-.btn-secondary:hover:not(:disabled) {
+html[data-theme="new"] .btn-secondary:hover:not(:disabled) {
   border-color: #f0b90b;
   color: #f0b90b;
 }
-.btn-secondary:disabled {
+html[data-theme="new"] .btn-secondary:disabled {
   color: #5e6673;
   border-color: #2b2f36;
   cursor: not-allowed;
 }
 
-/* Data card — subtle border on dark panel, tight radius for data density. */
-.card-surface {
+/* Secondary button — classic design. */
+html[data-theme="classic"] .btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 0.375rem;
+  background-color: #374151;
+  color: #f3f4f6;
+  font-weight: 600;
+  font-size: 0.875rem;
+  border: 1px solid transparent;
+  transition: background-color 200ms ease;
+}
+html[data-theme="classic"] .btn-secondary:hover:not(:disabled) {
+  background-color: #4b5563;
+}
+html[data-theme="classic"] .btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Data card — new design. */
+html[data-theme="new"] .card-surface {
   background-color: #1e2026;
   border: 1px solid #2b2f36;
   border-radius: 12px;
+}
+
+/* Data card — classic design. */
+html[data-theme="classic"] .card-surface {
+  background-color: #111827;
+  border: 1px solid #1f2937;
+  border-radius: 8px;
 }
 
 /* Tag/pill for status badges on dark panels. */
@@ -299,26 +369,32 @@ pre {
   text-transform: uppercase;
 }
 
-/* Scrollbar refinement — Binance-style thin dark scrollbar. */
-*::-webkit-scrollbar {
+/* Scrollbar refinement — new design: thin dark Binance-style. */
+html[data-theme="new"] *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
-*::-webkit-scrollbar-track {
+html[data-theme="new"] *::-webkit-scrollbar-track {
   background: transparent;
 }
-*::-webkit-scrollbar-thumb {
+html[data-theme="new"] *::-webkit-scrollbar-thumb {
   background: #2b2f36;
   border-radius: 9999px;
 }
-*::-webkit-scrollbar-thumb:hover {
+html[data-theme="new"] *::-webkit-scrollbar-thumb:hover {
   background: #3a3e45;
 }
 
-/* Selection uses Binance Yellow. */
-::selection {
+/* Selection — new design: Binance Yellow. */
+html[data-theme="new"] ::selection {
   background-color: rgba(240, 185, 11, 0.35);
   color: #fafafa;
+}
+
+/* Selection — classic design: default blue. */
+html[data-theme="classic"] ::selection {
+  background-color: rgba(59, 130, 246, 0.35);
+  color: #f3f4f6;
 }
 
 /* ───── Animations ────────────────────────────────────────────────────── */

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import type { FC, FormEvent } from 'react';
 import { useLocale, type TranslationKey } from '../i18n/index.ts';
+import { useTheme, type Theme } from '../theme/index.ts';
 
 interface ConfigProps {
   getConfig: () => Promise<Record<string, unknown>>;
@@ -12,7 +13,7 @@ interface ConfigProps {
 // ---------------------------------------------------------------------------
 // Tab definitions
 // ---------------------------------------------------------------------------
-type Strategy = 'exchanges' | 'perp' | 'spot' | 'risk' | 'safety' | 'analytics' | 'allocation';
+type Strategy = 'exchanges' | 'perp' | 'spot' | 'risk' | 'safety' | 'analytics' | 'allocation' | 'appearance';
 type PerpTabId = 'fund' | 'schedule' | 'discovery' | 'persist' | 'entry' | 'exit';
 type SpotTabId = 'sf-general' | 'sf-sizing' | 'sf-discovery' | 'sf-exit';
 type RiskTabId = 'risk-margins' | 'risk-liq';
@@ -321,6 +322,7 @@ const ReadOnlyNumberField: FC<{
 // ---------------------------------------------------------------------------
 const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBlacklistRemove }) => {
   const { t } = useLocale();
+  const { theme, setTheme } = useTheme();
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
@@ -1887,11 +1889,37 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
     </div>
   );
 
+  const renderAppearanceTab = () => (
+    <div className="max-w-lg space-y-6">
+      <div>
+        <h3 className="text-sm font-semibold text-gray-300 mb-1">{t('cfg.appearance.theme')}</h3>
+        <p className="text-xs text-gray-500 mb-4">{t('cfg.appearance.theme.desc')}</p>
+        <div className="flex gap-2">
+          {(['new', 'classic'] as Theme[]).map((opt) => (
+            <button
+              key={opt}
+              type="button"
+              onClick={() => setTheme(opt)}
+              className={`px-5 py-2 rounded-full text-sm font-semibold transition-all duration-150 ${
+                theme === opt
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'bg-gray-800 text-gray-400 hover:text-gray-200 hover:bg-gray-700 border border-gray-700'
+              }`}
+            >
+              {opt === 'new' ? t('cfg.appearance.theme.new') : t('cfg.appearance.theme.classic')}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
   const renderTabContent = () => {
     if (strategy === 'exchanges') return renderExchangesTab();
     if (strategy === 'safety') return renderSafetyTab();
     if (strategy === 'analytics') return renderAnalyticsTab();
     if (strategy === 'allocation') return renderAllocationTab();
+    if (strategy === 'appearance') return renderAppearanceTab();
     switch (activeTab) {
       case 'fund': return renderFundTab();
       case 'schedule': return renderScheduleTab();
@@ -1993,10 +2021,21 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
         >
           {t('cfg.tab.allocation')}
         </button>
+        <button
+          type="button"
+          onClick={() => setStrategy('appearance')}
+          className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all duration-150 ${
+            strategy === 'appearance'
+              ? 'bg-gray-600 text-gray-100 shadow-sm'
+              : 'text-gray-500 hover:text-gray-300'
+          }`}
+        >
+          {t('cfg.tab.appearance')}
+        </button>
       </div>
 
-      {/* Tab bar (hidden for exchanges, safety, analytics, allocation — no sub-tabs) */}
-      {strategy !== 'exchanges' && strategy !== 'safety' && strategy !== 'analytics' && strategy !== 'allocation' && <div
+      {/* Tab bar (hidden for exchanges, safety, analytics, allocation, appearance — no sub-tabs) */}
+      {strategy !== 'exchanges' && strategy !== 'safety' && strategy !== 'analytics' && strategy !== 'allocation' && strategy !== 'appearance' && <div
         ref={tabBarRef}
         className="flex gap-1 overflow-x-auto pb-3 mb-4 scrollbar-none"
         style={{ scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' }}
