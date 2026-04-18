@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.20] - 2026-04-18
+
+### Changed
+- **Dashboard design toggle — users can choose Classic (pre-v0.32.18) or New (Binance-inspired) design.** Default is now **Classic**, preserving the look that predates the v0.32.18 redesign for users who didn't like the rebrand. The New design is opt-in via Config → **Appearance** tab.
+  - **`web/src/theme/index.ts`** (new): `ThemeContext` + `useTheme()` hook, mirrors the `LocaleContext` pattern. localStorage-backed (`arb-theme` key), default `'classic'`. No backend config — UI preference is per-browser, not per-deployment.
+  - **`web/src/index.css`**: Binance color tokens moved out of global `@theme` into `:root[data-theme="new"]`, so Tailwind v4 utility classes (`bg-gray-400`, `text-gray-900`, etc.) resolve to Binance values only when the new theme is active. When `data-theme="classic"` (default), the Tailwind v4 built-in palette applies — restoring the pre-v0.32.18 look. `.btn-primary` / `.btn-secondary` / focus rings / body background all gate on `[data-theme]`.
+  - **`web/src/App.tsx`**: wraps the app in `<ThemeContext.Provider>`, syncs `document.documentElement.dataset.theme` on every theme change via `useEffect` (no page reload needed). Mobile header, update banner, TradFi banner, and update modal each branch on theme to match the classic palette.
+  - **`web/src/components/{Sidebar,StatusBadge,TimeRangeSelector}.tsx` + `pages/Login.tsx`**: each component reads `useTheme()` and renders the classic (pre-ae8c563) or new markup accordingly. Props and behavior identical — only visuals differ.
+  - **`web/src/pages/Config.tsx`**: new rightmost strategy tab `Appearance` with a two-option toggle (Classic / New Design). Theme switches live on click.
+  - **i18n**: 5 new keys synced in `en.ts` and `zh-TW.ts` (`cfg.tab.appearance`, `cfg.appearance.theme`, `cfg.appearance.theme.{new,classic,desc}`).
+  - **Frontend-only change** — no Go code, backend, or `config.json` touched. No new npm dependencies.
+
 ## [0.32.19] - 2026-04-17
 
 ### Fixed

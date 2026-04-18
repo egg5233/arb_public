@@ -726,6 +726,13 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.analytics.enableAnalyticsDesc': '啟用基於 SQLite 的效能分析（損益圖表、策略比較、交易所指標）。需要重啟。',
   'cfg.analytics.dbPath': '資料庫路徑',
   'cfg.analytics.dbPathDesc': 'SQLite 分析資料庫檔案路徑',
+
+  // Config - Appearance
+  'cfg.tab.appearance': '外觀',
+  'cfg.appearance.theme': '儀表板主題',
+  'cfg.appearance.theme.new': '新版設計',
+  'cfg.appearance.theme.classic': '經典版',
+  'cfg.appearance.theme.desc': '變更立即生效，儲存於瀏覽器本機。',
 };
 
 export default zhTW;
