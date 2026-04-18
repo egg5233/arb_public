@@ -2,11 +2,9 @@ package discovery
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"math/rand"
-	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -14,7 +12,6 @@ import (
 )
 
 var (
-	lorisHistoricalURL          = "https://loris.tools/api/funding/historical"
 	backtestCacheTTL            = 24 * time.Hour
 	backtestRefreshInterval     = 4 * time.Hour
 	backtestRefreshCandidateMin = 10
@@ -30,18 +27,6 @@ type backtestResult struct {
 	ShortSum  float64 `json:"short_sum"`
 	NetProfit float64 `json:"net_profit"`
 	FetchedAt string  `json:"fetched_at,omitempty"`
-}
-
-// lorisHistoricalResponse represents the Loris historical funding API response.
-type lorisHistoricalResponse struct {
-	Symbol  string                      `json:"symbol"`
-	Series  map[string][]lorisDataPoint `json:"series"`
-	Notices []string                    `json:"notices"`
-}
-
-type lorisDataPoint struct {
-	T string  `json:"t"` // ISO 8601 timestamp
-	Y float64 `json:"y"` // settlement rate
 }
 
 // backtestFundingHistory checks if a coin's historical funding spread has been
@@ -119,39 +104,13 @@ func (s *Scanner) fetchAndCacheBacktest(opp models.Opportunity) bool {
 	now := time.Now().UTC()
 	start := now.Add(-time.Duration(days) * 24 * time.Hour)
 
-	params := url.Values{}
-	params.Set("symbol", base)
-	params.Set("start", start.Format(time.RFC3339))
-	params.Set("end", now.Format(time.RFC3339))
-	params.Set("exchanges", opp.LongExchange+","+opp.ShortExchange)
-
-	reqURL := lorisHistoricalURL + "?" + params.Encode()
-	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+	historical, err := FetchLorisHistoricalSeries(s.client, base, []string{opp.LongExchange, opp.ShortExchange}, start, now)
 	if err != nil {
-		return false
-	}
-	req.Header.Set("User-Agent", "arb-bot/1.0")
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		s.log.Warn("backtest prefetch %s: request failed: %v", opp.Symbol, err)
-		return false
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == 429 {
-		s.log.Warn("backtest prefetch %s: 429 rate limited", opp.Symbol)
-		return false
-	}
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		s.log.Warn("backtest prefetch %s: API returned %d: %s", opp.Symbol, resp.StatusCode, string(body))
-		return false
-	}
-
-	var historical lorisHistoricalResponse
-	if err := json.NewDecoder(resp.Body).Decode(&historical); err != nil {
+		if errors.Is(err, ErrLorisRateLimited) {
+			s.log.Warn("backtest prefetch %s: 429 rate limited", opp.Symbol)
+		} else {
+			s.log.Warn("backtest prefetch %s: request failed: %v", opp.Symbol, err)
+		}
 		return false
 	}
 
@@ -165,8 +124,8 @@ func (s *Scanner) fetchAndCacheBacktest(opp models.Opportunity) bool {
 	// Filter and sum.
 	longInterval := s.getLegInterval(opp.LongExchange, opp.Symbol)
 	shortInterval := s.getLegInterval(opp.ShortExchange, opp.Symbol)
-	longFiltered := filterValidSettlements(longSeries, longInterval)
-	shortFiltered := filterValidSettlements(shortSeries, shortInterval)
+	longFiltered := FilterValidSettlements(longSeries, longInterval)
+	shortFiltered := FilterValidSettlements(shortSeries, shortInterval)
 
 	expectedLong := float64(days) * 24.0 / longInterval
 	expectedShort := float64(days) * 24.0 / shortInterval
@@ -376,56 +335,4 @@ func (s *Scanner) getLegInterval(exchange, symbol string) float64 {
 		}
 	}
 	return 8 // default fallback
-}
-
-// filterValidSettlements filters data points to only valid settlement times
-// and deduplicates by rounded hour.
-func filterValidSettlements(series []lorisDataPoint, intervalHours float64) []lorisDataPoint {
-	seen := make(map[string]bool) // dedupe by rounded hour key
-	var out []lorisDataPoint
-
-	for _, p := range series {
-		t, err := time.Parse(time.RFC3339, p.T)
-		if err != nil {
-			continue
-		}
-		// Round to nearest hour to handle ±1 min jitter (e.g. 07:59 → 08:00).
-		rounded := roundToNearestHour(t)
-		if !isValidSettlementHour(rounded, intervalHours) {
-			continue
-		}
-		// Deduplicate by rounded hour.
-		key := rounded.Format(time.RFC3339)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		out = append(out, p)
-	}
-	return out
-}
-
-// roundToNearestHour rounds a timestamp to the nearest hour.
-// e.g. 07:59 → 08:00, 08:01 → 08:00, 08:31 → 09:00
-func roundToNearestHour(t time.Time) time.Time {
-	if t.Minute() >= 30 {
-		return t.Truncate(time.Hour).Add(time.Hour)
-	}
-	return t.Truncate(time.Hour)
-}
-
-// isValidSettlementHour checks if a rounded-to-hour timestamp is a valid
-// funding settlement time for the given interval.
-func isValidSettlementHour(t time.Time, intervalHours float64) bool {
-	h := t.Hour()
-	switch {
-	case intervalHours <= 1:
-		return true // every hour
-	case intervalHours <= 4:
-		return h%4 == 0 // 0,4,8,12,16,20
-	case intervalHours <= 8:
-		return h%8 == 0 // 0,8,16
-	default:
-		return true // unknown interval, accept on-the-hour
-	}
 }

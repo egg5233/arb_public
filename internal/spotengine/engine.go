@@ -2,6 +2,7 @@ package spotengine
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -46,6 +47,14 @@ type SpotEngine struct {
 
 	// posMu provides per-position locking for read-modify-write operations.
 	posMu sync.Map // posID → *sync.Mutex
+
+	// prefetchMu ensures only one spot backtest prefetch runs at a time.
+	prefetchMu       sync.Mutex
+	spotBackoffMu    sync.RWMutex
+	spotBackoffUntil time.Time
+
+	// client is the HTTP client used for Loris historical API calls (injectable in tests).
+	client *http.Client
 
 	// borrowVelocity tracks recent borrow APR samples per position for spike detection.
 	borrowVelocity *RateVelocityDetector
@@ -98,12 +107,15 @@ func NewSpotEngine(
 		lastSeen:       make(map[string]bool),
 		borrowVelocity: NewRateVelocityDetector(),
 		telegram:       telegram,
+		client:         &http.Client{Timeout: 15 * time.Second},
 	}
 }
 
 // SetSnapshotWriter injects the analytics snapshot writer for recording
 // spot position close events. The writer is optional; nil means analytics disabled.
-func (e *SpotEngine) SetSnapshotWriter(sw interface{ RecordSpotClose(pos *models.SpotFuturesPosition) }) {
+func (e *SpotEngine) SetSnapshotWriter(sw interface {
+	RecordSpotClose(pos *models.SpotFuturesPosition)
+}) {
 	e.snapshotWriter = sw
 }
 
@@ -191,6 +203,7 @@ func (e *SpotEngine) discoveryLoop() {
 	}
 	passed := filterPassed(opps)
 	e.logDiscoveryResults(passed)
+	go e.prefetchSpotBacktestData(passed)
 	e.pushOppsToAPI(opps)
 	e.updatePersistenceCounts(passed)
 	e.updateAllocation() // refresh allocation before auto-entries
@@ -209,6 +222,7 @@ func (e *SpotEngine) discoveryLoop() {
 			}
 			passed := filterPassed(opps)
 			e.logDiscoveryResults(passed)
+			go e.prefetchSpotBacktestData(passed)
 			e.pushOppsToAPI(opps)
 			e.updatePersistenceCounts(passed)
 			e.updateAllocation() // refresh allocation before auto-entries
@@ -227,6 +241,7 @@ func (e *SpotEngine) discoveryLoop() {
 			}
 			passed := filterPassed(opps)
 			e.logDiscoveryResults(passed)
+			go e.prefetchSpotBacktestData(passed)
 			e.pushOppsToAPI(opps)
 			e.updatePersistenceCounts(passed)
 			e.updateAllocation() // refresh allocation before auto-entries

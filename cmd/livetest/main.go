@@ -12,10 +12,10 @@ import (
 	"arb/internal/config"
 	"arb/pkg/exchange"
 	"arb/pkg/exchange/binance"
+	"arb/pkg/exchange/bingx"
 	"arb/pkg/exchange/bitget"
 	"arb/pkg/exchange/bybit"
 	"arb/pkg/exchange/gateio"
-	"arb/pkg/exchange/bingx"
 	"arb/pkg/exchange/okx"
 )
 

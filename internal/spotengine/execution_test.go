@@ -83,9 +83,11 @@ func (s *closeTestExchange) SetMetricsCallback(exchange.MetricsCallback) {}
 func (s *closeTestExchange) PlaceStopLoss(exchange.StopLossParams) (string, error) {
 	return "", nil
 }
-func (s *closeTestExchange) CancelStopLoss(string, string) error                      { return nil }
-func (s *closeTestExchange) PlaceTakeProfit(exchange.TakeProfitParams) (string, error) { return "", nil }
-func (s *closeTestExchange) CancelTakeProfit(string, string) error                     { return nil }
+func (s *closeTestExchange) CancelStopLoss(string, string) error { return nil }
+func (s *closeTestExchange) PlaceTakeProfit(exchange.TakeProfitParams) (string, error) {
+	return "", nil
+}
+func (s *closeTestExchange) CancelTakeProfit(string, string) error { return nil }
 func (s *closeTestExchange) GetUserTrades(string, time.Time, int) ([]exchange.Trade, error) {
 	return nil, nil
 }
@@ -99,9 +101,9 @@ func (s *closeTestExchange) WithdrawFeeInclusive() bool { return false }
 func (s *closeTestExchange) GetWithdrawFee(string, string) (float64, float64, error) {
 	return 0, 0, nil
 }
-func (s *closeTestExchange) EnsureOneWayMode() error  { return nil }
+func (s *closeTestExchange) EnsureOneWayMode() error      { return nil }
 func (s *closeTestExchange) CancelAllOrders(string) error { return nil }
-func (s *closeTestExchange) Close()                   {}
+func (s *closeTestExchange) Close()                       {}
 
 type closeTestSpotMargin struct {
 	placeCalls   int

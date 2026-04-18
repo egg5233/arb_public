@@ -24,10 +24,10 @@ func newAutoEntryEngine(t *testing.T, cfg *config.Config) (*SpotEngine, *minired
 		t.Fatalf("database.New: %v", err)
 	}
 	return &SpotEngine{
-		cfg:       cfg,
-		db:        db,
-		log:       utils.NewLogger("test"),
-		lastSeen:  make(map[string]bool),
+		cfg:      cfg,
+		db:       db,
+		log:      utils.NewLogger("test"),
+		lastSeen: make(map[string]bool),
 	}, mr
 }
 

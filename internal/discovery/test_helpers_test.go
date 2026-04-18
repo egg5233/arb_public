@@ -15,7 +15,7 @@ type stubExchange struct{ name string }
 func (s stubExchange) Name() string                                         { return s.name }
 func (s stubExchange) PlaceOrder(exchange.PlaceOrderParams) (string, error) { return "", nil }
 func (s stubExchange) CancelOrder(string, string) error                     { return nil }
-func (s stubExchange) CancelAllOrders(string) error                          { return nil }
+func (s stubExchange) CancelAllOrders(string) error                         { return nil }
 func (s stubExchange) GetPendingOrders(string) ([]exchange.Order, error)    { return nil, nil }
 func (s stubExchange) GetOrderFilledQty(string, string) (float64, error)    { return 0, nil }
 func (s stubExchange) GetPosition(string) ([]exchange.Position, error)      { return nil, nil }
@@ -49,12 +49,12 @@ func (s stubExchange) GetOrderUpdate(string) (exchange.OrderUpdate, bool) {
 func (s stubExchange) GetUserTrades(string, time.Time, int) ([]exchange.Trade, error) {
 	return nil, nil
 }
-func (s stubExchange) PlaceStopLoss(exchange.StopLossParams) (string, error)    { return "", nil }
-func (s stubExchange) CancelStopLoss(string, string) error                     { return nil }
+func (s stubExchange) PlaceStopLoss(exchange.StopLossParams) (string, error)     { return "", nil }
+func (s stubExchange) CancelStopLoss(string, string) error                       { return nil }
 func (s stubExchange) PlaceTakeProfit(exchange.TakeProfitParams) (string, error) { return "", nil }
-func (s stubExchange) CancelTakeProfit(string, string) error                    { return nil }
-func (s stubExchange) SetOrderCallback(func(exchange.OrderUpdate))           {}
-func (s stubExchange) SetMetricsCallback(exchange.MetricsCallback)           {}
+func (s stubExchange) CancelTakeProfit(string, string) error                     { return nil }
+func (s stubExchange) SetOrderCallback(func(exchange.OrderUpdate))               {}
+func (s stubExchange) SetMetricsCallback(exchange.MetricsCallback)               {}
 func (s stubExchange) GetFundingFees(string, time.Time) ([]exchange.FundingPayment, error) {
 	return nil, nil
 }
@@ -63,7 +63,7 @@ func (s stubExchange) Close()                  {}
 func (s stubExchange) GetClosePnL(string, time.Time) ([]exchange.ClosePnL, error) {
 	return nil, nil
 }
-func (s stubExchange) WithdrawFeeInclusive() bool                     { return false }
+func (s stubExchange) WithdrawFeeInclusive() bool { return false }
 func (s stubExchange) GetWithdrawFee(string, string) (float64, float64, error) {
 	return 0, 0, nil
 }

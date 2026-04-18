@@ -25,9 +25,9 @@ func liqDistEngine(markPrice, maintRate float64, leverage int, gateEnabled bool)
 		SpotFuturesMaintenanceDefault:    0.05,
 		SpotFuturesMaintenanceCacheTTL:   60,
 		// Set high thresholds for other triggers so they don't fire.
-		SpotFuturesPriceExitPct:      999.0,
-		SpotFuturesPriceEmergencyPct: 999.0,
-		SpotFuturesMarginExitPct:     999.0,
+		SpotFuturesPriceExitPct:       999.0,
+		SpotFuturesPriceEmergencyPct:  999.0,
+		SpotFuturesMarginExitPct:      999.0,
 		SpotFuturesMarginEmergencyPct: 999.0,
 	}
 
