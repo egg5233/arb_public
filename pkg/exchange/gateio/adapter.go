@@ -1558,8 +1558,9 @@ func (a *Adapter) Close() {
 }
 
 func (a *Adapter) EnsureOneWayMode() error {
-	// Gate.io annotations validate dual_mode as a JSON body, not a query parameter.
-	_, err := a.client.Post("/futures/usdt/dual_mode", `{"dual_mode":false}`)
+	// Gate.io /futures/{settle}/dual_mode requires dual_mode as a QUERY
+	// parameter (server returns MISSING_REQUIRED_PARAM if passed as JSON body).
+	_, err := a.client.Post("/futures/usdt/dual_mode?dual_mode=false", "")
 	if err != nil {
 		errMsg := err.Error()
 		// Already in single mode, has open positions, or no change needed

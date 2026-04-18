@@ -154,7 +154,7 @@ func TestQuantoMultiplierRoundTrip(t *testing.T) {
 	}
 }
 
-func TestEnsureOneWayMode_UsesJSONBody(t *testing.T) {
+func TestEnsureOneWayMode_UsesQueryParam(t *testing.T) {
 	var gotPath string
 	var gotQuery string
 	var gotBody []byte
@@ -189,18 +189,11 @@ func TestEnsureOneWayMode_UsesJSONBody(t *testing.T) {
 	if gotPath != "/api/v4/futures/usdt/dual_mode" {
 		t.Fatalf("expected path /api/v4/futures/usdt/dual_mode, got %s", gotPath)
 	}
-	if gotQuery != "" {
-		t.Fatalf("expected no query string, got %q", gotQuery)
+	if gotQuery != "dual_mode=false" {
+		t.Fatalf("expected query dual_mode=false, got %q", gotQuery)
 	}
-
-	var payload struct {
-		DualMode bool `json:"dual_mode"`
-	}
-	if err := json.Unmarshal(gotBody, &payload); err != nil {
-		t.Fatalf("unmarshal request body: %v", err)
-	}
-	if payload.DualMode {
-		t.Fatalf("expected dual_mode=false, got true")
+	if len(gotBody) != 0 {
+		t.Fatalf("expected empty body, got %d bytes: %s", len(gotBody), string(gotBody))
 	}
 }
 
