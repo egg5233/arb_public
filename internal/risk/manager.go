@@ -264,17 +264,14 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 
 	needed := m.effectiveCapitalPerLeg(string(StrategyPerpPerp))
 	if !dryRun {
+		const sweepTarget = 1e9
 		if needed > 0 {
-			bufferedNeed := needed * m.cfg.MarginSafetyMultiplier
-			m.ensureFuturesBalance(opp.LongExchange, longExch, longBal, bufferedNeed)
-			m.ensureFuturesBalance(opp.ShortExchange, shortExch, shortBal, bufferedNeed)
+			// Fixed-capital mode still needs the full split-account sweep; otherwise
+			// post-trade L4 uses an artificially low futures total and can reject a
+			// trade that already has idle spot available.
+			m.ensureFuturesBalance(opp.LongExchange, longExch, longBal, sweepTarget)
+			m.ensureFuturesBalance(opp.ShortExchange, shortExch, shortBal, sweepTarget)
 		} else {
-			// Auto-size: sweep all available spot into futures to maximize position sizing.
-			// On split-account exchanges (Binance, Bitget, Gate.io), spot balance
-			// is invisible to futures sizing — transfer it before approval.
-			// ensureFuturesBalance transfers min(deficit, spotAvailable), so passing
-			// a large 'needed' effectively sweeps all spot into futures.
-			const sweepTarget = 1e9
 			m.ensureFuturesBalance(opp.LongExchange, longExch, longBal, sweepTarget)
 			m.ensureFuturesBalance(opp.ShortExchange, shortExch, shortBal, sweepTarget)
 		}

@@ -143,17 +143,29 @@ func (e *Engine) canReserveAllocatorChoice(work map[string]rebalanceBalanceInfo,
 	if !okL || !okS {
 		return false
 	}
-	// Buffered sufficiency: same threshold the allocator used for selection.
+	long = e.replayUsableAllocatorBalance(c.longExchange, long)
+	short = e.replayUsableAllocatorBalance(c.shortExchange, short)
 	if long.futures < c.requiredMargin || short.futures < c.requiredMargin {
 		return false
 	}
-	// Unbuffered projected-ratio check mirroring dryRunTransferPlan's
-	// post-trade L4 gate, so replay matches feasibility semantics.
 	margin := c.requiredMargin
 	if e.cfg.MarginSafetyMultiplier > 0 {
 		margin = c.requiredMargin / e.cfg.MarginSafetyMultiplier
 	}
 	return e.replayProjectedRatioOK(long, margin) && e.replayProjectedRatioOK(short, margin)
+}
+
+func (e *Engine) replayUsableAllocatorBalance(name string, bal rebalanceBalanceInfo) rebalanceBalanceInfo {
+	if uc, ok := e.exchanges[name].(interface{ IsUnified() bool }); ok && uc.IsUnified() {
+		return bal
+	}
+	if bal.spot <= 0 {
+		return bal
+	}
+	bal.futures += bal.spot
+	bal.futuresTotal += bal.spot
+	bal.spot = 0
+	return bal
 }
 
 // reserveAllocatorChoice subtracts requiredMargin from BOTH legs (not /2),
@@ -1575,13 +1587,21 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 					netFloor = 0
 				}
 				if contribution < netFloor {
+					scheduled := origDeficit - remaining
+					if scheduled >= origDeficit*0.9 {
+						e.log.Info("rebalance: residual %.2f on %s below %s minWd floor %.2f after %.2f/%.2f already scheduled; not overfunding",
+							remaining, exchName, bestDonor, netFloor, scheduled, origDeficit)
+						result.Unfunded[exchName] = remaining
+						if _, ok := result.SkipReasons[exchName]; !ok {
+							result.SkipReasons[exchName] = fmt.Sprintf("residual %.2f below %s minWd floor %.2f", remaining, bestDonor, netFloor)
+						}
+						break
+					}
 					cappedFloor := math.Min(netFloor, bestSurplus-fee)
 					if cappedFloor <= 0 {
-						e.log.Debug("rebalance: %s contribution %.2f below minWd net floor %.2f and no room to bump, skipping", bestDonor, contribution, netFloor)
 						surplus[bestDonor] = 0
 						continue
 					}
-					e.log.Info("rebalance: %s bumping contribution %.2f -> %.2f to meet minWd net floor %.2f", bestDonor, contribution, cappedFloor, netFloor)
 					contribution = cappedFloor
 				}
 			}
@@ -1950,53 +1970,76 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 			if pollErr != nil {
 				continue
 			}
-			if spotBal.Available >= startBal+totalPending*0.9 {
+			arrivedAmt := spotBal.Available - startBal
+			if arrivedAmt < totalPending*0.9 {
+				continue
+			}
+			e.log.Info("rebalance: deposit threshold met (90%%) on %s: %.2f arrived of %.2f target", recipient, arrivedAmt, totalPending)
+
+			moveAmt := math.Min(totalPending, arrivedAmt)
+			moveAmt = math.Floor(moveAmt*10000) / 10000
+			if moveAmt <= 0 {
+				continue
+			}
+
+			// Unified receivers (bybit UTA, gateio unified): deposit already
+			// sits in the unified pool — no spot→futures API call needed.
+			// Credit the PostBalances directly. Mirrors v0.32.21 Section A.
+			if uc, ok := recipientExch.(interface{ IsUnified() bool }); ok && uc.IsUnified() {
+				bi := balances[recipient]
+				bi.futures += moveAmt
+				bi.futuresTotal += moveAmt
+				balances[recipient] = bi
+				if result.FundedReceivers == nil {
+					result.FundedReceivers = make(map[string]float64)
+				}
+				result.FundedReceivers[recipient] += moveAmt
+				result.CrossTransferHappened = true
 				arrived = true
-				e.log.Info("rebalance: all deposits confirmed on %s (bal=%.2f)", recipient, spotBal.Available)
 				break
 			}
-		}
-		if !arrived {
-			e.log.Warn("rebalance: deposits on %s not confirmed within 5min, skipping spot->futures", recipient)
-			continue
-		}
-		if totalPending <= 0 {
-			continue
-		}
-		if uc, ok := recipientExch.(interface{ IsUnified() bool }); ok && uc.IsUnified() {
-			// Deposit already lives in unified pool; GetFuturesBalance() already saw it.
-			bi := balances[recipient]
-			bi.futures += totalPending
-			bi.futuresTotal += totalPending
-			balances[recipient] = bi
-			if result.FundedReceivers == nil {
-				result.FundedReceivers = make(map[string]float64)
+
+			// Split-account receivers: actual spot→futures API call.
+			transferStr := fmt.Sprintf("%.4f", moveAmt)
+			if err := recipientExch.TransferToFutures("USDT", transferStr); err != nil {
+				e.log.Warn("rebalance: %s spot->futures %s USDT failed before %s: %v", recipient, transferStr, pollDeadline.Format(time.RFC3339), err)
+				continue
 			}
-			result.FundedReceivers[recipient] += totalPending
-			result.CrossTransferHappened = true // used in Section D
-			continue
-		}
-		transferStr := fmt.Sprintf("%.4f", totalPending)
-		if err := recipientExch.TransferToFutures("USDT", transferStr); err != nil {
-			e.log.Error("rebalance: %s spot->futures failed: %v", recipient, err)
-		} else {
+
 			e.log.Info("rebalance: %s spot->futures %s USDT (rebalance deposit)", recipient, transferStr)
 			e.recordTransfer(recipient+" spot", recipient, "USDT", "internal", transferStr, "0", "", "completed", "rebalance-recv")
-			// Update PostBalances so keepFundedChoices sees the recipient's real
-			// funded state. spot->futures is atomic, so we can credit immediately.
 			bi := balances[recipient]
-			bi.futures += totalPending
-			bi.futuresTotal += totalPending
-			bi.spot -= totalPending
-			if bi.spot < 0 {
-				bi.spot = 0
-			}
+			bi.futures += moveAmt
+			bi.futuresTotal += moveAmt
+			bi.spot = math.Max(0, spotBal.Available-moveAmt)
 			balances[recipient] = bi
 			if result.FundedReceivers == nil {
 				result.FundedReceivers = make(map[string]float64)
 			}
-			result.FundedReceivers[recipient] += totalPending
+			result.FundedReceivers[recipient] += moveAmt
 			result.CrossTransferHappened = true
+			arrived = true
+			break
+		}
+		if !arrived {
+			// Deadline hit — check if spot actually received funds. If so, credit
+			// spot-backed receiver state so keepFundedChoices can retain override
+			// (replay will simulate spot→futures via Bug 2's replayUsableAllocatorBalance).
+			if liveSpot, err := recipientExch.GetSpotBalance(); err == nil {
+				arrivedAmt := liveSpot.Available - startBal
+				if arrivedAmt > 1.0 {
+					bi := balances[recipient]
+					bi.spot += arrivedAmt
+					balances[recipient] = bi
+					if result.FundedReceivers == nil {
+						result.FundedReceivers = make(map[string]float64)
+					}
+					result.FundedReceivers[recipient] += arrivedAmt
+					result.CrossTransferHappened = true
+					e.log.Info("rebalance: deadline hit on %s, credited %.2f spot-backed for override retention", recipient, arrivedAmt)
+				}
+			}
+			e.log.Warn("rebalance: deposits on %s not confirmed within 5min, skipping spot->futures", recipient)
 		}
 	}
 

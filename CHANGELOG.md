@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.23] - 2026-04-18
+
+### Fixed
+- **Rebalance deposit race — 5 bugs + log fix from 2026-04-18 06:45 UTC SIGNUSDT incident.** Plan v3 ALL PASS + Codex post-review PASS. Root story: bingx alone could cover 111.42 USDT deficit to binance; bitget was unnecessarily bumped +10 to meet its 10-USDT min-withdraw floor, so target became 121.42. bingx landed in 40s, bitget late. 90% threshold falsely declared "all deposits confirmed" (bal=111.42 ≥ 109.28), then `TransferToFutures("121.42")` failed `code=-5013`. No retry despite 1m43s remaining rebalance lifetime. Non-unified credit path skipped on error → override dropped. At :55 entry, auto-transfer only covered the 67-USDT deficit, leaving 54.48 idle — post-trade L4 ratio hit 0.91 > 0.80 due to artificially low total → rejected. Fixes:
+  - **Bug 2 (replay + credit for split-account).** `canReserveAllocatorChoice` now runs balances through new `replayUsableAllocatorBalance` helper that simulates split-account spot→futures (unified exchanges unchanged), so stranded spot no longer fails the override replay. Deadline-fallback credits `bi.spot` (not `bi.futures`) so replay handles the sweep.
+  - **Bug 3 (sweep all in fixed-capital).** `internal/risk/manager.go` `ensureFuturesBalance` now uses `sweepTarget=1e9` in both fixed-capital and auto-size branches; previously fixed-capital left spot idle → L4 projection used artificially low futures total.
+  - **Bug 4 (min-withdraw overfund guard).** When >= 90% of the original deficit is already scheduled from prior donors, the min-withdraw bump at `allocator.go:1589` is skipped (marks residual as `Unfunded`, no over-solicitation).
+  - **Bug 5 (retry-to-deadline + Bug 1 cap + log).** Receiver block at `allocator.go:1977-2023` now: (a) caps `moveAmt` to `min(totalPending, arrivedAmt)` instead of transferring 100% target; (b) unified fast-path credits directly without `TransferToFutures` API call (mirrors v0.32.21 Section A); (c) split-account path on error uses `continue` to retry next poll iteration with fresh `GetSpotBalance()` until `pollDeadline`; (d) on deadline hit, credits `bi.spot` for override retention via Bug 2 replay. Log renamed `all deposits confirmed` → `deposit threshold met (90%)` to stop misleading triage.
+
 ## [0.32.22] - 2026-04-18
 
 ### Fixed
