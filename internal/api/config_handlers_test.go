@@ -488,6 +488,56 @@ func TestHandleConfig_ExchangeHealthScoringRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHandleConfig_WithdrawMinIntervalMs(t *testing.T) {
+	s, mr := newTestServer(t)
+	defer mr.Close()
+
+	// Seed config with documented default.
+	s.cfg.WithdrawMinIntervalMs = 11000
+
+	// GET returns 11000.
+	getReq := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	getW := httptest.NewRecorder()
+	s.handleGetConfig(getW, getReq)
+	if getW.Code != http.StatusOK {
+		t.Fatalf("GET expected 200, got %d: %s", getW.Code, getW.Body.String())
+	}
+	var getResp struct {
+		OK   bool                   `json:"ok"`
+		Data map[string]interface{} `json:"data"`
+	}
+	if err := json.NewDecoder(getW.Body).Decode(&getResp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	riskData, ok := getResp.Data["risk"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("risk payload missing: %#v", getResp.Data["risk"])
+	}
+	if v, _ := riskData["withdraw_min_interval_ms"].(float64); v != 11000 {
+		t.Fatalf("expected withdraw_min_interval_ms=11000, got %v", riskData["withdraw_min_interval_ms"])
+	}
+
+	// POST updates to 5000.
+	postReq := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"risk":{"withdraw_min_interval_ms":5000}}`))
+	postW := httptest.NewRecorder()
+	s.handlePostConfig(postW, postReq)
+	if postW.Code != http.StatusOK {
+		t.Fatalf("POST expected 200, got %d: %s", postW.Code, postW.Body.String())
+	}
+	if s.cfg.WithdrawMinIntervalMs != 5000 {
+		t.Fatalf("config not updated: %d", s.cfg.WithdrawMinIntervalMs)
+	}
+
+	// Redis flat-map persisted.
+	persisted, err := s.db.GetConfigField("withdraw_min_interval_ms")
+	if err != nil {
+		t.Fatalf("redis get withdraw_min_interval_ms: %v", err)
+	}
+	if persisted != "5000" {
+		t.Fatalf("expected redis withdraw_min_interval_ms=5000, got %q", persisted)
+	}
+}
+
 func TestHandleGetExchangeHealth_ColdStart(t *testing.T) {
 	s, mr := newTestServer(t)
 	defer mr.Close()

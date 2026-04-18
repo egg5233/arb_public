@@ -1105,6 +1105,14 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
           />
 
           <NumberField
+            label={t('cfg.field.withdrawMinIntervalMs')}
+            desc={t('cfg.desc.withdrawMinIntervalMs')}
+            value={getByPath(config, ['risk', 'withdraw_min_interval_ms'])}
+            unit="ms"
+            onChange={(v) => handleChange(['risk', 'withdraw_min_interval_ms'], v)}
+          />
+
+          <NumberField
             label={t('cfg.field.riskMonitorInterval')}
             desc={t('cfg.desc.riskMonitorInterval')}
             value={getByPath(config, ['risk', 'risk_monitor_interval_sec'])}

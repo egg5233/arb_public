@@ -466,6 +466,7 @@ type configRiskResponse struct {
 	MarginL5Threshold           float64 `json:"margin_l5_threshold"`
 	L4ReduceFraction            float64 `json:"l4_reduce_fraction"`
 	MarginSafetyMultiplier      float64 `json:"margin_safety_multiplier"`
+	WithdrawMinIntervalMs       int     `json:"withdraw_min_interval_ms"`
 	EntryMarginHeadroom         float64 `json:"entry_margin_headroom"`
 	RiskMonitorIntervalSec      int     `json:"risk_monitor_interval_sec"`
 	EnableLiqTrendTracking      bool    `json:"enable_liq_trend_tracking"`
@@ -591,6 +592,7 @@ func (s *Server) buildConfigResponse() configResponse {
 			MarginL5Threshold:           s.cfg.MarginL5Threshold,
 			L4ReduceFraction:            s.cfg.L4ReduceFraction,
 			MarginSafetyMultiplier:      s.cfg.MarginSafetyMultiplier,
+			WithdrawMinIntervalMs:       s.cfg.WithdrawMinIntervalMs,
 			EntryMarginHeadroom:         s.cfg.EntryMarginHeadroom,
 			RiskMonitorIntervalSec:      s.cfg.RiskMonitorIntervalSec,
 			EnableLiqTrendTracking:      s.cfg.EnableLiqTrendTracking,
@@ -910,6 +912,7 @@ type riskUpdate struct {
 	MarginL5Threshold           *float64 `json:"margin_l5_threshold"`
 	L4ReduceFraction            *float64 `json:"l4_reduce_fraction"`
 	MarginSafetyMultiplier      *float64 `json:"margin_safety_multiplier"`
+	WithdrawMinIntervalMs       *int     `json:"withdraw_min_interval_ms"`
 	EntryMarginHeadroom         *float64 `json:"entry_margin_headroom"`
 	RiskMonitorIntervalSec      *int     `json:"risk_monitor_interval_sec"`
 	EnableLiqTrendTracking      *bool    `json:"enable_liq_trend_tracking"`
@@ -1129,6 +1132,9 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if rk.MarginSafetyMultiplier != nil && *rk.MarginSafetyMultiplier >= 1.0 {
 			s.cfg.MarginSafetyMultiplier = *rk.MarginSafetyMultiplier
+		}
+		if rk.WithdrawMinIntervalMs != nil && *rk.WithdrawMinIntervalMs >= 0 {
+			s.cfg.WithdrawMinIntervalMs = *rk.WithdrawMinIntervalMs
 		}
 		if rk.EntryMarginHeadroom != nil && *rk.EntryMarginHeadroom > 0 && *rk.EntryMarginHeadroom <= 1.0 {
 			s.cfg.EntryMarginHeadroom = *rk.EntryMarginHeadroom
@@ -1546,6 +1552,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"margin_l5_threshold":                 strconv.FormatFloat(snapshot.Risk.MarginL5Threshold, 'f', -1, 64),
 		"l4_reduce_fraction":                  strconv.FormatFloat(snapshot.Risk.L4ReduceFraction, 'f', -1, 64),
 		"margin_safety_multiplier":            strconv.FormatFloat(snapshot.Risk.MarginSafetyMultiplier, 'f', -1, 64),
+		"withdraw_min_interval_ms":            strconv.Itoa(snapshot.Risk.WithdrawMinIntervalMs),
 		"risk_monitor_interval_sec":           strconv.Itoa(snapshot.Risk.RiskMonitorIntervalSec),
 		"enable_liq_trend_tracking":           strconv.FormatBool(snapshot.Risk.EnableLiqTrendTracking),
 		"liq_projection_minutes":              strconv.Itoa(snapshot.Risk.LiqProjectionMinutes),

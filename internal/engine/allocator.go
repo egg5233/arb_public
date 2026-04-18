@@ -1823,6 +1823,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 		batchKeys = append(batchKeys, k)
 	}
 	sort.Strings(batchKeys)
+	lastWithdrawAt := make(map[string]time.Time, len(batchedWds))
 	for _, bk := range batchKeys {
 		bw := batchedWds[bk]
 		withdrawAmtForAPI := bw.netTotal
@@ -1830,6 +1831,18 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 			withdrawAmtForAPI = bw.netTotal + bw.fee
 		}
 		amtStr := fmt.Sprintf("%.4f", withdrawAmtForAPI)
+
+		if minMs := e.cfg.WithdrawMinIntervalMs; minMs > 0 {
+			if last, ok := lastWithdrawAt[bw.donor]; ok {
+				wait := time.Duration(minMs)*time.Millisecond - time.Since(last)
+				if wait > 0 {
+					e.log.Info("rebalance: withdraw throttle donor=%s wait=%v", bw.donor, wait.Round(time.Millisecond))
+					time.Sleep(wait)
+				}
+			}
+			lastWithdrawAt[bw.donor] = time.Now()
+		}
+
 		e.log.Info("rebalance: batched withdraw %s->%s net=%.2f fee=%.4f amount=%.2f via %s",
 			bw.donor, bw.recipient, bw.netTotal, bw.fee, withdrawAmtForAPI, bw.chain)
 

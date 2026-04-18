@@ -56,6 +56,7 @@ type Config struct {
 	L4ReduceFraction       float64 // fraction to reduce at L4 (default: 0.50)
 	MarginSafetyMultiplier float64 // margin buffer multiplier for entry check (default: 2.0)
 	EntryMarginHeadroom    float64 // fraction of L3 threshold used as entry limit (default: 0.80, i.e. L3×0.80)
+	WithdrawMinIntervalMs  int     // min interval (ms) between withdraws from same donor in batched rebalance (default: 11000; 0 = disabled)
 
 	// Exit strategy
 	ExitDepthTimeoutSec int     // depth-fill exit loop timeout before market fallback (default 300)
@@ -469,6 +470,7 @@ type jsonRisk struct {
 	L4ReduceFraction            *float64 `json:"l4_reduce_fraction"`
 	MarginSafetyMultiplier      *float64 `json:"margin_safety_multiplier"`
 	EntryMarginHeadroom         *float64 `json:"entry_margin_headroom"`
+	WithdrawMinIntervalMs       *int     `json:"withdraw_min_interval_ms"`
 	RiskMonitorIntervalSec      *int     `json:"risk_monitor_interval_sec"`
 	EnableLiqTrendTracking      *bool    `json:"enable_liq_trend_tracking"`
 	LiqProjectionMinutes        *int     `json:"liq_projection_minutes"`
@@ -531,6 +533,7 @@ func Load() *Config {
 		L4ReduceFraction:                 0.30,
 		MarginSafetyMultiplier:           2.0,
 		EntryMarginHeadroom:              0.80,
+		WithdrawMinIntervalMs:            11000,
 		ExitDepthTimeoutSec:              300,
 		ExitMaxGapBPS:                    10.0,
 		RiskMonitorIntervalSec:           300,
@@ -949,6 +952,9 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		}
 		if rk.EntryMarginHeadroom != nil && *rk.EntryMarginHeadroom > 0 {
 			c.EntryMarginHeadroom = *rk.EntryMarginHeadroom
+		}
+		if rk.WithdrawMinIntervalMs != nil && *rk.WithdrawMinIntervalMs >= 0 {
+			c.WithdrawMinIntervalMs = *rk.WithdrawMinIntervalMs
 		}
 		if rk.RiskMonitorIntervalSec != nil && *rk.RiskMonitorIntervalSec > 0 {
 			c.RiskMonitorIntervalSec = *rk.RiskMonitorIntervalSec
@@ -1434,6 +1440,7 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	risk["l4_reduce_fraction"] = c.L4ReduceFraction
 	risk["margin_safety_multiplier"] = c.MarginSafetyMultiplier
 	risk["entry_margin_headroom"] = c.EntryMarginHeadroom
+	risk["withdraw_min_interval_ms"] = c.WithdrawMinIntervalMs
 	risk["risk_monitor_interval_sec"] = c.RiskMonitorIntervalSec
 	risk["enable_liq_trend_tracking"] = c.EnableLiqTrendTracking
 	risk["liq_projection_minutes"] = c.LiqProjectionMinutes

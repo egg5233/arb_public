@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.25] - 2026-04-18
+
+### Fixed
+- **Cross-exchange withdraw rate-limit throttle.** At 2026-04-18 12:45:10 UTC, rebalance for SIRENUSDT triggered two gateio withdraws 1ms apart (bingx + binance recipients); second hit `code=TOO_FAST Withdrawal frequency is limited to 10s`. gateio had 314 USDT available — not a balance issue. Bot's batched-withdraw executor (`internal/engine/allocator.go:1826`) had no per-donor timing gate. Added `lastWithdrawAt map[string]time.Time` in the batched-withdraw loop: before each `Withdraw()` API call, if `time.Since(lastWithdrawAt[donor]) < WithdrawMinIntervalMs`, sleep the remaining delta; timing anchor is request-dispatch (not response-completion). New config `WithdrawMinIntervalMs` (default 11000ms = 11s, 1s buffer above gateio's 10s hard limit; bybit documented same 10s-per-coin/chain limit) fully wired through `Config` / `jsonRisk` / defaults / `applyJSON` / `SaveJSON` in `internal/config/config.go` plus `configRiskResponse` / `buildConfigResponse` / `riskUpdate` / `handlePostConfig` / Redis flat-map in `internal/api/handlers.go`. Dashboard: new `NumberField` in Config → Appearance (actually Risk) tab, i18n keys added to `en.ts` and `zh-TW.ts`. Regression test at `internal/api/config_handlers_test.go::TestHandleConfig_WithdrawMinIntervalMs` covers GET, POST, in-memory update, Redis persistence. Plan v5 ALL PASS + Codex post-review PASS (with missing test finding addressed).
+
 ## [0.32.24] - 2026-04-18
 
 ### Fixed
