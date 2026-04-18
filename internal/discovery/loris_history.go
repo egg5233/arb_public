@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -15,6 +16,34 @@ var lorisHistoricalURL = "https://loris.tools/api/funding/historical"
 
 // ErrLorisRateLimited is returned by FetchLorisHistoricalSeries when the API returns 429.
 var ErrLorisRateLimited = errors.New("Loris API rate limited (429)")
+
+// Package-level Loris 429 backoff, shared across all callers (perp-perp Scanner
+// and spot-futures SpotEngine). Both engines target the same historical endpoint,
+// so a rate-limit tripped by one must suppress the other.
+var (
+	lorisBackoffMu       sync.RWMutex
+	lorisBackoffUntil    time.Time
+	lorisBackoffDuration = 60 * time.Second
+)
+
+// LorisBackoffUntil returns (active, until). active=true means callers should
+// skip their next Loris fetch until `until`.
+func LorisBackoffUntil() (bool, time.Time) {
+	lorisBackoffMu.RLock()
+	defer lorisBackoffMu.RUnlock()
+	return time.Now().Before(lorisBackoffUntil), lorisBackoffUntil
+}
+
+// TriggerLorisBackoff sets the package-level cooldown to `now + lorisBackoffDuration`.
+// Callers that observe a 429 (or ErrLorisRateLimited from FetchLorisHistoricalSeries)
+// don't need to call this — FetchLorisHistoricalSeries does it automatically.
+// Exposed so callers can force a backoff on non-429 errors they treat as rate-limiting.
+func TriggerLorisBackoff() time.Time {
+	lorisBackoffMu.Lock()
+	defer lorisBackoffMu.Unlock()
+	lorisBackoffUntil = time.Now().Add(lorisBackoffDuration)
+	return lorisBackoffUntil
+}
 
 // LorisHistoricalResponse is the parsed response from the Loris historical funding API.
 type LorisHistoricalResponse struct {
@@ -53,6 +82,7 @@ func FetchLorisHistoricalSeries(client *http.Client, base string, exchanges []st
 	defer resp.Body.Close()
 
 	if resp.StatusCode == 429 {
+		TriggerLorisBackoff()
 		return nil, ErrLorisRateLimited
 	}
 	if resp.StatusCode != http.StatusOK {

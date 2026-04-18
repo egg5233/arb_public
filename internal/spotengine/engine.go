@@ -49,9 +49,9 @@ type SpotEngine struct {
 	posMu sync.Map // posID → *sync.Mutex
 
 	// prefetchMu ensures only one spot backtest prefetch runs at a time.
-	prefetchMu       sync.Mutex
-	spotBackoffMu    sync.RWMutex
-	spotBackoffUntil time.Time
+	// The 429 backoff is package-level (discovery.LorisBackoffUntil /
+	// TriggerLorisBackoff) so it's shared with perp-perp backtest prefetch.
+	prefetchMu sync.Mutex
 
 	// client is the HTTP client used for Loris historical API calls (injectable in tests).
 	client *http.Client
@@ -203,7 +203,7 @@ func (e *SpotEngine) discoveryLoop() {
 	}
 	passed := filterPassed(opps)
 	e.logDiscoveryResults(passed)
-	go e.prefetchSpotBacktestData(passed)
+	e.launchBacktestPrefetch(passed)
 	e.pushOppsToAPI(opps)
 	e.updatePersistenceCounts(passed)
 	e.updateAllocation() // refresh allocation before auto-entries
@@ -222,7 +222,7 @@ func (e *SpotEngine) discoveryLoop() {
 			}
 			passed := filterPassed(opps)
 			e.logDiscoveryResults(passed)
-			go e.prefetchSpotBacktestData(passed)
+			e.launchBacktestPrefetch(passed)
 			e.pushOppsToAPI(opps)
 			e.updatePersistenceCounts(passed)
 			e.updateAllocation() // refresh allocation before auto-entries
@@ -241,7 +241,7 @@ func (e *SpotEngine) discoveryLoop() {
 			}
 			passed := filterPassed(opps)
 			e.logDiscoveryResults(passed)
-			go e.prefetchSpotBacktestData(passed)
+			e.launchBacktestPrefetch(passed)
 			e.pushOppsToAPI(opps)
 			e.updatePersistenceCounts(passed)
 			e.updateAllocation() // refresh allocation before auto-entries

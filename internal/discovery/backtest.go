@@ -171,12 +171,9 @@ func (s *Scanner) prefetchBacktestData(opps []models.Opportunity) {
 		return
 	}
 
-	// Check global backoff.
-	s.lorisBackoffMu.RLock()
-	backoff := s.lorisBackoffUntil
-	s.lorisBackoffMu.RUnlock()
-	if time.Now().Before(backoff) {
-		s.log.Info("backtest prefetch: skipping, rate limit backoff until %s", backoff.Format("15:04:05"))
+	// Check global backoff (shared across perp-perp and spot-futures engines).
+	if active, until := LorisBackoffUntil(); active {
+		s.log.Info("backtest prefetch: skipping, rate limit backoff until %s", until.Format("15:04:05"))
 		return
 	}
 
@@ -222,20 +219,17 @@ func (s *Scanner) prefetchBacktestData(opps []models.Opportunity) {
 		delay := nextBacktestPrefetchDelay()
 		time.Sleep(delay)
 
-		// Re-check backoff (might have been set by another path).
-		s.lorisBackoffMu.RLock()
-		backoff = s.lorisBackoffUntil
-		s.lorisBackoffMu.RUnlock()
-		if time.Now().Before(backoff) {
+		// Re-check backoff (might have been tripped by another path, incl. the spot engine).
+		if active, _ := LorisBackoffUntil(); active {
 			s.log.Warn("backtest prefetch: hit backoff, stopping after %d/%d", fetched, len(toFetch))
 			return
 		}
 
 		if !s.fetchAndCacheBacktest(opp) {
-			// On failure (likely 429), set global backoff.
-			s.lorisBackoffMu.Lock()
-			s.lorisBackoffUntil = time.Now().Add(60 * time.Second)
-			s.lorisBackoffMu.Unlock()
+			// On failure (likely 429), set global backoff. FetchLorisHistoricalSeries
+			// auto-triggers on 429; TriggerLorisBackoff here covers non-429 errors
+			// (timeout, decode failure) that we treat as rate-limiting too.
+			TriggerLorisBackoff()
 			s.log.Warn("backtest prefetch: 429/error, backing off 60s after %d/%d", fetched, len(toFetch))
 			return
 		}
@@ -246,12 +240,9 @@ func (s *Scanner) prefetchBacktestData(opps []models.Opportunity) {
 }
 
 func (s *Scanner) tryInlineFetchBacktest(opp models.Opportunity) bool {
-	s.lorisBackoffMu.RLock()
-	backoff := s.lorisBackoffUntil
-	s.lorisBackoffMu.RUnlock()
-	if time.Now().Before(backoff) {
+	if active, until := LorisBackoffUntil(); active {
 		s.log.Warn("backtest entry fetch %s (%s/%s): skipped, rate limit backoff until %s",
-			opp.Symbol, opp.LongExchange, opp.ShortExchange, backoff.Format("15:04:05"))
+			opp.Symbol, opp.LongExchange, opp.ShortExchange, until.Format("15:04:05"))
 		return false
 	}
 
@@ -261,9 +252,7 @@ func (s *Scanner) tryInlineFetchBacktest(opp models.Opportunity) bool {
 		return true
 	}
 
-	s.lorisBackoffMu.Lock()
-	s.lorisBackoffUntil = time.Now().Add(60 * time.Second)
-	s.lorisBackoffMu.Unlock()
+	TriggerLorisBackoff()
 	return false
 }
 

@@ -40,22 +40,24 @@ func (r spotBacktestResult) isStale(now time.Time) bool {
 }
 
 // SpotBacktestDayBreakdown is a single settlement entry in the on-demand report.
+// Field names match the frontend contract (web/src/pages/Opportunities.tsx).
 type SpotBacktestDayBreakdown struct {
-	Timestamp string  `json:"timestamp"`
-	FundingY  float64 `json:"funding_y"` // raw bps from Loris
+	Date string  `json:"date"` // short UTC "MM-DD HH" label
+	Bps  float64 `json:"bps"`  // raw bps from Loris
 }
 
 // SpotBacktestReport is the payload returned by RunSpotBacktestOnDemand.
+// Field names match the frontend contract (web/src/pages/Opportunities.tsx).
 type SpotBacktestReport struct {
-	Symbol      string                     `json:"symbol"`
-	Exchange    string                     `json:"exchange"`
-	Direction   string                     `json:"direction"`
-	Days        int                        `json:"days"`
-	SumBps      float64                    `json:"sum_bps"`
-	NetAPR      float64                    `json:"net_apr"`
-	Settlements int                        `json:"settlements"`
-	Coverage    float64                    `json:"coverage"`
-	Breakdown   []SpotBacktestDayBreakdown `json:"breakdown"`
+	Symbol          string                     `json:"symbol"`
+	Exchange        string                     `json:"exchange"`
+	Direction       string                     `json:"direction"`
+	Days            int                        `json:"days_lookback"`
+	SumBps          float64                    `json:"sum_bps"`
+	ProjectedAPR    float64                    `json:"projected_apr"` // decimal, e.g. 0.12 = 12%
+	SettlementCount int                        `json:"settlement_count"`
+	CoveragePct     float64                    `json:"coverage_pct"` // 0-100 percent
+	DayBreakdown    []SpotBacktestDayBreakdown `json:"days"`
 }
 
 func spotBacktestCacheKey(symbol, exchange string, days int) string {
@@ -150,8 +152,39 @@ func (e *SpotEngine) fetchAndCacheSpotBacktest(opp SpotArbOpportunity) bool {
 	return true
 }
 
+// launchBacktestPrefetch runs prefetchSpotBacktestData in a tracked goroutine
+// so Stop() waits for it to finish before returning.
+func (e *SpotEngine) launchBacktestPrefetch(opps []SpotArbOpportunity) {
+	if !e.cfg.SpotFuturesBacktestEnabled {
+		return
+	}
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		e.prefetchSpotBacktestData(opps)
+	}()
+}
+
+// sleepInterruptible returns early if Stop() is called during the sleep.
+// Returns true if the caller should continue; false if shutting down.
+func (e *SpotEngine) sleepInterruptible(d time.Duration) bool {
+	if d <= 0 {
+		return !e.stopping()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-e.stopCh:
+		return false
+	case <-timer.C:
+		return !e.stopping()
+	}
+}
+
 // prefetchSpotBacktestData pre-warms the backtest cache for Dir B opportunities.
 // Only one prefetch runs at a time (prefetchMu). Rate-limited to avoid 429s from Loris.
+// Rate-limit cooldown is package-level (discovery.LorisBackoffUntil) and shared
+// with the perp-perp prefetcher — a 429 seen by either one suppresses both.
 func (e *SpotEngine) prefetchSpotBacktestData(opps []SpotArbOpportunity) {
 	if !e.cfg.SpotFuturesBacktestEnabled {
 		return
@@ -161,17 +194,18 @@ func (e *SpotEngine) prefetchSpotBacktestData(opps []SpotArbOpportunity) {
 	}
 	defer e.prefetchMu.Unlock()
 
+	if e.stopping() {
+		return
+	}
+
 	days := e.cfg.SpotFuturesBacktestDays
 	if days <= 0 {
 		return
 	}
 
-	// Check global backoff.
-	e.spotBackoffMu.RLock()
-	backoff := e.spotBackoffUntil
-	e.spotBackoffMu.RUnlock()
-	if time.Now().Before(backoff) {
-		e.log.Info("spot backtest prefetch: skipping, backoff until %s", backoff.Format("15:04:05"))
+	// Check shared Loris 429 backoff.
+	if active, until := discovery.LorisBackoffUntil(); active {
+		e.log.Info("spot backtest prefetch: skipping, shared Loris backoff until %s", until.Format("15:04:05"))
 		return
 	}
 
@@ -203,20 +237,20 @@ func (e *SpotEngine) prefetchSpotBacktestData(opps []SpotArbOpportunity) {
 
 	fetched := 0
 	for _, opp := range toFetch {
-		time.Sleep(nextSpotBacktestDelay())
+		if !e.sleepInterruptible(nextSpotBacktestDelay()) {
+			e.log.Info("spot backtest prefetch: shutdown during delay, stopping after %d/%d", fetched, len(toFetch))
+			return
+		}
 
-		e.spotBackoffMu.RLock()
-		backoff = e.spotBackoffUntil
-		e.spotBackoffMu.RUnlock()
-		if time.Now().Before(backoff) {
-			e.log.Warn("spot backtest prefetch: hit backoff, stopping after %d/%d", fetched, len(toFetch))
+		if active, _ := discovery.LorisBackoffUntil(); active {
+			e.log.Warn("spot backtest prefetch: hit shared backoff, stopping after %d/%d", fetched, len(toFetch))
 			return
 		}
 
 		if !e.fetchAndCacheSpotBacktest(opp) {
-			e.spotBackoffMu.Lock()
-			e.spotBackoffUntil = time.Now().Add(60 * time.Second)
-			e.spotBackoffMu.Unlock()
+			// FetchLorisHistoricalSeries auto-triggers backoff on 429; do it
+			// here too so non-429 errors we treat as rate-limiting also cool down.
+			discovery.TriggerLorisBackoff()
 			e.log.Warn("spot backtest prefetch: error, backing off 60s after %d/%d", fetched, len(toFetch))
 			return
 		}
@@ -272,26 +306,40 @@ func (e *SpotEngine) RunSpotBacktestOnDemand(ctx context.Context, symbol, exchan
 	for _, p := range filtered {
 		sumY += p.Y
 		breakdown = append(breakdown, SpotBacktestDayBreakdown{
-			Timestamp: p.T,
-			FundingY:  p.Y,
+			Date: formatSettlementLabel(p.T),
+			Bps:  p.Y,
 		})
 	}
 
 	// Annualize: average daily bps × 365 ÷ 10000
-	netAPR := 0.0
+	projectedAPR := 0.0
 	if days > 0 {
-		netAPR = (sumY / float64(days)) * 365.0 / 10000.0
+		projectedAPR = (sumY / float64(days)) * 365.0 / 10000.0
 	}
 
 	return &SpotBacktestReport{
-		Symbol:      symbol,
-		Exchange:    exchange,
-		Direction:   direction,
-		Days:        days,
-		SumBps:      sumY,
-		NetAPR:      netAPR,
-		Settlements: len(filtered),
-		Coverage:    coverage,
-		Breakdown:   breakdown,
+		Symbol:          symbol,
+		Exchange:        exchange,
+		Direction:       direction,
+		Days:            days,
+		SumBps:          sumY,
+		ProjectedAPR:    projectedAPR,
+		SettlementCount: len(filtered),
+		CoveragePct:     coverage * 100.0,
+		DayBreakdown:    breakdown,
 	}, nil
+}
+
+// formatSettlementLabel converts an ISO-8601 timestamp into a short "MM-DD HH"
+// UTC label for the frontend breakdown table. Falls back to the first 10 chars
+// if parsing fails (e.g. "2026-04-18").
+func formatSettlementLabel(ts string) string {
+	t, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		if len(ts) > 10 {
+			return ts[:10]
+		}
+		return ts
+	}
+	return t.UTC().Format("01-02 15")
 }
