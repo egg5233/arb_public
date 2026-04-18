@@ -17,28 +17,29 @@ import (
 
 // Server is the Dashboard HTTP/WebSocket server.
 type Server struct {
-	db                *database.Client
-	cfg               *config.Config
-	hub               *Hub
-	log               *utils.Logger
-	srv               *http.Server
-	opps              []models.Opportunity
-	auth              *authStore
-	exchanges         map[string]exchange.Exchange
-	closePosition     func(posID string) error                                           // registered by engine
-	openPosition      func(symbol, longExchange, shortExchange string, force bool) error // registered by engine
-	logSub            chan utils.LogEntry
-	rejStore          *models.RejectionStore
-	permissions       map[string]exchange.PermissionResult
-	scorer            *risk.ExchangeScorer
-	spotOpps          atomic.Value // []interface{}
-	spotOpenPosition      func(symbol, exchange, direction string) error
-	spotClosePosition    func(positionID string) error
-	spotInjectTestOpp    func(symbol, exchange string)
+	db                     *database.Client
+	cfg                    *config.Config
+	hub                    *Hub
+	log                    *utils.Logger
+	srv                    *http.Server
+	opps                   []models.Opportunity
+	auth                   *authStore
+	exchanges              map[string]exchange.Exchange
+	closePosition          func(posID string) error                                           // registered by engine
+	openPosition           func(symbol, longExchange, shortExchange string, force bool) error // registered by engine
+	logSub                 chan utils.LogEntry
+	rejStore               *models.RejectionStore
+	permissions            map[string]exchange.PermissionResult
+	scorer                 *risk.ExchangeScorer
+	spotOpps               atomic.Value // []interface{}
+	spotOpenPosition       func(symbol, exchange, direction string) error
+	spotClosePosition      func(positionID string) error
+	spotInjectTestOpp      func(symbol, exchange string)
 	spotMaintenanceWarning func(symbol, exchange string) string
-	configNotifier    *config.ConfigNotifier
-	analyticsStore    *analytics.Store
-	allocator         *risk.CapitalAllocator
+	spotRunBacktest        func(ctx context.Context, symbol, exchange, direction string, days int) (interface{}, error)
+	configNotifier         *config.ConfigNotifier
+	analyticsStore         *analytics.Store
+	allocator              *risk.CapitalAllocator
 }
 
 // NewServer creates a new Dashboard server.
@@ -127,6 +128,7 @@ func (s *Server) Start() {
 	mux.HandleFunc("/api/spot/config/auto", s.cors(s.authMiddleware(s.handleSpotAutoConfig)))
 	mux.HandleFunc("/api/spot/test-inject", s.cors(s.authMiddleware(s.handleSpotTestInject)))
 	mux.HandleFunc("/api/spot/test-lifecycle", s.cors(s.authMiddleware(s.handleSpotTestLifecycle)))
+	mux.HandleFunc("POST /api/spot/backtest", s.cors(s.authMiddleware(s.handleSpotBacktest)))
 
 	// Analytics
 	mux.HandleFunc("/api/analytics/pnl-history", s.cors(s.authMiddleware(s.handleGetAnalyticsPnLHistory)))
@@ -295,6 +297,11 @@ func (s *Server) SetSpotTestInjectHandler(fn func(symbol, exchange string)) {
 // symbol has an elevated maintenance rate. Returns a warning string or "".
 func (s *Server) SetSpotMaintenanceWarning(fn func(symbol, exchange string) string) {
 	s.spotMaintenanceWarning = fn
+}
+
+// SetSpotBacktestHandler registers the spot engine's on-demand backtest callback.
+func (s *Server) SetSpotBacktestHandler(fn func(ctx context.Context, symbol, exchange, direction string, days int) (interface{}, error)) {
+	s.spotRunBacktest = fn
 }
 
 // SetPermissions stores the startup permission check results.

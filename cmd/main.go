@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -433,6 +434,9 @@ func main() {
 		apiSrv.SetSpotCloseHandler(spotEng.ManualClose)
 		apiSrv.SetSpotTestInjectHandler(spotEng.InjectTestOpportunity)
 		apiSrv.SetSpotMaintenanceWarning(spotEng.MaintenanceWarning)
+		apiSrv.SetSpotBacktestHandler(func(ctx context.Context, symbol, exchange, direction string, days int) (interface{}, error) {
+			return spotEng.RunSpotBacktestOnDemand(ctx, symbol, exchange, direction, days)
+		})
 		spotEng.Start()
 		eng.SetSpotCloseCallback(spotEng.ClosePosition)
 		log.Info("Spot-futures engine started")

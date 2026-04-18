@@ -59,9 +59,9 @@ func main() {
 		fmt.Printf("ERROR: %v\n", err)
 	} else {
 		var resp struct {
-			TotalAvailableMargin      string            `json:"total_available_margin"`
-			UnifiedAccountTotalEquity string            `json:"unified_account_total_equity"`
-			TotalMaintenanceMargin    string            `json:"total_maintenance_margin"`
+			TotalAvailableMargin      string `json:"total_available_margin"`
+			UnifiedAccountTotalEquity string `json:"unified_account_total_equity"`
+			TotalMaintenanceMargin    string `json:"total_maintenance_margin"`
 			Balances                  map[string]struct {
 				Available string `json:"available"`
 				Equity    string `json:"equity"`

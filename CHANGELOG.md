@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.21] - 2026-04-18
+
+### Added
+- **Spot-Futures Dir B backtest capability** — historical funding filter for `buy_spot_short` opportunities + on-demand UI backtest modal. Dir A (`borrow_sell_long`) is not yet supported (pending historical borrow-rate source).
+  - **Background filter** (`internal/spotengine/backtest.go`, new): `backtestDirB` checks N days of historical Loris funding data after the net-APR check. Cache miss = fail-open (same as perp-perp). `prefetchSpotBacktestData` prefetches for passing opps after each scan. `RunSpotBacktestOnDemand` runs a fresh uncached fetch for the UI.
+  - **Discovery hook** (`internal/spotengine/discovery.go`): if `SpotFuturesBacktestEnabled` and direction is `buy_spot_short`, calls `backtestDirB`; sets `FilterStatus` to reason on fail. Active positions bypass. Dir A unchanged.
+  - **New config fields** (`internal/config/config.go`):
+    - `SpotFuturesBacktestEnabled bool` — JSON: `backtest_enabled`, ENV: `SPOT_FUTURES_BACKTEST_ENABLED`, **default OFF**
+    - `SpotFuturesBacktestDays int` — JSON: `backtest_days`, ENV: `SPOT_FUTURES_BACKTEST_DAYS`, default 7
+    - `SpotFuturesBacktestMinProfit float64` — JSON: `backtest_min_profit`, ENV: `SPOT_FUTURES_BACKTEST_MIN_PROFIT`, default 0 bps
+  - **New endpoint** (`internal/api/spot_handlers.go`): `POST /api/spot/backtest` — parses `{symbol, exchange, direction, days}`, rejects Dir A with 400, calls `RunSpotBacktestOnDemand`, returns standard `{ok, data}` envelope.
+  - **Dashboard config controls** (`web/src/pages/Config.tsx`): enable toggle, days input, min-profit-bps input under Spot-Futures tab, mirroring perp-perp backtest controls.
+  - **On-demand modal** (`web/src/pages/SpotPositions.tsx`): Backtest button on each Dir B opportunity row; modal shows funding sum bps, APR projection, settlement count, coverage %, and per-day breakdown. Dir A button disabled with tooltip.
+  - **i18n**: matching keys added to `web/src/i18n/en.ts` and `web/src/i18n/zh-TW.ts`.
+
+### Fixed (review follow-ups on v0.32.21)
+- **Backend/frontend JSON contract** — `SpotBacktestReport` now emits the field names the dashboard expects: `projected_apr`, `settlement_count`, `coverage_pct` (0–100 percent, not 0–1 ratio), and `days: [{date, bps}]`. Prevented the on-demand modal from crashing at `result.days.length` on first successful response.
+- **Stop-aware prefetch goroutine** — the spot backtest prefetch goroutine is now tracked in `SpotEngine.wg` via `launchBacktestPrefetch`, with a `sleepInterruptible` helper and `e.stopping()` checks inside the loop. `Stop()` waits for it to finish before returning.
+- **Shared Loris 429 backoff** — moved the rate-limit cooldown to package-level `discovery.LorisBackoffUntil` / `TriggerLorisBackoff`, shared between the perp-perp `Scanner` and the spot-futures `SpotEngine`. `FetchLorisHistoricalSeries` auto-triggers on 429, so a 429 seen by either engine now suppresses the other instead of each engine keeping its own cooldown.
+
 ## [0.32.20] - 2026-04-18
 
 ### Changed

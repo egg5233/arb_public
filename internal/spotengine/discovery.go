@@ -277,6 +277,12 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 					filterStatus = fmt.Sprintf("net %.1f%% < min %.1f%%", netAPR*100, e.cfg.SpotFuturesMinNetYieldAPR*100)
 				}
 
+				if filterStatus == "" && e.cfg.SpotFuturesBacktestEnabled && !isActive {
+					if pass, reason := e.backtestDirB(SpotArbOpportunity{Symbol: symbol, Exchange: exchName}); !pass {
+						filterStatus = reason
+					}
+				}
+
 				opps = append(opps, SpotArbOpportunity{
 					Symbol:          symbol,
 					BaseCoin:        strings.ToUpper(baseSym),
@@ -452,6 +458,12 @@ func (e *SpotEngine) runCoinGlassFallback() []SpotArbOpportunity {
 		// Check net yield threshold.
 		if filterStatus == "" && netAPR < e.cfg.SpotFuturesMinNetYieldAPR && !isActive {
 			filterStatus = fmt.Sprintf("net %.1f%% < min %.1f%%", netAPR*100, e.cfg.SpotFuturesMinNetYieldAPR*100)
+		}
+
+		if filterStatus == "" && e.cfg.SpotFuturesBacktestEnabled && direction == "buy_spot_short" && !isActive {
+			if pass, reason := e.backtestDirB(SpotArbOpportunity{Symbol: spotSymbol, Exchange: exchName}); !pass {
+				filterStatus = reason
+			}
 		}
 
 		if filterStatus != "" && !isActive {

@@ -77,4 +77,3 @@ func TestApplyJSON_FundRebalanceFallbackWhenStrategyMissing(t *testing.T) {
 		t.Fatalf("expected fund rebalance_scan_minute=20 to apply as fallback, got %d", cfg.RebalanceScanMinute)
 	}
 }
-

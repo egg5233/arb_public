@@ -218,10 +218,10 @@ func TestCoinGlassOpportunitiesIntervalHours(t *testing.T) {
 // TestRateToBpsPerHour verifies the bps/hour normalization function.
 func TestRateToBpsPerHour(t *testing.T) {
 	tests := []struct {
-		name       string
-		rate       float64
-		intervalH  float64
-		wantBpsH   float64
+		name      string
+		rate      float64
+		intervalH float64
+		wantBpsH  float64
 	}{
 		{"8h divides by 8", 80.0, 8.0, 10.0},
 		{"1h divides by 1", 10.0, 1.0, 10.0},

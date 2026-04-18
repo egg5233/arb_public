@@ -76,10 +76,10 @@ type Scanner struct {
 	lastLorisIntervals map[string]map[string]float64 // exchange → symbol → interval hours
 	intervalsMu        sync.RWMutex
 
-	// Backtest prefetch rate limiting.
-	prefetchMu        sync.Mutex
-	lorisBackoffMu    sync.RWMutex
-	lorisBackoffUntil time.Time
+	// Backtest prefetch serialization. The 429 backoff is package-level
+	// (see discovery.LorisBackoffUntil / TriggerLorisBackoff) so it's shared
+	// with the spot-futures backtest prefetch.
+	prefetchMu sync.Mutex
 
 	// Dynamic trading fees loaded at startup (percentage format, e.g. 0.04 = 0.04%).
 	dynamicFees   map[string]FeeSchedule

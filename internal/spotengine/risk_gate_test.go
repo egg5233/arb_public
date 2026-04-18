@@ -53,8 +53,8 @@ func seedActivePosition(t *testing.T, db *database.Client, symbol, exchange stri
 // Regression test for ARB-74.
 func TestCheckRiskGate_DryRunAtCapacity(t *testing.T) {
 	cfg := &config.Config{
-		SpotFuturesDryRun:          true,
-		SpotFuturesMaxPositions:    1,
+		SpotFuturesDryRun:           true,
+		SpotFuturesMaxPositions:     1,
 		SpotFuturesPersistenceScans: 0,
 	}
 	eng, mr := newRiskGateEngine(t, cfg)
@@ -77,8 +77,8 @@ func TestCheckRiskGate_DryRunAtCapacity(t *testing.T) {
 // Regression test for ARB-74.
 func TestCheckRiskGate_DryRunDuplicate(t *testing.T) {
 	cfg := &config.Config{
-		SpotFuturesDryRun:          true,
-		SpotFuturesMaxPositions:    5,
+		SpotFuturesDryRun:           true,
+		SpotFuturesMaxPositions:     5,
 		SpotFuturesPersistenceScans: 0,
 	}
 	eng, mr := newRiskGateEngine(t, cfg)
@@ -101,9 +101,9 @@ func TestCheckRiskGate_DryRunDuplicate(t *testing.T) {
 // Regression test for ARB-74.
 func TestCheckRiskGate_DryRunCooldown(t *testing.T) {
 	cfg := &config.Config{
-		SpotFuturesDryRun:           true,
-		SpotFuturesMaxPositions:     5,
-		SpotFuturesPersistenceScans: 0,
+		SpotFuturesDryRun:            true,
+		SpotFuturesMaxPositions:      5,
+		SpotFuturesPersistenceScans:  0,
 		SpotFuturesLossCooldownHours: 24,
 	}
 	eng, mr := newRiskGateEngine(t, cfg)
@@ -205,14 +205,14 @@ func newMaintenanceGateEngine(t *testing.T, cfg *config.Config, maintRate float6
 // 30% maintenance at 3x leverage → survivable 3.3% < 30% threshold → REJECTED.
 func TestMaintenanceRateGate_RejectsHighRate(t *testing.T) {
 	cfg := &config.Config{
-		SpotFuturesMaxPositions:         5,
-		SpotFuturesPersistenceScans:     0,
+		SpotFuturesMaxPositions:          5,
+		SpotFuturesPersistenceScans:      0,
 		SpotFuturesEnableMaintenanceGate: true,
-		SpotFuturesLeverage:             3,
-		SpotFuturesCapitalSeparate:      200,
-		SpotFuturesCapitalUnified:       500,
-		SpotFuturesMaintenanceDefault:   0.05,
-		SpotFuturesMaintenanceCacheTTL:  60,
+		SpotFuturesLeverage:              3,
+		SpotFuturesCapitalSeparate:       200,
+		SpotFuturesCapitalUnified:        500,
+		SpotFuturesMaintenanceDefault:    0.05,
+		SpotFuturesMaintenanceCacheTTL:   60,
 	}
 	eng, mr := newMaintenanceGateEngine(t, cfg, 0.30) // 30% maintenance
 	defer mr.Close()
@@ -230,15 +230,15 @@ func TestMaintenanceRateGate_RejectsHighRate(t *testing.T) {
 // 0.5% maintenance at 3x leverage → survivable 32.8% >= 30% threshold → ALLOWED.
 func TestMaintenanceRateGate_AllowsLowRate(t *testing.T) {
 	cfg := &config.Config{
-		SpotFuturesMaxPositions:         5,
-		SpotFuturesPersistenceScans:     0,
-		SpotFuturesDryRun:              false,
+		SpotFuturesMaxPositions:          5,
+		SpotFuturesPersistenceScans:      0,
+		SpotFuturesDryRun:                false,
 		SpotFuturesEnableMaintenanceGate: true,
-		SpotFuturesLeverage:             3,
-		SpotFuturesCapitalSeparate:      200,
-		SpotFuturesCapitalUnified:       500,
-		SpotFuturesMaintenanceDefault:   0.05,
-		SpotFuturesMaintenanceCacheTTL:  60,
+		SpotFuturesLeverage:              3,
+		SpotFuturesCapitalSeparate:       200,
+		SpotFuturesCapitalUnified:        500,
+		SpotFuturesMaintenanceDefault:    0.05,
+		SpotFuturesMaintenanceCacheTTL:   60,
 	}
 	eng, mr := newMaintenanceGateEngine(t, cfg, 0.005) // 0.5% maintenance
 	defer mr.Close()
@@ -253,15 +253,15 @@ func TestMaintenanceRateGate_AllowsLowRate(t *testing.T) {
 // EnableMaintenanceGate = false, entries pass even with 30% rate.
 func TestMaintenanceRateGate_SkippedWhenDisabled(t *testing.T) {
 	cfg := &config.Config{
-		SpotFuturesMaxPositions:         5,
-		SpotFuturesPersistenceScans:     0,
-		SpotFuturesDryRun:              false,
+		SpotFuturesMaxPositions:          5,
+		SpotFuturesPersistenceScans:      0,
+		SpotFuturesDryRun:                false,
 		SpotFuturesEnableMaintenanceGate: false, // gate disabled
-		SpotFuturesLeverage:             3,
-		SpotFuturesCapitalSeparate:      200,
-		SpotFuturesCapitalUnified:       500,
-		SpotFuturesMaintenanceDefault:   0.05,
-		SpotFuturesMaintenanceCacheTTL:  60,
+		SpotFuturesLeverage:              3,
+		SpotFuturesCapitalSeparate:       200,
+		SpotFuturesCapitalUnified:        500,
+		SpotFuturesMaintenanceDefault:    0.05,
+		SpotFuturesMaintenanceCacheTTL:   60,
 	}
 	eng, mr := newMaintenanceGateEngine(t, cfg, 0.30) // 30% maintenance, but gate disabled
 	defer mr.Close()
@@ -295,15 +295,15 @@ func TestMaintenanceRateGate_LeverageScaling(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &config.Config{
-				SpotFuturesMaxPositions:         5,
-				SpotFuturesPersistenceScans:     0,
-				SpotFuturesDryRun:              false,
+				SpotFuturesMaxPositions:          5,
+				SpotFuturesPersistenceScans:      0,
+				SpotFuturesDryRun:                false,
 				SpotFuturesEnableMaintenanceGate: true,
-				SpotFuturesLeverage:             tt.leverage,
-				SpotFuturesCapitalSeparate:      200,
-				SpotFuturesCapitalUnified:       500,
-				SpotFuturesMaintenanceDefault:   0.05,
-				SpotFuturesMaintenanceCacheTTL:  60,
+				SpotFuturesLeverage:              tt.leverage,
+				SpotFuturesCapitalSeparate:       200,
+				SpotFuturesCapitalUnified:        500,
+				SpotFuturesMaintenanceDefault:    0.05,
+				SpotFuturesMaintenanceCacheTTL:   60,
 			}
 			eng, mr := newMaintenanceGateEngine(t, cfg, tt.maintRate)
 			defer mr.Close()
@@ -321,14 +321,14 @@ func TestMaintenanceRateGate_LeverageScaling(t *testing.T) {
 // 3x: survivable = 33.3% - 5% = 28.3% < 30% threshold → REJECTED.
 func TestMaintenanceRateGate_ZeroRateUsesDefault(t *testing.T) {
 	cfg := &config.Config{
-		SpotFuturesMaxPositions:         5,
-		SpotFuturesPersistenceScans:     0,
+		SpotFuturesMaxPositions:          5,
+		SpotFuturesPersistenceScans:      0,
 		SpotFuturesEnableMaintenanceGate: true,
-		SpotFuturesLeverage:             3,
-		SpotFuturesCapitalSeparate:      200,
-		SpotFuturesCapitalUnified:       500,
-		SpotFuturesMaintenanceDefault:   0.05,
-		SpotFuturesMaintenanceCacheTTL:  60,
+		SpotFuturesLeverage:              3,
+		SpotFuturesCapitalSeparate:       200,
+		SpotFuturesCapitalUnified:        500,
+		SpotFuturesMaintenanceDefault:    0.05,
+		SpotFuturesMaintenanceCacheTTL:   60,
 	}
 	eng, mr := newMaintenanceGateEngine(t, cfg, 0) // rate=0 → default 0.05
 	defer mr.Close()
@@ -346,15 +346,15 @@ func TestMaintenanceRateGate_ZeroRateUsesDefault(t *testing.T) {
 // fires before dry-run (check 7). When both would trigger, maintenance wins.
 func TestMaintenanceRateGate_BeforeDryRun(t *testing.T) {
 	cfg := &config.Config{
-		SpotFuturesMaxPositions:         5,
-		SpotFuturesPersistenceScans:     0,
-		SpotFuturesDryRun:              true, // dry-run enabled
+		SpotFuturesMaxPositions:          5,
+		SpotFuturesPersistenceScans:      0,
+		SpotFuturesDryRun:                true, // dry-run enabled
 		SpotFuturesEnableMaintenanceGate: true,
-		SpotFuturesLeverage:             3,
-		SpotFuturesCapitalSeparate:      200,
-		SpotFuturesCapitalUnified:       500,
-		SpotFuturesMaintenanceDefault:   0.05,
-		SpotFuturesMaintenanceCacheTTL:  60,
+		SpotFuturesLeverage:              3,
+		SpotFuturesCapitalSeparate:       200,
+		SpotFuturesCapitalUnified:        500,
+		SpotFuturesMaintenanceDefault:    0.05,
+		SpotFuturesMaintenanceCacheTTL:   60,
 	}
 	eng, mr := newMaintenanceGateEngine(t, cfg, 0.30) // high rate → rejected
 	defer mr.Close()
