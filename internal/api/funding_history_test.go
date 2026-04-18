@@ -17,49 +17,63 @@ type fundingStubExchange struct {
 	fees []exchange.FundingPayment
 }
 
-func (s fundingStubExchange) Name() string { return s.name }
-func (s fundingStubExchange) SetMetricsCallback(exchange.MetricsCallback) {}
+func (s fundingStubExchange) Name() string                                         { return s.name }
+func (s fundingStubExchange) SetMetricsCallback(exchange.MetricsCallback)          {}
 func (s fundingStubExchange) PlaceOrder(exchange.PlaceOrderParams) (string, error) { return "", nil }
-func (s fundingStubExchange) CancelOrder(string, string) error { return nil }
-func (s fundingStubExchange) CancelAllOrders(string) error { return nil }
-func (s fundingStubExchange) GetPendingOrders(string) ([]exchange.Order, error) { return nil, nil }
-func (s fundingStubExchange) GetOrderFilledQty(string, string) (float64, error) { return 0, nil }
-func (s fundingStubExchange) GetPosition(string) ([]exchange.Position, error) { return nil, nil }
-func (s fundingStubExchange) GetAllPositions() ([]exchange.Position, error) { return nil, nil }
-func (s fundingStubExchange) SetLeverage(string, string, string) error { return nil }
-func (s fundingStubExchange) SetMarginMode(string, string) error { return nil }
-func (s fundingStubExchange) LoadAllContracts() (map[string]exchange.ContractInfo, error) { return nil, nil }
+func (s fundingStubExchange) CancelOrder(string, string) error                     { return nil }
+func (s fundingStubExchange) CancelAllOrders(string) error                         { return nil }
+func (s fundingStubExchange) GetPendingOrders(string) ([]exchange.Order, error)    { return nil, nil }
+func (s fundingStubExchange) GetOrderFilledQty(string, string) (float64, error)    { return 0, nil }
+func (s fundingStubExchange) GetPosition(string) ([]exchange.Position, error)      { return nil, nil }
+func (s fundingStubExchange) GetAllPositions() ([]exchange.Position, error)        { return nil, nil }
+func (s fundingStubExchange) SetLeverage(string, string, string) error             { return nil }
+func (s fundingStubExchange) SetMarginMode(string, string) error                   { return nil }
+func (s fundingStubExchange) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
+	return nil, nil
+}
 func (s fundingStubExchange) GetFundingRate(string) (*exchange.FundingRate, error) { return nil, nil }
-func (s fundingStubExchange) GetFundingInterval(string) (time.Duration, error) { return 0, nil }
-func (s fundingStubExchange) GetFuturesBalance() (*exchange.Balance, error) { return nil, nil }
-func (s fundingStubExchange) GetSpotBalance() (*exchange.Balance, error) { return nil, nil }
-func (s fundingStubExchange) Withdraw(exchange.WithdrawParams) (*exchange.WithdrawResult, error) { return nil, nil }
+func (s fundingStubExchange) GetFundingInterval(string) (time.Duration, error)     { return 0, nil }
+func (s fundingStubExchange) GetFuturesBalance() (*exchange.Balance, error)        { return nil, nil }
+func (s fundingStubExchange) GetSpotBalance() (*exchange.Balance, error)           { return nil, nil }
+func (s fundingStubExchange) Withdraw(exchange.WithdrawParams) (*exchange.WithdrawResult, error) {
+	return nil, nil
+}
 func (s fundingStubExchange) WithdrawFeeInclusive() bool { return false }
-func (s fundingStubExchange) GetWithdrawFee(string, string) (float64, float64, error) { return 0, 0, nil }
-func (s fundingStubExchange) TransferToSpot(string, string) error { return nil }
-func (s fundingStubExchange) TransferToFutures(string, string) error { return nil }
+func (s fundingStubExchange) GetWithdrawFee(string, string) (float64, float64, error) {
+	return 0, 0, nil
+}
+func (s fundingStubExchange) TransferToSpot(string, string) error                   { return nil }
+func (s fundingStubExchange) TransferToFutures(string, string) error                { return nil }
 func (s fundingStubExchange) GetOrderbook(string, int) (*exchange.Orderbook, error) { return nil, nil }
-func (s fundingStubExchange) StartPriceStream([]string) {}
-func (s fundingStubExchange) SubscribeSymbol(string) bool { return false }
-func (s fundingStubExchange) GetBBO(string) (exchange.BBO, bool) { return exchange.BBO{}, false }
-func (s fundingStubExchange) GetPriceStore() *sync.Map { return &sync.Map{} }
-func (s fundingStubExchange) SubscribeDepth(string) bool { return false }
-func (s fundingStubExchange) UnsubscribeDepth(string) bool { return false }
-func (s fundingStubExchange) GetDepth(string) (*exchange.Orderbook, bool) { return nil, false }
-func (s fundingStubExchange) StartPrivateStream() {}
-func (s fundingStubExchange) GetOrderUpdate(string) (exchange.OrderUpdate, bool) { return exchange.OrderUpdate{}, false }
-func (s fundingStubExchange) SetOrderCallback(func(exchange.OrderUpdate)) {}
+func (s fundingStubExchange) StartPriceStream([]string)                             {}
+func (s fundingStubExchange) SubscribeSymbol(string) bool                           { return false }
+func (s fundingStubExchange) GetBBO(string) (exchange.BBO, bool)                    { return exchange.BBO{}, false }
+func (s fundingStubExchange) GetPriceStore() *sync.Map                              { return &sync.Map{} }
+func (s fundingStubExchange) SubscribeDepth(string) bool                            { return false }
+func (s fundingStubExchange) UnsubscribeDepth(string) bool                          { return false }
+func (s fundingStubExchange) GetDepth(string) (*exchange.Orderbook, bool)           { return nil, false }
+func (s fundingStubExchange) StartPrivateStream()                                   {}
+func (s fundingStubExchange) GetOrderUpdate(string) (exchange.OrderUpdate, bool) {
+	return exchange.OrderUpdate{}, false
+}
+func (s fundingStubExchange) SetOrderCallback(func(exchange.OrderUpdate))           {}
 func (s fundingStubExchange) PlaceStopLoss(exchange.StopLossParams) (string, error) { return "", nil }
-func (s fundingStubExchange) CancelStopLoss(string, string) error                  { return nil }
+func (s fundingStubExchange) CancelStopLoss(string, string) error                   { return nil }
 func (s fundingStubExchange) PlaceTakeProfit(exchange.TakeProfitParams) (string, error) {
 	return "", nil
 }
 func (s fundingStubExchange) CancelTakeProfit(string, string) error { return nil }
-func (s fundingStubExchange) GetUserTrades(string, time.Time, int) ([]exchange.Trade, error) { return nil, nil }
-func (s fundingStubExchange) GetFundingFees(string, time.Time) ([]exchange.FundingPayment, error) { return s.fees, nil }
-func (s fundingStubExchange) GetClosePnL(string, time.Time) ([]exchange.ClosePnL, error) { return nil, nil }
+func (s fundingStubExchange) GetUserTrades(string, time.Time, int) ([]exchange.Trade, error) {
+	return nil, nil
+}
+func (s fundingStubExchange) GetFundingFees(string, time.Time) ([]exchange.FundingPayment, error) {
+	return s.fees, nil
+}
+func (s fundingStubExchange) GetClosePnL(string, time.Time) ([]exchange.ClosePnL, error) {
+	return nil, nil
+}
 func (s fundingStubExchange) EnsureOneWayMode() error { return nil }
-func (s fundingStubExchange) Close() {}
+func (s fundingStubExchange) Close()                  {}
 
 func TestHandleGetPositionFundingIncludesRotatedAwayBybitWindow(t *testing.T) {
 	s, mr := newTestServer(t)

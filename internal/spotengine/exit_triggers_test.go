@@ -57,12 +57,12 @@ func (s priceStubExchange) StartPrivateStream()                         {}
 func (s priceStubExchange) GetOrderUpdate(string) (exchange.OrderUpdate, bool) {
 	return exchange.OrderUpdate{}, false
 }
-func (s priceStubExchange) SetOrderCallback(func(exchange.OrderUpdate))           {}
-func (s priceStubExchange) SetMetricsCallback(exchange.MetricsCallback)           {}
-func (s priceStubExchange) PlaceStopLoss(exchange.StopLossParams) (string, error)    { return "", nil }
-func (s priceStubExchange) CancelStopLoss(string, string) error                     { return nil }
+func (s priceStubExchange) SetOrderCallback(func(exchange.OrderUpdate))               {}
+func (s priceStubExchange) SetMetricsCallback(exchange.MetricsCallback)               {}
+func (s priceStubExchange) PlaceStopLoss(exchange.StopLossParams) (string, error)     { return "", nil }
+func (s priceStubExchange) CancelStopLoss(string, string) error                       { return nil }
 func (s priceStubExchange) PlaceTakeProfit(exchange.TakeProfitParams) (string, error) { return "", nil }
-func (s priceStubExchange) CancelTakeProfit(string, string) error                    { return nil }
+func (s priceStubExchange) CancelTakeProfit(string, string) error                     { return nil }
 func (s priceStubExchange) GetUserTrades(string, time.Time, int) ([]exchange.Trade, error) {
 	return nil, nil
 }
@@ -76,9 +76,9 @@ func (s priceStubExchange) WithdrawFeeInclusive() bool { return false }
 func (s priceStubExchange) GetWithdrawFee(string, string) (float64, float64, error) {
 	return 0, 0, nil
 }
-func (s priceStubExchange) EnsureOneWayMode() error  { return nil }
+func (s priceStubExchange) EnsureOneWayMode() error      { return nil }
 func (s priceStubExchange) CancelAllOrders(string) error { return nil }
-func (s priceStubExchange) Close()                   {}
+func (s priceStubExchange) Close()                       {}
 
 // newPriceSpikeEngine creates a SpotEngine wired to return a fixed current price.
 func newPriceSpikeEngine(currentPrice float64) *SpotEngine {

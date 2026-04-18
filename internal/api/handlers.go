@@ -383,19 +383,19 @@ type configAIResponse struct {
 }
 
 type configStrategyResponse struct {
-	TopOpportunities       int                     `json:"top_opportunities"`
-	ScanMinutes            []int                   `json:"scan_minutes"`
-	EntryScanMinute        int                     `json:"entry_scan_minute"`
-	ExitScanMinute         int                     `json:"exit_scan_minute"`
-	RotateScanMinute       int                     `json:"rotate_scan_minute"`
-	RebalanceScanMinute    int                     `json:"rebalance_scan_minute"`
-	EnablePoolAllocator    bool                    `json:"enable_pool_allocator"`
-	TopPairsPerSymbol      int                     `json:"top_pairs_per_symbol"`
-	AllocatorTimeoutMs int                     `json:"allocator_timeout_ms"`
-	Discovery          configDiscoveryResponse `json:"discovery"`
-	Entry                  configEntryResponse     `json:"entry"`
-	Exit                   configExitResponse      `json:"exit"`
-	Rotation               configRotationResponse  `json:"rotation"`
+	TopOpportunities    int                     `json:"top_opportunities"`
+	ScanMinutes         []int                   `json:"scan_minutes"`
+	EntryScanMinute     int                     `json:"entry_scan_minute"`
+	ExitScanMinute      int                     `json:"exit_scan_minute"`
+	RotateScanMinute    int                     `json:"rotate_scan_minute"`
+	RebalanceScanMinute int                     `json:"rebalance_scan_minute"`
+	EnablePoolAllocator bool                    `json:"enable_pool_allocator"`
+	TopPairsPerSymbol   int                     `json:"top_pairs_per_symbol"`
+	AllocatorTimeoutMs  int                     `json:"allocator_timeout_ms"`
+	Discovery           configDiscoveryResponse `json:"discovery"`
+	Entry               configEntryResponse     `json:"entry"`
+	Exit                configExitResponse      `json:"exit"`
+	Rotation            configRotationResponse  `json:"rotation"`
 }
 
 type configDiscoveryResponse struct {
@@ -521,15 +521,15 @@ func (s *Server) buildConfigResponse() configResponse {
 	resp := configResponse{
 		DryRun: s.cfg.DryRun,
 		Strategy: configStrategyResponse{
-			TopOpportunities:       s.cfg.TopOpportunities,
-			ScanMinutes:            s.cfg.ScanMinutes,
-			EntryScanMinute:        s.cfg.EntryScanMinute,
-			ExitScanMinute:         s.cfg.ExitScanMinute,
-			RotateScanMinute:       s.cfg.RotateScanMinute,
-			RebalanceScanMinute:    s.cfg.RebalanceScanMinute,
-			EnablePoolAllocator:    s.cfg.EnablePoolAllocator,
-			TopPairsPerSymbol:      s.cfg.TopPairsPerSymbol,
-			AllocatorTimeoutMs: s.cfg.AllocatorTimeoutMs,
+			TopOpportunities:    s.cfg.TopOpportunities,
+			ScanMinutes:         s.cfg.ScanMinutes,
+			EntryScanMinute:     s.cfg.EntryScanMinute,
+			ExitScanMinute:      s.cfg.ExitScanMinute,
+			RotateScanMinute:    s.cfg.RotateScanMinute,
+			RebalanceScanMinute: s.cfg.RebalanceScanMinute,
+			EnablePoolAllocator: s.cfg.EnablePoolAllocator,
+			TopPairsPerSymbol:   s.cfg.TopPairsPerSymbol,
+			AllocatorTimeoutMs:  s.cfg.AllocatorTimeoutMs,
 			Discovery: configDiscoveryResponse{
 				MinHoldTimeHours:        int(s.cfg.MinHoldTime.Hours()),
 				MaxCostRatio:            s.cfg.MaxCostRatio,
@@ -829,19 +829,19 @@ type aiUpdate struct {
 }
 
 type strategyUpdate struct {
-	TopOpportunities       *int             `json:"top_opportunities"`
-	ScanMinutes            []int            `json:"scan_minutes"`
-	EntryScanMinute        *int             `json:"entry_scan_minute"`
-	ExitScanMinute         *int             `json:"exit_scan_minute"`
-	RotateScanMinute       *int             `json:"rotate_scan_minute"`
-	RebalanceScanMinute    *int             `json:"rebalance_scan_minute"`
-	EnablePoolAllocator    *bool            `json:"enable_pool_allocator"`
-	TopPairsPerSymbol      *int             `json:"top_pairs_per_symbol"`
-	AllocatorTimeoutMs *int             `json:"allocator_timeout_ms"`
-	Discovery          *discoveryUpdate `json:"discovery"`
-	Entry                  *entryUpdate     `json:"entry"`
-	Exit                   *exitUpdate      `json:"exit"`
-	Rotation               *rotationUpdate  `json:"rotation"`
+	TopOpportunities    *int             `json:"top_opportunities"`
+	ScanMinutes         []int            `json:"scan_minutes"`
+	EntryScanMinute     *int             `json:"entry_scan_minute"`
+	ExitScanMinute      *int             `json:"exit_scan_minute"`
+	RotateScanMinute    *int             `json:"rotate_scan_minute"`
+	RebalanceScanMinute *int             `json:"rebalance_scan_minute"`
+	EnablePoolAllocator *bool            `json:"enable_pool_allocator"`
+	TopPairsPerSymbol   *int             `json:"top_pairs_per_symbol"`
+	AllocatorTimeoutMs  *int             `json:"allocator_timeout_ms"`
+	Discovery           *discoveryUpdate `json:"discovery"`
+	Entry               *entryUpdate     `json:"entry"`
+	Exit                *exitUpdate      `json:"exit"`
+	Rotation            *rotationUpdate  `json:"rotation"`
 }
 
 type discoveryUpdate struct {
@@ -1533,8 +1533,8 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"rebalance_scan_minute":               strconv.Itoa(snapshot.Strategy.RebalanceScanMinute),
 		"enable_pool_allocator":               strconv.FormatBool(snapshot.Strategy.EnablePoolAllocator),
 		"top_pairs_per_symbol":                strconv.Itoa(snapshot.Strategy.TopPairsPerSymbol),
-		"allocator_timeout_ms": strconv.Itoa(snapshot.Strategy.AllocatorTimeoutMs),
-		"top_opportunities":   strconv.Itoa(snapshot.Strategy.TopOpportunities),
+		"allocator_timeout_ms":                strconv.Itoa(snapshot.Strategy.AllocatorTimeoutMs),
+		"top_opportunities":                   strconv.Itoa(snapshot.Strategy.TopOpportunities),
 		"entry_scan_minute":                   strconv.Itoa(snapshot.Strategy.EntryScanMinute),
 		"exit_scan_minute":                    strconv.Itoa(snapshot.Strategy.ExitScanMinute),
 		"rotate_scan_minute":                  strconv.Itoa(snapshot.Strategy.RotateScanMinute),

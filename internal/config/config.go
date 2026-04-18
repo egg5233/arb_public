@@ -223,6 +223,11 @@ type Config struct {
 	SpotFuturesMaintenanceDefault    float64 // conservative default when rate=0/unknown (default: 0.05 = 5%)
 	SpotFuturesMaintenanceCacheTTL   int     // cache TTL in minutes for tiered rate data (default: 60)
 
+	// Backtest filter for spot-futures Dir B (buy_spot_short only)
+	SpotFuturesBacktestEnabled   bool    // filter Dir B opps by historical funding sum (default: false)
+	SpotFuturesBacktestDays      int     // historical funding window in days (default: 7)
+	SpotFuturesBacktestMinProfit float64 // minimum sum of funding bps over window to pass (default: 0)
+
 	// Telegram notifications
 	TelegramBotToken string
 	TelegramChatID   string
@@ -352,6 +357,11 @@ type jsonSpotFutures struct {
 	EnableMaintenanceGate *bool    `json:"enable_maintenance_gate"`
 	MaintenanceDefault    *float64 `json:"maintenance_default"`
 	MaintenanceCacheTTL   *int     `json:"maintenance_cache_ttl"`
+
+	// Backtest filter for spot-futures Dir B
+	BacktestEnabled   *bool    `json:"backtest_enabled"`
+	BacktestDays      *int     `json:"backtest_days"`
+	BacktestMinProfit *float64 `json:"backtest_min_profit"`
 }
 
 type jsonExchange struct {
@@ -621,6 +631,11 @@ func Load() *Config {
 		SpotFuturesEnableMaintenanceGate: false,
 		SpotFuturesMaintenanceDefault:    0.05,
 		SpotFuturesMaintenanceCacheTTL:   60,
+
+		// Backtest filter defaults (OFF per new-feature rollout rule)
+		SpotFuturesBacktestEnabled:   false,
+		SpotFuturesBacktestDays:      7,
+		SpotFuturesBacktestMinProfit: 0,
 
 		// Unified capital allocation defaults (Phase 5)
 		EnableUnifiedCapital:   false,
@@ -1230,6 +1245,16 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if sf.MaintenanceCacheTTL != nil && *sf.MaintenanceCacheTTL >= 1 {
 			c.SpotFuturesMaintenanceCacheTTL = *sf.MaintenanceCacheTTL
 		}
+		// Backtest filter
+		if sf.BacktestEnabled != nil {
+			c.SpotFuturesBacktestEnabled = *sf.BacktestEnabled
+		}
+		if sf.BacktestDays != nil && *sf.BacktestDays > 0 {
+			c.SpotFuturesBacktestDays = *sf.BacktestDays
+		}
+		if sf.BacktestMinProfit != nil && *sf.BacktestMinProfit >= 0 {
+			c.SpotFuturesBacktestMinProfit = *sf.BacktestMinProfit
+		}
 	}
 
 	// Telegram
@@ -1552,6 +1577,9 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	sf["enable_maintenance_gate"] = c.SpotFuturesEnableMaintenanceGate
 	sf["maintenance_default"] = c.SpotFuturesMaintenanceDefault
 	sf["maintenance_cache_ttl"] = c.SpotFuturesMaintenanceCacheTTL
+	sf["backtest_enabled"] = c.SpotFuturesBacktestEnabled
+	sf["backtest_days"] = c.SpotFuturesBacktestDays
+	sf["backtest_min_profit"] = c.SpotFuturesBacktestMinProfit
 	delete(sf, "capital_per_position") // removed field
 
 	// Allocation (Phase 5)
@@ -1837,6 +1865,19 @@ func (c *Config) loadEnvOverrides() {
 	if v := os.Getenv("SPOT_FUTURES_MAINTENANCE_CACHE_TTL"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
 			c.SpotFuturesMaintenanceCacheTTL = n
+		}
+	}
+	if v := os.Getenv("SPOT_FUTURES_BACKTEST_ENABLED"); v != "" {
+		c.SpotFuturesBacktestEnabled = v == "1" || v == "true" || v == "yes"
+	}
+	if v := os.Getenv("SPOT_FUTURES_BACKTEST_DAYS"); v != "" {
+		if i, err := strconv.Atoi(v); err == nil && i > 0 {
+			c.SpotFuturesBacktestDays = i
+		}
+	}
+	if v := os.Getenv("SPOT_FUTURES_BACKTEST_MIN_PROFIT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+			c.SpotFuturesBacktestMinProfit = f
 		}
 	}
 

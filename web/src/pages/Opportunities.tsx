@@ -6,6 +6,14 @@ import { ExchangeLink } from '../utils/tradingUrl.tsx';
 type Tab = 'perp' | 'spot';
 type TranslateFn = ReturnType<typeof useLocale>['t'];
 
+interface SpotBacktestReport {
+  sum_bps: number;
+  projected_apr: number;
+  settlement_count: number;
+  coverage_pct: number;
+  days: { date: string; bps: number }[];
+}
+
 interface BorrowResult {
   symbol: string;
   exchange: string;
@@ -32,6 +40,7 @@ interface SpotSectionProps {
   opportunities: SpotOpportunity[];
   t: TranslateFn;
   onSpotOpen?: (symbol: string, exchange: string, direction: string) => Promise<void>;
+  onOpenBacktest?: (opp: SpotOpportunity) => void;
   gapResults: Record<string, PriceGapResult>;
   borrowResults: Record<string, BorrowResult>;
   spotOpening: string | null;
@@ -92,6 +101,139 @@ function getSpotSourceLabel(t: TranslateFn, source?: string): string {
 const PAGE_SIZE = 20;
 
 // ---------------------------------------------------------------------------
+// SpotBacktestModal — on-demand Dir B backtest panel
+// ---------------------------------------------------------------------------
+const SpotBacktestModal: FC<{ opp: SpotOpportunity; t: TranslateFn; onClose: () => void }> = ({ opp, t, onClose }) => {
+  const [days, setDays] = useState(7);
+  const [result, setResult] = useState<SpotBacktestReport | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const isA = opp.direction === 'borrow_sell_long';
+
+  const handleRun = async () => {
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    try {
+      const token = localStorage.getItem('arb_token');
+      const res = await fetch('/api/spot/backtest', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ symbol: opp.symbol, exchange: opp.exchange, direction: opp.direction, days }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null) as { error?: string } | null;
+        throw new Error(body?.error || `HTTP ${res.status}`);
+      }
+      const data = await res.json() as { ok: boolean; data?: SpotBacktestReport; error?: string };
+      if (!data.ok) throw new Error(data.error || 'Request failed');
+      setResult(data.data ?? null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const maxBps = result && result.days.length > 0 ? Math.max(...result.days.map(d => Math.abs(d.bps)), 1) : 1;
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
+      <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-bold text-gray-100">{t('spotBacktest.modal.title')}</h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-200 text-xl leading-none">&times;</button>
+        </div>
+
+        <div className="flex items-center gap-3 mb-4 text-sm">
+          <span className="font-mono font-bold text-gray-100">{opp.symbol}</span>
+          <span className="text-gray-400">{opp.exchange}</span>
+          <span className={`px-1.5 py-0.5 text-xs rounded ${isA ? 'bg-blue-500/20 text-blue-400' : 'bg-violet-500/20 text-violet-400'}`}>
+            {isA ? 'Dir A' : 'Dir B'}
+          </span>
+        </div>
+
+        {isA ? (
+          <p className="text-sm text-amber-400">{t('spotBacktest.modal.notSupportedDirA')}</p>
+        ) : (
+          <>
+            <div className="flex items-center gap-3 mb-4">
+              <label className="text-sm text-gray-400">Days:</label>
+              <input
+                type="number"
+                min={1}
+                max={30}
+                value={days}
+                onChange={(e) => setDays(Math.max(1, Math.min(30, parseInt(e.target.value, 10) || 7)))}
+                className="w-20 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+              />
+              <button
+                disabled={loading}
+                onClick={handleRun}
+                className={`px-4 py-1.5 text-sm font-semibold rounded transition-colors ${loading ? 'bg-gray-700 text-gray-400 cursor-wait' : 'bg-violet-600/30 text-violet-300 hover:bg-violet-600/50'}`}
+              >
+                {loading ? t('spotBacktest.modal.loading') : t('spotBacktest.modal.run')}
+              </button>
+            </div>
+
+            {error && (
+              <div className="text-red-400 text-sm mb-3">{t('spotBacktest.modal.error')}: {error}</div>
+            )}
+
+            {result && (
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <div className="bg-gray-800 rounded-lg p-2.5">
+                    <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-0.5">{t('spotBacktest.modal.sumBps')}</div>
+                    <div className={`font-mono text-sm font-bold ${result.sum_bps >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{result.sum_bps.toFixed(1)}</div>
+                  </div>
+                  <div className="bg-gray-800 rounded-lg p-2.5">
+                    <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-0.5">{t('spotBacktest.modal.projectedApr')}</div>
+                    <div className={`font-mono text-sm font-bold ${result.projected_apr >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{(result.projected_apr * 100).toFixed(1)}%</div>
+                  </div>
+                  <div className="bg-gray-800 rounded-lg p-2.5">
+                    <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-0.5">{t('spotBacktest.modal.settlements')}</div>
+                    <div className="font-mono text-sm font-bold text-gray-100">{result.settlement_count}</div>
+                  </div>
+                  <div className="bg-gray-800 rounded-lg p-2.5">
+                    <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-0.5">{t('spotBacktest.modal.coverage')}</div>
+                    <div className={`font-mono text-sm font-bold ${result.coverage_pct >= 80 ? 'text-emerald-400' : result.coverage_pct >= 50 ? 'text-amber-400' : 'text-red-400'}`}>{result.coverage_pct.toFixed(0)}%</div>
+                  </div>
+                </div>
+
+                {result.days.length > 0 && (
+                  <div className="bg-gray-800 rounded-lg p-3">
+                    <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-2">Daily Funding (bps)</div>
+                    <div className="space-y-1">
+                      {result.days.map((d, i) => (
+                        <div key={i} className="flex items-center gap-2 text-[10px]">
+                          <span className="text-gray-600 w-16 shrink-0 font-mono">{d.date}</span>
+                          <div className="flex-1 bg-gray-700 rounded-full h-2">
+                            <div
+                              className={`h-2 rounded-full ${d.bps >= 0 ? 'bg-emerald-500' : 'bg-red-500'}`}
+                              style={{ width: `${Math.max(2, (Math.abs(d.bps) / maxBps) * 100)}%` }}
+                            />
+                          </div>
+                          <span className={`w-12 text-right font-mono shrink-0 ${d.bps >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{d.bps.toFixed(1)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // Spot opportunity row (shared between full and compact modes)
 // ---------------------------------------------------------------------------
 interface SpotRowProps {
@@ -100,6 +242,7 @@ interface SpotRowProps {
   compact?: boolean;
   t: TranslateFn;
   onSpotOpen?: (symbol: string, exchange: string, direction: string) => Promise<void>;
+  onOpenBacktest?: (opp: SpotOpportunity) => void;
   gapResult?: PriceGapResult;
   borrowResult?: BorrowResult;
   spotOpening: string | null;
@@ -107,7 +250,7 @@ interface SpotRowProps {
   setSpotError: (v: string | null) => void;
 }
 
-const SpotRow: FC<SpotRowProps> = ({ opp, index, compact, t, onSpotOpen, gapResult, borrowResult, spotOpening, setSpotOpening, setSpotError }) => {
+const SpotRow: FC<SpotRowProps> = ({ opp, index, compact, t, onSpotOpen, onOpenBacktest, gapResult, borrowResult, spotOpening, setSpotOpening, setSpotError }) => {
   const filtered = !!opp.filter_status;
   const isA = opp.direction === 'borrow_sell_long';
   const oppKey = `${opp.symbol}-${opp.exchange}-${opp.direction}`;
@@ -163,13 +306,28 @@ const SpotRow: FC<SpotRowProps> = ({ opp, index, compact, t, onSpotOpen, gapResu
           )}
         </td>
         <td className="py-1.5 text-right whitespace-nowrap">
-          {onSpotOpen && !filtered && !borrowWarn && (
-            <button disabled={spotOpening === oppKey} onClick={handleOpen}
-              className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${spotOpening === oppKey ? 'bg-gray-700 text-gray-400 cursor-wait' : 'bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/40'}`}>
-              {spotOpening === oppKey ? '..' : 'Open'}
-            </button>
-          )}
-          {filtered && <span className="w-1.5 h-1.5 rounded-full bg-gray-600 inline-block" />}
+          <div className="flex items-center justify-end gap-1">
+            {onSpotOpen && !filtered && !borrowWarn && (
+              <button disabled={spotOpening === oppKey} onClick={handleOpen}
+                className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${spotOpening === oppKey ? 'bg-gray-700 text-gray-400 cursor-wait' : 'bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/40'}`}>
+                {spotOpening === oppKey ? '..' : 'Open'}
+              </button>
+            )}
+            {onOpenBacktest && (
+              isA ? (
+                <span title={t('spotBacktest.modal.notSupportedDirA')}
+                  className="px-1.5 py-0.5 text-[10px] rounded bg-gray-700/40 text-gray-600 cursor-not-allowed select-none">
+                  BT
+                </span>
+              ) : (
+                <button onClick={() => onOpenBacktest(opp)}
+                  className="px-1.5 py-0.5 text-[10px] rounded transition-colors bg-violet-600/20 text-violet-400 hover:bg-violet-600/40">
+                  BT
+                </button>
+              )
+            )}
+            {filtered && !onSpotOpen && !onOpenBacktest && <span className="w-1.5 h-1.5 rounded-full bg-gray-600 inline-block" />}
+          </div>
         </td>
       </tr>
     );
@@ -219,12 +377,27 @@ const SpotRow: FC<SpotRowProps> = ({ opp, index, compact, t, onSpotOpen, gapResu
           : <span className="inline-flex items-center gap-1 text-xs text-emerald-400"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />{t('spot.ready')}</span>}
       </td>
       <td className="px-2 py-1">
-        {onSpotOpen && !filtered && !borrowWarn && (
-          <button disabled={spotOpening === oppKey} onClick={handleOpen}
-            className={`px-2 py-0.5 text-xs rounded transition-colors ${spotOpening === oppKey ? 'bg-gray-700 text-gray-400 cursor-wait' : 'bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/40'}`}>
-            {spotOpening === oppKey ? 'Opening...' : 'Open'}
-          </button>
-        )}
+        <div className="flex items-center gap-1.5">
+          {onSpotOpen && !filtered && !borrowWarn && (
+            <button disabled={spotOpening === oppKey} onClick={handleOpen}
+              className={`px-2 py-0.5 text-xs rounded transition-colors ${spotOpening === oppKey ? 'bg-gray-700 text-gray-400 cursor-wait' : 'bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/40'}`}>
+              {spotOpening === oppKey ? 'Opening...' : 'Open'}
+            </button>
+          )}
+          {onOpenBacktest && (
+            isA ? (
+              <span title={t('spotBacktest.modal.notSupportedDirA')}
+                className="px-2 py-0.5 text-xs rounded bg-gray-700/40 text-gray-600 cursor-not-allowed select-none">
+                Backtest
+              </span>
+            ) : (
+              <button onClick={() => onOpenBacktest(opp)}
+                className="px-2 py-0.5 text-xs rounded transition-colors bg-violet-600/20 text-violet-400 hover:bg-violet-600/40">
+                Backtest
+              </button>
+            )
+          )}
+        </div>
       </td>
     </tr>
   );
@@ -233,7 +406,7 @@ const SpotRow: FC<SpotRowProps> = ({ opp, index, compact, t, onSpotOpen, gapResu
 // ---------------------------------------------------------------------------
 // SpotCard — mobile (< md) card rendering of a spot opportunity
 // ---------------------------------------------------------------------------
-const SpotCard: FC<SpotRowProps> = ({ opp, index, t, onSpotOpen, gapResult, borrowResult, spotOpening, setSpotOpening, setSpotError }) => {
+const SpotCard: FC<SpotRowProps> = ({ opp, index, t, onSpotOpen, onOpenBacktest, gapResult, borrowResult, spotOpening, setSpotOpening, setSpotError }) => {
   const filtered = !!opp.filter_status;
   const isA = opp.direction === 'borrow_sell_long';
   const oppKey = `${opp.symbol}-${opp.exchange}-${opp.direction}`;
@@ -335,17 +508,32 @@ const SpotCard: FC<SpotRowProps> = ({ opp, index, t, onSpotOpen, gapResult, borr
           )}
           {filtered && <span className="text-gray-500 text-[10px]">{opp.filter_status}</span>}
         </div>
-        {onSpotOpen && !filtered && !borrowWarn && (
-          <button
-            disabled={spotOpening === oppKey}
-            onClick={handleOpen}
-            className={`px-3 py-1 text-xs font-semibold rounded transition-colors ${
-              spotOpening === oppKey ? 'bg-gray-700 text-gray-400 cursor-wait' : 'bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/40'
-            }`}
-          >
-            {spotOpening === oppKey ? '...' : 'Open'}
-          </button>
-        )}
+        <div className="flex items-center gap-1.5">
+          {onSpotOpen && !filtered && !borrowWarn && (
+            <button
+              disabled={spotOpening === oppKey}
+              onClick={handleOpen}
+              className={`px-3 py-1 text-xs font-semibold rounded transition-colors ${
+                spotOpening === oppKey ? 'bg-gray-700 text-gray-400 cursor-wait' : 'bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/40'
+              }`}
+            >
+              {spotOpening === oppKey ? '...' : 'Open'}
+            </button>
+          )}
+          {onOpenBacktest && (
+            isA ? (
+              <span title={t('spotBacktest.modal.notSupportedDirA')}
+                className="px-3 py-1 text-xs font-semibold rounded bg-gray-700/40 text-gray-600 cursor-not-allowed select-none">
+                BT
+              </span>
+            ) : (
+              <button onClick={() => onOpenBacktest(opp)}
+                className="px-3 py-1 text-xs font-semibold rounded transition-colors bg-violet-600/20 text-violet-400 hover:bg-violet-600/40">
+                BT
+              </button>
+            )
+          )}
+        </div>
       </div>
     </div>
   );
@@ -613,6 +801,7 @@ const Opportunities: FC<OpportunitiesProps> = ({
   const [singlePage, setSinglePage] = useState(0);
   const [gapLoading, setGapLoading] = useState(false);
   const [borrowLoading, setBorrowLoading] = useState(false);
+  const [backtestOpp, setBacktestOpp] = useState<SpotOpportunity | null>(null);
 
   const dismissModal = useCallback(() => { if (!opening) setOpeningOpp(null); }, [opening]);
   useEffect(() => {
@@ -891,6 +1080,7 @@ const Opportunities: FC<OpportunitiesProps> = ({
                   onBatchCheckGap={onBatchCheckGap} onBatchCheckBorrowable={onBatchCheckBorrowable}
                   onSpotOpen={onSpotOpen} spotOpening={spotOpening}
                   setSpotOpening={setSpotOpening} setSpotError={setSpotError}
+                  onOpenBacktest={setBacktestOpp}
                 />
                 <SpotSection
                   title={t('spot.sourceCoinGlass')}
@@ -906,6 +1096,7 @@ const Opportunities: FC<OpportunitiesProps> = ({
                   onBatchCheckGap={onBatchCheckGap} onBatchCheckBorrowable={onBatchCheckBorrowable}
                   onSpotOpen={onSpotOpen} spotOpening={spotOpening}
                   setSpotOpening={setSpotOpening} setSpotError={setSpotError}
+                  onOpenBacktest={setBacktestOpp}
                 />
               </div>
               {fallbackSpotOpportunities.length > 0 && (
@@ -923,6 +1114,7 @@ const Opportunities: FC<OpportunitiesProps> = ({
                   onBatchCheckGap={onBatchCheckGap} onBatchCheckBorrowable={onBatchCheckBorrowable}
                   onSpotOpen={onSpotOpen} spotOpening={spotOpening}
                   setSpotOpening={setSpotOpening} setSpotError={setSpotError}
+                  onOpenBacktest={setBacktestOpp}
                 />
               )}
             </div>
@@ -939,9 +1131,14 @@ const Opportunities: FC<OpportunitiesProps> = ({
               onBatchCheckGap={onBatchCheckGap} onBatchCheckBorrowable={onBatchCheckBorrowable}
               onSpotOpen={onSpotOpen} spotOpening={spotOpening}
               setSpotOpening={setSpotOpening} setSpotError={setSpotError}
+              onOpenBacktest={setBacktestOpp}
             />
           )}
         </div>
+      )}
+
+      {backtestOpp && (
+        <SpotBacktestModal opp={backtestOpp} t={t} onClose={() => setBacktestOpp(null)} />
       )}
 
       {openingOpp && (

@@ -52,12 +52,12 @@ func newGuardTestPos(direction string, age time.Duration) *models.SpotFuturesPos
 
 func TestMinHoldGate(t *testing.T) {
 	tests := []struct {
-		name         string
+		name          string
 		enableMinHold bool
-		minHoldHours int
-		posAge       time.Duration
-		wantReason   string // "" means no trigger (blocked or nothing fires)
-		wantBlocked  bool   // true if guard blocks a yield trigger that would fire
+		minHoldHours  int
+		posAge        time.Duration
+		wantReason    string // "" means no trigger (blocked or nothing fires)
+		wantBlocked   bool   // true if guard blocks a yield trigger that would fire
 	}{
 		{
 			name:          "young position blocked by min-hold",
@@ -225,8 +225,8 @@ func TestEmergencyBypass(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &config.Config{
 				// ALL guards ON.
-				SpotFuturesEnableMinHold:        true,
-				SpotFuturesMinHoldHours:         999, // position will always be "too young"
+				SpotFuturesEnableMinHold:         true,
+				SpotFuturesMinHoldHours:          999, // position will always be "too young"
 				SpotFuturesEnableSettlementGuard: true,
 				SpotFuturesSettlementWindowMin:   60, // always in window
 				SpotFuturesEnableExitSpreadGate:  true,
@@ -339,7 +339,7 @@ func TestExitSpreadGate(t *testing.T) {
 				FuturesEntry: 100.0,
 				Status:       "active",
 				CreatedAt:    time.Now().Add(-24 * time.Hour), // old enough for min-hold
-				FundingAPR:   0.01,                           // low funding to trigger yield exit
+				FundingAPR:   0.01,                            // low funding to trigger yield exit
 			}
 
 			reason, _ := eng.checkExitTriggers(pos)

@@ -165,7 +165,7 @@ func runWSTests(name string, exc exchange.Exchange) bool {
 		// Scale up to meet 5 USDT notional minimum (target 8 USDT for safety,
 		// since limit orders at 80% price must also meet the minimum).
 		minNotional := 8.0
-		needed := math.Ceil(minNotional / bbo.Ask / contract.StepSize) * contract.StepSize
+		needed := math.Ceil(minNotional/bbo.Ask/contract.StepSize) * contract.StepSize
 		if needed > testSize {
 			testSize = needed
 		}

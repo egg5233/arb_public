@@ -1355,6 +1355,7 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
   const renderSfDiscoveryTab = () => {
     const sfScannerMode = String(getByPath(config, ['spot_futures', 'scanner_mode']) ?? 'native');
     const sfEnablePriceGapGate = getByPath(config, ['spot_futures', 'enable_price_gap_gate']) === true;
+    const sfBacktestEnabled = getByPath(config, ['spot_futures', 'backtest_enabled']) === true;
 
     return (
       <div className="space-y-4">
@@ -1429,6 +1430,46 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
                 value={getByPath(config, ['spot_futures', 'max_price_gap_pct'])}
                 unit="%"
                 onChange={(v) => handleChange(['spot_futures', 'max_price_gap_pct'], v)}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Dir B Backtest section */}
+        <div className="border-t border-gray-800 pt-4 mt-4">
+          <h4 className="text-sm font-semibold text-gray-400 mb-3">Dir B Backtest</h4>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+              <div className="flex items-center gap-2 mb-2">
+                <label className="text-sm font-medium">{t('cfg.sf.backtestEnabled')}</label>
+                <Tooltip text={t('cfg.sf.backtestEnabledDesc')} />
+              </div>
+              <div className="flex items-center gap-3">
+                <ToggleSwitch
+                  on={sfBacktestEnabled}
+                  onChange={(v) => handleBoolChange(['spot_futures', 'backtest_enabled'], v)}
+                />
+                <span className={`text-sm font-semibold ${sfBacktestEnabled ? 'text-green-400' : 'text-red-400'}`}>
+                  {sfBacktestEnabled ? 'ON' : 'OFF'}
+                </span>
+              </div>
+            </div>
+            <div className={!sfBacktestEnabled ? 'opacity-50' : ''}>
+              <NumberField
+                label={t('cfg.sf.backtestDays')}
+                desc={t('cfg.sf.backtestDaysDesc')}
+                value={getByPath(config, ['spot_futures', 'backtest_days'])}
+                unit="d"
+                onChange={(v) => handleChange(['spot_futures', 'backtest_days'], v)}
+              />
+            </div>
+            <div className={!sfBacktestEnabled ? 'opacity-50' : ''}>
+              <NumberField
+                label={t('cfg.sf.backtestMinProfit')}
+                desc={t('cfg.sf.backtestMinProfitDesc')}
+                value={getByPath(config, ['spot_futures', 'backtest_min_profit'])}
+                unit="bps"
+                onChange={(v) => handleChange(['spot_futures', 'backtest_min_profit'], v)}
               />
             </div>
           </div>
