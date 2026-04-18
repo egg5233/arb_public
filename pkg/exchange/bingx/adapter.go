@@ -249,7 +249,7 @@ func (a *Adapter) CancelOrder(symbol, orderID string) error {
 	if err != nil {
 		// 80018 = already filled, 80016 = order not exist
 		if apiErr, ok := err.(*APIError); ok {
-			if apiErr.Code == 80018 || apiErr.Code == 80016 {
+			if apiErr.Code == 80018 || apiErr.Code == 80016 || apiErr.Code == 109400 {
 				return nil
 			}
 		}

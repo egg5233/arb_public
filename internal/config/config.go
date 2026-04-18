@@ -51,6 +51,7 @@ type Config struct {
 	// Margin health thresholds (marginRatio values, 0-1 scale where 1.0 = liquidation)
 	MarginL3Threshold      float64 // trigger fund transfer (default: 0.50)
 	MarginL4Threshold      float64 // trigger position reduction (default: 0.80)
+	MarginL4Headroom       float64 // extra cushion below L4 for rebalance deficit sizing (default: 0.05)
 	MarginL5Threshold      float64 // trigger emergency close (default: 0.95)
 	L4ReduceFraction       float64 // fraction to reduce at L4 (default: 0.50)
 	MarginSafetyMultiplier float64 // margin buffer multiplier for entry check (default: 2.0)
@@ -463,6 +464,7 @@ type jsonFund struct {
 type jsonRisk struct {
 	MarginL3Threshold           *float64 `json:"margin_l3_threshold"`
 	MarginL4Threshold           *float64 `json:"margin_l4_threshold"`
+	MarginL4Headroom            *float64 `json:"margin_l4_headroom"`
 	MarginL5Threshold           *float64 `json:"margin_l5_threshold"`
 	L4ReduceFraction            *float64 `json:"l4_reduce_fraction"`
 	MarginSafetyMultiplier      *float64 `json:"margin_safety_multiplier"`
@@ -524,6 +526,7 @@ func Load() *Config {
 		MinChunkUSDT:                     10,
 		MarginL3Threshold:                0.50,
 		MarginL4Threshold:                0.80,
+		MarginL4Headroom:                 0.05,
 		MarginL5Threshold:                0.95,
 		L4ReduceFraction:                 0.30,
 		MarginSafetyMultiplier:           2.0,
@@ -931,6 +934,9 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		}
 		if rk.MarginL4Threshold != nil && *rk.MarginL4Threshold > 0 {
 			c.MarginL4Threshold = *rk.MarginL4Threshold
+		}
+		if rk.MarginL4Headroom != nil && *rk.MarginL4Headroom > 0 {
+			c.MarginL4Headroom = *rk.MarginL4Headroom
 		}
 		if rk.MarginL5Threshold != nil && *rk.MarginL5Threshold > 0 {
 			c.MarginL5Threshold = *rk.MarginL5Threshold
@@ -1423,6 +1429,7 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	risk := getMap(raw, "risk")
 	risk["margin_l3_threshold"] = c.MarginL3Threshold
 	risk["margin_l4_threshold"] = c.MarginL4Threshold
+	risk["margin_l4_headroom"] = c.MarginL4Headroom
 	risk["margin_l5_threshold"] = c.MarginL5Threshold
 	risk["l4_reduce_fraction"] = c.L4ReduceFraction
 	risk["margin_safety_multiplier"] = c.MarginSafetyMultiplier

@@ -636,6 +636,14 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			// against PostBalances and drop any whose required legs are no
 			// longer funded, so the next :55 entry scan cannot be steered
 			// onto unfunded exchanges.
+			if !result.LocalTransferHappened && !result.CrossTransferHappened {
+				e.allocOverrideMu.Lock()
+				e.allocOverrides = nil
+				e.allocOverrideMu.Unlock()
+				e.log.Info("rebalance: no transfers executed, skipping allocator override store")
+				e.log.Info("rebalance: complete")
+				return
+			}
 			kept := e.keepFundedChoices(allocSel.choices, result.PostBalances, result.FundedReceivers)
 
 			e.allocOverrideMu.Lock()
@@ -928,7 +936,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 				}
 				projectedRatio := 1 - projectedAvail/bal.futuresTotal
 				if projectedRatio >= e.cfg.MarginL4Threshold {
-					targetRatio := e.cfg.MarginL4Threshold - marginEpsilon
+					targetRatio := e.rebalanceTargetRatio()
 					freeTarget := 1.0 - targetRatio
 					ratioDeficit := (freeTarget*bal.futuresTotal - bal.futures + actualMargin) / targetRatio
 					if ratioDeficit > 0 {
@@ -949,7 +957,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 		if actualMargin <= 0 {
 			actualMargin = need
 		}
-		targetRatio := e.cfg.MarginL4Threshold - marginEpsilon
+		targetRatio := e.rebalanceTargetRatio()
 		freeTarget := 1.0 - targetRatio
 		var ratioDeficit float64
 		if freeTarget > 0 && bal.futuresTotal > 0 {
@@ -3328,6 +3336,19 @@ func (e *Engine) commonTradeableSize(longExch, shortExch, symbol string, size fl
 	return size
 }
 
+func (e *Engine) refetchMarginCappedSize(exch exchange.Exchange, longExchange, shortExchange, symbol string, leverage, price, minSize, minChunkUSDT, currentSize float64) (float64, *exchange.Balance, error) {
+	liveBal, err := exch.GetFuturesBalance()
+	if err != nil {
+		return 0, nil, err
+	}
+	downsized := (liveBal.Available * leverage) / price
+	downsized = e.commonTradeableSize(longExchange, shortExchange, symbol, downsized)
+	if downsized <= 0 || downsized >= currentSize || downsized < minSize || downsized*price < minChunkUSDT {
+		return 0, liveBal, fmt.Errorf("refetched size below minimum (avail=%.2f price=%.6f)", liveBal.Available, price)
+	}
+	return downsized, liveBal, nil
+}
+
 // executeTradeV2 opens a delta-neutral position using depth-driven sequential
 // IOC orders. It reads the live orderbook depth on each tick, sizes to available
 // liquidity, and places the less-liquid leg first. If the first leg fails, it
@@ -3758,14 +3779,25 @@ fillLoop:
 				Size:      shortSizeStr,
 				Force:     "ioc",
 			})
+			if err != nil && isMarginError(err) {
+				e.log.Warn("depth tick: short IOC margin insufficient for %s, refetching live balance", opp.Symbol)
+				lastBalCheck = time.Time{}
+				downsized, liveBal, resizeErr := e.refetchMarginCappedSize(shortExch, opp.LongExchange, opp.ShortExchange, opp.Symbol, leverage, bidPrice, minSize, e.cfg.MinChunkUSDT, size)
+				if liveBal != nil {
+					cachedShortBal = liveBal
+				}
+				if resizeErr != nil {
+					e.log.Warn("depth tick: short IOC margin insufficient for %s after refetch, aborting entry: %v", opp.Symbol, resizeErr)
+					break fillLoop
+				}
+				size = downsized
+				shortSizeStr = e.formatSize(opp.ShortExchange, opp.Symbol, size)
+				e.log.Warn("depth tick: short IOC margin insufficient for %s, retrying once with downsized size=%s", opp.Symbol, shortSizeStr)
+				shortOID, err = shortExch.PlaceOrder(exchange.PlaceOrderParams{Symbol: opp.Symbol, Side: exchange.SideSell, OrderType: "limit", Price: shortPriceStr, Size: shortSizeStr, Force: "ioc"})
+			}
 			if err != nil {
 				shortConsecFails++
 				e.recordAPIError(opp.ShortExchange, err)
-				// On margin error, refresh balance to get accurate state
-				if isMarginError(err) {
-					e.log.Warn("depth tick: short IOC margin insufficient for %s, invalidating cache", opp.Symbol)
-					lastBalCheck = time.Time{} // force immediate refresh next tick
-				}
 				e.log.Warn("depth tick: short IOC failed (%d/%d): %v", shortConsecFails, maxConsecFails, err)
 				continue
 			}
@@ -3997,14 +4029,25 @@ fillLoop:
 				Size:      longSizeStr,
 				Force:     "ioc",
 			})
+			if err != nil && isMarginError(err) {
+				e.log.Warn("depth tick: long IOC margin insufficient for %s, refetching live balance", opp.Symbol)
+				lastBalCheck = time.Time{}
+				downsized, liveBal, resizeErr := e.refetchMarginCappedSize(longExch, opp.LongExchange, opp.ShortExchange, opp.Symbol, leverage, askPrice, minSize, e.cfg.MinChunkUSDT, size)
+				if liveBal != nil {
+					cachedLongBal = liveBal
+				}
+				if resizeErr != nil {
+					e.log.Warn("depth tick: long IOC margin insufficient for %s after refetch, aborting entry: %v", opp.Symbol, resizeErr)
+					break fillLoop
+				}
+				size = downsized
+				longSizeStr = e.formatSize(opp.LongExchange, opp.Symbol, size)
+				e.log.Warn("depth tick: long IOC margin insufficient for %s, retrying once with downsized size=%s", opp.Symbol, longSizeStr)
+				longOID, err = longExch.PlaceOrder(exchange.PlaceOrderParams{Symbol: opp.Symbol, Side: exchange.SideBuy, OrderType: "limit", Price: longPriceStr, Size: longSizeStr, Force: "ioc"})
+			}
 			if err != nil {
 				longConsecFails++
 				e.recordAPIError(opp.LongExchange, err)
-				// On margin error, refresh balance to get accurate state
-				if isMarginError(err) {
-					e.log.Warn("depth tick: long IOC margin insufficient for %s, invalidating cache", opp.Symbol)
-					lastBalCheck = time.Time{} // force immediate refresh next tick
-				}
 				e.log.Warn("depth tick: long IOC failed (%d/%d): %v", longConsecFails, maxConsecFails, err)
 				continue
 			}
@@ -4481,6 +4524,8 @@ func (e *Engine) confirmFill(exch exchange.Exchange, orderID, symbol string) (fi
 			} else {
 				e.log.Warn("confirmFill: timeout %s on %s: no WS update at all", orderID, exch.Name())
 			}
+			// BingX 109400 is normalized to nil by its adapter, so "already gone"
+			// falls through to the REST query below instead of spamming WARNs.
 			// Cancel any resting/partial order to prevent untracked fills.
 			if err := exch.CancelOrder(symbol, orderID); err != nil {
 				e.log.Warn("confirmFill: cancel %s on %s: %v", orderID, exch.Name(), err)

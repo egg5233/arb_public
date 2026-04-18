@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.21] - 2026-04-18
+
+### Fixed
+- **Post-v0.32.20 log audit — 7 bugs.** Open-ended Codex log audit over 11 rotate/entry cycles (since v0.32.20 deploy at 16:22 UTC) surfaced 7 additional issues affecting transfer-no-open reliability. Plan v2 ALL PASS + Codex post-review PASS. Shipped as single patch:
+  - **Bug β — Bybit unified receiver TransferToFutures call was inappropriate.** `allocator.go` receiver credit path unconditionally called `TransferToFutures()` after deposit confirmation. For Bybit UTA, this returned `code=131212 user insufficient balance` because UTA has no separate spot wallet — deposit lands directly in unified pool. Failure skipped the credit path, leaving `PostBalances` and `FundedReceivers` stale; `keepFundedChoices` then dropped the override despite successful deposit. Gate.io unified already handles this via adapter no-op; Bybit needed gate at allocator call site. Added unified-check branch before `TransferToFutures` that credits balances directly + sets `CrossTransferHappened=true`.
+  - **Bug 3 — Rebalance L4 headroom too tight.** All 5 deficit-sizing sites (`allocator.go`, `engine.go`) computed `targetRatio := MarginL4Threshold - marginEpsilon` where marginEpsilon=0.005. Transfers sized to hit L4 exactly; any tiny intervening price move pushed post-trade ratio to 0.81+ and entry rejected. Centralized via new `rebalanceTargetRatio()` helper using new `MarginL4Headroom` config (default 0.05 = 5% headroom below L4). Full config wiring added.
+  - **Bug 2 — Binance -2019 insufficient margin wasted 5 IOC retries.** First-leg IOC returned `code=-2019` when cached balance diverged from live. Engine retried 5× same size → circuit breaker trip → trade aborted. Added `refetchMarginCappedSize()` helper; first-leg IOC handlers (short + long) now detect margin error via existing `isMarginError`, refetch live balance, downsize once, retry; if refetched size < minSize, abort immediately. Second-leg handlers unchanged (require rollback/match, not downsize).
+  - **Bug 4 — Override stored even when no transfer occurred.** `rebalanceFunds` stored allocator override whenever it selected a pair, regardless of whether actual transfer happened (`crossDeficits empty after local fund relief` case). Next entry scan hit "all overrides stale" → tier-3 fallback. Extended `rebalanceExecutionResult` with `LocalTransferHappened` + `CrossTransferHappened` bools. Set on successful local/cross transfer. Engine short-circuits override storage if neither flag is set.
+  - **Bug 6 — BingX 109400 "order not exist" cancel spam.** `CancelOrder` returned `code=109400` when order already completed; handler logged WARN and fell through. Added 109400 to adapter-level idempotent code list (alongside existing 80018/80016); engine cancel-path falls through cleanly to the existing `GetOrderFilledQty` REST re-query for terminal state.
+  - **Bug 1 — Gate.io EnsureOneWayMode startup error not hard-failed.** Every startup, gateio `EnsureOneWayMode` logged error and bot continued assuming one-way. If account actually in hedge mode, trades fail silently. Changed startup loop to `os.Exit(1)` on EnsureOneWayMode failure.
+  - **Bug 7 — Donor capacity log spam.** Single INFO line emitted 30+ times per rebalance cycle from branch-and-bound paths. Downgraded to DEBUG.
+- Bug 5 (allocator symbol cooldown on repeated rejection) intentionally deferred for separate patch.
+
 ## [0.32.20] - 2026-04-18
 
 ### Fixed

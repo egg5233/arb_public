@@ -223,10 +223,10 @@ func main() {
 	// Ensure all exchanges are in cross-margin one-way mode.
 	for name, exch := range exchanges {
 		if err := exch.EnsureOneWayMode(); err != nil {
-			log.Error("EnsureOneWayMode on %s: %v", name, err)
-		} else {
-			log.Info("%s: one-way mode confirmed", name)
+			log.Error("FATAL: EnsureOneWayMode on %s failed: %v", name, err)
+			os.Exit(1)
 		}
+		log.Info("%s: one-way mode confirmed", name)
 	}
 
 	// Create shared rejection store and wire to all components.

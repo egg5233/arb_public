@@ -15,6 +15,17 @@ import (
 
 const marginEpsilon = 0.005 // margin buffer to avoid hitting L4 boundary exactly
 
+// rebalanceTargetRatio returns the post-rebalance margin ratio target.
+// Uses MarginL4Headroom (default 0.05) for meaningful headroom below L4
+// so entry scans don't immediately re-hit the L4 gate after a transfer.
+func (e *Engine) rebalanceTargetRatio() float64 {
+	target := e.cfg.MarginL4Threshold - e.cfg.MarginL4Headroom
+	if target <= 0 || target >= e.cfg.MarginL4Threshold {
+		target = e.cfg.MarginL4Threshold - marginEpsilon
+	}
+	return target
+}
+
 // feeEntry caches a single GetWithdrawFee result (fee + minWithdraw).
 // valid=false means the lookup failed or was not yet attempted.
 type feeEntry struct {
@@ -82,7 +93,9 @@ type rebalanceExecutionResult struct {
 	// FundedReceivers: exchanges that received a cross-exchange deposit AND
 	// successfully moved it to futures this cycle. Used as a trigger for the
 	// live-balance recheck in keepFundedChoices — not a bias for entry scan.
-	FundedReceivers map[string]float64
+	FundedReceivers       map[string]float64
+	LocalTransferHappened bool
+	CrossTransferHappened bool
 }
 
 // cloneRebalanceBalances returns a shallow copy of the map. rebalanceBalanceInfo
@@ -781,7 +794,7 @@ func (e *Engine) allocatorDonorGrossCapacity(name string, bal rebalanceBalanceIn
 		return 0
 	}
 
-	e.log.Info("rebalance: donor %s capacity: futures=%.2f total=%.2f marginRatio=%.4f maxTransferOut=%.2f futuresAvail=%.2f surplus=%.2f unified=%v hasPos=%v",
+	e.log.Debug("rebalance: donor %s capacity: futures=%.2f total=%.2f marginRatio=%.4f maxTransferOut=%.2f futuresAvail=%.2f surplus=%.2f unified=%v hasPos=%v",
 		name, bal.futures, bal.futuresTotal, bal.marginRatio, bal.maxTransferOut, futuresAvail, surplus, isUnified, bal.hasPositions)
 
 	return surplus
@@ -932,7 +945,7 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 		if actualMargin <= 0 {
 			actualMargin = need
 		}
-		targetRatio := e.cfg.MarginL4Threshold - marginEpsilon
+		targetRatio := e.rebalanceTargetRatio()
 		freeTarget := 1.0 - targetRatio
 		var ratioDeficit float64
 		if freeTarget > 0 && sim[exch].futuresTotal > 0 {
@@ -1326,6 +1339,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 								bi.futuresTotal += extra
 								balances[name] = bi
 								bal = balances[name] // refresh local copy for L4 check below
+								result.LocalTransferHappened = true
 							}
 						}
 					}
@@ -1354,7 +1368,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 					name, need, actualMargin, bal.futures, bal.futuresTotal, projectedAvail, projectedRatio, e.cfg.MarginL4Threshold)
 				if projectedRatio >= e.cfg.MarginL4Threshold {
 					// Compute ratio deficit: how much extra needed so ratio < L4
-					targetRatio := e.cfg.MarginL4Threshold - marginEpsilon
+					targetRatio := e.rebalanceTargetRatio()
 					freeTarget := 1.0 - targetRatio
 					ratioDeficit := (freeTarget*bal.futuresTotal - bal.futures + actualMargin) / targetRatio
 					if ratioDeficit > 0 {
@@ -1376,7 +1390,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 		if actualMargin <= 0 {
 			actualMargin = need
 		}
-		targetRatio := e.cfg.MarginL4Threshold - marginEpsilon
+		targetRatio := e.rebalanceTargetRatio()
 		freeTarget := 1.0 - targetRatio
 		var ratioDeficit float64
 		if freeTarget > 0 && bal.futuresTotal > 0 {
@@ -1416,6 +1430,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 					bi.spot -= actualTransfer
 					bi.futuresTotal += actualTransfer // same-exchange relief: futures pool grows, keep PostBalances consistent with the other relief branch at 1150-1155
 					balances[name] = bi
+					result.LocalTransferHappened = true
 				}
 			}
 		}
@@ -1948,6 +1963,19 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 		if totalPending <= 0 {
 			continue
 		}
+		if uc, ok := recipientExch.(interface{ IsUnified() bool }); ok && uc.IsUnified() {
+			// Deposit already lives in unified pool; GetFuturesBalance() already saw it.
+			bi := balances[recipient]
+			bi.futures += totalPending
+			bi.futuresTotal += totalPending
+			balances[recipient] = bi
+			if result.FundedReceivers == nil {
+				result.FundedReceivers = make(map[string]float64)
+			}
+			result.FundedReceivers[recipient] += totalPending
+			result.CrossTransferHappened = true // used in Section D
+			continue
+		}
 		transferStr := fmt.Sprintf("%.4f", totalPending)
 		if err := recipientExch.TransferToFutures("USDT", transferStr); err != nil {
 			e.log.Error("rebalance: %s spot->futures failed: %v", recipient, err)
@@ -1968,6 +1996,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				result.FundedReceivers = make(map[string]float64)
 			}
 			result.FundedReceivers[recipient] += totalPending
+			result.CrossTransferHappened = true
 		}
 	}
 
