@@ -630,7 +630,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			e.log.Warn("rebalance: pool allocator failed, falling back to sequential: %v", allocErr)
 		} else if allocSel != nil && allocSel.feasible {
 			e.log.Info("rebalance: pool allocator selected %d opps (value=%.4f, choices=%s)", len(allocSel.choices), allocSel.totalBaseValue, e.formatAllocatorSummary(allocSel))
-			result := e.executeRebalanceFundingPlan(allocSel.needs, balances, nil)
+			result := e.executeRebalanceFundingPlan(allocSel.needs, balances, nil, allocSel.plan.Steps)
 
 			// Gate override storage on post-execution reality. Replay choices
 			// against PostBalances and drop any whose required legs are no
@@ -1094,7 +1094,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 		precomputed[i] = rebalanceDeficit{exchange: cd.exchange, amount: cd.amount}
 	}
 	e.log.Info("rebalance: %d exchanges need cross-exchange funding, delegating to allocator executor", len(precomputed))
-	result := e.executeRebalanceFundingPlan(needs, balances, precomputed)
+	result := e.executeRebalanceFundingPlan(needs, balances, precomputed, nil)
 
 	if !(localTransferHappened || result.LocalTransferHappened || result.CrossTransferHappened) {
 		e.allocOverrideMu.Lock()

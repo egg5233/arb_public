@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.26] - 2026-04-18
+
+### Fixed
+- **Pool allocator executor now honors simulation's Steps (planner/executor parity).** At 2026-04-18 14:45 UTC on v0.32.25, pool allocator selected SIGNUSDT gateio/bingx. Dry-run `simulation passed`, gateio→bingx 132.55 USDT executed successfully, but override dropped (`kept=0`) with empty shortReason and entry at 14:55 rejected (gateio post-trade ratio 0.91 > L4 0.80). Codex deep-dive confirmed: `dryRunTransferPlan` produces `Steps []transferStep` (donor→recipient assignments with fee/chain/minWd), but `executeRebalanceFundingPlan` threw away `Steps` and re-ran greedy donor selection from `needs` only. Same bug class as v0.32.24 Bug B (sequential planner/executor mismatch), in the pool allocator path. When the same exchange served as both donor AND trading leg, executor's re-greedy routing drained more than sim validated → post-exec state failed `keepFundedChoices` replay. Plan v3 ALL PASS + Codex post-review PASS. Changes:
+  - **`transferStep` struct** (`internal/engine/allocator.go:68-75`): added `MinWithdraw float64` field. `dryRunTransferPlan` now populates `MinWithdraw: minWd` (line 1228-1233) so executor's late min-withdraw safety check can use sim's validated value, not rediscover it.
+  - **`allocatorSelection` struct** (`:257-263`): added `plan dryRunResult` field. `runPoolAllocator` assigns `plan: simResult` before returning the feasible selection.
+  - **`executeRebalanceFundingPlan` signature** (`:1300`): added `plannedSteps []transferStep` parameter.
+  - **Pool allocator call site** (`internal/engine/engine.go:633`): passes `allocSel.plan.Steps` instead of `nil`.
+  - **Sequential fallback call site** (`:1097`): passes `nil` (sequential has its own dry-run prune per v0.32.24 Bug B).
+  - **Executor loop** (`allocator.go:1477-1616`): builds `plannedByRecipient` map; for each recipient's cross-deficit, if `plannedSteps != nil`, dequeues steps from the map (using step.From/Fee/MinWithdraw/Chain directly) instead of running greedy donor selection. Greedy fallback preserved when `plannedSteps == nil`. Variable scoping renamed to avoid Go redeclaration (chain/fee/minWd now declared at loop top).
+- Net effect: pool allocator's simulation is now binding — if sim validates a specific donor→recipient→amount routing as feasible, executor will execute exactly that plan. Prevents donor-leg overlap divergence where greedy re-allocation drained a donor's own-leg capacity.
+
 ## [0.32.25] - 2026-04-18
 
 ### Fixed

@@ -66,10 +66,12 @@ type rebalanceDeficit struct {
 }
 
 type transferStep struct {
-	From, To string
-	Amount   float64
-	Fee      float64
-	Chain    string
+	From        string
+	To          string
+	Amount      float64
+	Fee         float64
+	Chain       string
+	MinWithdraw float64
 }
 
 type dryRunResult struct {
@@ -257,6 +259,7 @@ type allocatorSelection struct {
 	needs          map[string]float64
 	totalBaseValue float64
 	feasible       bool
+	plan           dryRunResult
 }
 
 type exchNeedsMap map[string]float64
@@ -436,8 +439,9 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 
 	// Post-solver simulation: verify that planned transfers + position openings
 	// won't push any exchange to L4+ health level.
+	var simResult dryRunResult
 	if feasible && len(selected) > 0 {
-		simResult := e.dryRunTransferPlan(selected, balances, feeCache)
+		simResult = e.dryRunTransferPlan(selected, balances, feeCache)
 		for !simResult.Feasible && len(selected) > 0 {
 			worstIdx := 0
 			worstVal := selected[0].baseValue
@@ -480,6 +484,7 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 		needs:          needs,
 		totalBaseValue: totalValue,
 		feasible:       feasible,
+		plan:           simResult,
 	}, nil
 }
 
@@ -1218,7 +1223,14 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 			r.futuresTotal += move
 			sim[exch] = r
 
-			steps = append(steps, transferStep{From: bestDonor, To: exch, Amount: move, Fee: fee, Chain: chain})
+			steps = append(steps, transferStep{
+				From:        bestDonor,
+				To:          exch,
+				Amount:      move,
+				Fee:         fee,
+				Chain:       chain,
+				MinWithdraw: minWd,
+			})
 			totalFee += fee
 			deficit -= move
 			// Decrement donor budget (matches executor's surplus[bestDonor] -= netAmount + fee)
@@ -1285,7 +1297,7 @@ func (e *Engine) formatAllocatorSummary(sel *allocatorSelection) string {
 	return strings.Join(names, ", ")
 }
 
-func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances map[string]rebalanceBalanceInfo, precomputedDeficits []rebalanceDeficit) rebalanceExecutionResult {
+func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances map[string]rebalanceBalanceInfo, precomputedDeficits []rebalanceDeficit, plannedSteps []transferStep) rebalanceExecutionResult {
 	// PostBalances starts as a clone of caller balances. The executor mutates
 	// `balances` in place throughout (same-exchange relief, eager donor
 	// decrements, etc). We mirror those mutations into PostBalances only at
@@ -1462,6 +1474,11 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 		surplus[name] = e.allocatorDonorGrossCapacity(name, balances[name], needs[name])
 	}
 
+	plannedByRecipient := map[string][]transferStep{}
+	for _, step := range plannedSteps {
+		plannedByRecipient[step.To] = append(plannedByRecipient[step.To], step)
+	}
+
 	pendingDeposits := map[string]float64{}
 	pendingStartBal := map[string]float64{}
 
@@ -1487,34 +1504,66 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 		remaining := crossDeficits[i].amount
 		exchName := crossDeficits[i].exchange
 		origDeficit := remaining
+		planned := plannedByRecipient[exchName]
+		plannedIdx := 0
 		e.log.Debug("rebalance: processing crossDeficit %s amount=%.2f", exchName, remaining)
 		// FIX 9: removed remaining < 1.0 skip — intentional over-transfer when deficit < minWd
 		for remaining > 0 {
-			var bestDonor string
-			var bestSurplus float64
-			for name, s := range surplus {
-				if name == exchName || s <= 0 {
-					continue
-				}
-				if balances[name].marginRatio >= e.cfg.MarginL4Threshold {
-					e.log.Info("rebalance: skipping donor %s (marginRatio=%.4f >= L4=%.4f)", name, balances[name].marginRatio, e.cfg.MarginL4Threshold)
-					continue
-				}
-				// Deterministic tie-break: pick highest surplus, then alphabetical name
-				if s > bestSurplus || (s == bestSurplus && (bestDonor == "" || name < bestDonor)) {
-					bestDonor = name
-					bestSurplus = s
-				}
-			}
-			if bestDonor == "" {
-				e.log.Warn("rebalance: no donor found for %s remaining deficit=%.2f", exchName, remaining)
-				result.SkipReasons[exchName] = fmt.Sprintf("no donor found (deficit=%.2f)", remaining)
-				break
-			}
+			var bestDonor, chain string
+			var bestSurplus, fee, minWd, contribution float64
 
-			contribution := remaining
-			if contribution > bestSurplus {
-				contribution = bestSurplus
+			if len(plannedSteps) > 0 {
+				if plannedIdx >= len(planned) {
+					result.SkipReasons[exchName] = fmt.Sprintf("planned steps exhausted (remaining=%.2f)", remaining)
+					break
+				}
+				step := planned[plannedIdx]
+				plannedIdx++
+
+				if step.To != exchName {
+					result.SkipReasons[exchName] = fmt.Sprintf("planned step routed to %s, expected %s", step.To, exchName)
+					break
+				}
+
+				bestDonor = step.From
+				bestSurplus = surplus[bestDonor]
+				fee = step.Fee
+				minWd = step.MinWithdraw
+				contribution = step.Amount
+				chain = step.Chain
+
+				if contribution > remaining {
+					contribution = remaining
+				}
+				if contribution > bestSurplus {
+					contribution = bestSurplus
+				}
+			} else {
+				// Existing greedy donor-selection block (fallback when no plan)
+				for name, s := range surplus {
+					if name == exchName || s <= 0 {
+						continue
+					}
+					if balances[name].marginRatio >= e.cfg.MarginL4Threshold {
+						e.log.Info("rebalance: skipping donor %s (marginRatio=%.4f >= L4=%.4f)", name, balances[name].marginRatio, e.cfg.MarginL4Threshold)
+						continue
+					}
+					// Deterministic tie-break: pick highest surplus, then alphabetical name
+					if s > bestSurplus || (s == bestSurplus && (bestDonor == "" || name < bestDonor)) {
+						bestDonor = name
+						bestSurplus = s
+					}
+				}
+				if bestDonor == "" {
+					e.log.Warn("rebalance: no donor found for %s remaining deficit=%.2f", exchName, remaining)
+					result.SkipReasons[exchName] = fmt.Sprintf("no donor found (deficit=%.2f)", remaining)
+					break
+				}
+
+				contribution = remaining
+				if contribution > bestSurplus {
+					contribution = bestSurplus
+				}
 			}
 
 			e.cfg.RLock()
@@ -1530,27 +1579,42 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				break
 			}
 
-			var chain, destAddr string
-			for _, c := range []string{"APT", "BEP20"} {
-				if addr, ok := recipientAddrs[c]; ok && addr != "" {
-					chain = c
+			var destAddr string
+			if len(plannedSteps) > 0 {
+				// Planned path: chain already set from step; just resolve destAddr.
+				if addr, ok := recipientAddrs[chain]; ok && addr != "" {
 					destAddr = addr
+				}
+				if chain == "" || destAddr == "" {
+					e.log.Warn("rebalance: planned chain %q has no deposit address for %s", chain, exchName)
+					result.SkipReasons[exchName] = fmt.Sprintf("planned chain %q missing deposit address", chain)
 					break
 				}
-			}
-			if chain == "" {
-				e.log.Warn("rebalance: no shared chain between %s and %s", bestDonor, exchName)
-				surplus[bestDonor] = 0
-				continue
-			}
+				e.log.Info("rebalance: %s withdraw fee=%.4f minWd=%.4f USDT via %s (planned)", bestDonor, fee, minWd, chain)
+			} else {
+				// Greedy path: discover chain and fetch live fee.
+				for _, c := range []string{"APT", "BEP20"} {
+					if addr, ok := recipientAddrs[c]; ok && addr != "" {
+						chain = c
+						destAddr = addr
+						break
+					}
+				}
+				if chain == "" {
+					e.log.Warn("rebalance: no shared chain between %s and %s", bestDonor, exchName)
+					surplus[bestDonor] = 0
+					continue
+				}
 
-			fee, minWd, feeErr := e.exchanges[bestDonor].GetWithdrawFee("USDT", chain)
-			if feeErr != nil {
-				e.log.Warn("rebalance: %s GetWithdrawFee failed: %v, skipping donor", bestDonor, feeErr)
-				surplus[bestDonor] = 0
-				continue
+				var feeErr error
+				fee, minWd, feeErr = e.exchanges[bestDonor].GetWithdrawFee("USDT", chain)
+				if feeErr != nil {
+					e.log.Warn("rebalance: %s GetWithdrawFee failed: %v, skipping donor", bestDonor, feeErr)
+					surplus[bestDonor] = 0
+					continue
+				}
+				e.log.Info("rebalance: %s withdraw fee=%.4f minWd=%.4f USDT via %s", bestDonor, fee, minWd, chain)
 			}
-			e.log.Info("rebalance: %s withdraw fee=%.4f minWd=%.4f USDT via %s", bestDonor, fee, minWd, chain)
 
 			// FIX 6a: fee-mode aware cap — keep existing net-fee path, add fee-inclusive path.
 			isGross := e.exchanges[bestDonor].WithdrawFeeInclusive()
