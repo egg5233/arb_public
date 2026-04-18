@@ -1,6 +1,7 @@
 package bybit
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -286,6 +287,62 @@ func (a *Adapter) GetSpotBBO(symbol string) (exchange.BBO, error) {
 // ---------------------------------------------------------------------------
 // Spot Margin: Interest Rate
 // ---------------------------------------------------------------------------
+
+// GetMarginInterestRateHistory returns historical hourly borrow rates for a coin
+// over [start, end], paginating in 30-day windows (Bybit max per call).
+func (a *Adapter) GetMarginInterestRateHistory(ctx context.Context, coin string, start, end time.Time) ([]exchange.MarginInterestRatePoint, error) {
+	const maxWindow = 30 * 24 * time.Hour
+	var all []exchange.MarginInterestRatePoint
+
+	windowStart := start
+	for windowStart.Before(end) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		windowEnd := windowStart.Add(maxWindow)
+		if windowEnd.After(end) {
+			windowEnd = end
+		}
+		params := map[string]string{
+			"currency":  coin,
+			"vipLevel":  "No VIP",
+			"startTime": strconv.FormatInt(windowStart.UnixMilli(), 10),
+			"endTime":   strconv.FormatInt(windowEnd.UnixMilli(), 10),
+		}
+		result, err := a.client.Get("/v5/spot-margin-trade/interest-rate-history", params)
+		if err != nil {
+			return nil, fmt.Errorf("bybit GetMarginInterestRateHistory: %w", err)
+		}
+		var resp struct {
+			List []struct {
+				Timestamp        int64  `json:"timestamp"`
+				Currency         string `json:"currency"`
+				HourlyBorrowRate string `json:"hourlyBorrowRate"`
+				VipLevel         string `json:"vipLevel"`
+			} `json:"list"`
+		}
+		if err := json.Unmarshal(result, &resp); err != nil {
+			return nil, fmt.Errorf("bybit GetMarginInterestRateHistory unmarshal: %w", err)
+		}
+		for _, r := range resp.List {
+			rate, _ := strconv.ParseFloat(r.HourlyBorrowRate, 64)
+			all = append(all, exchange.MarginInterestRatePoint{
+				Timestamp:  time.UnixMilli(r.Timestamp),
+				HourlyRate: rate,
+				VipLevel:   r.VipLevel,
+			})
+		}
+		windowStart = windowEnd
+		if len(resp.List) > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}
+	return all, nil
+}
 
 // GetMarginInterestRate returns the current borrow interest rate for a coin
 // via the crypto-loan loanable-data endpoint (public, no auth needed).

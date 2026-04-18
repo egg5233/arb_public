@@ -2,6 +2,7 @@ package spotengine
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 
 	"arb/internal/config"
 	"arb/internal/database"
+	"arb/pkg/exchange"
 	"arb/pkg/utils"
 
 	"github.com/alicebob/miniredis/v2"
@@ -202,7 +204,208 @@ func TestPrefetchSpotBacktestData_SkipsDirA(t *testing.T) {
 	}
 	e.prefetchSpotBacktestData(opps)
 
+	// Dir A binance is supported but the engine has no spotMargin adapter configured,
+	// so it should be excluded from toFetch (no extra Loris call).
 	if len(requested) != 1 || requested[0] != "ETH" {
 		t.Fatalf("expected one Loris request for Dir B (ETH), got %v", requested)
+	}
+}
+
+// ---- Dir A tests ----
+
+// mockDirASpotMargin is a minimal SpotMarginExchange for Dir A backtest tests.
+type mockDirASpotMargin struct {
+	history []exchange.MarginInterestRatePoint
+	err     error
+}
+
+func (m *mockDirASpotMargin) MarginBorrow(exchange.MarginBorrowParams) error { return nil }
+func (m *mockDirASpotMargin) MarginRepay(exchange.MarginRepayParams) error   { return nil }
+func (m *mockDirASpotMargin) PlaceSpotMarginOrder(exchange.SpotMarginOrderParams) (string, error) {
+	return "", nil
+}
+func (m *mockDirASpotMargin) GetSpotBBO(string) (exchange.BBO, error) {
+	return exchange.BBO{Bid: 100, Ask: 100.1}, nil
+}
+func (m *mockDirASpotMargin) GetMarginInterestRate(string) (*exchange.MarginInterestRate, error) {
+	return &exchange.MarginInterestRate{HourlyRate: 0.00001}, nil
+}
+func (m *mockDirASpotMargin) GetMarginBalance(string) (*exchange.MarginBalance, error) {
+	return &exchange.MarginBalance{Available: 1000}, nil
+}
+func (m *mockDirASpotMargin) TransferToMargin(string, string) error   { return nil }
+func (m *mockDirASpotMargin) TransferFromMargin(string, string) error { return nil }
+func (m *mockDirASpotMargin) GetMarginInterestRateHistory(_ context.Context, _ string, _, _ time.Time) ([]exchange.MarginInterestRatePoint, error) {
+	return m.history, m.err
+}
+
+func writeDirABacktestResult(t *testing.T, db *database.Client, key string, result spotBacktestDirAResult) {
+	t.Helper()
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if err := db.SetWithTTL(key, string(data), time.Hour); err != nil {
+		t.Fatalf("SetWithTTL: %v", err)
+	}
+}
+
+func TestSpotBacktestDirA_CacheMissFailOpen(t *testing.T) {
+	e, mr := newSpotBacktestEngine(t)
+	defer mr.Close()
+	e.cfg.SpotFuturesBacktestDays = 7
+	e.cfg.SpotFuturesBacktestMinProfit = 10.0
+
+	opp := SpotArbOpportunity{Symbol: "BTCUSDT", Exchange: "binance", Direction: "borrow_sell_long"}
+	pass, _ := e.backtestDirA(opp)
+	if !pass {
+		t.Fatal("Dir A cache miss should fail open (pass=true)")
+	}
+}
+
+func TestSpotBacktestDirA_CacheHitPass(t *testing.T) {
+	e, mr := newSpotBacktestEngine(t)
+	defer mr.Close()
+	e.cfg.SpotFuturesBacktestDays = 7
+	e.cfg.SpotFuturesBacktestMinProfit = -50.0 // Dir A profitable if net > -50 bps
+
+	key := spotBacktestDirACacheKey("BTCUSDT", "binance", 7)
+	writeDirABacktestResult(t, e.db, key, spotBacktestDirAResult{
+		NetBps: -10.0, FundingBps: 30.0, BorrowBps: 20.0,
+		Settlements: 21, Coverage: 1.0,
+		FetchedAt: time.Now().UTC().Format(time.RFC3339),
+	})
+
+	opp := SpotArbOpportunity{Symbol: "BTCUSDT", Exchange: "binance"}
+	pass, reason := e.backtestDirA(opp)
+	if !pass {
+		t.Fatalf("netBps=-10 above threshold -50, should pass, got reason %q", reason)
+	}
+}
+
+func TestSpotBacktestDirA_CacheHitFail(t *testing.T) {
+	e, mr := newSpotBacktestEngine(t)
+	defer mr.Close()
+	e.cfg.SpotFuturesBacktestDays = 7
+	e.cfg.SpotFuturesBacktestMinProfit = 0.0 // require net > 0 (unlikely for Dir A)
+
+	key := spotBacktestDirACacheKey("BTCUSDT", "binance", 7)
+	writeDirABacktestResult(t, e.db, key, spotBacktestDirAResult{
+		NetBps: -30.0, FundingBps: 20.0, BorrowBps: 10.0,
+		Settlements: 21, Coverage: 1.0,
+		FetchedAt: time.Now().UTC().Format(time.RFC3339),
+	})
+
+	opp := SpotArbOpportunity{Symbol: "BTCUSDT", Exchange: "binance"}
+	pass, reason := e.backtestDirA(opp)
+	if pass {
+		t.Fatal("netBps=-30 below threshold 0, should fail")
+	}
+	if !strings.Contains(reason, "need >0.00") {
+		t.Fatalf("unexpected reason: %q", reason)
+	}
+}
+
+func TestSpotBacktestDirACacheKeyFormat(t *testing.T) {
+	key := spotBacktestDirACacheKey("ETHUSDT", "bybit", 7)
+	expected := "arb:spot_backtest:ETHUSDT:bybit:borrow_sell_long:7"
+	if key != expected {
+		t.Fatalf("Dir A cache key = %q, want %q", key, expected)
+	}
+}
+
+// TestBacktestDirASignMath verifies the critical sign convention:
+// Dir A is LONG futures + SHORT spot. Long futures PAYS when funding > 0.
+// Positive funding + positive borrow = both costs → netBps must be NEGATIVE.
+func TestBacktestDirASignMath(t *testing.T) {
+	e, mr := newSpotBacktestEngine(t)
+	defer mr.Close()
+	e.cfg.SpotFuturesBacktestDays = 1
+	e.cfg.SpotFuturesBacktestMinProfit = -9999
+
+	// Use fixed timestamps at valid 8h settlement hours (0h, 8h, 16h UTC).
+	// Three funding settlements of +5 bps each (positive = cost to long futures).
+	// Borrow: 24 hourly points at 0.0001/h → 0.0001 * 10000 = 1 bps/h each.
+	const lorisBody = `{"symbol":"BTC","series":{"binance":[` +
+		`{"t":"2026-04-18T00:00:00Z","y":5.0},` +
+		`{"t":"2026-04-18T08:00:00Z","y":5.0},` +
+		`{"t":"2026-04-18T16:00:00Z","y":5.0}` +
+		`]}}`
+
+	hourlyRate := 0.0001 // 0.01%/h → 1 bps/h
+	baseTime, _ := time.Parse(time.RFC3339, "2026-04-18T16:00:00Z")
+	var borrowPts []exchange.MarginInterestRatePoint
+	for i := 0; i < 24; i++ {
+		borrowPts = append(borrowPts, exchange.MarginInterestRatePoint{
+			Timestamp:  baseTime.Add(-time.Duration(i) * time.Hour),
+			HourlyRate: hourlyRate,
+		})
+	}
+
+	mock := &mockDirASpotMargin{history: borrowPts}
+	e.spotMargin = map[string]exchange.SpotMarginExchange{"binance": mock}
+	e.client = &http.Client{
+		Transport: spotBacktestRoundTripper(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(lorisBody)),
+			}, nil
+		}),
+	}
+
+	opp := SpotArbOpportunity{Symbol: "BTCUSDT", Exchange: "binance", Direction: "borrow_sell_long"}
+	if !e.fetchAndCacheSpotBacktestDirA(context.Background(), opp) {
+		t.Fatal("fetchAndCacheSpotBacktestDirA returned false")
+	}
+
+	key := spotBacktestDirACacheKey("BTCUSDT", "binance", 1)
+	result, found := e.loadSpotBacktestDirAResult(key)
+	if !found {
+		t.Fatal("expected Dir A cache entry")
+	}
+
+	// Positive funding = cost to long futures. Positive borrow = cost.
+	// Both costs → net must be negative.
+	if result.NetBps >= 0 {
+		t.Fatalf("SIGN BUG: positive funding=%.2f + positive borrow=%.2f should yield negative net, got %.2f",
+			result.FundingBps, result.BorrowBps, result.NetBps)
+	}
+	if result.FundingBps <= 0 {
+		t.Fatalf("FundingBps should be positive (raw Loris sum), got %.2f", result.FundingBps)
+	}
+	if result.BorrowBps <= 0 {
+		t.Fatalf("BorrowBps should be positive (cost), got %.2f", result.BorrowBps)
+	}
+}
+
+func TestSpotBacktestDirA_UnsupportedExchange(t *testing.T) {
+	e, mr := newSpotBacktestEngine(t)
+	defer mr.Close()
+	e.cfg.SpotFuturesBacktestDays = 7
+	e.cfg.SpotFuturesBacktestMinProfit = 999.0 // impossibly high threshold
+
+	for _, exchName := range []string{"okx", "bitget", "bingx"} {
+		opp := SpotArbOpportunity{Symbol: "BTCUSDT", Exchange: exchName, Direction: "borrow_sell_long"}
+		pass, reason := e.backtestDirA(opp)
+		if !pass {
+			t.Errorf("unsupported exchange %q should fail-open, got reason %q", exchName, reason)
+		}
+	}
+}
+
+func TestExchangeSupportsDirABacktest(t *testing.T) {
+	supported := []string{"binance", "bybit", "gateio"}
+	unsupported := []string{"okx", "bitget", "bingx", ""}
+
+	for _, ex := range supported {
+		if !exchangeSupportsDirABacktest(ex) {
+			t.Errorf("%q should be supported for Dir A backtest", ex)
+		}
+	}
+	for _, ex := range unsupported {
+		if exchangeSupportsDirABacktest(ex) {
+			t.Errorf("%q should NOT be supported for Dir A backtest", ex)
+		}
 	}
 }

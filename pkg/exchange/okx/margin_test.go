@@ -1,11 +1,25 @@
 package okx
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"arb/pkg/exchange"
 )
+
+func TestGetMarginInterestRateHistoryOKXNotSupported(t *testing.T) {
+	adapter := new(Adapter)
+	_, err := adapter.GetMarginInterestRateHistory(context.Background(), "BTC",
+		time.Now().Add(-24*time.Hour), time.Now())
+	if !errors.Is(err, exchange.ErrHistoricalBorrowNotSupported) {
+		t.Fatalf("expected ErrHistoricalBorrowNotSupported, got %v", err)
+	}
+}
 
 func TestGetSpotBBOMapsMissingSpotInstrument(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

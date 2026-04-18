@@ -1,6 +1,10 @@
 package exchange
 
-import "time"
+import (
+	"context"
+	"errors"
+	"time"
+)
 
 // MetricsCallback records REST endpoint latency and error outcomes.
 type MetricsCallback func(endpoint string, latency time.Duration, err error)
@@ -131,16 +135,16 @@ type FundingRate struct {
 
 // Balance holds account balance info.
 type Balance struct {
-	Total          float64 // total equity
-	Available      float64 // available for new orders
-	Frozen         float64 // locked in positions/orders
-	Currency       string  // "USDT"
-	MarginRatio    float64 // maintenanceMargin / equity; 0 = unknown, 1.0 = liquidation
+	Total       float64 // total equity
+	Available   float64 // available for new orders
+	Frozen      float64 // locked in positions/orders
+	Currency    string  // "USDT"
+	MarginRatio float64 // maintenanceMargin / equity; 0 = unknown, 1.0 = liquidation
 	// MarginRatioUnavailable marks exchanges/accounts where we do not have a
 	// trusted maintenance-style risk ratio and should not synthesize one from
 	// available/equity heuristics for global L3/L4/L5 health decisions.
 	MarginRatioUnavailable bool
-	MaxTransferOut float64 // max amount that can be transferred out; 0 = unknown unless MaxTransferOutAuthoritative=true
+	MaxTransferOut         float64 // max amount that can be transferred out; 0 = unknown unless MaxTransferOutAuthoritative=true
 	// MaxTransferOutAuthoritative: when true, MaxTransferOut=0 means the
 	// exchange has explicitly reported no withdrawable collateral (e.g. all
 	// equity reserved as position margin), not "field missing". Only adapters
@@ -328,6 +332,17 @@ type MarginInterestRate struct {
 	DailyRate  float64 // per-day rate as decimal (if available)
 }
 
+// MarginInterestRatePoint holds a single historical borrow rate observation.
+type MarginInterestRatePoint struct {
+	Timestamp  time.Time
+	HourlyRate float64 // per-hour rate as decimal (e.g. 0.000005)
+	VipLevel   string  // empty for exchanges that don't tier by VIP
+}
+
+// ErrHistoricalBorrowNotSupported is returned by GetMarginInterestRateHistory on
+// exchanges that do not expose a public historical borrow-rate API.
+var ErrHistoricalBorrowNotSupported = errors.New("historical borrow rate not supported on this exchange")
+
 // MarginBalance holds spot margin account info for a coin.
 type MarginBalance struct {
 	Coin          string
@@ -379,6 +394,10 @@ type SpotMarginExchange interface {
 
 	// TransferFromMargin moves funds from the margin account back to main/futures.
 	TransferFromMargin(coin string, amount string) error
+
+	// GetMarginInterestRateHistory returns historical hourly borrow rates for coin
+	// over [start, end]. Unsupported exchanges return ErrHistoricalBorrowNotSupported.
+	GetMarginInterestRateHistory(ctx context.Context, coin string, start, end time.Time) ([]MarginInterestRatePoint, error)
 }
 
 // SpotMarginOrderQuerier is an optional interface for exchanges that can

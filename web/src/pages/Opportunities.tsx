@@ -11,7 +11,9 @@ interface SpotBacktestReport {
   projected_apr: number;
   settlement_count: number;
   coverage_pct: number;
-  days: { date: string; bps: number }[];
+  funding_bps?: number;
+  borrow_bps?: number;
+  days: { date: string; bps: number; funding_bps?: number; borrow_bps?: number }[];
 }
 
 interface BorrowResult {
@@ -100,8 +102,18 @@ function getSpotSourceLabel(t: TranslateFn, source?: string): string {
 
 const PAGE_SIZE = 20;
 
+const SPOT_DIR_A_BACKTEST_EXCHANGES = new Set(['binance', 'bybit', 'gateio']);
+
+function canBacktest(opp: SpotOpportunity): { allowed: boolean; reason?: string } {
+  if (opp.direction === 'buy_spot_short') return { allowed: true };
+  if (opp.direction === 'borrow_sell_long' && SPOT_DIR_A_BACKTEST_EXCHANGES.has(opp.exchange)) {
+    return { allowed: true };
+  }
+  return { allowed: false, reason: opp.exchange };
+}
+
 // ---------------------------------------------------------------------------
-// SpotBacktestModal — on-demand Dir B backtest panel
+// SpotBacktestModal — on-demand backtest panel (Dir A + Dir B)
 // ---------------------------------------------------------------------------
 const SpotBacktestModal: FC<{ opp: SpotOpportunity; t: TranslateFn; onClose: () => void }> = ({ opp, t, onClose }) => {
   const [days, setDays] = useState(7);
@@ -157,10 +169,7 @@ const SpotBacktestModal: FC<{ opp: SpotOpportunity; t: TranslateFn; onClose: () 
           </span>
         </div>
 
-        {isA ? (
-          <p className="text-sm text-amber-400">{t('spotBacktest.modal.notSupportedDirA')}</p>
-        ) : (
-          <>
+        <>
             <div className="flex items-center gap-3 mb-4">
               <label className="text-sm text-gray-400">Days:</label>
               <input
@@ -186,31 +195,67 @@ const SpotBacktestModal: FC<{ opp: SpotOpportunity; t: TranslateFn; onClose: () 
 
             {result && (
               <div className="space-y-3">
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  <div className="bg-gray-800 rounded-lg p-2.5">
-                    <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-0.5">{t('spotBacktest.modal.sumBps')}</div>
-                    <div className={`font-mono text-sm font-bold ${result.sum_bps >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{result.sum_bps.toFixed(1)}</div>
+                {result.funding_bps !== undefined ? (
+                  <>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="bg-gray-800 rounded-lg p-2.5">
+                        <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-0.5">{t('spotBacktest.modal.fundingBps')}</div>
+                        <div className={`font-mono text-sm font-bold ${result.funding_bps >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{result.funding_bps.toFixed(1)}</div>
+                      </div>
+                      <div className="bg-gray-800 rounded-lg p-2.5">
+                        <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-0.5">{t('spotBacktest.modal.borrowBps')}</div>
+                        <div className={`font-mono text-sm font-bold ${(result.borrow_bps ?? 0) <= 0 ? 'text-emerald-400' : 'text-amber-400'}`}>{(result.borrow_bps ?? 0).toFixed(1)}</div>
+                      </div>
+                      <div className="bg-gray-800 rounded-lg p-2.5">
+                        <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-0.5">{t('spotBacktest.modal.netBps')}</div>
+                        <div className={`font-mono text-sm font-bold ${result.sum_bps >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{result.sum_bps.toFixed(1)}</div>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="bg-gray-800 rounded-lg p-2.5">
+                        <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-0.5">{t('spotBacktest.modal.projectedApr')}</div>
+                        <div className={`font-mono text-sm font-bold ${result.projected_apr >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{(result.projected_apr * 100).toFixed(1)}%</div>
+                      </div>
+                      <div className="bg-gray-800 rounded-lg p-2.5">
+                        <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-0.5">{t('spotBacktest.modal.settlements')}</div>
+                        <div className="font-mono text-sm font-bold text-gray-100">{result.settlement_count}</div>
+                      </div>
+                      <div className="bg-gray-800 rounded-lg p-2.5">
+                        <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-0.5">{t('spotBacktest.modal.coverage')}</div>
+                        <div className={`font-mono text-sm font-bold ${result.coverage_pct >= 80 ? 'text-emerald-400' : result.coverage_pct >= 50 ? 'text-amber-400' : 'text-red-400'}`}>{result.coverage_pct.toFixed(0)}%</div>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <div className="bg-gray-800 rounded-lg p-2.5">
+                      <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-0.5">{t('spotBacktest.modal.sumBps')}</div>
+                      <div className={`font-mono text-sm font-bold ${result.sum_bps >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{result.sum_bps.toFixed(1)}</div>
+                    </div>
+                    <div className="bg-gray-800 rounded-lg p-2.5">
+                      <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-0.5">{t('spotBacktest.modal.projectedApr')}</div>
+                      <div className={`font-mono text-sm font-bold ${result.projected_apr >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{(result.projected_apr * 100).toFixed(1)}%</div>
+                    </div>
+                    <div className="bg-gray-800 rounded-lg p-2.5">
+                      <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-0.5">{t('spotBacktest.modal.settlements')}</div>
+                      <div className="font-mono text-sm font-bold text-gray-100">{result.settlement_count}</div>
+                    </div>
+                    <div className="bg-gray-800 rounded-lg p-2.5">
+                      <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-0.5">{t('spotBacktest.modal.coverage')}</div>
+                      <div className={`font-mono text-sm font-bold ${result.coverage_pct >= 80 ? 'text-emerald-400' : result.coverage_pct >= 50 ? 'text-amber-400' : 'text-red-400'}`}>{result.coverage_pct.toFixed(0)}%</div>
+                    </div>
                   </div>
-                  <div className="bg-gray-800 rounded-lg p-2.5">
-                    <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-0.5">{t('spotBacktest.modal.projectedApr')}</div>
-                    <div className={`font-mono text-sm font-bold ${result.projected_apr >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{(result.projected_apr * 100).toFixed(1)}%</div>
-                  </div>
-                  <div className="bg-gray-800 rounded-lg p-2.5">
-                    <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-0.5">{t('spotBacktest.modal.settlements')}</div>
-                    <div className="font-mono text-sm font-bold text-gray-100">{result.settlement_count}</div>
-                  </div>
-                  <div className="bg-gray-800 rounded-lg p-2.5">
-                    <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-0.5">{t('spotBacktest.modal.coverage')}</div>
-                    <div className={`font-mono text-sm font-bold ${result.coverage_pct >= 80 ? 'text-emerald-400' : result.coverage_pct >= 50 ? 'text-amber-400' : 'text-red-400'}`}>{result.coverage_pct.toFixed(0)}%</div>
-                  </div>
-                </div>
+                )}
 
                 {result.days.length > 0 && (
                   <div className="bg-gray-800 rounded-lg p-3">
                     <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-2">Daily Funding (bps)</div>
                     <div className="space-y-1">
                       {result.days.map((d, i) => (
-                        <div key={i} className="flex items-center gap-2 text-[10px]">
+                        <div key={i} className="flex items-center gap-2 text-[10px]"
+                          title={d.funding_bps !== undefined
+                            ? `Funding: ${d.funding_bps.toFixed(1)} bps | Borrow: ${(d.borrow_bps ?? 0).toFixed(1)} bps | Net: ${d.bps.toFixed(1)} bps`
+                            : undefined}>
                           <span className="text-gray-600 w-16 shrink-0 font-mono">{d.date}</span>
                           <div className="flex-1 bg-gray-700 rounded-full h-2">
                             <div
@@ -227,7 +272,6 @@ const SpotBacktestModal: FC<{ opp: SpotOpportunity; t: TranslateFn; onClose: () 
               </div>
             )}
           </>
-        )}
       </div>
     </div>
   );
@@ -313,19 +357,20 @@ const SpotRow: FC<SpotRowProps> = ({ opp, index, compact, t, onSpotOpen, onOpenB
                 {spotOpening === oppKey ? '..' : 'Open'}
               </button>
             )}
-            {onOpenBacktest && (
-              isA ? (
-                <span title={t('spotBacktest.modal.notSupportedDirA')}
-                  className="px-1.5 py-0.5 text-[10px] rounded bg-gray-700/40 text-gray-600 cursor-not-allowed select-none">
-                  BT
-                </span>
-              ) : (
+            {onOpenBacktest && (() => {
+              const bt = canBacktest(opp);
+              return bt.allowed ? (
                 <button onClick={() => onOpenBacktest(opp)}
                   className="px-1.5 py-0.5 text-[10px] rounded transition-colors bg-violet-600/20 text-violet-400 hover:bg-violet-600/40">
                   BT
                 </button>
-              )
-            )}
+              ) : (
+                <span title={opp.exchange === 'bingx' ? t('spotBacktest.modal.notSupportedDirA') : t('spotBacktest.modal.notSupportedExchange').replace('{exchange}', bt.reason ?? opp.exchange)}
+                  className="px-1.5 py-0.5 text-[10px] rounded bg-gray-700/40 text-gray-600 cursor-not-allowed select-none">
+                  BT
+                </span>
+              );
+            })()}
             {filtered && !onSpotOpen && !onOpenBacktest && <span className="w-1.5 h-1.5 rounded-full bg-gray-600 inline-block" />}
           </div>
         </td>
@@ -384,19 +429,20 @@ const SpotRow: FC<SpotRowProps> = ({ opp, index, compact, t, onSpotOpen, onOpenB
               {spotOpening === oppKey ? 'Opening...' : 'Open'}
             </button>
           )}
-          {onOpenBacktest && (
-            isA ? (
-              <span title={t('spotBacktest.modal.notSupportedDirA')}
-                className="px-2 py-0.5 text-xs rounded bg-gray-700/40 text-gray-600 cursor-not-allowed select-none">
-                Backtest
-              </span>
-            ) : (
+          {onOpenBacktest && (() => {
+            const bt = canBacktest(opp);
+            return bt.allowed ? (
               <button onClick={() => onOpenBacktest(opp)}
                 className="px-2 py-0.5 text-xs rounded transition-colors bg-violet-600/20 text-violet-400 hover:bg-violet-600/40">
                 Backtest
               </button>
-            )
-          )}
+            ) : (
+              <span title={opp.exchange === 'bingx' ? t('spotBacktest.modal.notSupportedDirA') : t('spotBacktest.modal.notSupportedExchange').replace('{exchange}', bt.reason ?? opp.exchange)}
+                className="px-2 py-0.5 text-xs rounded bg-gray-700/40 text-gray-600 cursor-not-allowed select-none">
+                Backtest
+              </span>
+            );
+          })()}
         </div>
       </td>
     </tr>
@@ -520,19 +566,20 @@ const SpotCard: FC<SpotRowProps> = ({ opp, index, t, onSpotOpen, onOpenBacktest,
               {spotOpening === oppKey ? '...' : 'Open'}
             </button>
           )}
-          {onOpenBacktest && (
-            isA ? (
-              <span title={t('spotBacktest.modal.notSupportedDirA')}
-                className="px-3 py-1 text-xs font-semibold rounded bg-gray-700/40 text-gray-600 cursor-not-allowed select-none">
-                BT
-              </span>
-            ) : (
+          {onOpenBacktest && (() => {
+            const bt = canBacktest(opp);
+            return bt.allowed ? (
               <button onClick={() => onOpenBacktest(opp)}
                 className="px-3 py-1 text-xs font-semibold rounded transition-colors bg-violet-600/20 text-violet-400 hover:bg-violet-600/40">
                 BT
               </button>
-            )
-          )}
+            ) : (
+              <span title={opp.exchange === 'bingx' ? t('spotBacktest.modal.notSupportedDirA') : t('spotBacktest.modal.notSupportedExchange').replace('{exchange}', bt.reason ?? opp.exchange)}
+                className="px-3 py-1 text-xs font-semibold rounded bg-gray-700/40 text-gray-600 cursor-not-allowed select-none">
+                BT
+              </span>
+            );
+          })()}
         </div>
       </div>
     </div>

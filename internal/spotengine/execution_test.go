@@ -1,6 +1,7 @@
 package spotengine
 
 import (
+	"context"
 	"errors"
 	"math"
 	"strings"
@@ -151,6 +152,9 @@ func (s *closeTestSpotMargin) GetSpotBBO(string) (exchange.BBO, error) {
 }
 func (s *closeTestSpotMargin) TransferToMargin(string, string) error   { return nil }
 func (s *closeTestSpotMargin) TransferFromMargin(string, string) error { return nil }
+func (s *closeTestSpotMargin) GetMarginInterestRateHistory(_ context.Context, _ string, _, _ time.Time) ([]exchange.MarginInterestRatePoint, error) {
+	return nil, exchange.ErrHistoricalBorrowNotSupported
+}
 func (s *closeTestSpotMargin) GetSpotMarginOrder(string, string) (*exchange.SpotMarginOrderStatus, error) {
 	s.queryCalls++
 	if len(s.queryErrs) > 0 {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"arb/internal/discovery"
+	"arb/pkg/exchange"
 )
 
 var (
@@ -42,8 +43,10 @@ func (r spotBacktestResult) isStale(now time.Time) bool {
 // SpotBacktestDayBreakdown is a single settlement entry in the on-demand report.
 // Field names match the frontend contract (web/src/pages/Opportunities.tsx).
 type SpotBacktestDayBreakdown struct {
-	Date string  `json:"date"` // short UTC "MM-DD HH" label
-	Bps  float64 `json:"bps"`  // raw bps from Loris
+	Date       string  `json:"date"`                  // short UTC "MM-DD HH" label
+	Bps        float64 `json:"bps"`                   // net bps (Dir B: funding; Dir A: -funding-borrow)
+	FundingBps float64 `json:"funding_bps,omitempty"` // Dir A only: raw funding settlement bps
+	BorrowBps  float64 `json:"borrow_bps,omitempty"`  // Dir A only: borrow cost bps for this 8h period
 }
 
 // SpotBacktestReport is the payload returned by RunSpotBacktestOnDemand.
@@ -58,6 +61,8 @@ type SpotBacktestReport struct {
 	SettlementCount int                        `json:"settlement_count"`
 	CoveragePct     float64                    `json:"coverage_pct"` // 0-100 percent
 	DayBreakdown    []SpotBacktestDayBreakdown `json:"days"`
+	FundingBps      float64                    `json:"funding_bps,omitempty"` // Dir A only: cumulative raw funding
+	BorrowBps       float64                    `json:"borrow_bps,omitempty"`  // Dir A only: cumulative borrow cost
 }
 
 func spotBacktestCacheKey(symbol, exchange string, days int) string {
@@ -209,24 +214,41 @@ func (e *SpotEngine) prefetchSpotBacktestData(opps []SpotArbOpportunity) {
 		return
 	}
 
-	// Filter to Dir B only, deduplicate by symbol+exchange.
+	// Collect Dir B and supported Dir A opps, deduplicate by symbol+exchange+direction.
 	seen := make(map[string]bool)
 	var toFetch []SpotArbOpportunity
 	now := time.Now().UTC()
 	for _, opp := range opps {
-		if opp.Direction != "buy_spot_short" {
-			continue
+		switch opp.Direction {
+		case "buy_spot_short":
+			k := opp.Symbol + ":" + opp.Exchange + ":b"
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			cacheKey := spotBacktestCacheKey(opp.Symbol, opp.Exchange, days)
+			if result, ok := e.loadSpotBacktestResult(cacheKey); ok && !result.isStale(now) {
+				continue
+			}
+			toFetch = append(toFetch, opp)
+		case "borrow_sell_long":
+			if !exchangeSupportsDirABacktest(opp.Exchange) {
+				continue
+			}
+			if _, hasAdapter := e.spotMargin[opp.Exchange]; !hasAdapter {
+				continue
+			}
+			k := opp.Symbol + ":" + opp.Exchange + ":a"
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			cacheKey := spotBacktestDirACacheKey(opp.Symbol, opp.Exchange, days)
+			if result, ok := e.loadSpotBacktestDirAResult(cacheKey); ok && !result.isStale(now) {
+				continue
+			}
+			toFetch = append(toFetch, opp)
 		}
-		k := opp.Symbol + ":" + opp.Exchange
-		if seen[k] {
-			continue
-		}
-		seen[k] = true
-		cacheKey := spotBacktestCacheKey(opp.Symbol, opp.Exchange, days)
-		if result, ok := e.loadSpotBacktestResult(cacheKey); ok && !result.isStale(now) {
-			continue
-		}
-		toFetch = append(toFetch, opp)
 	}
 
 	if len(toFetch) == 0 {
@@ -247,7 +269,14 @@ func (e *SpotEngine) prefetchSpotBacktestData(opps []SpotArbOpportunity) {
 			return
 		}
 
-		if !e.fetchAndCacheSpotBacktest(opp) {
+		var ok bool
+		switch opp.Direction {
+		case "borrow_sell_long":
+			ok = e.fetchAndCacheSpotBacktestDirA(context.Background(), opp)
+		default:
+			ok = e.fetchAndCacheSpotBacktest(opp)
+		}
+		if !ok {
 			// FetchLorisHistoricalSeries auto-triggers backoff on 429; do it
 			// here too so non-429 errors we treat as rate-limiting also cool down.
 			discovery.TriggerLorisBackoff()
@@ -267,12 +296,11 @@ func nextSpotBacktestDelay() time.Duration {
 	return spotBacktestPrefetchMinDelay + time.Duration(rand.Int63n(int64(span)))
 }
 
-// RunSpotBacktestOnDemand fetches fresh historical funding data and returns a
-// per-settlement breakdown. Only Direction B (buy_spot_short) is supported.
-func (e *SpotEngine) RunSpotBacktestOnDemand(ctx context.Context, symbol, exchange, direction string, days int) (*SpotBacktestReport, error) {
-	if direction != "buy_spot_short" {
-		return nil, fmt.Errorf("backtest not yet supported for direction %q (requires historical borrow-rate source)", direction)
-	}
+// RunSpotBacktestOnDemand fetches fresh historical data and returns a per-settlement
+// breakdown. Dir B (buy_spot_short) uses Loris funding only. Dir A (borrow_sell_long)
+// combines Loris funding + exchange historical borrow rates; only supported on
+// binance, bybit, and gateio.
+func (e *SpotEngine) RunSpotBacktestOnDemand(ctx context.Context, symbol, exchName, direction string, days int) (*SpotBacktestReport, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -283,16 +311,30 @@ func (e *SpotEngine) RunSpotBacktestOnDemand(ctx context.Context, symbol, exchan
 		days = 7
 	}
 
+	switch direction {
+	case "buy_spot_short":
+		return e.runBacktestDirBOnDemand(ctx, symbol, exchName, days)
+	case "borrow_sell_long":
+		if !exchangeSupportsDirABacktest(exchName) {
+			return nil, fmt.Errorf("Dir A backtest not yet supported on %q (Phase 2)", exchName)
+		}
+		return e.runBacktestDirAOnDemand(ctx, symbol, exchName, days)
+	default:
+		return nil, fmt.Errorf("unknown direction %q", direction)
+	}
+}
+
+func (e *SpotEngine) runBacktestDirBOnDemand(ctx context.Context, symbol, exchName string, days int) (*SpotBacktestReport, error) {
 	base := strings.TrimSuffix(symbol, "USDT")
 	now := time.Now().UTC()
 	start := now.Add(-time.Duration(days) * 24 * time.Hour)
 
-	historical, err := discovery.FetchLorisHistoricalSeries(e.client, base, []string{exchange}, start, now)
+	historical, err := discovery.FetchLorisHistoricalSeries(e.client, base, []string{exchName}, start, now)
 	if err != nil {
 		return nil, fmt.Errorf("loris fetch: %w", err)
 	}
 
-	series := historical.Series[exchange]
+	series := historical.Series[exchName]
 	filtered := discovery.FilterValidSettlements(series, 8.0)
 
 	expectedSettlements := float64(days) * 24.0 / 8.0
@@ -311,7 +353,6 @@ func (e *SpotEngine) RunSpotBacktestOnDemand(ctx context.Context, symbol, exchan
 		})
 	}
 
-	// Annualize: average daily bps × 365 ÷ 10000
 	projectedAPR := 0.0
 	if days > 0 {
 		projectedAPR = (sumY / float64(days)) * 365.0 / 10000.0
@@ -319,14 +360,98 @@ func (e *SpotEngine) RunSpotBacktestOnDemand(ctx context.Context, symbol, exchan
 
 	return &SpotBacktestReport{
 		Symbol:          symbol,
-		Exchange:        exchange,
-		Direction:       direction,
+		Exchange:        exchName,
+		Direction:       "buy_spot_short",
 		Days:            days,
 		SumBps:          sumY,
 		ProjectedAPR:    projectedAPR,
 		SettlementCount: len(filtered),
 		CoveragePct:     coverage * 100.0,
 		DayBreakdown:    breakdown,
+	}, nil
+}
+
+func (e *SpotEngine) runBacktestDirAOnDemand(ctx context.Context, symbol, exchName string, days int) (*SpotBacktestReport, error) {
+	smExch, ok := e.spotMargin[exchName]
+	if !ok {
+		return nil, fmt.Errorf("no spot margin adapter for %q", exchName)
+	}
+
+	base := strings.TrimSuffix(symbol, "USDT")
+	now := time.Now().UTC()
+	start := now.Add(-time.Duration(days) * 24 * time.Hour)
+
+	historical, err := discovery.FetchLorisHistoricalSeries(e.client, base, []string{exchName}, start, now)
+	if err != nil {
+		return nil, fmt.Errorf("loris fetch: %w", err)
+	}
+
+	borrowSeries, err := smExch.GetMarginInterestRateHistory(ctx, base, start, now)
+	if err != nil {
+		return nil, fmt.Errorf("borrow rate history: %w", err)
+	}
+
+	// Build hourly borrow lookup for O(1) per-settlement attribution.
+	borrowByHour := make(map[time.Time]float64, len(borrowSeries))
+	for _, bp := range borrowSeries {
+		h := bp.Timestamp.UTC().Truncate(time.Hour)
+		borrowByHour[h] += bp.HourlyRate
+	}
+
+	series := historical.Series[exchName]
+	filtered := discovery.FilterValidSettlements(series, 8.0)
+
+	expectedSettlements := float64(days) * 24.0 / 8.0
+	coverage := 0.0
+	if expectedSettlements > 0 {
+		coverage = float64(len(filtered)) / expectedSettlements
+	}
+
+	var totalFundingBps, totalBorrowBps float64
+	breakdown := make([]SpotBacktestDayBreakdown, 0, len(filtered))
+	for _, p := range filtered {
+		t, _ := time.Parse(time.RFC3339, p.T)
+		t = t.UTC()
+
+		// Sum hourly borrow rates for the 8h window ending at this settlement.
+		var settleBorrowBps float64
+		for h := 1; h <= 8; h++ {
+			hour := t.Add(-time.Duration(h) * time.Hour).Truncate(time.Hour)
+			settleBorrowBps += borrowByHour[hour] * 10000
+		}
+
+		settleFundingBps := p.Y
+		netBps := -settleFundingBps - settleBorrowBps
+		totalFundingBps += settleFundingBps
+		totalBorrowBps += settleBorrowBps
+
+		breakdown = append(breakdown, SpotBacktestDayBreakdown{
+			Date:       formatSettlementLabel(p.T),
+			Bps:        netBps,
+			FundingBps: settleFundingBps,
+			BorrowBps:  settleBorrowBps,
+		})
+	}
+
+	// Dir A net: long futures pays positive funding; borrow is always a cost.
+	netBps := -totalFundingBps - totalBorrowBps
+	projectedAPR := 0.0
+	if days > 0 {
+		projectedAPR = (netBps / float64(days)) * 365.0 / 10000.0
+	}
+
+	return &SpotBacktestReport{
+		Symbol:          symbol,
+		Exchange:        exchName,
+		Direction:       "borrow_sell_long",
+		Days:            days,
+		SumBps:          netBps,
+		ProjectedAPR:    projectedAPR,
+		SettlementCount: len(filtered),
+		CoveragePct:     coverage * 100.0,
+		DayBreakdown:    breakdown,
+		FundingBps:      totalFundingBps,
+		BorrowBps:       totalBorrowBps,
 	}, nil
 }
 
@@ -342,4 +467,159 @@ func formatSettlementLabel(ts string) string {
 		return ts
 	}
 	return t.UTC().Format("01-02 15")
+}
+
+// ---- Dir A (borrow_sell_long) backtest ----
+
+// spotBacktestDirAResult caches Dir A funding + borrow sums in Redis.
+// NetBps = -FundingBps - BorrowBps: Dir A long-futures pays positive funding
+// and always pays borrow, so profitable Dir A has negative cumulative funding.
+type spotBacktestDirAResult struct {
+	FundingBps  float64 `json:"funding_bps"`
+	BorrowBps   float64 `json:"borrow_bps"`
+	NetBps      float64 `json:"net_bps"`
+	Settlements int     `json:"settlements"`
+	Coverage    float64 `json:"coverage"`
+	FetchedAt   string  `json:"fetched_at,omitempty"`
+}
+
+func (r spotBacktestDirAResult) isStale(now time.Time) bool {
+	if r.FetchedAt == "" {
+		return true
+	}
+	t, err := time.Parse(time.RFC3339, r.FetchedAt)
+	if err != nil {
+		return true
+	}
+	return now.Sub(t) >= spotBacktestRefreshInterval
+}
+
+func spotBacktestDirACacheKey(symbol, exchName string, days int) string {
+	return fmt.Sprintf("arb:spot_backtest:%s:%s:borrow_sell_long:%d", symbol, exchName, days)
+}
+
+// exchangeSupportsDirABacktest returns true for the three exchanges that expose
+// public historical borrow-rate APIs: Binance, Bybit, Gate.io.
+func exchangeSupportsDirABacktest(exchName string) bool {
+	switch exchName {
+	case "binance", "bybit", "gateio":
+		return true
+	default:
+		return false
+	}
+}
+
+// backtestDirA checks the Redis cache for a Dir A historical backtest result.
+// Unsupported exchanges fail-open immediately. Cache misses also fail-open.
+func (e *SpotEngine) backtestDirA(opp SpotArbOpportunity) (bool, string) {
+	if !exchangeSupportsDirABacktest(opp.Exchange) {
+		return true, ""
+	}
+	days := e.cfg.SpotFuturesBacktestDays
+	if days <= 0 {
+		return true, ""
+	}
+	cacheKey := spotBacktestDirACacheKey(opp.Symbol, opp.Exchange, days)
+	if result, ok := e.loadSpotBacktestDirAResult(cacheKey); ok {
+		if result.NetBps > e.cfg.SpotFuturesBacktestMinProfit {
+			return true, ""
+		}
+		return false, fmt.Sprintf("backtest unprofitable (%dd cached): netBps=%.2f (need >%.2f)",
+			days, result.NetBps, e.cfg.SpotFuturesBacktestMinProfit)
+	}
+	e.log.Info("spot backtest Dir A %s (%s): cache miss, fail-open (will prefetch)", opp.Symbol, opp.Exchange)
+	return true, ""
+}
+
+func (e *SpotEngine) loadSpotBacktestDirAResult(cacheKey string) (spotBacktestDirAResult, bool) {
+	cached, err := e.db.Get(cacheKey)
+	if err != nil || cached == "" {
+		return spotBacktestDirAResult{}, false
+	}
+	var result spotBacktestDirAResult
+	if err := json.Unmarshal([]byte(cached), &result); err != nil {
+		return spotBacktestDirAResult{}, false
+	}
+	return result, true
+}
+
+// fetchAndCacheSpotBacktestDirA fetches Loris historical funding and exchange
+// historical borrow rates for a Dir A opportunity, then caches the result.
+// Returns true on success or benign skip, false on API error/429.
+func (e *SpotEngine) fetchAndCacheSpotBacktestDirA(ctx context.Context, opp SpotArbOpportunity) bool {
+	days := e.cfg.SpotFuturesBacktestDays
+	if days <= 0 {
+		return true
+	}
+	smExch, ok := e.spotMargin[opp.Exchange]
+	if !ok {
+		return true
+	}
+
+	base := strings.TrimSuffix(opp.Symbol, "USDT")
+	now := time.Now().UTC()
+	start := now.Add(-time.Duration(days) * 24 * time.Hour)
+
+	historical, err := discovery.FetchLorisHistoricalSeries(e.client, base, []string{opp.Exchange}, start, now)
+	if err != nil {
+		if errors.Is(err, discovery.ErrLorisRateLimited) {
+			e.log.Warn("spot backtest Dir A prefetch %s (%s): 429 rate limited", opp.Symbol, opp.Exchange)
+		} else {
+			e.log.Warn("spot backtest Dir A prefetch %s (%s): loris: %v", opp.Symbol, opp.Exchange, err)
+		}
+		return false
+	}
+
+	borrowSeries, err := smExch.GetMarginInterestRateHistory(ctx, base, start, now)
+	if err != nil {
+		if errors.Is(err, exchange.ErrHistoricalBorrowNotSupported) {
+			// Capability gate should prevent reaching here; handle gracefully.
+			e.log.Info("spot backtest Dir A %s (%s): historical borrow not supported, skipping", opp.Symbol, opp.Exchange)
+			return true
+		}
+		e.log.Warn("spot backtest Dir A prefetch %s (%s): borrow history: %v", opp.Symbol, opp.Exchange, err)
+		return false
+	}
+
+	fundingSeries := historical.Series[opp.Exchange]
+	if len(fundingSeries) == 0 {
+		return true
+	}
+
+	filtered := discovery.FilterValidSettlements(fundingSeries, 8.0)
+	expectedSettlements := float64(days) * 24.0 / 8.0
+	coverage := float64(len(filtered)) / expectedSettlements
+	if coverage < 0.5 {
+		return true
+	}
+
+	var sumFundingBps float64
+	for _, p := range filtered {
+		sumFundingBps += p.Y
+	}
+
+	// Each borrow point covers one hour; convert hourly rate to bps.
+	var sumBorrowBps float64
+	for _, p := range borrowSeries {
+		sumBorrowBps += p.HourlyRate * 10000
+	}
+
+	// Dir A net: long futures pays positive funding; borrow is always a cost.
+	netBps := -sumFundingBps - sumBorrowBps
+
+	result := spotBacktestDirAResult{
+		FundingBps:  sumFundingBps,
+		BorrowBps:   sumBorrowBps,
+		NetBps:      netBps,
+		Settlements: len(filtered),
+		Coverage:    coverage,
+		FetchedAt:   now.Format(time.RFC3339),
+	}
+	if data, err := json.Marshal(result); err == nil {
+		e.db.SetWithTTL(spotBacktestDirACacheKey(opp.Symbol, opp.Exchange, days), string(data), spotBacktestCacheTTL)
+	}
+
+	e.log.Info("spot backtest Dir A prefetch %s (%s %dd): net=%.2f bps (funding=%.2f borrow=%.2f) settlements=%d coverage=%.0f%%",
+		opp.Symbol, opp.Exchange, days, netBps, sumFundingBps, sumBorrowBps, len(filtered), coverage*100)
+	return true
 }

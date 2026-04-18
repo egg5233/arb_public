@@ -38,24 +38,24 @@ func TestMaintenanceRateNormalization_OKX(t *testing.T) {
 			}
 			respond([]map[string]interface{}{
 				{
-					"tier":   "1",
-					"minSz":  "0",
-					"maxSz":  "15000",
-					"mmr":    "0.01",
+					"tier":     "1",
+					"minSz":    "0",
+					"maxSz":    "15000",
+					"mmr":      "0.01",
 					"maxLever": "125",
 				},
 				{
-					"tier":   "2",
-					"minSz":  "15000",
-					"maxSz":  "50000",
-					"mmr":    "0.02",
+					"tier":     "2",
+					"minSz":    "15000",
+					"maxSz":    "50000",
+					"mmr":      "0.02",
 					"maxLever": "50",
 				},
 				{
-					"tier":   "3",
-					"minSz":  "50000",
-					"maxSz":  "200000",
-					"mmr":    "0.03",
+					"tier":     "3",
+					"minSz":    "50000",
+					"maxSz":    "200000",
+					"mmr":      "0.03",
 					"maxLever": "20",
 				},
 			})
@@ -113,17 +113,17 @@ func TestGetMaintenanceRate_OKX_TierMatching(t *testing.T) {
 		case "/api/v5/public/position-tiers":
 			respond([]map[string]interface{}{
 				{
-					"tier":   "1",
-					"minSz":  "0",
-					"maxSz":  "500",
-					"mmr":    "0.02",
+					"tier":     "1",
+					"minSz":    "0",
+					"maxSz":    "500",
+					"mmr":      "0.02",
 					"maxLever": "100",
 				},
 				{
-					"tier":   "2",
-					"minSz":  "500",
-					"maxSz":  "5000",
-					"mmr":    "0.04",
+					"tier":     "2",
+					"minSz":    "500",
+					"maxSz":    "5000",
+					"mmr":      "0.04",
 					"maxLever": "50",
 				},
 			})

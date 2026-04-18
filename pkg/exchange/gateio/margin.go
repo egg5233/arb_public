@@ -1,11 +1,13 @@
 package gateio
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"arb/pkg/exchange"
 )
@@ -318,6 +320,69 @@ func (a *Adapter) GetSpotBBO(symbol string) (exchange.BBO, error) {
 // ---------------------------------------------------------------------------
 // Spot Margin: Interest Rate
 // ---------------------------------------------------------------------------
+
+// GetMarginInterestRateHistory returns historical hourly borrow rates for a coin
+// over [start, end]. Gate.io's endpoint has no date-range params so results are
+// paginated and filtered client-side. Sorted newest-first; stops when oldest
+// record in a page predates start.
+func (a *Adapter) GetMarginInterestRateHistory(ctx context.Context, coin string, start, end time.Time) ([]exchange.MarginInterestRatePoint, error) {
+	const maxPages = 200
+	var all []exchange.MarginInterestRatePoint
+
+	for page := 1; page <= maxPages; page++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		params := map[string]string{
+			"currency": strings.ToUpper(coin),
+			"tier":     "0",
+			"limit":    "100",
+			"page":     strconv.Itoa(page),
+		}
+		data, err := a.client.Get("/unified/history_loan_rate", params)
+		if err != nil {
+			return nil, fmt.Errorf("gateio GetMarginInterestRateHistory: %w", err)
+		}
+		var resp struct {
+			Currency string `json:"currency"`
+			Rates    []struct {
+				Time int64  `json:"time"`
+				Rate string `json:"rate"`
+			} `json:"rates"`
+		}
+		if err := json.Unmarshal(data, &resp); err != nil {
+			return nil, fmt.Errorf("gateio GetMarginInterestRateHistory unmarshal: %w", err)
+		}
+		if len(resp.Rates) == 0 {
+			break
+		}
+		reachedStart := false
+		for _, r := range resp.Rates {
+			ts := time.UnixMilli(r.Time)
+			if ts.Before(start) {
+				reachedStart = true
+				continue
+			}
+			if ts.After(end) {
+				continue
+			}
+			rate, _ := strconv.ParseFloat(r.Rate, 64)
+			all = append(all, exchange.MarginInterestRatePoint{
+				Timestamp:  ts,
+				HourlyRate: rate,
+			})
+		}
+		// Oldest record in this page predates start — no need to go further back.
+		oldest := time.UnixMilli(resp.Rates[len(resp.Rates)-1].Time)
+		if oldest.Before(start) || reachedStart {
+			break
+		}
+		if len(resp.Rates) < 100 {
+			break // last page
+		}
+	}
+	return all, nil
+}
 
 // GetMarginInterestRate returns the current borrow interest rate for a coin
 // via GET /unified/estimate_rate.

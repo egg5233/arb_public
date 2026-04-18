@@ -1,10 +1,12 @@
 package binance
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"arb/pkg/exchange"
 )
@@ -221,6 +223,62 @@ func (b *Adapter) GetSpotBBO(symbol string) (exchange.BBO, error) {
 // ---------------------------------------------------------------------------
 // Spot Margin: Interest Rate
 // ---------------------------------------------------------------------------
+
+// GetMarginInterestRateHistory returns historical daily borrow rates for a coin
+// over [start, end], paginating in 30-day windows.
+// Binance granularity is daily; HourlyRate = dailyInterestRate / 24.
+func (b *Adapter) GetMarginInterestRateHistory(ctx context.Context, coin string, start, end time.Time) ([]exchange.MarginInterestRatePoint, error) {
+	const maxWindow = 30 * 24 * time.Hour
+	var all []exchange.MarginInterestRatePoint
+
+	windowStart := start
+	for windowStart.Before(end) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		windowEnd := windowStart.Add(maxWindow)
+		if windowEnd.After(end) {
+			windowEnd = end
+		}
+		params := map[string]string{
+			"asset":     coin,
+			"vipLevel":  "0",
+			"startTime": strconv.FormatInt(windowStart.UnixMilli(), 10),
+			"endTime":   strconv.FormatInt(windowEnd.UnixMilli(), 10),
+			"limit":     "100",
+		}
+		body, err := b.client.SpotGet("/sapi/v1/margin/interestRateHistory", params)
+		if err != nil {
+			return nil, fmt.Errorf("binance GetMarginInterestRateHistory: %w", err)
+		}
+		var resp []struct {
+			Asset             string `json:"asset"`
+			DailyInterestRate string `json:"dailyInterestRate"`
+			Timestamp         int64  `json:"timestamp"`
+			VipLevel          int    `json:"vipLevel"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("binance GetMarginInterestRateHistory unmarshal: %w", err)
+		}
+		for _, r := range resp {
+			daily, _ := strconv.ParseFloat(r.DailyInterestRate, 64)
+			all = append(all, exchange.MarginInterestRatePoint{
+				Timestamp:  time.UnixMilli(r.Timestamp),
+				HourlyRate: daily / 24,
+				VipLevel:   strconv.Itoa(r.VipLevel),
+			})
+		}
+		windowStart = windowEnd
+		if len(resp) > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}
+	return all, nil
+}
 
 // GetMarginInterestRate returns the current borrow interest rate for a coin.
 func (b *Adapter) GetMarginInterestRate(coin string) (*exchange.MarginInterestRate, error) {
