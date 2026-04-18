@@ -1938,8 +1938,8 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				if fb, err := e.exchanges[bw.recipient].GetFuturesBalance(); err == nil {
 					pendingStartBal[bw.recipient] = fb.Available
 				} else {
-					e.log.Warn("rebalance: %s unified GetFuturesBalance for deposit baseline failed: %v, using spot fallback", bw.recipient, err)
-					pendingStartBal[bw.recipient] = balances[bw.recipient].spot
+					e.log.Warn("rebalance: %s unified GetFuturesBalance for deposit baseline failed: %v, using futures snapshot fallback", bw.recipient, err)
+					pendingStartBal[bw.recipient] = balances[bw.recipient].futures
 				}
 			} else {
 				pendingStartBal[bw.recipient] = balances[bw.recipient].spot
@@ -2022,23 +2022,50 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 			break
 		}
 		if !arrived {
-			// Deadline hit — check if spot actually received funds. If so, credit
-			// spot-backed receiver state so keepFundedChoices can retain override
-			// (replay will simulate spot→futures via Bug 2's replayUsableAllocatorBalance).
-			if liveSpot, err := recipientExch.GetSpotBalance(); err == nil {
-				arrivedAmt := liveSpot.Available - startBal
+			creditedAmt := 0.0
+
+			// Deadline hit: mirror the same balance source used by the poll loop,
+			// then preserve any late-arriving funds for override replay.
+			var liveBal *exchange.Balance
+			var balErr error
+			if uc, ok := recipientExch.(interface{ IsUnified() bool }); ok && uc.IsUnified() {
+				liveBal, balErr = recipientExch.GetFuturesBalance()
+			} else {
+				liveBal, balErr = recipientExch.GetSpotBalance()
+			}
+			if balErr == nil {
+				arrivedAmt := liveBal.Available - startBal
 				if arrivedAmt > 1.0 {
+					creditedAmt = math.Min(totalPending, arrivedAmt)
+
 					bi := balances[recipient]
-					bi.spot += arrivedAmt
+					if uc, ok := recipientExch.(interface{ IsUnified() bool }); ok && uc.IsUnified() {
+						bi.futures += creditedAmt
+						bi.futuresTotal += creditedAmt
+					} else {
+						bi.spot += creditedAmt
+					}
 					balances[recipient] = bi
+
 					if result.FundedReceivers == nil {
 						result.FundedReceivers = make(map[string]float64)
 					}
-					result.FundedReceivers[recipient] += arrivedAmt
+					result.FundedReceivers[recipient] += creditedAmt
 					result.CrossTransferHappened = true
-					e.log.Info("rebalance: deadline hit on %s, credited %.2f spot-backed for override retention", recipient, arrivedAmt)
+					e.log.Info("rebalance: deadline hit on %s, credited %.2f late-arriving balance for override retention", recipient, creditedAmt)
 				}
 			}
+
+			shortfall := totalPending - creditedAmt
+			if shortfall > 0.0001 {
+				result.Unfunded[recipient] = shortfall
+				if creditedAmt > 0 {
+					result.SkipReasons[recipient] = fmt.Sprintf("deposit timeout after partial arrival %.2f/%.2f", creditedAmt, totalPending)
+				} else {
+					result.SkipReasons[recipient] = "deposit timeout"
+				}
+			}
+
 			e.log.Warn("rebalance: deposits on %s not confirmed within 5min, skipping spot->futures", recipient)
 		}
 	}

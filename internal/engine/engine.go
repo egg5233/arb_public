@@ -693,10 +693,27 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 	}
 
 	needs := map[string]float64{}
-	selectedSymbols := make(map[string]bool)     // prevent same-batch duplicates
-	reserved := map[string]float64{}             // cumulative margin reserved per exchange
-	plannedTransfers := map[string]float64{}     // cross-exchange transfer plan: recipient → amount
+	selectedSymbols := make(map[string]bool)
+	reserved := map[string]float64{}
+	plannedTransfers := map[string]float64{}
+
+	type sequentialChoice struct {
+		choice    allocatorChoice
+		longNeed  float64
+		shortNeed float64
+	}
+	selectedChoices := make([]sequentialChoice, 0, remainingSlots)
+
+	buildChoices := func(src []sequentialChoice) []allocatorChoice {
+		out := make([]allocatorChoice, 0, len(src))
+		for _, sc := range src {
+			out = append(out, sc.choice)
+		}
+		return out
+	}
+
 	selected := 0
+	localTransferHappened := false
 
 	for _, opp := range opps {
 		if selected >= remainingSlots {
@@ -781,6 +798,16 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 				continue
 			}
 
+			selectedChoices = append(selectedChoices, sequentialChoice{
+				choice: allocatorChoice{
+					symbol:         opp.Symbol,
+					longExchange:   opp.LongExchange,
+					shortExchange:  opp.ShortExchange,
+					requiredMargin: estMargin,
+				},
+				longNeed:  estMargin,
+				shortNeed: estMargin,
+			})
 			needs[opp.LongExchange] += estMargin
 			needs[opp.ShortExchange] += estMargin
 			reserved[opp.LongExchange] += estMargin
@@ -865,6 +892,16 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			continue
 		}
 
+		selectedChoices = append(selectedChoices, sequentialChoice{
+			choice: allocatorChoice{
+				symbol:         opp.Symbol,
+				longExchange:   opp.LongExchange,
+				shortExchange:  opp.ShortExchange,
+				requiredMargin: approval.RequiredMargin,
+			},
+			longNeed:  longMarginNeeded,
+			shortNeed: shortMarginNeeded,
+		})
 		needs[opp.LongExchange] += longMarginNeeded
 		needs[opp.ShortExchange] += shortMarginNeeded
 		reserved[opp.LongExchange] += longMarginNeeded
@@ -872,6 +909,36 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 		selectedSymbols[opp.Symbol] = true
 		selected++
 		e.log.Info("rebalance: selected %s (longMargin=%.2f shortMargin=%.2f)", opp.Symbol, longMarginNeeded, shortMarginNeeded)
+	}
+
+	if len(selectedChoices) > 0 {
+		feeCache := map[string]feeEntry{}
+		for len(selectedChoices) > 0 && !e.dryRunTransferPlan(buildChoices(selectedChoices), balances, feeCache).Feasible {
+			dropped := selectedChoices[len(selectedChoices)-1]
+			selectedChoices = selectedChoices[:len(selectedChoices)-1]
+			needs[dropped.choice.longExchange] -= dropped.longNeed
+			if needs[dropped.choice.longExchange] <= 0 {
+				delete(needs, dropped.choice.longExchange)
+			}
+			needs[dropped.choice.shortExchange] -= dropped.shortNeed
+			if needs[dropped.choice.shortExchange] <= 0 {
+				delete(needs, dropped.choice.shortExchange)
+			}
+			reserved[dropped.choice.longExchange] -= dropped.longNeed
+			if reserved[dropped.choice.longExchange] < 0 {
+				reserved[dropped.choice.longExchange] = 0
+			}
+			reserved[dropped.choice.shortExchange] -= dropped.shortNeed
+			if reserved[dropped.choice.shortExchange] < 0 {
+				reserved[dropped.choice.shortExchange] = 0
+			}
+			delete(selectedSymbols, dropped.choice.symbol)
+			if selected > 0 {
+				selected--
+			}
+			e.log.Info("rebalance: prune %s %s/%s - dry-run infeasible",
+				dropped.choice.symbol, dropped.choice.longExchange, dropped.choice.shortExchange)
+		}
 	}
 
 	e.log.Info("rebalance: analyzed %d opportunities, selected %d, needs: %v, plannedTransfers: %v", len(opps), selected, needs, plannedTransfers)
@@ -911,6 +978,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 							if err := e.exchanges[name].TransferToFutures("USDT", amtStr); err != nil {
 								e.log.Error("rebalance: %s spot→futures failed: %v", name, err)
 							} else {
+								localTransferHappened = true
 								bi := balances[name]
 								bi.futures += extra
 								bi.spot -= extra
@@ -991,6 +1059,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 				if err := e.exchanges[name].TransferToFutures("USDT", amtStr); err != nil {
 					e.log.Error("rebalance: %s spot→futures failed: %v", name, err)
 				} else {
+					localTransferHappened = true
 					transferAmt -= actualTransfer
 					bi := balances[name]
 					bi.futures += actualTransfer
@@ -1006,6 +1075,13 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 	}
 
 	if len(crossDeficits) == 0 {
+		if localTransferHappened {
+			kept := e.keepFundedChoices(buildChoices(selectedChoices), balances, nil)
+			e.allocOverrideMu.Lock()
+			e.allocOverrides = kept
+			e.allocOverrideMu.Unlock()
+			e.log.Info("rebalance: stored %d sequential allocator overrides (local-only) for entry scan", len(kept))
+		}
 		e.log.Info("rebalance: all exchanges funded, no cross-exchange transfers needed")
 		return
 	}
@@ -1018,9 +1094,22 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 		precomputed[i] = rebalanceDeficit{exchange: cd.exchange, amount: cd.amount}
 	}
 	e.log.Info("rebalance: %d exchanges need cross-exchange funding, delegating to allocator executor", len(precomputed))
-	// Sequential fallback does not use allocOverrides; signature aligned but
-	// result not consumed.
-	_ = e.executeRebalanceFundingPlan(needs, balances, precomputed)
+	result := e.executeRebalanceFundingPlan(needs, balances, precomputed)
+
+	if !(localTransferHappened || result.LocalTransferHappened || result.CrossTransferHappened) {
+		e.allocOverrideMu.Lock()
+		e.allocOverrides = nil
+		e.allocOverrideMu.Unlock()
+		e.log.Info("rebalance: no transfers executed, skipping sequential override store")
+	} else {
+		kept := e.keepFundedChoices(buildChoices(selectedChoices), result.PostBalances, result.FundedReceivers)
+
+		e.allocOverrideMu.Lock()
+		e.allocOverrides = kept
+		e.allocOverrideMu.Unlock()
+
+		e.log.Info("rebalance: stored %d sequential allocator overrides for entry scan", len(kept))
+	}
 
 	e.log.Info("rebalance: complete")
 }

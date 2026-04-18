@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.24] - 2026-04-18
+
+### Fixed
+- **Rebalance partial-success: 4 bugs from post-v0.32.23 3-round log audit.** Plan v5 ALL PASS + Codex post-review PASS. Round 2 of 3 rounds opened SOONUSDT successfully, but Rounds 1 and 3 still had transfers execute without positions opening. Codex 2097-line audit surfaced 4 additional bugs (Bug E over-solicitation deferred as optimization):
+  - **Bug A+D (allocator.go:2024-2067) — Deadline-fallback missing accounting + unified uses wrong balance API.** v0.32.23's Bug 5 deadline-fallback credited spot but never wrote `result.Unfunded[recipient]` or `result.SkipReasons[recipient]`, so `complete (unfunded=0)` log was misleading. Also: for unified recipients (bybit UTA, gateio unified), `GetSpotBalance()` always returns 0, so late-arriving deposits on unified exchanges could not be recovered. Fix: deadline-fallback now branches on `IsUnified()` — unified uses `GetFuturesBalance()` and credits `bi.futures`/`bi.futuresTotal`; split uses `GetSpotBalance()` and credits `bi.spot`. Shortfall (not covered by late arrival) is written to `result.Unfunded` and `result.SkipReasons`.
+  - **Bug A2 (allocator.go:1941) — Unified baseline `startBal` fallback used `.spot`.** When `GetFuturesBalance()` fails during deposit-baseline setup for unified recipient, old code fell back to `bi.spot` which is always 0 for unified → later poll math over-credited any late deposit as "arrived". Fix: fallback now uses `bi.futures` which represents the unified pool.
+  - **Bug B (engine.go:695-941) — Sequential planner/executor mismatch stranded legs.** Sequential planner computed donor→recipient assignments into `plannedTransfers`, but executor ignored it and greedy-allocated donors from `needs` in fixed order. Round 3: gateio consumed all donors first, bingx got zero transfers despite being in rescue plan. Fix: planner-side validation via new `dryRunTransferPlan` prune loop. Added `sequentialChoice` struct + `selectedChoices []sequentialChoice` tracking both rescue AND normal selections. Dry-run verifies whole plan feasibility; while infeasible, pops the last-added choice (restoring `needs`/`reserved`/`selectedSymbols`) until feasible subset remains.
+  - **Bug C (engine.go:981, 1062, 1077-1084, 1097-1105) — Sequential fallback never stored overrides.** The fallback path discarded `executeRebalanceFundingPlan` result with `_ = ...`, so partial rescue success (e.g. gateio funded but bingx not) could never steer entry at :55 — always went tier-3 tier-3-rank-based. Fix: tracked `localTransferHappened` flag in sequential flow scope (set on each successful local spot→futures); `crossDeficits==0` early return now stores overrides via `keepFundedChoices(selectedChoices, balances, nil)` when local transfers succeeded; cross-exchange path consumes `result` and gates override storage on `localTransferHappened || result.LocalTransferHappened || result.CrossTransferHappened`.
+- Bug E (over-solicitation of ratioDef when marginDef is smaller) deferred — optimization, not correctness issue.
+
 ## [0.32.23] - 2026-04-18
 
 ### Fixed
