@@ -1,0 +1,32 @@
+{
+  "retCode": 0,
+  "retMsg": "OK",
+  "result": {
+    "category": "spot",
+    "list": [
+      {
+        "symbol": "GWEIUSDT",
+        "baseCoin": "GWEI",
+        "quoteCoin": "USDT",
+        "innovation": "0",
+        "status": "Trading",
+        "marginTrading": "both",
+        "lotSizeFilter": {
+          "basePrecision": "1",
+          "quotePrecision": "0.0001",
+          "minOrderQty": "1",
+          "maxOrderQty": "92233720368",
+          "minOrderAmt": "1",
+          "maxOrderAmt": "2000000"
+        },
+        "quoteFilter": {
+          "minOrderAmt": "1",
+          "maxOrderAmt": "2000000"
+        },
+        "priceFilter": {
+          "tickSize": "0.0001"
+        }
+      }
+    ]
+  }
+}

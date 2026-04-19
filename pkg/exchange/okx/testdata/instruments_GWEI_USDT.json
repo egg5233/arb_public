@@ -1,0 +1,13 @@
+[
+  {
+    "instType": "SPOT",
+    "instId": "GWEI-USDT",
+    "baseCcy": "GWEI",
+    "quoteCcy": "USDT",
+    "minSz": "1",
+    "lotSz": "1",
+    "tickSz": "0.0001",
+    "minNotional": "",
+    "state": "live"
+  }
+]

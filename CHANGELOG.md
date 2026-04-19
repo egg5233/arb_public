@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.29] - 2026-04-19
+
+### Fixed
+- **Spot-futures "stuck in exiting" dust lockup** — positions no longer loop forever when the spot exit leaves an untradeable residual (first hit GUAUSDT, recurred on GWEIUSDT 2026-04-19).
+  - New `SpotOrderRules(symbol)` on `SpotMarginExchange` — returns `MinBaseQty`, `QtyStep`, `MinNotional` from each exchange's **spot market** endpoint (Binance `/api/v3/exchangeInfo`, Bybit `/v5/market/instruments-info?category=spot`, Gate.io `/spot/currency_pairs`, OKX `/api/v5/public/instruments?instType=SPOT`, Bitget `/api/v2/spot/public/symbols`). 5-min per-symbol cache inside each adapter.
+  - Close paths (`closeDirectionB`, `closeDirectionA`, `emergencyClose` spot goroutine) now detect untradeable dust via `isSpotResidualDust(rules, remaining, price)` — dust if `floor(remaining/step)*step < MinBaseQty` or `effective * price < MinNotional`. Marks the spot leg closed with a `(spot dust residue ignored: X BASECOIN)` note on `ExitReason`.
+  - Dir A dust short-circuit additionally verifies `GetMarginBalance.Borrowed == 0` before marking closed — prevents losing track of outstanding borrow liability.
+  - Futures close is now idempotent on "empty position" / "position not exist" errors via `isAlreadyFlatError` + `verifyFuturesFlat(GetPosition)` double-check. Populates `FuturesExit` from orderbook mid when the exchange provided no fill price.
+  - Retry-compatible: currently-stuck positions auto-heal on the next monitor retry after deploy. No Redis cleanup required.
+
 ## [0.32.28] - 2026-04-19
 
 ### Added

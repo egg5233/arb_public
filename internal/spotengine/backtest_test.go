@@ -238,6 +238,9 @@ func (m *mockDirASpotMargin) TransferFromMargin(string, string) error { return n
 func (m *mockDirASpotMargin) GetMarginInterestRateHistory(_ context.Context, _ string, _, _ time.Time) ([]exchange.MarginInterestRatePoint, error) {
 	return m.history, m.err
 }
+func (m *mockDirASpotMargin) SpotOrderRules(string) (*exchange.SpotOrderRules, error) {
+	return nil, nil
+}
 
 func writeDirABacktestResult(t *testing.T, db *database.Client, key string, result spotBacktestDirAResult) {
 	t.Helper()
