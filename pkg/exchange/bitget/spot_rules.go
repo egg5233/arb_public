@@ -42,9 +42,10 @@ func (a *Adapter) SpotOrderRules(symbol string) (*exchange.SpotOrderRules, error
 		Code string `json:"code"`
 		Msg  string `json:"msg"`
 		Data []struct {
-			MinTradeAmount string `json:"minTradeAmount"` // min base quantity
-			QuantityScale  string `json:"quantityScale"`  // decimal places for quantity
-			MinTradeUSDT   string `json:"minTradeUSDT"`   // min notional in USDT
+			MinTradeAmount    string `json:"minTradeAmount"`    // min base quantity (often "0" — treat as no base floor)
+			QuantityPrecision string `json:"quantityPrecision"` // decimal places for quantity — current field
+			QuantityScale     string `json:"quantityScale"`     // legacy v1 name, kept as fallback
+			MinTradeUSDT      string `json:"minTradeUSDT"`      // min notional in USDT
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
@@ -61,9 +62,15 @@ func (a *Adapter) SpotOrderRules(symbol string) (*exchange.SpotOrderRules, error
 	minBase, _ := strconv.ParseFloat(item.MinTradeAmount, 64)
 	minNotional, _ := strconv.ParseFloat(item.MinTradeUSDT, 64)
 
-	// quantityScale is decimal places (e.g. "2" → step=0.01)
+	// Prefer quantityPrecision (Bitget v2 current); fall back to legacy quantityScale
+	// if an older response shape ever appears. Both carry the same "decimals" semantics
+	// (e.g. "2" → step=0.01). Missing/zero → step=1 (integer-only).
+	precisionStr := item.QuantityPrecision
+	if precisionStr == "" {
+		precisionStr = item.QuantityScale
+	}
 	qtyStep := 1.0
-	if scale, err := strconv.Atoi(item.QuantityScale); err == nil && scale > 0 {
+	if scale, err := strconv.Atoi(precisionStr); err == nil && scale > 0 {
 		s := 1.0
 		for i := 0; i < scale; i++ {
 			s /= 10

@@ -1,20 +1,23 @@
 {
   "code": "00000",
   "msg": "success",
-  "requestTime": 1713600000000,
+  "requestTime": 1776611874975,
   "data": [
     {
       "symbol": "GWEIUSDT",
       "baseCoin": "GWEI",
       "quoteCoin": "USDT",
-      "minTradeAmount": "1",
-      "maxTradeAmount": "10000000000",
+      "minTradeAmount": "0",
+      "maxTradeAmount": "900000000000000000000",
       "takerFeeRate": "0.002",
       "makerFeeRate": "0.002",
       "pricePrecision": "4",
-      "quantityScale": "0",
+      "quantityPrecision": "2",
+      "quotePrecision": "6",
       "minTradeUSDT": "1",
-      "status": "online"
+      "status": "online",
+      "buyLimitPriceRatio": "0.05",
+      "sellLimitPriceRatio": "0.05"
     }
   ]
 }

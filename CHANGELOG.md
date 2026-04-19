@@ -12,6 +12,9 @@ All notable changes to this project will be documented in this file.
   - Futures close is now idempotent on "empty position" / "position not exist" errors via `isAlreadyFlatError` + `verifyFuturesFlat(GetPosition)` double-check. Populates `FuturesExit` from orderbook mid when the exchange provided no fill price.
   - Retry-compatible: currently-stuck positions auto-heal on the next monitor retry after deploy. No Redis cleanup required.
 
+### Fixed (review follow-ups on v0.32.29)
+- **Bitget spot rules parser** (`pkg/exchange/bitget/spot_rules.go`) — the live Bitget v2 `/api/v2/spot/public/symbols` response uses `quantityPrecision` (not `quantityScale`). The original parser silently defaulted `QtyStep` to 1, which could cause `isSpotResidualDust` to flag a tradeable residual as dust on Bitget symbols with real sub-integer step precision. Parser now reads `quantityPrecision` with `quantityScale` retained as a legacy fallback. Golden fixture re-recorded from a live endpoint response; added a test that covers the legacy-field fallback path.
+
 ## [0.32.28] - 2026-04-19
 
 ### Added

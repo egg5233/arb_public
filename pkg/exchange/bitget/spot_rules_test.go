@@ -45,12 +45,16 @@ func TestSpotOrderRulesBitgetGolden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SpotOrderRules: %v", err)
 	}
-	if rules.MinBaseQty != 1.0 {
-		t.Errorf("MinBaseQty = %v, want 1.0", rules.MinBaseQty)
+	// Live Bitget v2 response for GWEIUSDT as of 2026-04-19:
+	// minTradeAmount="0" → MinBaseQty=0 (notional-only floor)
+	// quantityPrecision="2" → QtyStep=0.01
+	// minTradeUSDT="1" → MinNotional=1
+	if rules.MinBaseQty != 0.0 {
+		t.Errorf("MinBaseQty = %v, want 0.0", rules.MinBaseQty)
 	}
-	// quantityScale=0 → step=1 (integer-only)
-	if rules.QtyStep != 1.0 {
-		t.Errorf("QtyStep = %v, want 1.0 (quantityScale=0)", rules.QtyStep)
+	const wantStep = 0.01
+	if rules.QtyStep < wantStep*0.9999 || rules.QtyStep > wantStep*1.0001 {
+		t.Errorf("QtyStep = %v, want ~%v (quantityPrecision=2)", rules.QtyStep, wantStep)
 	}
 	if rules.MinNotional != 1.0 {
 		t.Errorf("MinNotional = %v, want 1.0", rules.MinNotional)
@@ -128,15 +132,16 @@ func TestSpotOrderRulesBitgetAPIError(t *testing.T) {
 	}
 }
 
-func TestSpotOrderRulesBitgetQuantityScale(t *testing.T) {
+// TestSpotOrderRulesBitgetQuantityPrecision covers the current v2 field name.
+func TestSpotOrderRulesBitgetQuantityPrecision(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// quantityScale=3 → step=0.001
-		fmt.Fprint(w, `{"code":"00000","msg":"success","data":[{"minTradeAmount":"0.001","quantityScale":"3","minTradeUSDT":"1"}]}`)
+		// quantityPrecision=3 → step=0.001
+		fmt.Fprint(w, `{"code":"00000","msg":"success","data":[{"minTradeAmount":"0.001","quantityPrecision":"3","minTradeUSDT":"1"}]}`)
 	}))
 	defer srv.Close()
 
 	adapter := newBitgetTestAdapter(srv.URL)
-	const sym = "BTCUSDT_bitget_scale"
+	const sym = "BTCUSDT_bitget_precision"
 
 	spotRulesCacheMu.Lock()
 	delete(spotRulesCache, sym)
@@ -148,6 +153,33 @@ func TestSpotOrderRulesBitgetQuantityScale(t *testing.T) {
 	}
 	const wantStep = 0.001
 	if rules.QtyStep < wantStep*0.9999 || rules.QtyStep > wantStep*1.0001 {
-		t.Errorf("QtyStep = %v, want ~%v (quantityScale=3)", rules.QtyStep, wantStep)
+		t.Errorf("QtyStep = %v, want ~%v (quantityPrecision=3)", rules.QtyStep, wantStep)
+	}
+}
+
+// TestSpotOrderRulesBitgetLegacyQuantityScaleFallback verifies the parser still
+// accepts the deprecated v1 quantityScale field if a response ever contains it
+// in place of quantityPrecision.
+func TestSpotOrderRulesBitgetLegacyQuantityScaleFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Legacy response shape: only quantityScale, no quantityPrecision.
+		fmt.Fprint(w, `{"code":"00000","msg":"success","data":[{"minTradeAmount":"0.001","quantityScale":"3","minTradeUSDT":"1"}]}`)
+	}))
+	defer srv.Close()
+
+	adapter := newBitgetTestAdapter(srv.URL)
+	const sym = "BTCUSDT_bitget_legacy"
+
+	spotRulesCacheMu.Lock()
+	delete(spotRulesCache, sym)
+	spotRulesCacheMu.Unlock()
+
+	rules, err := adapter.SpotOrderRules(sym)
+	if err != nil {
+		t.Fatalf("SpotOrderRules: %v", err)
+	}
+	const wantStep = 0.001
+	if rules.QtyStep < wantStep*0.9999 || rules.QtyStep > wantStep*1.0001 {
+		t.Errorf("QtyStep = %v, want ~%v (legacy quantityScale=3)", rules.QtyStep, wantStep)
 	}
 }
