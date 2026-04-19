@@ -19,6 +19,11 @@ All notable changes to this project will be documented in this file.
   - **i18n** (`web/src/i18n/en.ts` + `zh-TW.ts`): `spotBacktest.modal.fundingBps`, `spotBacktest.modal.borrowBps`, `spotBacktest.modal.netBps`, `spotBacktest.modal.notSupportedExchange` (with `{exchange}` placeholder).
   - **No new config** — reuses `SpotFuturesBacktestEnabled`, `SpotFuturesBacktestDays`, `SpotFuturesBacktestMinProfit`.
 
+### Fixed (review follow-ups on v0.32.28)
+- **API handler now accepts Dir A** (`internal/api/spot_handlers.go`) — `handleSpotBacktest` previously rejected every direction other than `buy_spot_short` with a 400 before reaching the engine, making the new Dir A modal unreachable from the dashboard. The handler now accepts both `buy_spot_short` and `borrow_sell_long`, forwards to the engine, and surfaces engine errors (e.g. "unsupported on okx") as 400 so the UI can render them inline. Two new tests cover the routing and the error-surfacing behavior.
+- **Frontend Dir-A detection uses `opp.direction`** (`web/src/pages/Opportunities.tsx`) — previously checked `result.funding_bps !== undefined`, but Go's `omitempty` would drop a legitimate zero-valued `funding_bps` and cause the modal to fall back to the Dir B layout. Now keys off the already-known `opp.direction` instead; the Dir A tile values use `?? 0` defensively.
+- **`TestBacktestDirASignMath` strengthened** (`internal/spotengine/backtest_test.go`) — now asserts the exact expected values (`FundingBps=15`, `BorrowBps=24`, `NetBps=-39`) in addition to sign direction. Catches magnitude regressions, not just sign flips.
+
 ## [0.32.27] - 2026-04-18
 
 ### Added

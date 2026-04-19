@@ -195,12 +195,12 @@ const SpotBacktestModal: FC<{ opp: SpotOpportunity; t: TranslateFn; onClose: () 
 
             {result && (
               <div className="space-y-3">
-                {result.funding_bps !== undefined ? (
+                {opp.direction === 'borrow_sell_long' ? (
                   <>
                     <div className="grid grid-cols-3 gap-2">
                       <div className="bg-gray-800 rounded-lg p-2.5">
                         <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-0.5">{t('spotBacktest.modal.fundingBps')}</div>
-                        <div className={`font-mono text-sm font-bold ${result.funding_bps >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{result.funding_bps.toFixed(1)}</div>
+                        <div className={`font-mono text-sm font-bold ${(result.funding_bps ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{(result.funding_bps ?? 0).toFixed(1)}</div>
                       </div>
                       <div className="bg-gray-800 rounded-lg p-2.5">
                         <div className="text-gray-500 text-[10px] uppercase tracking-wide mb-0.5">{t('spotBacktest.modal.borrowBps')}</div>
@@ -253,8 +253,8 @@ const SpotBacktestModal: FC<{ opp: SpotOpportunity; t: TranslateFn; onClose: () 
                     <div className="space-y-1">
                       {result.days.map((d, i) => (
                         <div key={i} className="flex items-center gap-2 text-[10px]"
-                          title={d.funding_bps !== undefined
-                            ? `Funding: ${d.funding_bps.toFixed(1)} bps | Borrow: ${(d.borrow_bps ?? 0).toFixed(1)} bps | Net: ${d.bps.toFixed(1)} bps`
+                          title={opp.direction === 'borrow_sell_long'
+                            ? `Funding: ${(d.funding_bps ?? 0).toFixed(1)} bps | Borrow: ${(d.borrow_bps ?? 0).toFixed(1)} bps | Net: ${d.bps.toFixed(1)} bps`
                             : undefined}>
                           <span className="text-gray-600 w-16 shrink-0 font-mono">{d.date}</span>
                           <div className="flex-1 bg-gray-700 rounded-full h-2">

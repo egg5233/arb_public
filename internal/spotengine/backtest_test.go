@@ -367,15 +367,24 @@ func TestBacktestDirASignMath(t *testing.T) {
 
 	// Positive funding = cost to long futures. Positive borrow = cost.
 	// Both costs → net must be negative.
-	if result.NetBps >= 0 {
-		t.Fatalf("SIGN BUG: positive funding=%.2f + positive borrow=%.2f should yield negative net, got %.2f",
-			result.FundingBps, result.BorrowBps, result.NetBps)
+	// Exact expected values:
+	//   FundingBps: 3 settlements × 5.0 = 15.0
+	//   BorrowBps:  24h × 0.0001/h × 10000 = 24.0
+	//   NetBps:     -15.0 - 24.0 = -39.0
+	const (
+		eps            = 1e-9
+		wantFundingBps = 15.0
+		wantBorrowBps  = 24.0
+		wantNetBps     = -39.0
+	)
+	if diff := result.FundingBps - wantFundingBps; diff > eps || diff < -eps {
+		t.Fatalf("FundingBps = %.6f, want %.6f", result.FundingBps, wantFundingBps)
 	}
-	if result.FundingBps <= 0 {
-		t.Fatalf("FundingBps should be positive (raw Loris sum), got %.2f", result.FundingBps)
+	if diff := result.BorrowBps - wantBorrowBps; diff > eps || diff < -eps {
+		t.Fatalf("BorrowBps = %.6f, want %.6f", result.BorrowBps, wantBorrowBps)
 	}
-	if result.BorrowBps <= 0 {
-		t.Fatalf("BorrowBps should be positive (cost), got %.2f", result.BorrowBps)
+	if diff := result.NetBps - wantNetBps; diff > eps || diff < -eps {
+		t.Fatalf("NetBps = %.6f, want %.6f (sign-math bug: expected -FundingBps-BorrowBps)", result.NetBps, wantNetBps)
 	}
 }
 
