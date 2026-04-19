@@ -289,6 +289,15 @@ type TradFiSigner interface {
 // Spot Margin (borrow-and-sell) types
 // ---------------------------------------------------------------------------
 
+// SpotOrderRules captures the spot market's constraints on order size/notional.
+// Returned by SpotMarginExchange.SpotOrderRules and consumed by the engine's
+// dust detector on close.
+type SpotOrderRules struct {
+	MinBaseQty  float64 // minimum base-asset quantity (e.g. 1 GWEI)
+	QtyStep     float64 // quantity precision step (e.g. 1 = integer only, 0.001 = 3dp)
+	MinNotional float64 // minimum quote notional (USDT), 0 if not enforced
+}
+
 // MarginBorrowParams contains parameters for borrowing a coin on spot margin.
 type MarginBorrowParams struct {
 	Coin   string // e.g. "BTC"
@@ -398,6 +407,11 @@ type SpotMarginExchange interface {
 	// GetMarginInterestRateHistory returns historical hourly borrow rates for coin
 	// over [start, end]. Unsupported exchanges return ErrHistoricalBorrowNotSupported.
 	GetMarginInterestRateHistory(ctx context.Context, coin string, start, end time.Time) ([]MarginInterestRatePoint, error)
+
+	// SpotOrderRules returns the spot market's lot/notional rules for symbol.
+	// Uses the exchange's SPOT instruments endpoint (NOT futures contract metadata).
+	// Results are cached per symbol with a 5-minute TTL.
+	SpotOrderRules(symbol string) (*SpotOrderRules, error)
 }
 
 // SpotMarginOrderQuerier is an optional interface for exchanges that can

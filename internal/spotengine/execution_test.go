@@ -117,6 +117,8 @@ type closeTestSpotMargin struct {
 	repayAmounts []string
 	marginBal    *exchange.MarginBalance
 	onPlace      func(call int, params exchange.SpotMarginOrderParams)
+	spotRules    *exchange.SpotOrderRules
+	spotRulesErr error
 }
 
 func (s *closeTestSpotMargin) MarginBorrow(exchange.MarginBorrowParams) error { return nil }
@@ -154,6 +156,9 @@ func (s *closeTestSpotMargin) TransferToMargin(string, string) error   { return 
 func (s *closeTestSpotMargin) TransferFromMargin(string, string) error { return nil }
 func (s *closeTestSpotMargin) GetMarginInterestRateHistory(_ context.Context, _ string, _, _ time.Time) ([]exchange.MarginInterestRatePoint, error) {
 	return nil, exchange.ErrHistoricalBorrowNotSupported
+}
+func (s *closeTestSpotMargin) SpotOrderRules(string) (*exchange.SpotOrderRules, error) {
+	return s.spotRules, s.spotRulesErr
 }
 func (s *closeTestSpotMargin) GetSpotMarginOrder(string, string) (*exchange.SpotMarginOrderStatus, error) {
 	s.queryCalls++

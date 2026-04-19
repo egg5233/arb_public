@@ -59,6 +59,9 @@ func (s priceGapStubExchange) GetMarginInterestRateHistory(_ context.Context, _ 
 	return nil, exchange.ErrHistoricalBorrowNotSupported
 }
 func (s priceGapStubExchange) CancelAllOrders(string) error { return nil }
+func (s priceGapStubExchange) SpotOrderRules(string) (*exchange.SpotOrderRules, error) {
+	return nil, nil
+}
 
 func newPriceGapGateEngine(t *testing.T, cfg *config.Config, stub priceGapStubExchange) (*SpotEngine, *miniredis.Miniredis) {
 	t.Helper()
