@@ -640,10 +640,10 @@ func (a *Adapter) GetMaintenanceRate(symbol string, notionalUSDT float64) (float
 	}
 
 	var tiers []struct {
-		Tier   string `json:"tier"`
-		MinSz  string `json:"minSz"`
-		MaxSz  string `json:"maxSz"`
-		Mmr    string `json:"mmr"`
+		Tier  string `json:"tier"`
+		MinSz string `json:"minSz"`
+		MaxSz string `json:"maxSz"`
+		Mmr   string `json:"mmr"`
 	}
 	if err := json.Unmarshal(data, &tiers); err != nil {
 		return 0, fmt.Errorf("GetMaintenanceRate unmarshal: %w", err)

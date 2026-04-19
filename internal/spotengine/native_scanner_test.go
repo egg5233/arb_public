@@ -1,6 +1,7 @@
 package spotengine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -51,6 +52,9 @@ func (s *nativeScannerStubExchange) GetSpotBBO(string) (exchange.BBO, error) {
 }
 func (s *nativeScannerStubExchange) TransferToMargin(string, string) error   { return nil }
 func (s *nativeScannerStubExchange) TransferFromMargin(string, string) error { return nil }
+func (s *nativeScannerStubExchange) GetMarginInterestRateHistory(_ context.Context, _ string, _, _ time.Time) ([]exchange.MarginInterestRatePoint, error) {
+	return nil, exchange.ErrHistoricalBorrowNotSupported
+}
 
 // mockLorisServer creates an httptest.Server that returns Loris funding rate data.
 func mockLorisServer(resp models.LorisResponse) *httptest.Server {

@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.28] - 2026-04-19
+
+### Added
+- **Spot-Futures Dir A (`borrow_sell_long`) backtest capability** for Binance, Bybit, and Gate.io. OKX and Bitget remain deferred (OKX has CSV-only export; Bitget's history endpoint is user-scoped, not public market rates).
+  - **New `SpotMarginExchange` interface method** (`pkg/exchange/types.go`): `GetMarginInterestRateHistory(ctx, coin, start, end) ([]MarginInterestRatePoint, error)`. Adapters that lack a public historical API return `ErrHistoricalBorrowNotSupported`; callers fail-open on this sentinel (same semantics as a cache miss).
+    - Binance: `GET /sapi/v1/margin/interestRateHistory` — daily granularity, paginates in 30-day windows; `HourlyRate = dailyInterestRate / 24`.
+    - Bybit: `GET /v5/spot-margin-trade/interest-rate-history` — hourly, paginates in 30-day windows, VIP level `No VIP`.
+    - Gate.io: `GET /unified/history_loan_rate` — hourly, page/limit pagination with client-side `[start, end]` filtering (endpoint has no date params).
+    - OKX + Bitget: return `ErrHistoricalBorrowNotSupported` immediately.
+  - **`backtestDirA` filter** (`internal/spotengine/backtest.go`): computes `netBps = −Σ fundingBps − Σ borrowBps` over the configured lookback window. Cache key: `arb:spot_backtest:{symbol}:{exchange}:borrow_sell_long:{days}` with 24 h TTL. Cache miss → fail-open (opportunity passes filter). Unsupported exchange → no-op (no cache write). Shares existing Loris 429 backoff from `discovery.TriggerLorisBackoff`.
+  - **`exchangeSupportsDirABacktest` helper** gates the filter in one place — currently `binance`, `bybit`, `gateio`.
+  - **Discovery hook** (`internal/spotengine/discovery.go`): native-scan and CoinGlass-scan Dir A paths call `backtestDirA` when `SpotFuturesBacktestEnabled && exchangeSupportsDirABacktest(exch)` and the position is not already active.
+  - **`RunSpotBacktestOnDemand`** now accepts `direction=borrow_sell_long` on supported exchanges (previously rejected with 400). Returns extended `SpotBacktestReport` with optional `funding_bps` and `borrow_bps` breakdown fields (zero-valued for Dir B — backward compatible).
+  - **Dashboard** (`web/src/pages/Opportunities.tsx`): Backtest button is enabled on Dir A rows for `binance`/`bybit`/`gateio`; rows for unsupported exchanges show a per-exchange tooltip (`spotBacktest.modal.notSupportedExchange`). Modal renders two additional stat tiles — funding bps and borrow bps — alongside the existing net-bps tile.
+  - **i18n** (`web/src/i18n/en.ts` + `zh-TW.ts`): `spotBacktest.modal.fundingBps`, `spotBacktest.modal.borrowBps`, `spotBacktest.modal.netBps`, `spotBacktest.modal.notSupportedExchange` (with `{exchange}` placeholder).
+  - **No new config** — reuses `SpotFuturesBacktestEnabled`, `SpotFuturesBacktestDays`, `SpotFuturesBacktestMinProfit`.
+
+### Fixed (review follow-ups on v0.32.28)
+- **API handler now accepts Dir A** (`internal/api/spot_handlers.go`) — `handleSpotBacktest` previously rejected every direction other than `buy_spot_short` with a 400 before reaching the engine, making the new Dir A modal unreachable from the dashboard. The handler now accepts both `buy_spot_short` and `borrow_sell_long`, forwards to the engine, and surfaces engine errors (e.g. "unsupported on okx") as 400 so the UI can render them inline. Two new tests cover the routing and the error-surfacing behavior.
+- **Frontend Dir-A detection uses `opp.direction`** (`web/src/pages/Opportunities.tsx`) — previously checked `result.funding_bps !== undefined`, but Go's `omitempty` would drop a legitimate zero-valued `funding_bps` and cause the modal to fall back to the Dir B layout. Now keys off the already-known `opp.direction` instead; the Dir A tile values use `?? 0` defensively.
+- **`TestBacktestDirASignMath` strengthened** (`internal/spotengine/backtest_test.go`) — now asserts the exact expected values (`FundingBps=15`, `BorrowBps=24`, `NetBps=-39`) in addition to sign direction. Catches magnitude regressions, not just sign flips.
+
 ## [0.32.27] - 2026-04-18
 
 ### Added
