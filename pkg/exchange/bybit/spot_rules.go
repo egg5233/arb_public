@@ -41,12 +41,16 @@ func (a *Adapter) SpotOrderRules(symbol string) (*exchange.SpotOrderRules, error
 		return nil, fmt.Errorf("SpotOrderRules bybit %s: %w", symbol, err)
 	}
 
+	// Bybit v5 spot instruments: minOrderAmt is nested under lotSizeFilter in the
+	// current live response. Older docs / shapes put it under quoteFilter; we
+	// accept both and prefer lotSizeFilter.minOrderAmt when present.
 	// Bybit client already unwraps the envelope and returns Result directly.
 	var result struct {
 		List []struct {
 			LotSizeFilter struct {
 				MinOrderQty   string `json:"minOrderQty"`
 				BasePrecision string `json:"basePrecision"`
+				MinOrderAmt   string `json:"minOrderAmt"`
 			} `json:"lotSizeFilter"`
 			QuoteFilter struct {
 				MinOrderAmt string `json:"minOrderAmt"`
@@ -62,7 +66,14 @@ func (a *Adapter) SpotOrderRules(symbol string) (*exchange.SpotOrderRules, error
 
 	item := result.List[0]
 	minBase, _ := strconv.ParseFloat(item.LotSizeFilter.MinOrderQty, 64)
-	minNotional, _ := strconv.ParseFloat(item.QuoteFilter.MinOrderAmt, 64)
+
+	// Prefer lotSizeFilter.minOrderAmt (current v5 shape); fall back to
+	// quoteFilter.minOrderAmt for legacy response shapes.
+	minNotionalStr := item.LotSizeFilter.MinOrderAmt
+	if minNotionalStr == "" {
+		minNotionalStr = item.QuoteFilter.MinOrderAmt
+	}
+	minNotional, _ := strconv.ParseFloat(minNotionalStr, 64)
 
 	// basePrecision is the step size (e.g. "0.000001" means 6dp)
 	qtyStep := 1.0

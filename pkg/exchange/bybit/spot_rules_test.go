@@ -58,7 +58,7 @@ func TestSpotOrderRulesBybitCached(t *testing.T) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		fmt.Fprint(w, `{"retCode":0,"retMsg":"OK","result":{"category":"spot","list":[{"lotSizeFilter":{"minOrderQty":"0.001","basePrecision":"0.001"},"quoteFilter":{"minOrderAmt":"1"}}]}}`)
+		fmt.Fprint(w, `{"retCode":0,"retMsg":"OK","result":{"category":"spot","list":[{"lotSizeFilter":{"minOrderQty":"0.001","basePrecision":"0.001","minOrderAmt":"1"}}]}}`)
 	}))
 	defer srv.Close()
 
@@ -86,7 +86,7 @@ func TestSpotOrderRulesBybitCacheExpiry(t *testing.T) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		fmt.Fprint(w, `{"retCode":0,"retMsg":"OK","result":{"category":"spot","list":[{"lotSizeFilter":{"minOrderQty":"1","basePrecision":"1"},"quoteFilter":{"minOrderAmt":"1"}}]}}`)
+		fmt.Fprint(w, `{"retCode":0,"retMsg":"OK","result":{"category":"spot","list":[{"lotSizeFilter":{"minOrderQty":"1","basePrecision":"1","minOrderAmt":"1"}}]}}`)
 	}))
 	defer srv.Close()
 
@@ -133,7 +133,7 @@ func TestSpotOrderRulesBybitEmptyList(t *testing.T) {
 
 func TestSpotOrderRulesBybitPrecisionStep(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"retCode":0,"retMsg":"OK","result":{"category":"spot","list":[{"lotSizeFilter":{"minOrderQty":"0.0001","basePrecision":"0.0001"},"quoteFilter":{"minOrderAmt":"5"}}]}}`)
+		fmt.Fprint(w, `{"retCode":0,"retMsg":"OK","result":{"category":"spot","list":[{"lotSizeFilter":{"minOrderQty":"0.0001","basePrecision":"0.0001","minOrderAmt":"5"}}]}}`)
 	}))
 	defer srv.Close()
 
@@ -158,5 +158,61 @@ func TestSpotOrderRulesBybitPrecisionStep(t *testing.T) {
 	}
 	if rules.MinNotional != 5.0 {
 		t.Errorf("MinNotional = %v, want 5.0", rules.MinNotional)
+	}
+}
+
+// TestSpotOrderRulesBybitMinNotionalInLotSizeOnly verifies the current v5 live
+// shape: minOrderAmt is nested under lotSizeFilter, with NO quoteFilter present.
+// This test would fail if the parser only read quoteFilter.minOrderAmt.
+func TestSpotOrderRulesBybitMinNotionalInLotSizeOnly(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// No quoteFilter object at all — matches current v5 live response.
+		fmt.Fprint(w, `{"retCode":0,"retMsg":"OK","result":{"category":"spot","list":[{"lotSizeFilter":{"minOrderQty":"0.0001","basePrecision":"0.0001","minOrderAmt":"5"}}]}}`)
+	}))
+	defer srv.Close()
+
+	adapter := &Adapter{client: NewClient("key", "secret")}
+	adapter.client.baseURL = srv.URL
+	adapter.client.httpClient = srv.Client()
+	const sym = "BTCUSDT_bybit_lotsize_only"
+
+	spotRulesCacheMu.Lock()
+	delete(spotRulesCache, sym)
+	spotRulesCacheMu.Unlock()
+
+	rules, err := adapter.SpotOrderRules(sym)
+	if err != nil {
+		t.Fatalf("SpotOrderRules: %v", err)
+	}
+	if rules.MinNotional != 5.0 {
+		t.Errorf("MinNotional = %v, want 5.0 — parser likely not reading lotSizeFilter.minOrderAmt", rules.MinNotional)
+	}
+}
+
+// TestSpotOrderRulesBybitLegacyQuoteFilterFallback verifies the parser still
+// accepts the legacy v5 shape where minOrderAmt was only under quoteFilter.
+// Low-risk belt-and-suspenders for API-version drift.
+func TestSpotOrderRulesBybitLegacyQuoteFilterFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Legacy: quoteFilter only, no minOrderAmt in lotSizeFilter.
+		fmt.Fprint(w, `{"retCode":0,"retMsg":"OK","result":{"category":"spot","list":[{"lotSizeFilter":{"minOrderQty":"0.0001","basePrecision":"0.0001"},"quoteFilter":{"minOrderAmt":"7"}}]}}`)
+	}))
+	defer srv.Close()
+
+	adapter := &Adapter{client: NewClient("key", "secret")}
+	adapter.client.baseURL = srv.URL
+	adapter.client.httpClient = srv.Client()
+	const sym = "BTCUSDT_bybit_legacy"
+
+	spotRulesCacheMu.Lock()
+	delete(spotRulesCache, sym)
+	spotRulesCacheMu.Unlock()
+
+	rules, err := adapter.SpotOrderRules(sym)
+	if err != nil {
+		t.Fatalf("SpotOrderRules: %v", err)
+	}
+	if rules.MinNotional != 7.0 {
+		t.Errorf("MinNotional = %v, want 7.0 — legacy quoteFilter fallback not working", rules.MinNotional)
 	}
 }

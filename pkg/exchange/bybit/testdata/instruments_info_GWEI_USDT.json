@@ -19,10 +19,6 @@
           "minOrderAmt": "1",
           "maxOrderAmt": "2000000"
         },
-        "quoteFilter": {
-          "minOrderAmt": "1",
-          "maxOrderAmt": "2000000"
-        },
         "priceFilter": {
           "tickSize": "0.0001"
         }
