@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.33] - 2026-04-20
+
+### Fixed
+- **Binance Dir A borrow-cost under-counting** (`pkg/exchange/binance/margin.go`) — codex re-review `0b5f1811` caught this pre-existing bug exposed by the new borrow-coverage floor. Binance's `/sapi/v1/margin/interestRateHistory` returns one record per day, but the adapter was emitting one `MarginInterestRatePoint` per record with `HourlyRate = daily/24`. The engine sums `HourlyRate × 10000` across points to compute total borrow cost in bps — so a 7-day backtest summed only 7 points × (daily/24) × 10000 instead of the correct 7 × daily × 10000 (24× under-count). With the new coverage floor, 7 daily points over a 7-day window was 4% coverage, correctly failing the floor but masking the real bug. Adapter now expands each daily record into 24 hourly-equivalent points within `[start, end]`, preserving the interface contract and producing correct bps totals. New `TestGetMarginInterestRateHistoryBinanceDailyExpansionCostAccuracy` asserts `Σ HourlyRate × 10000 == daily × 7 × 10000` over 7 days as regression guard.
+- **Dir A backtest frontend/backend policy drift** (`web/src/pages/Opportunities.tsx`) — codex audit `14064872` finding 1. The Backtest button on OKX/Bitget Dir A rows was always disabled because `SPOT_DIR_A_BACKTEST_EXCHANGES` hard-coded the native-only list, even when `SpotFuturesBacktestCoinGlassFallback` was on and the backend was ready to serve the request. Removed the frontend capability gate; the UI now always allows clicking Backtest, and the backend's 400 response (with a clear message from `RunSpotBacktestOnDemand` or the 400 from `insufficient borrow history`) surfaces in the modal's error area.
+- **Dir A sparse-borrow bootstrap trap** (`internal/spotengine/backtest.go`) — codex audit `14064872` finding 2. `fetchAndCacheSpotBacktestDirA` and `runBacktestDirAOnDemand` now enforce a ≥50% borrow-history coverage floor (`len(borrowSeries) / days*24`). During CoinGlass fallback bootstrap, the scraper accumulates one sample per hour; 24h of data over a 7-day window would previously produce misleading NetBps (missing hours default to zero via the borrowByHour map lookup) and cache for 24h, potentially allowing OKX/Bitget Dir A opportunities to false-pass the MinProfit filter. The prefetch path now fails open (no cache write) below the floor; the on-demand path returns a descriptive error so the modal displays an actionable "data source still accumulating" message.
+- 3 new regression tests in `dir_a_coverage_test.go` cover sparse (24/168h → no cache), full (168/168h → cache), and on-demand sparse (10h → error) paths.
+
 ## [0.32.32] - 2026-04-20
 
 ### Added
