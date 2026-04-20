@@ -1336,6 +1336,57 @@ type ExchangeSecretOverride struct {
 	Passphrase string
 }
 
+// keepNonZero is a tripwire used by SaveJSON to protect critical numeric config
+// fields (capital per leg, max positions, leverage) from being silently zeroed
+// by stale dashboard state or buggy update paths. If newVal is numeric zero AND
+// existing (the on-disk value just read) is numeric non-zero, returns existing
+// unchanged and logs a loud warning including the caller so the zeroing source
+// can be traced. Otherwise returns newVal normally.
+//
+// Incoming 0 for these fields is almost always a bug — legitimate operational
+// changes (e.g. disabling spot-futures) flip *Enabled booleans rather than
+// zeroing out capital/leverage. Added in v0.32.32 after a live incident where
+// spot_futures.{max_positions, leverage, capital_unified_usdt} were unexpectedly
+// zeroed by an unknown update path. The tripwire is intentionally narrow; it
+// does not block the save, only preserves the specific field.
+func keepNonZero(existing, newVal interface{}, fieldName string) interface{} {
+	if !isNumericZero(newVal) {
+		return newVal
+	}
+	if !isNumericNonZero(existing) {
+		return newVal
+	}
+	_, caller, line, _ := runtime.Caller(1)
+	fmt.Fprintf(os.Stderr,
+		"[config] TRIPWIRE: refusing to zero %s (disk=%v, in-memory=%v) — keeping disk value. caller=%s:%d\n",
+		fieldName, existing, newVal, caller, line)
+	return existing
+}
+
+func isNumericZero(v interface{}) bool {
+	switch x := v.(type) {
+	case int:
+		return x == 0
+	case int64:
+		return x == 0
+	case float64:
+		return x == 0
+	}
+	return false
+}
+
+func isNumericNonZero(v interface{}) bool {
+	switch x := v.(type) {
+	case int:
+		return x != 0
+	case int64:
+		return x != 0
+	case float64:
+		return x != 0
+	}
+	return false
+}
+
 // SaveJSON writes the current runtime config back to config.json while
 // preserving exchange secrets from the original file.
 func (c *Config) SaveJSON() error {
@@ -1547,8 +1598,13 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 
 	sf := getMap(raw, "spot_futures")
 	sf["enabled"] = c.SpotFuturesEnabled
-	sf["max_positions"] = c.SpotFuturesMaxPositions
-	sf["leverage"] = c.SpotFuturesLeverage
+	// Tripwire: refuse to overwrite on-disk non-zero numeric values with zero for
+	// safety-critical runtime parameters. An incoming zero for these fields is
+	// almost always the result of a bug (stale dashboard state, missing guard in
+	// an update path, etc.) rather than an intentional change. Logs loudly so the
+	// culprit can be traced. See CHANGELOG v0.32.32.
+	sf["max_positions"] = keepNonZero(sf["max_positions"], c.SpotFuturesMaxPositions, "spot_futures.max_positions")
+	sf["leverage"] = keepNonZero(sf["leverage"], c.SpotFuturesLeverage, "spot_futures.leverage")
 	sf["monitor_interval_sec"] = c.SpotFuturesMonitorIntervalSec
 	sf["min_net_yield_apr"] = c.SpotFuturesMinNetYieldAPR
 	sf["max_borrow_apr"] = c.SpotFuturesMaxBorrowAPR
@@ -1568,8 +1624,8 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	sf["auto_dry_run"] = c.SpotFuturesDryRun
 	sf["persistence_scans"] = c.SpotFuturesPersistenceScans
 	sf["profit_transfer_enabled"] = c.SpotFuturesProfitTransferEnabled
-	sf["capital_separate_usdt"] = c.SpotFuturesCapitalSeparate
-	sf["capital_unified_usdt"] = c.SpotFuturesCapitalUnified
+	sf["capital_separate_usdt"] = keepNonZero(sf["capital_separate_usdt"], c.SpotFuturesCapitalSeparate, "spot_futures.capital_separate_usdt")
+	sf["capital_unified_usdt"] = keepNonZero(sf["capital_unified_usdt"], c.SpotFuturesCapitalUnified, "spot_futures.capital_unified_usdt")
 	sf["scanner_mode"] = c.SpotFuturesScannerMode
 	delete(sf, "native_scanner_enabled") // clean old key
 	sf["enable_min_hold"] = c.SpotFuturesEnableMinHold

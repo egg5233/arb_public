@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.32] - 2026-04-20
+
+### Added
+- **SaveJSON tripwire for critical numeric fields** (`internal/config/config.go`) — defense-in-depth against config-clearing incidents. The `keepNonZero` helper now guards `spot_futures.max_positions`, `spot_futures.leverage`, `spot_futures.capital_unified_usdt`, and `spot_futures.capital_separate_usdt` on every SaveJSON write. If a save attempts to zero a currently-non-zero on-disk value for any of these, the tripwire logs a loud `[config] TRIPWIRE: refusing to zero ...` line (including the Go caller) and preserves the disk value. Legitimate operational changes flip `*Enabled` booleans rather than zeroing capital/leverage, so an incoming zero is almost always a bug (stale dashboard state, missing guard in an update path, etc.). The tripwire is narrow — it does not block the save, only preserves the specific field.
+- 10 unit tests covering disk-preserved, disk-missing, type-mixing, and normal-update cases.
+
+### Fixed
+- Live incident recovery: between v0.32.30 deploy (13:34) and v0.32.31 deploy (13:48), `spot_futures.max_positions`, `spot_futures.leverage`, and `spot_futures.capital_unified_usdt` were silently zeroed during a SaveJSON write with an unidentified caller. Manual restore from `config.bk` was required. The tripwire above makes future occurrences visible via logs and prevents the zeroing.
+
 ## [0.32.31] - 2026-04-20
 
 ### Fixed
