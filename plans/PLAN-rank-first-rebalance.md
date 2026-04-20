@@ -1,6 +1,6 @@
 # Plan: Rank-First Rebalance — Invert Pool Allocator from Primary to Fallback
 
-Version: v27
+Version: v28
 Date: 2026-04-20
 Status: DRAFT
 
@@ -31,7 +31,8 @@ Status: DRAFT
 - v24 (2026-04-20): Corrected first parameter of keepFundedChoices from map to slice.
 - v25 (2026-04-20): Aligned plan text with pushed-branch source (pre-dependency-merge): 3-arg keepFundedChoices, marginRatio check, corrected line anchors. 12/15 PASS on Codex review.
 - v26 (2026-04-20): Swept remaining stale anchors/contract text for Files-to-Change table and the two paragraphs around the signature block. ALL PASS on normal review.
-- v27 (this draft): Codex INDEPENDENT review of v26 (task b45d2ea2 at pinned HEAD 4fdc9f26) found 3 residual issues. (1) Dependencies section cited `plans/PLAN-margin-ratio-unify.md` as a required dependency, but that plan file is NOT present at pinned commit 4fdc9f26 (the branch has 5bugs v5 but not margin-ratio-unify). v27 rewrites the dependency to say the margin-ratio-unify plan/implementation is not yet landed on this branch, and implementers must either merge it first or keep the current `bal.marginRatio >= e.cfg.MarginL4Threshold` formula. (2) Forward-compat note about 5bugs adding `PendingDeposits` was wrong — 5bugs v5 itself does not add that field or a 4th `pending` arg; the future extension, if it happens, would be a separate plan. v27 rewords to "If a future plan (not 5bugs v5) extends...". (3) Multiple non-history plan anchors referencing pool-allocator alt-handling code in allocator.go were drifted from the current pushed-branch source: `buildAllocatorCandidates :557-633` → `:491-568`; pre-approval alt guards `:621, :625, :629` → `:553-564`; altOpp building pattern `:582-595` → `:517-524`; alt evaluation at `:617-618` → `:552-567`. v27 updates all four anchors to match current source.
+- v27 (2026-04-20): Addressed v26 independent findings (Dependencies, forward-compat note, pool-allocator line anchors).
+- v28 (this draft): Codex INDEPENDENT re-review of v27 (task 3451e475 at pinned HEAD dab6c2a6) found 2 residual issues. (1) Dependencies stop-condition line still said "If either dependency has not landed, stop — do not implement this plan", which contradicts v27's new two-option guidance (land margin-ratio-unify first OR keep marginRatio). v28 rewrites the stop-condition to scope the hard block only to 5bugs v5, while the margin-ratio-unify case permits either landing-then-verify or keeping the current formula consistently. (2) Two symmetric-reservation anchor references at the "conservative stance" paragraph and the "Out of Scope" rationale still had pre-v27 anchors (`dryRunTransferPlan :936-940`, `canReserveAllocatorChoice :181-200`, `reserveAllocatorChoice :212`, `:939`) — v27 missed these instances because the risks-table row and the Fallback-paragraph were fixed but these two prose locations weren't. v28 updates both to the corrected anchors (`dryRunTransferPlan :855-857`, `canReserveAllocatorChoice :142-150`, `reserveAllocatorChoice :173-181`).
 
 <details>
 <summary>v8 description (retained for history)</summary> Independent reviewer caught 4 issues that dependent reviews missed — (1) Tier-1 only tried primary pair via `alt=nil`, missing `opp.Alternatives` evaluation that current pool allocator does (would lose feasible alt-pair selections for rank-N when primary fails); (2) plan said "extend manager_test.go" but that file does not exist; (3) tests 4+13 omitted fixed-capital precondition needed for cache top-up branch; (4) minor anchor drift `allocator.go:929-937` → `936-940`. v8 adds per-symbol pair walk (primary + alternatives) in Change 4, fixes manager_test.go instruction to "create new", adds `CapitalPerLeg > 0` precondition to tests 4/13, corrects the `936-940` anchor, adds Test 15 for alt-pair coverage.
@@ -45,7 +46,7 @@ Status: DRAFT
 
 Both are referenced by exact line numbers in the current tree below.
 
-If either dependency has not landed, **stop — do not implement this plan**.
+If `PLAN-rebalance-partial-5bugs v5` has not landed, **stop — do not implement this plan**. For margin-ratio-unify, either land that helper dependency first and re-verify the helper formula/anchors, or intentionally keep the current `marginRatio` formula consistently in the inline gate, extracted helper, and parity tests; the plan works in either regime because the parity test pins equivalence between inline and helper.
 
 ## Problem Statement
 
@@ -678,12 +679,12 @@ Add a clarifying comment at `engine.go:1352`:
 
 `approval.LongMarginNeeded` and `approval.ShortMarginNeeded` can differ by the long/short mid-price gap (typically <1% for delta-neutral perp-perp pairs). 5bugs Bug B tracks them asymmetrically on `sequentialChoice.longNeed/shortNeed` for local planner bookkeeping, but `buildChoices()` maps each `sequentialChoice` to `allocatorChoice{requiredMargin: approval.RequiredMargin}` — where `RequiredMargin = max(LongMarginNeeded, ShortMarginNeeded)` per `manager.go:715`.
 
-Downstream, `dryRunTransferPlan` (`allocator.go:936-940`) and `canReserveAllocatorChoice` (`allocator.go:181-200`) both reserve `requiredMargin` symmetrically on BOTH legs. This means the short leg receives a reservation slightly larger than its actual need when `long_margin > short_margin`.
+Downstream, `dryRunTransferPlan` (`allocator.go:855-857`), `canReserveAllocatorChoice` (`allocator.go:142-150`), and `reserveAllocatorChoice` (`allocator.go:173-181`) all reserve `requiredMargin` symmetrically on BOTH legs. This means the short leg receives a reservation slightly larger than its actual need when `long_margin > short_margin`.
 
 **Impact**: in rare edge cases (e.g., one exchange has exactly enough for short_margin but not long_margin, cross-exchange transfer plan relies on that exact margin), a feasible rank-ordered selection can be conservatively dropped. In practice for perp-perp delta-neutral, the asymmetry is <1% and this drop is extremely unlikely.
 
 **Decision**: accept the conservative symmetric replay as a carry-forward of existing semantics. Do NOT extend `allocatorChoice` with per-leg fields in this plan. Rationale:
-- Changing `allocatorChoice` touches `dryRunTransferPlan` (`allocator.go:939`), `canReserveAllocatorChoice` (`allocator.go:181-200`), `reserveAllocatorChoice` (`allocator.go:212`), `keepFundedChoices`, and the pool allocator's solver — cross-cutting risk disproportionate to the win.
+- Changing `allocatorChoice` touches `dryRunTransferPlan` (`allocator.go:855-857`), `canReserveAllocatorChoice` (`allocator.go:142-150`), `reserveAllocatorChoice` (`allocator.go:173-181`), `keepFundedChoices`, and the pool allocator's solver — cross-cutting risk disproportionate to the win.
 - For delta-neutral perp-perp pairs, the per-leg asymmetry is typically <1%, making conservative drops rare in practice.
 
 **Fallback is not guaranteed-equivalent recovery**: if Tier-1 conservatively drops a choice due to symmetric over-reservation, the pool allocator fallback uses the SAME symmetric `requiredMargin` replay path (`allocator.go:142-150, :173-181, :855-857`) and for the SAME `allocatorChoice` applies the same feasibility gate. Fallback therefore does NOT "self-heal" the exact same choice. However, pool allocator separately evaluates `opp.Alternatives` (`allocator.go:552-567`) and re-sorts the full choice set by `baseValue`, so the fallback can still select a DIFFERENT feasible choice — an alternative pair, a lower-rank bundle whose totals fit inside `balances` under the symmetric gate. This is an accepted carry-forward of the symmetric contract with the clarification that fallback may produce a different selection than Tier-1 considered, not that it never produces one.
