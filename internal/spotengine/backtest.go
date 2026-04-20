@@ -232,7 +232,7 @@ func (e *SpotEngine) prefetchSpotBacktestData(opps []SpotArbOpportunity) {
 			}
 			toFetch = append(toFetch, opp)
 		case "borrow_sell_long":
-			if !exchangeSupportsDirABacktest(opp.Exchange) {
+			if !e.canRunDirABacktest(opp.Exchange) {
 				continue
 			}
 			if _, hasAdapter := e.spotMargin[opp.Exchange]; !hasAdapter {
@@ -315,8 +315,8 @@ func (e *SpotEngine) RunSpotBacktestOnDemand(ctx context.Context, symbol, exchNa
 	case "buy_spot_short":
 		return e.runBacktestDirBOnDemand(ctx, symbol, exchName, days)
 	case "borrow_sell_long":
-		if !exchangeSupportsDirABacktest(exchName) {
-			return nil, fmt.Errorf("Dir A backtest not yet supported on %q (Phase 2)", exchName)
+		if !e.canRunDirABacktest(exchName) {
+			return nil, fmt.Errorf("Dir A backtest not yet supported on %q", exchName)
 		}
 		return e.runBacktestDirAOnDemand(ctx, symbol, exchName, days)
 	default:
@@ -386,7 +386,7 @@ func (e *SpotEngine) runBacktestDirAOnDemand(ctx context.Context, symbol, exchNa
 		return nil, fmt.Errorf("loris fetch: %w", err)
 	}
 
-	borrowSeries, err := smExch.GetMarginInterestRateHistory(ctx, base, start, now)
+	borrowSeries, err := e.loadBorrowHistoryWithFallback(ctx, smExch, exchName, base, start, now)
 	if err != nil {
 		return nil, fmt.Errorf("borrow rate history: %w", err)
 	}
@@ -499,7 +499,9 @@ func spotBacktestDirACacheKey(symbol, exchName string, days int) string {
 }
 
 // exchangeSupportsDirABacktest returns true for the three exchanges that expose
-// public historical borrow-rate APIs: Binance, Bybit, Gate.io.
+// public historical borrow-rate APIs: Binance, Bybit, Gate.io. This is the
+// "native" list — OKX and Bitget can still run Dir A via the CoinGlass fallback
+// when SpotFuturesBacktestCoinGlassFallback is enabled (see canRunDirABacktest).
 func exchangeSupportsDirABacktest(exchName string) bool {
 	switch exchName {
 	case "binance", "bybit", "gateio":
@@ -509,10 +511,81 @@ func exchangeSupportsDirABacktest(exchName string) bool {
 	}
 }
 
+// exchangeSupportsCoinGlassDirAFallback returns true for the exchanges whose
+// historical borrow rates are available via the CoinGlass /MarginFee scraper
+// (/var/solana/data/coinGlass/fetch_margin_fee.js) when the native API doesn't
+// expose them.
+func exchangeSupportsCoinGlassDirAFallback(exchName string) bool {
+	switch exchName {
+	case "okx", "bitget":
+		return true
+	default:
+		return false
+	}
+}
+
+// canRunDirABacktest decides whether Dir A historical backtest can run on this
+// exchange given the current config. True when the adapter has a native history
+// API, OR when the CoinGlass fallback is enabled and the exchange has CoinGlass
+// coverage.
+func (e *SpotEngine) canRunDirABacktest(exchName string) bool {
+	if exchangeSupportsDirABacktest(exchName) {
+		return true
+	}
+	if e.cfg.SpotFuturesBacktestCoinGlassFallback && exchangeSupportsCoinGlassDirAFallback(exchName) {
+		return true
+	}
+	return false
+}
+
+// loadBorrowHistoryWithFallback returns the historical borrow-rate series for
+// (exchName, baseCoin) over [start, end]. It prefers the adapter's native
+// GetMarginInterestRateHistory; if that returns ErrHistoricalBorrowNotSupported
+// and the CoinGlass fallback is enabled, it reads from the scraper-populated
+// Redis list instead. Returns (nil, nil) with no error if the adapter has no
+// native support AND the fallback is disabled / empty — callers treat that as
+// cache-miss / skip.
+func (e *SpotEngine) loadBorrowHistoryWithFallback(
+	ctx context.Context,
+	smExch exchange.SpotMarginExchange,
+	exchName, baseCoin string,
+	start, end time.Time,
+) ([]exchange.MarginInterestRatePoint, error) {
+	series, err := smExch.GetMarginInterestRateHistory(ctx, baseCoin, start, end)
+	if err == nil {
+		return series, nil
+	}
+	if !errors.Is(err, exchange.ErrHistoricalBorrowNotSupported) {
+		return nil, err
+	}
+	// Adapter has no native support. Try CoinGlass fallback if enabled.
+	if !e.cfg.SpotFuturesBacktestCoinGlassFallback {
+		return nil, err // preserve the sentinel for upstream handling
+	}
+	cgPoints, cgErr := e.db.GetCoinGlassMarginFeeHistory(exchName, baseCoin, start, end)
+	if cgErr != nil {
+		e.log.Warn("Dir A CoinGlass fallback read %s (%s): %v", baseCoin, exchName, cgErr)
+		return nil, err // fall back to the original sentinel
+	}
+	if len(cgPoints) == 0 {
+		// Key missing or no data in range — treat as unsupported for this scan.
+		return nil, err
+	}
+	out := make([]exchange.MarginInterestRatePoint, 0, len(cgPoints))
+	for _, p := range cgPoints {
+		out = append(out, exchange.MarginInterestRatePoint{
+			Timestamp:  p.Timestamp,
+			HourlyRate: p.HourlyRate,
+		})
+	}
+	e.log.Info("Dir A CoinGlass fallback %s (%s): %d points", baseCoin, exchName, len(out))
+	return out, nil
+}
+
 // backtestDirA checks the Redis cache for a Dir A historical backtest result.
 // Unsupported exchanges fail-open immediately. Cache misses also fail-open.
 func (e *SpotEngine) backtestDirA(opp SpotArbOpportunity) (bool, string) {
-	if !exchangeSupportsDirABacktest(opp.Exchange) {
+	if !e.canRunDirABacktest(opp.Exchange) {
 		return true, ""
 	}
 	days := e.cfg.SpotFuturesBacktestDays
@@ -570,11 +643,11 @@ func (e *SpotEngine) fetchAndCacheSpotBacktestDirA(ctx context.Context, opp Spot
 		return false
 	}
 
-	borrowSeries, err := smExch.GetMarginInterestRateHistory(ctx, base, start, now)
+	borrowSeries, err := e.loadBorrowHistoryWithFallback(ctx, smExch, opp.Exchange, base, start, now)
 	if err != nil {
 		if errors.Is(err, exchange.ErrHistoricalBorrowNotSupported) {
-			// Capability gate should prevent reaching here; handle gracefully.
-			e.log.Info("spot backtest Dir A %s (%s): historical borrow not supported, skipping", opp.Symbol, opp.Exchange)
+			// Neither native adapter nor CoinGlass fallback produced data.
+			e.log.Info("spot backtest Dir A %s (%s): historical borrow unavailable, skipping", opp.Symbol, opp.Exchange)
 			return true
 		}
 		e.log.Warn("spot backtest Dir A prefetch %s (%s): borrow history: %v", opp.Symbol, opp.Exchange, err)

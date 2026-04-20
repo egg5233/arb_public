@@ -567,6 +567,8 @@ const en = {
   'cfg.sf.backtestDaysDesc': 'Days of historical futures funding data to check for Dir B opportunities. Default 7.',
   'cfg.sf.backtestMinProfit': 'Min Profit (bps)',
   'cfg.sf.backtestMinProfitDesc': 'Minimum cumulative funding in basis points over the backtest window to pass the filter. Default 0.',
+  'cfg.sf.backtestCoinGlassFallback': 'Dir A: CoinGlass Fallback (OKX/Bitget)',
+  'cfg.sf.backtestCoinGlassFallbackDesc': 'Enable Dir A (borrow_sell_long) backtest on OKX and Bitget using the CoinGlass-scraped history at coinGlassMarginFee:hist:*. Requires the fetch_margin_fee.js scraper to have accumulated data (~7 days for a full window). When disabled or Redis is empty, OKX/Bitget Dir A stays unsupported. Default OFF.',
   'spotBacktest.modal.title': 'Dir B Backtest',
   'spotBacktest.modal.run': 'Run',
   'spotBacktest.modal.sumBps': 'Total Funding (bps)',

@@ -563,6 +563,8 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.sf.backtestDaysDesc': '用於方向 B 的歷史合約資金費率天數。預設 7。',
   'cfg.sf.backtestMinProfit': '最低利潤 (bps)',
   'cfg.sf.backtestMinProfitDesc': '通過篩選所需的回測視窗內最低累計資金費率（基點）。預設 0。',
+  'cfg.sf.backtestCoinGlassFallback': '方向 A: CoinGlass 後備來源 (OKX/Bitget)',
+  'cfg.sf.backtestCoinGlassFallbackDesc': '使用 CoinGlass 抓取的借貸利率歷史（Redis 鍵 coinGlassMarginFee:hist:*）為 OKX 與 Bitget 的方向 A (borrow_sell_long) 回測提供資料。需要 fetch_margin_fee.js 爬蟲累積約 7 天才能取得完整視窗。關閉或 Redis 無資料時，OKX/Bitget 的方向 A 仍不支援。預設關閉。',
   'spotBacktest.modal.title': '方向 B 回測',
   'spotBacktest.modal.run': '執行',
   'spotBacktest.modal.sumBps': '總資金費率 (bps)',
