@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.33] - 2026-04-20
+
+### Fixed
+- **Dir A backtest frontend/backend policy drift** (`web/src/pages/Opportunities.tsx`) — codex audit `14064872` finding 1. The Backtest button on OKX/Bitget Dir A rows was always disabled because `SPOT_DIR_A_BACKTEST_EXCHANGES` hard-coded the native-only list, even when `SpotFuturesBacktestCoinGlassFallback` was on and the backend was ready to serve the request. Removed the frontend capability gate; the UI now always allows clicking Backtest, and the backend's 400 response (with a clear message from `RunSpotBacktestOnDemand` or the 400 from `insufficient borrow history`) surfaces in the modal's error area.
+- **Dir A sparse-borrow bootstrap trap** (`internal/spotengine/backtest.go`) — codex audit `14064872` finding 2. `fetchAndCacheSpotBacktestDirA` and `runBacktestDirAOnDemand` now enforce a ≥50% borrow-history coverage floor (`len(borrowSeries) / days*24`). During CoinGlass fallback bootstrap, the scraper accumulates one sample per hour; 24h of data over a 7-day window would previously produce misleading NetBps (missing hours default to zero via the borrowByHour map lookup) and cache for 24h, potentially allowing OKX/Bitget Dir A opportunities to false-pass the MinProfit filter. The prefetch path now fails open (no cache write) below the floor; the on-demand path returns a descriptive error so the modal displays an actionable "data source still accumulating" message.
+- 3 new regression tests in `dir_a_coverage_test.go` cover sparse (24/168h → no cache), full (168/168h → cache), and on-demand sparse (10h → error) paths.
+
 ## [0.32.32] - 2026-04-20
 
 ### Added

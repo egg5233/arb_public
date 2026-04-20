@@ -102,14 +102,15 @@ function getSpotSourceLabel(t: TranslateFn, source?: string): string {
 
 const PAGE_SIZE = 20;
 
-const SPOT_DIR_A_BACKTEST_EXCHANGES = new Set(['binance', 'bybit', 'gateio']);
-
-function canBacktest(opp: SpotOpportunity): { allowed: boolean; reason?: string } {
-  if (opp.direction === 'buy_spot_short') return { allowed: true };
-  if (opp.direction === 'borrow_sell_long' && SPOT_DIR_A_BACKTEST_EXCHANGES.has(opp.exchange)) {
-    return { allowed: true };
-  }
-  return { allowed: false, reason: opp.exchange };
+// canBacktest is intentionally permissive — the UI always allows the Backtest
+// button to open the modal. The backend decides whether a given {exchange,
+// direction} is actually supported (native history, CoinGlass fallback, or
+// disabled) and returns a 400 with a clear message if not. Keeping the UI gate
+// in sync with backend policy had drift bugs (see codex review 14064872, where
+// OKX/Bitget Dir A with CoinGlass fallback enabled was unreachable from the
+// dashboard despite the backend supporting it).
+function canBacktest(_opp: SpotOpportunity): { allowed: boolean; reason?: string } {
+  return { allowed: true };
 }
 
 // ---------------------------------------------------------------------------
