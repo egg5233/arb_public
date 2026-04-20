@@ -250,6 +250,12 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 					filterStatus = fmt.Sprintf("net %.1f%% < min %.1f%%", netAPR*100, e.cfg.SpotFuturesMinNetYieldAPR*100)
 				}
 
+				if filterStatus == "" && e.cfg.SpotFuturesBacktestEnabled && e.canRunDirABacktest(exchName) && !isActive {
+					if pass, reason := e.backtestDirA(SpotArbOpportunity{Symbol: symbol, Exchange: exchName}); !pass {
+						filterStatus = reason
+					}
+				}
+
 				opps = append(opps, SpotArbOpportunity{
 					Symbol:          symbol,
 					BaseCoin:        strings.ToUpper(baseSym),
@@ -460,9 +466,18 @@ func (e *SpotEngine) runCoinGlassFallback() []SpotArbOpportunity {
 			filterStatus = fmt.Sprintf("net %.1f%% < min %.1f%%", netAPR*100, e.cfg.SpotFuturesMinNetYieldAPR*100)
 		}
 
-		if filterStatus == "" && e.cfg.SpotFuturesBacktestEnabled && direction == "buy_spot_short" && !isActive {
-			if pass, reason := e.backtestDirB(SpotArbOpportunity{Symbol: spotSymbol, Exchange: exchName}); !pass {
-				filterStatus = reason
+		if filterStatus == "" && e.cfg.SpotFuturesBacktestEnabled && !isActive {
+			switch direction {
+			case "buy_spot_short":
+				if pass, reason := e.backtestDirB(SpotArbOpportunity{Symbol: spotSymbol, Exchange: exchName}); !pass {
+					filterStatus = reason
+				}
+			case "borrow_sell_long":
+				if e.canRunDirABacktest(exchName) {
+					if pass, reason := e.backtestDirA(SpotArbOpportunity{Symbol: spotSymbol, Exchange: exchName}); !pass {
+						filterStatus = reason
+					}
+				}
 			}
 		}
 

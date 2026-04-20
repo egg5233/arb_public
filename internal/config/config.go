@@ -224,9 +224,10 @@ type Config struct {
 	SpotFuturesMaintenanceCacheTTL   int     // cache TTL in minutes for tiered rate data (default: 60)
 
 	// Backtest filter for spot-futures Dir B (buy_spot_short only)
-	SpotFuturesBacktestEnabled   bool    // filter Dir B opps by historical funding sum (default: false)
-	SpotFuturesBacktestDays      int     // historical funding window in days (default: 7)
-	SpotFuturesBacktestMinProfit float64 // minimum sum of funding bps over window to pass (default: 0)
+	SpotFuturesBacktestEnabled           bool    // filter Dir B opps by historical funding sum (default: false)
+	SpotFuturesBacktestDays              int     // historical funding window in days (default: 7)
+	SpotFuturesBacktestMinProfit         float64 // minimum sum of funding bps over window to pass (default: 0)
+	SpotFuturesBacktestCoinGlassFallback bool    // use CoinGlass-scraped history for OKX/Bitget Dir A (default: false)
 
 	// Telegram notifications
 	TelegramBotToken string
@@ -359,9 +360,10 @@ type jsonSpotFutures struct {
 	MaintenanceCacheTTL   *int     `json:"maintenance_cache_ttl"`
 
 	// Backtest filter for spot-futures Dir B
-	BacktestEnabled   *bool    `json:"backtest_enabled"`
-	BacktestDays      *int     `json:"backtest_days"`
-	BacktestMinProfit *float64 `json:"backtest_min_profit"`
+	BacktestEnabled           *bool    `json:"backtest_enabled"`
+	BacktestDays              *int     `json:"backtest_days"`
+	BacktestMinProfit         *float64 `json:"backtest_min_profit"`
+	BacktestCoinGlassFallback *bool    `json:"backtest_coinglass_fallback"`
 }
 
 type jsonExchange struct {
@@ -633,9 +635,10 @@ func Load() *Config {
 		SpotFuturesMaintenanceCacheTTL:   60,
 
 		// Backtest filter defaults (OFF per new-feature rollout rule)
-		SpotFuturesBacktestEnabled:   false,
-		SpotFuturesBacktestDays:      7,
-		SpotFuturesBacktestMinProfit: 0,
+		SpotFuturesBacktestEnabled:           false,
+		SpotFuturesBacktestDays:              7,
+		SpotFuturesBacktestMinProfit:         0,
+		SpotFuturesBacktestCoinGlassFallback: false,
 
 		// Unified capital allocation defaults (Phase 5)
 		EnableUnifiedCapital:   false,
@@ -1255,6 +1258,9 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if sf.BacktestMinProfit != nil && *sf.BacktestMinProfit >= 0 {
 			c.SpotFuturesBacktestMinProfit = *sf.BacktestMinProfit
 		}
+		if sf.BacktestCoinGlassFallback != nil {
+			c.SpotFuturesBacktestCoinGlassFallback = *sf.BacktestCoinGlassFallback
+		}
 	}
 
 	// Telegram
@@ -1328,6 +1334,57 @@ type ExchangeSecretOverride struct {
 	APIKey     string
 	SecretKey  string
 	Passphrase string
+}
+
+// keepNonZero is a tripwire used by SaveJSON to protect critical numeric config
+// fields (capital per leg, max positions, leverage) from being silently zeroed
+// by stale dashboard state or buggy update paths. If newVal is numeric zero AND
+// existing (the on-disk value just read) is numeric non-zero, returns existing
+// unchanged and logs a loud warning including the caller so the zeroing source
+// can be traced. Otherwise returns newVal normally.
+//
+// Incoming 0 for these fields is almost always a bug — legitimate operational
+// changes (e.g. disabling spot-futures) flip *Enabled booleans rather than
+// zeroing out capital/leverage. Added in v0.32.32 after a live incident where
+// spot_futures.{max_positions, leverage, capital_unified_usdt} were unexpectedly
+// zeroed by an unknown update path. The tripwire is intentionally narrow; it
+// does not block the save, only preserves the specific field.
+func keepNonZero(existing, newVal interface{}, fieldName string) interface{} {
+	if !isNumericZero(newVal) {
+		return newVal
+	}
+	if !isNumericNonZero(existing) {
+		return newVal
+	}
+	_, caller, line, _ := runtime.Caller(1)
+	fmt.Fprintf(os.Stderr,
+		"[config] TRIPWIRE: refusing to zero %s (disk=%v, in-memory=%v) — keeping disk value. caller=%s:%d\n",
+		fieldName, existing, newVal, caller, line)
+	return existing
+}
+
+func isNumericZero(v interface{}) bool {
+	switch x := v.(type) {
+	case int:
+		return x == 0
+	case int64:
+		return x == 0
+	case float64:
+		return x == 0
+	}
+	return false
+}
+
+func isNumericNonZero(v interface{}) bool {
+	switch x := v.(type) {
+	case int:
+		return x != 0
+	case int64:
+		return x != 0
+	case float64:
+		return x != 0
+	}
+	return false
 }
 
 // SaveJSON writes the current runtime config back to config.json while
@@ -1541,8 +1598,13 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 
 	sf := getMap(raw, "spot_futures")
 	sf["enabled"] = c.SpotFuturesEnabled
-	sf["max_positions"] = c.SpotFuturesMaxPositions
-	sf["leverage"] = c.SpotFuturesLeverage
+	// Tripwire: refuse to overwrite on-disk non-zero numeric values with zero for
+	// safety-critical runtime parameters. An incoming zero for these fields is
+	// almost always the result of a bug (stale dashboard state, missing guard in
+	// an update path, etc.) rather than an intentional change. Logs loudly so the
+	// culprit can be traced. See CHANGELOG v0.32.32.
+	sf["max_positions"] = keepNonZero(sf["max_positions"], c.SpotFuturesMaxPositions, "spot_futures.max_positions")
+	sf["leverage"] = keepNonZero(sf["leverage"], c.SpotFuturesLeverage, "spot_futures.leverage")
 	sf["monitor_interval_sec"] = c.SpotFuturesMonitorIntervalSec
 	sf["min_net_yield_apr"] = c.SpotFuturesMinNetYieldAPR
 	sf["max_borrow_apr"] = c.SpotFuturesMaxBorrowAPR
@@ -1562,8 +1624,8 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	sf["auto_dry_run"] = c.SpotFuturesDryRun
 	sf["persistence_scans"] = c.SpotFuturesPersistenceScans
 	sf["profit_transfer_enabled"] = c.SpotFuturesProfitTransferEnabled
-	sf["capital_separate_usdt"] = c.SpotFuturesCapitalSeparate
-	sf["capital_unified_usdt"] = c.SpotFuturesCapitalUnified
+	sf["capital_separate_usdt"] = keepNonZero(sf["capital_separate_usdt"], c.SpotFuturesCapitalSeparate, "spot_futures.capital_separate_usdt")
+	sf["capital_unified_usdt"] = keepNonZero(sf["capital_unified_usdt"], c.SpotFuturesCapitalUnified, "spot_futures.capital_unified_usdt")
 	sf["scanner_mode"] = c.SpotFuturesScannerMode
 	delete(sf, "native_scanner_enabled") // clean old key
 	sf["enable_min_hold"] = c.SpotFuturesEnableMinHold
@@ -1580,6 +1642,7 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	sf["backtest_enabled"] = c.SpotFuturesBacktestEnabled
 	sf["backtest_days"] = c.SpotFuturesBacktestDays
 	sf["backtest_min_profit"] = c.SpotFuturesBacktestMinProfit
+	sf["backtest_coinglass_fallback"] = c.SpotFuturesBacktestCoinGlassFallback
 	delete(sf, "capital_per_position") // removed field
 
 	// Allocation (Phase 5)
@@ -1874,6 +1937,9 @@ func (c *Config) loadEnvOverrides() {
 		if i, err := strconv.Atoi(v); err == nil && i > 0 {
 			c.SpotFuturesBacktestDays = i
 		}
+	}
+	if v := os.Getenv("SPOT_FUTURES_BACKTEST_COINGLASS_FALLBACK"); v != "" {
+		c.SpotFuturesBacktestCoinGlassFallback = v == "1" || v == "true" || v == "yes"
 	}
 	if v := os.Getenv("SPOT_FUTURES_BACKTEST_MIN_PROFIT"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {

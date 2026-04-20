@@ -364,6 +364,10 @@ type configSpotFuturesResponse struct {
 	EnableMaintenanceGate      bool     `json:"enable_maintenance_gate"`
 	MaintenanceDefault         float64  `json:"maintenance_default"`
 	MaintenanceCacheTTL        int      `json:"maintenance_cache_ttl"`
+	BacktestEnabled            bool     `json:"backtest_enabled"`
+	BacktestDays               int      `json:"backtest_days"`
+	BacktestMinProfit          float64  `json:"backtest_min_profit"`
+	BacktestCoinGlassFallback  bool     `json:"backtest_coinglass_fallback"`
 }
 
 type configExchangeResponse struct {
@@ -678,6 +682,10 @@ func (s *Server) buildConfigResponse() configResponse {
 		EnableMaintenanceGate:      s.cfg.SpotFuturesEnableMaintenanceGate,
 		MaintenanceDefault:         s.cfg.SpotFuturesMaintenanceDefault,
 		MaintenanceCacheTTL:        s.cfg.SpotFuturesMaintenanceCacheTTL,
+		BacktestEnabled:            s.cfg.SpotFuturesBacktestEnabled,
+		BacktestDays:               s.cfg.SpotFuturesBacktestDays,
+		BacktestMinProfit:          s.cfg.SpotFuturesBacktestMinProfit,
+		BacktestCoinGlassFallback:  s.cfg.SpotFuturesBacktestCoinGlassFallback,
 	}
 	return resp
 }
@@ -811,6 +819,10 @@ type spotFuturesUpdate struct {
 	EnableMaintenanceGate      *bool    `json:"enable_maintenance_gate"`
 	MaintenanceDefault         *float64 `json:"maintenance_default"`
 	MaintenanceCacheTTL        *int     `json:"maintenance_cache_ttl"`
+	BacktestEnabled            *bool    `json:"backtest_enabled"`
+	BacktestDays               *int     `json:"backtest_days"`
+	BacktestMinProfit          *float64 `json:"backtest_min_profit"`
+	BacktestCoinGlassFallback  *bool    `json:"backtest_coinglass_fallback"`
 }
 
 type exchangeUpdate struct {
@@ -1434,6 +1446,18 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if sf.MaintenanceCacheTTL != nil && *sf.MaintenanceCacheTTL >= 1 {
 			s.cfg.SpotFuturesMaintenanceCacheTTL = *sf.MaintenanceCacheTTL
+		}
+		if sf.BacktestEnabled != nil {
+			s.cfg.SpotFuturesBacktestEnabled = *sf.BacktestEnabled
+		}
+		if sf.BacktestDays != nil && *sf.BacktestDays > 0 {
+			s.cfg.SpotFuturesBacktestDays = *sf.BacktestDays
+		}
+		if sf.BacktestMinProfit != nil && *sf.BacktestMinProfit >= 0 {
+			s.cfg.SpotFuturesBacktestMinProfit = *sf.BacktestMinProfit
+		}
+		if sf.BacktestCoinGlassFallback != nil {
+			s.cfg.SpotFuturesBacktestCoinGlassFallback = *sf.BacktestCoinGlassFallback
 		}
 	}
 

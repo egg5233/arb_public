@@ -677,17 +677,17 @@ func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 			}
 
 			return &exchange.Balance{
-				Total:          total,
-				Available:      available,
-				Frozen:         used,
-				Currency:       "USDT",
+				Total:     total,
+				Available: available,
+				Frozen:    used,
+				Currency:  "USDT",
 				// BingX v3 balance does not expose a native maintenance-style risk
 				// ratio. The derived available/equity heuristic is useful for local
 				// display, but it is not comparable to Binance/Bybit/OKX health
 				// thresholds, so global health logic must treat it as unavailable.
 				MarginRatio:            marginRatio,
 				MarginRatioUnavailable: true,
-				MaxTransferOut: maxTransfer,
+				MaxTransferOut:         maxTransfer,
 			}, nil
 		}
 	}

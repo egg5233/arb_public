@@ -119,7 +119,7 @@ func (b *Adapter) CheckPermissions() exchange.PermissionResult {
 		Read: toBool(resp.EnableReading), FuturesTrade: toBool(resp.EnableFutures),
 		Withdraw: toBool(resp.EnableWithdrawals),
 		Transfer: toBool(resp.EnableInternalTransfer || resp.PermitsUniversalTransfer),
-		Method: "direct",
+		Method:   "direct",
 	}
 }
 
@@ -698,13 +698,13 @@ func (b *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 		TotalMarginBalance string `json:"totalMarginBalance"`
 		TotalMaintMargin   string `json:"totalMaintMargin"`
 		AvailableBalance   string `json:"availableBalance"`
-		MaxWithdrawAmount string `json:"maxWithdrawAmount"`
-		Assets            []struct {
-			Asset              string `json:"asset"`
-			WalletBalance      string `json:"walletBalance"`
-			MarginBalance      string `json:"marginBalance"`
-			AvailableBalance   string `json:"availableBalance"`
-			MaxWithdrawAmount  string `json:"maxWithdrawAmount"`
+		MaxWithdrawAmount  string `json:"maxWithdrawAmount"`
+		Assets             []struct {
+			Asset             string `json:"asset"`
+			WalletBalance     string `json:"walletBalance"`
+			MarginBalance     string `json:"marginBalance"`
+			AvailableBalance  string `json:"availableBalance"`
+			MaxWithdrawAmount string `json:"maxWithdrawAmount"`
 		} `json:"assets"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {

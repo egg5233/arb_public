@@ -78,10 +78,10 @@ func TestCtValRoundTrip(t *testing.T) {
 			placedSz = req.Sz
 			mu.Unlock()
 			respond([]map[string]interface{}{{
-				"ordId":  "123456",
+				"ordId":   "123456",
 				"clOrdId": "",
-				"sCode":  "0",
-				"sMsg":   "",
+				"sCode":   "0",
+				"sMsg":    "",
 			}})
 
 		case r.URL.Path == "/api/v5/trade/order" && r.Method == "GET":

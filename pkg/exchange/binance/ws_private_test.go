@@ -29,10 +29,10 @@ func buildOrderTradeUpdateMsg(t *testing.T, symbol string, orderIDInt int64, sta
 			"S":  "SELL",
 			"o":  origOrderType,
 			"X":  status,
-			"i":  orderIDInt,                               // int64 so JSON unmarshal works
+			"i":  orderIDInt, // int64 so JSON unmarshal works
 			"ap": "1.5900",
 			"z":  strconv.FormatFloat(filledQty, 'f', -1, 64),
-			"R":  reduceOnly,    // field "R" — was "ro" (bug fixed in H3B.1)
+			"R":  reduceOnly, // field "R" — was "ro" (bug fixed in H3B.1)
 			"q":  "189",
 			"cp": closePosition, // NEW field added in H3B.1
 			"ot": origOrderType, // NEW field added in H3B.1
@@ -123,7 +123,7 @@ func TestBinanceWSNormalFillStaysNonReduce(t *testing.T) {
 			"i":  int64(12345678), // must be int64 so strconv.FormatInt works correctly
 			"ap": "65000.00",
 			"z":  "0.001",
-			"R":  false,   // R=false
+			"R":  false, // R=false
 			"q":  "0.001",
 			"cp": false,   // cp=false — normal entry order
 			"ot": "LIMIT", // ot=LIMIT

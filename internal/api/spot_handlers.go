@@ -985,7 +985,9 @@ func (s *Server) handleSpotBatchCheckGap(w http.ResponseWriter, r *http.Request)
 }
 
 // handleSpotBacktest runs an on-demand historical funding backtest for a spot-futures opportunity.
-// Only Direction B (buy_spot_short) is supported; Direction A returns 400.
+// Accepts both Dir B (buy_spot_short) and Dir A (borrow_sell_long). Per-exchange capability for
+// Dir A is enforced by the engine's RunSpotBacktestOnDemand, which returns a descriptive error
+// for unsupported exchanges that this handler surfaces as 400.
 func (s *Server) handleSpotBacktest(w http.ResponseWriter, r *http.Request) {
 	if s.spotRunBacktest == nil {
 		writeJSON(w, http.StatusServiceUnavailable, Response{Error: "spot engine not available"})
@@ -1009,8 +1011,8 @@ func (s *Server) handleSpotBacktest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, Response{Error: "symbol, exchange, direction required"})
 		return
 	}
-	if req.Direction != "buy_spot_short" {
-		writeJSON(w, http.StatusBadRequest, Response{Error: "backtest not yet supported for borrow_sell_long"})
+	if req.Direction != "buy_spot_short" && req.Direction != "borrow_sell_long" {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "direction must be buy_spot_short or borrow_sell_long"})
 		return
 	}
 	if req.Days <= 0 {
@@ -1019,7 +1021,9 @@ func (s *Server) handleSpotBacktest(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.spotRunBacktest(r.Context(), req.Symbol, req.Exchange, req.Direction, req.Days)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, Response{Error: err.Error()})
+		// Engine errors that reflect a bad request (unsupported exchange for Dir A, etc.)
+		// should surface as 400 so the UI can render them inline without alarming the user.
+		writeJSON(w, http.StatusBadRequest, Response{Error: err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: result})

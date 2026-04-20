@@ -1,6 +1,7 @@
 package bitget
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -648,4 +649,10 @@ func (a *Adapter) TransferFromMargin(coin string, amount string) error {
 		return fmt.Errorf("TransferFromMargin failed: code=%s msg=%s", resp.Code, resp.Msg)
 	}
 	return nil
+}
+
+// GetMarginInterestRateHistory is not supported on Bitget — the history endpoint
+// only returns the authenticated user's own past borrows, not public market rates.
+func (a *Adapter) GetMarginInterestRateHistory(_ context.Context, _ string, _, _ time.Time) ([]exchange.MarginInterestRatePoint, error) {
+	return nil, exchange.ErrHistoricalBorrowNotSupported
 }

@@ -3,8 +3,8 @@
 package bingx
 
 import (
-	"compress/gzip"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"sync"
 	"testing"

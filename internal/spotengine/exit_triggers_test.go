@@ -1,6 +1,7 @@
 package spotengine
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -114,6 +115,12 @@ func (s *marginStubExchange) GetSpotBBO(string) (exchange.BBO, error) {
 }
 func (s *marginStubExchange) TransferToMargin(string, string) error   { return nil }
 func (s *marginStubExchange) TransferFromMargin(string, string) error { return nil }
+func (s *marginStubExchange) GetMarginInterestRateHistory(_ context.Context, _ string, _, _ time.Time) ([]exchange.MarginInterestRatePoint, error) {
+	return nil, exchange.ErrHistoricalBorrowNotSupported
+}
+func (s *marginStubExchange) SpotOrderRules(string) (*exchange.SpotOrderRules, error) {
+	return nil, nil
+}
 
 // TestCapitalForExchange verifies that separate-account exchanges get lower
 // capital limits than unified-account exchanges.

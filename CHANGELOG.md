@@ -2,6 +2,75 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.32] - 2026-04-20
+
+### Added
+- **SaveJSON tripwire for critical numeric fields** (`internal/config/config.go`) — defense-in-depth against config-clearing incidents. The `keepNonZero` helper now guards `spot_futures.max_positions`, `spot_futures.leverage`, `spot_futures.capital_unified_usdt`, and `spot_futures.capital_separate_usdt` on every SaveJSON write. If a save attempts to zero a currently-non-zero on-disk value for any of these, the tripwire logs a loud `[config] TRIPWIRE: refusing to zero ...` line (including the Go caller) and preserves the disk value. Legitimate operational changes flip `*Enabled` booleans rather than zeroing capital/leverage, so an incoming zero is almost always a bug (stale dashboard state, missing guard in an update path, etc.). The tripwire is narrow — it does not block the save, only preserves the specific field.
+- 10 unit tests covering disk-preserved, disk-missing, type-mixing, and normal-update cases.
+
+### Fixed
+- Live incident recovery: between v0.32.30 deploy (13:34) and v0.32.31 deploy (13:48), `spot_futures.max_positions`, `spot_futures.leverage`, and `spot_futures.capital_unified_usdt` were silently zeroed during a SaveJSON write with an unidentified caller. Manual restore from `config.bk` was required. The tripwire above makes future occurrences visible via logs and prevents the zeroing.
+
+## [0.32.31] - 2026-04-20
+
+### Fixed
+- **Spot-Futures backtest toggles not saving from dashboard** (`internal/api/handlers.go`) — latent bug present since v0.32.21 (Dir B) and uncovered by v0.32.30 (Dir A CoinGlass fallback). The `spotFuturesUpdate` request struct and `configSpotFuturesResponse` response struct in the `/api/config` handler were both missing the four backtest fields (`backtest_enabled`, `backtest_days`, `backtest_min_profit`, `backtest_coinglass_fallback`). Dashboard POSTs parsed into a struct with no matching fields so values were silently dropped — the toggle UI would flip back on refresh because the GET response also lacked the fields. Fixed by wiring all four fields through the GET response (struct + build block) and the POST request (struct + apply block). Underlying `SaveJSON`/`Load` paths in `internal/config/config.go` were already correct; only the API handler was unplumbed.
+
+## [0.32.30] - 2026-04-20
+
+### Added
+- **Spot-Futures Dir A backtest — CoinGlass fallback for OKX and Bitget (Phase 2)**. The two exchanges lack public historical borrow-rate APIs; previously Dir A backtest was gated off for them. This release adds a fallback that reads from a hourly-accumulated Redis time series populated by `/var/solana/data/coinGlass/fetch_margin_fee.js` (new scraper, runs under PM2).
+  - **New config field** (`internal/config/config.go`):
+    - `SpotFuturesBacktestCoinGlassFallback bool` — JSON: `backtest_coinglass_fallback`, ENV: `SPOT_FUTURES_BACKTEST_COINGLASS_FALLBACK`, **default OFF**. Wire through `jsonSpotFutures`, JSON read, JSON write, env-var parsing, and defaults block.
+  - **New database helper** (`internal/database/coinglass_margin_fee.go`): `GetCoinGlassMarginFeeHistory(exchange, coin, start, end) ([]CoinGlassMarginFeePoint, error)` reads the rolling Redis list `coinGlassMarginFee:hist:{exchange}:{coin}` (written by the scraper's hourly LPUSH + LTRIM 0 719), parses each entry, and filters by time window. Malformed entries skipped silently to survive scraper drift.
+  - **New engine helpers** (`internal/spotengine/backtest.go`):
+    - `exchangeSupportsCoinGlassDirAFallback(exch)` — returns true for `okx`, `bitget`.
+    - `(e *SpotEngine) canRunDirABacktest(exch)` — layered gate: native list (`binance`/`bybit`/`gateio`) always true, fallback list gated by config flag.
+    - `(e *SpotEngine) loadBorrowHistoryWithFallback(ctx, smExch, exchName, baseCoin, start, end)` — tries adapter's native `GetMarginInterestRateHistory` first; on `ErrHistoricalBorrowNotSupported` AND fallback flag enabled AND Redis has data, returns CoinGlass points converted to `MarginInterestRatePoint`. Preserves the sentinel when the fallback is off or empty so upstream fail-open logic stays intact.
+  - **Discovery + prefetch hooks** now use `canRunDirABacktest` instead of the native-only `exchangeSupportsDirABacktest`, and both borrow-history fetch sites (`runBacktestDirAOnDemand`, `fetchAndCacheSpotBacktestDirA`) route through `loadBorrowHistoryWithFallback`.
+  - **Bootstrap**: the CoinGlass scraper accumulates 1 sample per hour; 168 samples = 7 days of coverage. During bootstrap the fallback returns the sentinel (fail-open) and native-supported exchanges are unaffected.
+  - **No UI change** — Dir A button already enables for supported exchanges at the engine layer.
+
+### Fixed (review follow-ups on v0.32.30)
+- **Dashboard toggle** for `SpotFuturesBacktestCoinGlassFallback` (`web/src/pages/Config.tsx`) — the config flag was previously wired only through `config.json` and env vars, violating the new-feature rollout rule (config + dashboard toggle + persistence). Now exposed as a toggle in the Spot-Futures → Dir B Backtest section, next to the existing backtest controls. i18n keys added to `web/src/i18n/en.ts` and `web/src/i18n/zh-TW.ts`. No API handler change needed — the generic `POST /api/config` path already accepts the new field via the existing `jsonSpotFutures.backtest_coinglass_fallback` wiring.
+- **`GetCoinGlassMarginFeeHistory` JSON parsing** (`internal/database/coinglass_margin_fee.go`) — the parser declared a shared `entry` struct outside the loop. `encoding/json.Unmarshal` leaves fields unchanged when the input omits them, so a valid entry followed by `{}` could inherit the previous sample's `t` or `rate` and be returned as real data. Replaced with a fresh struct per iteration and pointer fields (`*int64`, `*float64`) so missing required fields now skip the entry instead of inheriting or zero-polluting. New regression test `TestGetCoinGlassMarginFeeHistory_PartialEntryDoesNotInheritPriorValues` locks this in.
+
+## [0.32.29] - 2026-04-19
+
+### Fixed
+- **Spot-futures "stuck in exiting" dust lockup** — positions no longer loop forever when the spot exit leaves an untradeable residual (first hit GUAUSDT, recurred on GWEIUSDT 2026-04-19).
+  - New `SpotOrderRules(symbol)` on `SpotMarginExchange` — returns `MinBaseQty`, `QtyStep`, `MinNotional` from each exchange's **spot market** endpoint (Binance `/api/v3/exchangeInfo`, Bybit `/v5/market/instruments-info?category=spot`, Gate.io `/spot/currency_pairs`, OKX `/api/v5/public/instruments?instType=SPOT`, Bitget `/api/v2/spot/public/symbols`). 5-min per-symbol cache inside each adapter.
+  - Close paths (`closeDirectionB`, `closeDirectionA`, `emergencyClose` spot goroutine) now detect untradeable dust via `isSpotResidualDust(rules, remaining, price)` — dust if `floor(remaining/step)*step < MinBaseQty` or `effective * price < MinNotional`. Marks the spot leg closed with a `(spot dust residue ignored: X BASECOIN)` note on `ExitReason`.
+  - Dir A dust short-circuit additionally verifies `GetMarginBalance.Borrowed == 0` before marking closed — prevents losing track of outstanding borrow liability.
+  - Futures close is now idempotent on "empty position" / "position not exist" errors via `isAlreadyFlatError` + `verifyFuturesFlat(GetPosition)` double-check. Populates `FuturesExit` from orderbook mid when the exchange provided no fill price.
+  - Retry-compatible: currently-stuck positions auto-heal on the next monitor retry after deploy. No Redis cleanup required.
+
+### Fixed (review follow-ups on v0.32.29)
+- **Bitget spot rules parser** (`pkg/exchange/bitget/spot_rules.go`) — the live Bitget v2 `/api/v2/spot/public/symbols` response uses `quantityPrecision` (not `quantityScale`). The original parser silently defaulted `QtyStep` to 1, which could cause `isSpotResidualDust` to flag a tradeable residual as dust on Bitget symbols with real sub-integer step precision. Parser now reads `quantityPrecision` with `quantityScale` retained as a legacy fallback. Golden fixture re-recorded from a live endpoint response; added a test that covers the legacy-field fallback path.
+- **Bybit spot rules parser** (`pkg/exchange/bybit/spot_rules.go`) — the live Bybit v5 `/v5/market/instruments-info?category=spot` response nests `minOrderAmt` inside `lotSizeFilter`, not inside a separate `quoteFilter` object. The original parser read only `quoteFilter.minOrderAmt`, so `MinNotional` silently parsed as 0 — meaning `isSpotResidualDust` would never catch a sub-notional residual via the notional check and instead keep attempting doomed orders (the opposite failure mode from the Bitget bug: preserving a dust lockup rather than skipping a tradeable residual). Parser now reads `lotSizeFilter.minOrderAmt` first, with `quoteFilter.minOrderAmt` retained as a legacy fallback. Golden fixture trimmed to the current v5 shape (lotSizeFilter only); added `TestSpotOrderRulesBybitMinNotionalInLotSizeOnly` (would fail under the old parser) and `TestSpotOrderRulesBybitLegacyQuoteFilterFallback` (covers version drift).
+
+## [0.32.28] - 2026-04-19
+
+### Added
+- **Spot-Futures Dir A (`borrow_sell_long`) backtest capability** for Binance, Bybit, and Gate.io. OKX and Bitget remain deferred (OKX has CSV-only export; Bitget's history endpoint is user-scoped, not public market rates).
+  - **New `SpotMarginExchange` interface method** (`pkg/exchange/types.go`): `GetMarginInterestRateHistory(ctx, coin, start, end) ([]MarginInterestRatePoint, error)`. Adapters that lack a public historical API return `ErrHistoricalBorrowNotSupported`; callers fail-open on this sentinel (same semantics as a cache miss).
+    - Binance: `GET /sapi/v1/margin/interestRateHistory` — daily granularity, paginates in 30-day windows; `HourlyRate = dailyInterestRate / 24`.
+    - Bybit: `GET /v5/spot-margin-trade/interest-rate-history` — hourly, paginates in 30-day windows, VIP level `No VIP`.
+    - Gate.io: `GET /unified/history_loan_rate` — hourly, page/limit pagination with client-side `[start, end]` filtering (endpoint has no date params).
+    - OKX + Bitget: return `ErrHistoricalBorrowNotSupported` immediately.
+  - **`backtestDirA` filter** (`internal/spotengine/backtest.go`): computes `netBps = −Σ fundingBps − Σ borrowBps` over the configured lookback window. Cache key: `arb:spot_backtest:{symbol}:{exchange}:borrow_sell_long:{days}` with 24 h TTL. Cache miss → fail-open (opportunity passes filter). Unsupported exchange → no-op (no cache write). Shares existing Loris 429 backoff from `discovery.TriggerLorisBackoff`.
+  - **`exchangeSupportsDirABacktest` helper** gates the filter in one place — currently `binance`, `bybit`, `gateio`.
+  - **Discovery hook** (`internal/spotengine/discovery.go`): native-scan and CoinGlass-scan Dir A paths call `backtestDirA` when `SpotFuturesBacktestEnabled && exchangeSupportsDirABacktest(exch)` and the position is not already active.
+  - **`RunSpotBacktestOnDemand`** now accepts `direction=borrow_sell_long` on supported exchanges (previously rejected with 400). Returns extended `SpotBacktestReport` with optional `funding_bps` and `borrow_bps` breakdown fields (zero-valued for Dir B — backward compatible).
+  - **Dashboard** (`web/src/pages/Opportunities.tsx`): Backtest button is enabled on Dir A rows for `binance`/`bybit`/`gateio`; rows for unsupported exchanges show a per-exchange tooltip (`spotBacktest.modal.notSupportedExchange`). Modal renders two additional stat tiles — funding bps and borrow bps — alongside the existing net-bps tile.
+  - **i18n** (`web/src/i18n/en.ts` + `zh-TW.ts`): `spotBacktest.modal.fundingBps`, `spotBacktest.modal.borrowBps`, `spotBacktest.modal.netBps`, `spotBacktest.modal.notSupportedExchange` (with `{exchange}` placeholder).
+  - **No new config** — reuses `SpotFuturesBacktestEnabled`, `SpotFuturesBacktestDays`, `SpotFuturesBacktestMinProfit`.
+
+### Fixed (review follow-ups on v0.32.28)
+- **API handler now accepts Dir A** (`internal/api/spot_handlers.go`) — `handleSpotBacktest` previously rejected every direction other than `buy_spot_short` with a 400 before reaching the engine, making the new Dir A modal unreachable from the dashboard. The handler now accepts both `buy_spot_short` and `borrow_sell_long`, forwards to the engine, and surfaces engine errors (e.g. "unsupported on okx") as 400 so the UI can render them inline. Two new tests cover the routing and the error-surfacing behavior.
+- **Frontend Dir-A detection uses `opp.direction`** (`web/src/pages/Opportunities.tsx`) — previously checked `result.funding_bps !== undefined`, but Go's `omitempty` would drop a legitimate zero-valued `funding_bps` and cause the modal to fall back to the Dir B layout. Now keys off the already-known `opp.direction` instead; the Dir A tile values use `?? 0` defensively.
+- **`TestBacktestDirASignMath` strengthened** (`internal/spotengine/backtest_test.go`) — now asserts the exact expected values (`FundingBps=15`, `BorrowBps=24`, `NetBps=-39`) in addition to sign direction. Catches magnitude regressions, not just sign flips.
+
 ## [0.32.27] - 2026-04-18
 
 ### Added

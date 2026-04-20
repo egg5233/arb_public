@@ -1,6 +1,10 @@
 package exchange
 
-import "time"
+import (
+	"context"
+	"errors"
+	"time"
+)
 
 // MetricsCallback records REST endpoint latency and error outcomes.
 type MetricsCallback func(endpoint string, latency time.Duration, err error)
@@ -131,16 +135,16 @@ type FundingRate struct {
 
 // Balance holds account balance info.
 type Balance struct {
-	Total          float64 // total equity
-	Available      float64 // available for new orders
-	Frozen         float64 // locked in positions/orders
-	Currency       string  // "USDT"
-	MarginRatio    float64 // maintenanceMargin / equity; 0 = unknown, 1.0 = liquidation
+	Total       float64 // total equity
+	Available   float64 // available for new orders
+	Frozen      float64 // locked in positions/orders
+	Currency    string  // "USDT"
+	MarginRatio float64 // maintenanceMargin / equity; 0 = unknown, 1.0 = liquidation
 	// MarginRatioUnavailable marks exchanges/accounts where we do not have a
 	// trusted maintenance-style risk ratio and should not synthesize one from
 	// available/equity heuristics for global L3/L4/L5 health decisions.
 	MarginRatioUnavailable bool
-	MaxTransferOut float64 // max amount that can be transferred out; 0 = unknown unless MaxTransferOutAuthoritative=true
+	MaxTransferOut         float64 // max amount that can be transferred out; 0 = unknown unless MaxTransferOutAuthoritative=true
 	// MaxTransferOutAuthoritative: when true, MaxTransferOut=0 means the
 	// exchange has explicitly reported no withdrawable collateral (e.g. all
 	// equity reserved as position margin), not "field missing". Only adapters
@@ -285,6 +289,15 @@ type TradFiSigner interface {
 // Spot Margin (borrow-and-sell) types
 // ---------------------------------------------------------------------------
 
+// SpotOrderRules captures the spot market's constraints on order size/notional.
+// Returned by SpotMarginExchange.SpotOrderRules and consumed by the engine's
+// dust detector on close.
+type SpotOrderRules struct {
+	MinBaseQty  float64 // minimum base-asset quantity (e.g. 1 GWEI)
+	QtyStep     float64 // quantity precision step (e.g. 1 = integer only, 0.001 = 3dp)
+	MinNotional float64 // minimum quote notional (USDT), 0 if not enforced
+}
+
 // MarginBorrowParams contains parameters for borrowing a coin on spot margin.
 type MarginBorrowParams struct {
 	Coin   string // e.g. "BTC"
@@ -327,6 +340,17 @@ type MarginInterestRate struct {
 	HourlyRate float64 // per-hour rate as decimal (e.g. 0.000005)
 	DailyRate  float64 // per-day rate as decimal (if available)
 }
+
+// MarginInterestRatePoint holds a single historical borrow rate observation.
+type MarginInterestRatePoint struct {
+	Timestamp  time.Time
+	HourlyRate float64 // per-hour rate as decimal (e.g. 0.000005)
+	VipLevel   string  // empty for exchanges that don't tier by VIP
+}
+
+// ErrHistoricalBorrowNotSupported is returned by GetMarginInterestRateHistory on
+// exchanges that do not expose a public historical borrow-rate API.
+var ErrHistoricalBorrowNotSupported = errors.New("historical borrow rate not supported on this exchange")
 
 // MarginBalance holds spot margin account info for a coin.
 type MarginBalance struct {
@@ -379,6 +403,15 @@ type SpotMarginExchange interface {
 
 	// TransferFromMargin moves funds from the margin account back to main/futures.
 	TransferFromMargin(coin string, amount string) error
+
+	// GetMarginInterestRateHistory returns historical hourly borrow rates for coin
+	// over [start, end]. Unsupported exchanges return ErrHistoricalBorrowNotSupported.
+	GetMarginInterestRateHistory(ctx context.Context, coin string, start, end time.Time) ([]MarginInterestRatePoint, error)
+
+	// SpotOrderRules returns the spot market's lot/notional rules for symbol.
+	// Uses the exchange's SPOT instruments endpoint (NOT futures contract metadata).
+	// Results are cached per symbol with a 5-minute TTL.
+	SpotOrderRules(symbol string) (*SpotOrderRules, error)
 }
 
 // SpotMarginOrderQuerier is an optional interface for exchanges that can
