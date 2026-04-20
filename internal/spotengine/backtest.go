@@ -391,6 +391,19 @@ func (e *SpotEngine) runBacktestDirAOnDemand(ctx context.Context, symbol, exchNa
 		return nil, fmt.Errorf("borrow rate history: %w", err)
 	}
 
+	// Borrow-coverage floor — same rationale as fetchAndCacheSpotBacktestDirA.
+	// On-demand, return a clear error so the modal displays an actionable message
+	// rather than a misleading "low cost" result with silently-zero'd missing hours.
+	expectedBorrowHours := float64(days) * 24.0
+	borrowCoverage := 0.0
+	if expectedBorrowHours > 0 {
+		borrowCoverage = float64(len(borrowSeries)) / expectedBorrowHours
+	}
+	if borrowCoverage < 0.5 {
+		return nil, fmt.Errorf("insufficient borrow history: have %d hours, need ~%d (%.0f%%) — data source still accumulating",
+			len(borrowSeries), int(expectedBorrowHours), borrowCoverage*100)
+	}
+
 	// Build hourly borrow lookup for O(1) per-settlement attribution.
 	borrowByHour := make(map[time.Time]float64, len(borrowSeries))
 	for _, bp := range borrowSeries {
@@ -663,6 +676,22 @@ func (e *SpotEngine) fetchAndCacheSpotBacktestDirA(ctx context.Context, opp Spot
 	expectedSettlements := float64(days) * 24.0 / 8.0
 	coverage := float64(len(filtered)) / expectedSettlements
 	if coverage < 0.5 {
+		return true
+	}
+
+	// Borrow-history coverage check — critical for CoinGlass fallback during
+	// bootstrap. Without this, the scraper's first few days produce partial
+	// hourly samples, the per-settlement borrow lookup silently treats missing
+	// hours as zero, NetBps comes out artificially high, and the cache records
+	// a misleading "pass" result for 24h. Fail-open at < 50% coverage.
+	expectedBorrowHours := float64(days) * 24.0
+	borrowCoverage := 0.0
+	if expectedBorrowHours > 0 {
+		borrowCoverage = float64(len(borrowSeries)) / expectedBorrowHours
+	}
+	if borrowCoverage < 0.5 {
+		e.log.Info("spot backtest Dir A prefetch %s (%s): borrow coverage %.0f%% < 50%%, skipping cache write",
+			opp.Symbol, opp.Exchange, borrowCoverage*100)
 		return true
 	}
 

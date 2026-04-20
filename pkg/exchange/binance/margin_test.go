@@ -13,7 +13,13 @@ import (
 )
 
 func TestGetMarginInterestRateHistoryBinanceGolden(t *testing.T) {
-	const tsMs = int64(1611544731000)
+	// Binance's /sapi/v1/margin/interestRateHistory returns one record per
+	// day. The adapter expands each daily record into 24 hourly-equivalent
+	// points to honor the SpotMarginExchange contract (hourly rates). This
+	// test uses a full-day window so all 24 expanded points survive the
+	// [start, end] filter.
+	dayStart, _ := time.Parse(time.RFC3339, "2026-04-20T00:00:00Z")
+	tsMs := dayStart.UnixMilli()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/sapi/v1/margin/interestRateHistory" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
@@ -26,26 +32,85 @@ func TestGetMarginInterestRateHistoryBinanceGolden(t *testing.T) {
 	defer srv.Close()
 
 	adapter := &Adapter{client: NewClient("key", "secret").WithBaseURL(srv.URL)}
-	start := time.UnixMilli(tsMs - 1000)
-	end := time.UnixMilli(tsMs + 1000)
+	// Start before the day, end after — include all 24 hours of expansion.
+	start := dayStart.Add(-time.Hour)
+	end := dayStart.Add(25 * time.Hour)
 
 	points, err := adapter.GetMarginInterestRateHistory(context.Background(), "BTC", start, end)
 	if err != nil {
 		t.Fatalf("GetMarginInterestRateHistory: %v", err)
 	}
-	if len(points) != 1 {
-		t.Fatalf("expected 1 point, got %d", len(points))
+	if len(points) != 24 {
+		t.Fatalf("expected 24 hourly points from 1 daily record, got %d", len(points))
 	}
 	wantHourly := 0.00024 / 24
-	if math.Abs(points[0].HourlyRate-wantHourly) > 1e-12 {
-		t.Fatalf("HourlyRate = %v, want %v", points[0].HourlyRate, wantHourly)
+	for i, p := range points {
+		if math.Abs(p.HourlyRate-wantHourly) > 1e-12 {
+			t.Fatalf("point[%d].HourlyRate = %v, want %v", i, p.HourlyRate, wantHourly)
+		}
+		if p.VipLevel != "0" {
+			t.Fatalf("point[%d].VipLevel = %q, want \"0\"", i, p.VipLevel)
+		}
+		wantTS := dayStart.Add(time.Duration(i) * time.Hour)
+		if !p.Timestamp.Equal(wantTS) {
+			t.Fatalf("point[%d].Timestamp = %v, want %v", i, p.Timestamp, wantTS)
+		}
 	}
-	if points[0].VipLevel != "0" {
-		t.Fatalf("VipLevel = %q, want \"0\"", points[0].VipLevel)
+}
+
+// TestGetMarginInterestRateHistoryBinanceDailyExpansionCostAccuracy verifies the
+// critical economic property: summing HourlyRate×10000 across expanded points
+// over a 7-day window equals the total borrow cost in bps (daily × 7 × 10000),
+// NOT daily×7×10000/24 (the pre-fix under-counting). Regression guard for the
+// bug that would produce artificially-favorable Dir A NetBps on Binance.
+func TestGetMarginInterestRateHistoryBinanceDailyExpansionCostAccuracy(t *testing.T) {
+	baseTime, _ := time.Parse(time.RFC3339, "2026-04-14T00:00:00Z")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 7 daily records over a 7-day window.
+		var records []string
+		for d := 0; d < 7; d++ {
+			ts := baseTime.Add(time.Duration(d) * 24 * time.Hour).UnixMilli()
+			records = append(records, fmt.Sprintf(`{"asset":"BTC","dailyInterestRate":"0.00024000","timestamp":%d,"vipLevel":0}`, ts))
+		}
+		fmt.Fprintf(w, "[%s]", joinStrings(records, ","))
+	}))
+	defer srv.Close()
+
+	adapter := &Adapter{client: NewClient("key", "secret").WithBaseURL(srv.URL)}
+	start := baseTime
+	end := baseTime.Add(7 * 24 * time.Hour)
+
+	points, err := adapter.GetMarginInterestRateHistory(context.Background(), "BTC", start, end)
+	if err != nil {
+		t.Fatalf("GetMarginInterestRateHistory: %v", err)
 	}
-	if points[0].Timestamp.UnixMilli() != tsMs {
-		t.Fatalf("Timestamp = %d, want %d", points[0].Timestamp.UnixMilli(), tsMs)
+	// 7 days × 24 hours = 168 expanded points.
+	if len(points) != 168 {
+		t.Fatalf("expected 168 expanded points (7 days × 24 hours), got %d", len(points))
 	}
+
+	// Sum of HourlyRate * 10000 must equal the total 7-day borrow cost in bps.
+	var totalBps float64
+	for _, p := range points {
+		totalBps += p.HourlyRate * 10000
+	}
+	const dailyRate = 0.00024
+	wantTotalBps := dailyRate * 7 * 10000
+	if math.Abs(totalBps-wantTotalBps) > 1e-9 {
+		t.Fatalf("total borrow cost = %.6f bps, want %.6f bps (daily × 7 × 10000) — adapter is under- or over-counting",
+			totalBps, wantTotalBps)
+	}
+}
+
+func joinStrings(parts []string, sep string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	out := parts[0]
+	for _, p := range parts[1:] {
+		out += sep + p
+	}
+	return out
 }
 
 func TestGetMarginInterestRateHistoryBinanceError(t *testing.T) {

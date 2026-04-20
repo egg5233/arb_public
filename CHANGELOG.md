@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.32.34] - 2026-04-20
+## [0.32.35] - 2026-04-20
 
 ### Added
 - **Per-recipient/per-donor debug trace logs in `dryRunTransferPlan`** (`internal/engine/allocator.go`) — 5 Debug-level log points for diagnosing rank-first Tier-1 prune decisions. Previously, `dryRun: no donor for X deficit=N` was the only visible infeasibility marker; it was impossible to trace from logs alone which donor sent how much to which recipient, whether min-withdraw overfunding consumed capacity, or whether post-trade-ratio headroom inflated the true transfer need. Five new logs:
@@ -14,7 +14,7 @@ All notable changes to this project will be documented in this file.
   
   Debug-level only (requires `DEBUG=true` env var) to avoid log pollution — rotate scan runs every 60 min; Info-level would add ~500-1200 lines/day. Plan file: `plans/PLAN-dryrun-transferplan-logs.md` v2 (ALL PASS on Codex review).
 
-## [0.32.33] - 2026-04-20
+## [0.32.34] - 2026-04-20
 
 ### Added
 - **Rank-first rebalance — invert pool allocator from primary to fallback** (plan v29 ALL PASS on normal + independent Codex review). `rebalanceFunds()` now runs the sequential rank-first planner as the PRIMARY path; the pool allocator runs only as FALLBACK when Tier-1 produces zero selected choices. Rank represents expected profitability from `discovery`, so capital now preferentially funds the highest-rank feasible combination rather than the `baseValue`-maximizing bundle.
@@ -29,6 +29,14 @@ All notable changes to this project will be documented in this file.
 ### Notes
 - Throughput tradeoff (accepted per user intent): once Tier-1 keeps even one ranked choice, pool allocator is not invoked that cycle — it cannot backfill remaining slots with lower-ranked positive-value bundles. Total deployed capital per cycle may be lower than pool-allocator-first behavior when feasible bundle value > top-N rank value. Tier-1 success log `tier1 selected N opps, skipping pool allocator fallback` makes this observable.
 - Known approximation: notional-floor Kind classification uses `effectiveCap * leverage` alone; sizing-zero from step rounding / short-leg price discount / min-size / invalid price are tagged `Capital` (not `Config`) in that regime, triggering a futile donor-rescue attempt (no correctness bug, just wasted work). `false-Config` under the chosen condition is mathematically impossible. Follow-up marker: if live logs show > 5 futile rescues/week, open a sizing-reason extension plan to return structured reject causes from `calculateSizeWithPrice`.
+
+## [0.32.33] - 2026-04-20
+
+### Fixed
+- **Binance Dir A borrow-cost under-counting** (`pkg/exchange/binance/margin.go`) — codex re-review `0b5f1811` caught this pre-existing bug exposed by the new borrow-coverage floor. Binance's `/sapi/v1/margin/interestRateHistory` returns one record per day, but the adapter was emitting one `MarginInterestRatePoint` per record with `HourlyRate = daily/24`. The engine sums `HourlyRate × 10000` across points to compute total borrow cost in bps — so a 7-day backtest summed only 7 points × (daily/24) × 10000 instead of the correct 7 × daily × 10000 (24× under-count). With the new coverage floor, 7 daily points over a 7-day window was 4% coverage, correctly failing the floor but masking the real bug. Adapter now expands each daily record into 24 hourly-equivalent points within `[start, end]`, preserving the interface contract and producing correct bps totals. New `TestGetMarginInterestRateHistoryBinanceDailyExpansionCostAccuracy` asserts `Σ HourlyRate × 10000 == daily × 7 × 10000` over 7 days as regression guard.
+- **Dir A backtest frontend/backend policy drift** (`web/src/pages/Opportunities.tsx`) — codex audit `14064872` finding 1. The Backtest button on OKX/Bitget Dir A rows was always disabled because `SPOT_DIR_A_BACKTEST_EXCHANGES` hard-coded the native-only list, even when `SpotFuturesBacktestCoinGlassFallback` was on and the backend was ready to serve the request. Removed the frontend capability gate; the UI now always allows clicking Backtest, and the backend's 400 response (with a clear message from `RunSpotBacktestOnDemand` or the 400 from `insufficient borrow history`) surfaces in the modal's error area.
+- **Dir A sparse-borrow bootstrap trap** (`internal/spotengine/backtest.go`) — codex audit `14064872` finding 2. `fetchAndCacheSpotBacktestDirA` and `runBacktestDirAOnDemand` now enforce a ≥50% borrow-history coverage floor (`len(borrowSeries) / days*24`). During CoinGlass fallback bootstrap, the scraper accumulates one sample per hour; 24h of data over a 7-day window would previously produce misleading NetBps (missing hours default to zero via the borrowByHour map lookup) and cache for 24h, potentially allowing OKX/Bitget Dir A opportunities to false-pass the MinProfit filter. The prefetch path now fails open (no cache write) below the floor; the on-demand path returns a descriptive error so the modal displays an actionable "data source still accumulating" message.
+- 3 new regression tests in `dir_a_coverage_test.go` cover sparse (24/168h → no cache), full (168/168h → cache), and on-demand sparse (10h → error) paths.
 
 ## [0.32.32] - 2026-04-20
 
