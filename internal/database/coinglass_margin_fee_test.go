@@ -76,6 +76,33 @@ func TestGetCoinGlassMarginFeeHistory_RoundtripAndFilter(t *testing.T) {
 	}
 }
 
+// TestGetCoinGlassMarginFeeHistory_PartialEntryDoesNotInheritPriorValues
+// locks in the fix for the JSON-reuse bug flagged by codex review e466a1de:
+// a valid entry followed by `{}` would previously cause the empty object to
+// inherit the prior sample's t/rate via the reused `entry` struct and a
+// permissive Unmarshal, silently poisoning borrow-rate history.
+func TestGetCoinGlassMarginFeeHistory_PartialEntryDoesNotInheritPriorValues(t *testing.T) {
+	db, mr := newDBForMarginFeeTest(t)
+	defer mr.Close()
+
+	now := time.Now().UTC().Truncate(time.Hour)
+	// LPUSH order: head is most recent. Put the "{}" (missing t/rate) AFTER
+	// a valid entry, so LRange returns them in the order that triggers the bug.
+	mr.Lpush("coinGlassMarginFee:hist:okx:BTC", `{}`)
+	mr.Lpush("coinGlassMarginFee:hist:okx:BTC", `{"t":`+strconv.FormatInt(now.Unix(), 10)+`,"rate":5e-6}`)
+
+	got, err := db.GetCoinGlassMarginFeeHistory("okx", "BTC", now.Add(-time.Hour), now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 point (the `{}` entry must be dropped, not inherit prior values), got %d: %+v", len(got), got)
+	}
+	if got[0].HourlyRate != 5e-6 {
+		t.Fatalf("expected rate 5e-6 from the valid entry, got %v", got[0].HourlyRate)
+	}
+}
+
 func TestGetCoinGlassMarginFeeHistory_MalformedEntriesSkipped(t *testing.T) {
 	db, mr := newDBForMarginFeeTest(t)
 	defer mr.Close()

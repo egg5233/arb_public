@@ -42,23 +42,31 @@ func (c *Client) GetCoinGlassMarginFeeHistory(exchange, coin string, start, end 
 		return nil, nil
 	}
 
-	var entry struct {
-		T    int64   `json:"t"`
-		Rate float64 `json:"rate"`
-	}
+	// Pointer fields let us detect missing `t` or `rate` in the payload — without
+	// them a partial/empty JSON object would silently unmarshal to zero values
+	// and, worse, a shared entry struct would inherit the previous sample's
+	// fields. Allocate a fresh entry per iteration to preclude that class of bug.
 	out := make([]CoinGlassMarginFeePoint, 0, len(raw))
 	for _, s := range raw {
+		var entry struct {
+			T    *int64   `json:"t"`
+			Rate *float64 `json:"rate"`
+		}
 		if err := json.Unmarshal([]byte(s), &entry); err != nil {
-			// Skip malformed entries — scraper drift shouldn't kill a backtest.
+			// Malformed JSON — scraper drift shouldn't kill a backtest.
 			continue
 		}
-		t := time.Unix(entry.T, 0).UTC()
+		if entry.T == nil || entry.Rate == nil {
+			// Missing required field — treat as malformed to avoid zero-value pollution.
+			continue
+		}
+		t := time.Unix(*entry.T, 0).UTC()
 		if t.Before(start) || t.After(end) {
 			continue
 		}
 		out = append(out, CoinGlassMarginFeePoint{
 			Timestamp:  t,
-			HourlyRate: entry.Rate,
+			HourlyRate: *entry.Rate,
 		})
 	}
 	return out, nil

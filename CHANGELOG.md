@@ -17,7 +17,9 @@ All notable changes to this project will be documented in this file.
   - **Bootstrap**: the CoinGlass scraper accumulates 1 sample per hour; 168 samples = 7 days of coverage. During bootstrap the fallback returns the sentinel (fail-open) and native-supported exchanges are unaffected.
   - **No UI change** — Dir A button already enables for supported exchanges at the engine layer.
 
-### Fixed (none)
+### Fixed (review follow-ups on v0.32.30)
+- **Dashboard toggle** for `SpotFuturesBacktestCoinGlassFallback` (`web/src/pages/Config.tsx`) — the config flag was previously wired only through `config.json` and env vars, violating the new-feature rollout rule (config + dashboard toggle + persistence). Now exposed as a toggle in the Spot-Futures → Dir B Backtest section, next to the existing backtest controls. i18n keys added to `web/src/i18n/en.ts` and `web/src/i18n/zh-TW.ts`. No API handler change needed — the generic `POST /api/config` path already accepts the new field via the existing `jsonSpotFutures.backtest_coinglass_fallback` wiring.
+- **`GetCoinGlassMarginFeeHistory` JSON parsing** (`internal/database/coinglass_margin_fee.go`) — the parser declared a shared `entry` struct outside the loop. `encoding/json.Unmarshal` leaves fields unchanged when the input omits them, so a valid entry followed by `{}` could inherit the previous sample's `t` or `rate` and be returned as real data. Replaced with a fresh struct per iteration and pointer fields (`*int64`, `*float64`) so missing required fields now skip the entry instead of inheriting or zero-polluting. New regression test `TestGetCoinGlassMarginFeeHistory_PartialEntryDoesNotInheritPriorValues` locks this in.
 
 ## [0.32.29] - 2026-04-19
 

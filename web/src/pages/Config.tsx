@@ -1472,6 +1472,23 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
                 onChange={(v) => handleChange(['spot_futures', 'backtest_min_profit'], v)}
               />
             </div>
+            <div className={!sfBacktestEnabled ? 'opacity-50' : ''}>
+              <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+                <div className="flex items-center gap-2 mb-2">
+                  <label className="text-sm font-medium">{t('cfg.sf.backtestCoinGlassFallback')}</label>
+                  <Tooltip text={t('cfg.sf.backtestCoinGlassFallbackDesc')} />
+                </div>
+                <div className="flex items-center gap-3">
+                  <ToggleSwitch
+                    on={getByPath(config, ['spot_futures', 'backtest_coinglass_fallback']) === true}
+                    onChange={(v) => handleBoolChange(['spot_futures', 'backtest_coinglass_fallback'], v)}
+                  />
+                  <span className={`text-sm font-semibold ${getByPath(config, ['spot_futures', 'backtest_coinglass_fallback']) === true ? 'text-green-400' : 'text-red-400'}`}>
+                    {getByPath(config, ['spot_futures', 'backtest_coinglass_fallback']) === true ? 'ON' : 'OFF'}
+                  </span>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
