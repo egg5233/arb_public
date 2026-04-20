@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.30] - 2026-04-20
+
+### Added
+- **Spot-Futures Dir A backtest — CoinGlass fallback for OKX and Bitget (Phase 2)**. The two exchanges lack public historical borrow-rate APIs; previously Dir A backtest was gated off for them. This release adds a fallback that reads from a hourly-accumulated Redis time series populated by `/var/solana/data/coinGlass/fetch_margin_fee.js` (new scraper, runs under PM2).
+  - **New config field** (`internal/config/config.go`):
+    - `SpotFuturesBacktestCoinGlassFallback bool` — JSON: `backtest_coinglass_fallback`, ENV: `SPOT_FUTURES_BACKTEST_COINGLASS_FALLBACK`, **default OFF**. Wire through `jsonSpotFutures`, JSON read, JSON write, env-var parsing, and defaults block.
+  - **New database helper** (`internal/database/coinglass_margin_fee.go`): `GetCoinGlassMarginFeeHistory(exchange, coin, start, end) ([]CoinGlassMarginFeePoint, error)` reads the rolling Redis list `coinGlassMarginFee:hist:{exchange}:{coin}` (written by the scraper's hourly LPUSH + LTRIM 0 719), parses each entry, and filters by time window. Malformed entries skipped silently to survive scraper drift.
+  - **New engine helpers** (`internal/spotengine/backtest.go`):
+    - `exchangeSupportsCoinGlassDirAFallback(exch)` — returns true for `okx`, `bitget`.
+    - `(e *SpotEngine) canRunDirABacktest(exch)` — layered gate: native list (`binance`/`bybit`/`gateio`) always true, fallback list gated by config flag.
+    - `(e *SpotEngine) loadBorrowHistoryWithFallback(ctx, smExch, exchName, baseCoin, start, end)` — tries adapter's native `GetMarginInterestRateHistory` first; on `ErrHistoricalBorrowNotSupported` AND fallback flag enabled AND Redis has data, returns CoinGlass points converted to `MarginInterestRatePoint`. Preserves the sentinel when the fallback is off or empty so upstream fail-open logic stays intact.
+  - **Discovery + prefetch hooks** now use `canRunDirABacktest` instead of the native-only `exchangeSupportsDirABacktest`, and both borrow-history fetch sites (`runBacktestDirAOnDemand`, `fetchAndCacheSpotBacktestDirA`) route through `loadBorrowHistoryWithFallback`.
+  - **Bootstrap**: the CoinGlass scraper accumulates 1 sample per hour; 168 samples = 7 days of coverage. During bootstrap the fallback returns the sentinel (fail-open) and native-supported exchanges are unaffected.
+  - **No UI change** — Dir A button already enables for supported exchanges at the engine layer.
+
+### Fixed (none)
+
 ## [0.32.29] - 2026-04-19
 
 ### Fixed

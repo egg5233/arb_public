@@ -224,9 +224,10 @@ type Config struct {
 	SpotFuturesMaintenanceCacheTTL   int     // cache TTL in minutes for tiered rate data (default: 60)
 
 	// Backtest filter for spot-futures Dir B (buy_spot_short only)
-	SpotFuturesBacktestEnabled   bool    // filter Dir B opps by historical funding sum (default: false)
-	SpotFuturesBacktestDays      int     // historical funding window in days (default: 7)
-	SpotFuturesBacktestMinProfit float64 // minimum sum of funding bps over window to pass (default: 0)
+	SpotFuturesBacktestEnabled           bool    // filter Dir B opps by historical funding sum (default: false)
+	SpotFuturesBacktestDays              int     // historical funding window in days (default: 7)
+	SpotFuturesBacktestMinProfit         float64 // minimum sum of funding bps over window to pass (default: 0)
+	SpotFuturesBacktestCoinGlassFallback bool    // use CoinGlass-scraped history for OKX/Bitget Dir A (default: false)
 
 	// Telegram notifications
 	TelegramBotToken string
@@ -359,9 +360,10 @@ type jsonSpotFutures struct {
 	MaintenanceCacheTTL   *int     `json:"maintenance_cache_ttl"`
 
 	// Backtest filter for spot-futures Dir B
-	BacktestEnabled   *bool    `json:"backtest_enabled"`
-	BacktestDays      *int     `json:"backtest_days"`
-	BacktestMinProfit *float64 `json:"backtest_min_profit"`
+	BacktestEnabled           *bool    `json:"backtest_enabled"`
+	BacktestDays              *int     `json:"backtest_days"`
+	BacktestMinProfit         *float64 `json:"backtest_min_profit"`
+	BacktestCoinGlassFallback *bool    `json:"backtest_coinglass_fallback"`
 }
 
 type jsonExchange struct {
@@ -633,9 +635,10 @@ func Load() *Config {
 		SpotFuturesMaintenanceCacheTTL:   60,
 
 		// Backtest filter defaults (OFF per new-feature rollout rule)
-		SpotFuturesBacktestEnabled:   false,
-		SpotFuturesBacktestDays:      7,
-		SpotFuturesBacktestMinProfit: 0,
+		SpotFuturesBacktestEnabled:           false,
+		SpotFuturesBacktestDays:              7,
+		SpotFuturesBacktestMinProfit:         0,
+		SpotFuturesBacktestCoinGlassFallback: false,
 
 		// Unified capital allocation defaults (Phase 5)
 		EnableUnifiedCapital:   false,
@@ -1255,6 +1258,9 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if sf.BacktestMinProfit != nil && *sf.BacktestMinProfit >= 0 {
 			c.SpotFuturesBacktestMinProfit = *sf.BacktestMinProfit
 		}
+		if sf.BacktestCoinGlassFallback != nil {
+			c.SpotFuturesBacktestCoinGlassFallback = *sf.BacktestCoinGlassFallback
+		}
 	}
 
 	// Telegram
@@ -1580,6 +1586,7 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	sf["backtest_enabled"] = c.SpotFuturesBacktestEnabled
 	sf["backtest_days"] = c.SpotFuturesBacktestDays
 	sf["backtest_min_profit"] = c.SpotFuturesBacktestMinProfit
+	sf["backtest_coinglass_fallback"] = c.SpotFuturesBacktestCoinGlassFallback
 	delete(sf, "capital_per_position") // removed field
 
 	// Allocation (Phase 5)
@@ -1874,6 +1881,9 @@ func (c *Config) loadEnvOverrides() {
 		if i, err := strconv.Atoi(v); err == nil && i > 0 {
 			c.SpotFuturesBacktestDays = i
 		}
+	}
+	if v := os.Getenv("SPOT_FUTURES_BACKTEST_COINGLASS_FALLBACK"); v != "" {
+		c.SpotFuturesBacktestCoinGlassFallback = v == "1" || v == "true" || v == "yes"
 	}
 	if v := os.Getenv("SPOT_FUTURES_BACKTEST_MIN_PROFIT"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
