@@ -1,6 +1,6 @@
 # Plan: Rank-First Rebalance — Invert Pool Allocator from Primary to Fallback
 
-Version: v23
+Version: v24
 Date: 2026-04-20
 Status: DRAFT
 
@@ -27,7 +27,8 @@ Status: DRAFT
 - v20 (2026-04-20): Codex review of v19 found 2 residual issues (test fixtures used raw cfg.Leverage; "Other callers" instruction only mentioned effectiveCap not both new args). v20 fixed both. v20 normal review returned ALL PASS.
 - v21 (2026-04-20): Codex INDEPENDENT review of v20 found 2 residual issues. (1) Call-site snippet used placeholder variable names (refPrice/cachedActive) instead of the real caller's midPrice/active. (2) Substantive gap: alt-pair selections without transfer never reached entry via allocOverrides because override storage gates were localTransferHappened-only. v21 fixed both via real variable names + new altOverrideNeeded flag + extended override-storage gates + Test 15 sub-cases 15a/15b + new Risks row.
 - v22 (2026-04-20): Codex review of v21 found 1 residual issue — executor-path keepFundedChoices passed nil,nil for the last two args but real contract passes result.FundedReceivers, result.PendingDeposits. v22 fixed both paths and added precision paragraph.
-- v23 (this draft): Codex review of v22 found 1 residual issue — the documented keepFundedChoices signature in the precision paragraph didn't match the real signature. Real signature at `allocator.go:246`: `func (e *Engine) keepFundedChoices(choices map[string]allocatorChoice, post map[string]rebalanceBalanceInfo, fundedReceivers map[string]float64, pending map[string]rebalancePending) map[string]allocatorChoice` (returns a MAP not a slice; takes `rebalanceBalanceInfo` not `*balanceInfo`; takes `rebalancePending` map not `float64` map). Real executor-result type is `rebalanceExecutionResult` (not `RebalanceExecutorResult`) with `FundedReceivers map[string]float64` and `PendingDeposits map[string]rebalancePending` at `allocator.go:129-137`. v23 corrects all type names and the return type in the signature documentation.
+- v23 (2026-04-20): Codex review of v22 found 1 residual issue — documented signature post/pending/return types were wrong. v23 corrected post (`rebalanceBalanceInfo`), pending (`rebalancePending`), return (`map[string]allocatorChoice`), and struct name (`rebalanceExecutionResult`). BUT v23 ALSO over-corrected by changing the FIRST parameter from slice to map, which was a mistake.
+- v24 (this draft): Codex INDEPENDENT review of v23 (task c098800c on outdated checkout, but the source-level observation was valid for my local tree too) found that v23's signature block is wrong about the first parameter. Real signature at `internal/engine/allocator.go:246`: `func (e *Engine) keepFundedChoices(choices []allocatorChoice, post map[string]rebalanceBalanceInfo, funded map[string]float64, pending map[string]rebalancePending) map[string]allocatorChoice` — the first parameter is `[]allocatorChoice` (SLICE), not `map[string]allocatorChoice`. Correspondingly, `buildChoices` at `engine.go:708` is `func(src []sequentialChoice) []allocatorChoice` and returns a SLICE. v24 corrects the signature block and the "buildChoices return shape" claim. Actual live call pattern at `engine.go:1106` is `kept := e.keepFundedChoices(buildChoices(selectedChoices), result.PostBalances, result.FundedReceivers, result.PendingDeposits)` — slice in, map out, which matches every existing caller (`engine.go:648, :1080, :1106`; `allocator_override_test.go:40, :69, :98, :126`).
 
 <details>
 <summary>v8 description (retained for history)</summary> Independent reviewer caught 4 issues that dependent reviews missed — (1) Tier-1 only tried primary pair via `alt=nil`, missing `opp.Alternatives` evaluation that current pool allocator does (would lose feasible alt-pair selections for rank-N when primary fails); (2) plan said "extend manager_test.go" but that file does not exist; (3) tests 4+13 omitted fixed-capital precondition needed for cache top-up branch; (4) minor anchor drift `allocator.go:929-937` → `936-940`. v8 adds per-symbol pair walk (primary + alternatives) in Change 4, fixes manager_test.go instruction to "create new", adds `CapitalPerLeg > 0` precondition to tests 4/13, corrects the `936-940` anchor, adds Test 15 for alt-pair coverage.
@@ -621,14 +622,14 @@ The `keepFundedChoices` helper is provided by 5bugs (dependency); its contract i
 
 ```go
 func (e *Engine) keepFundedChoices(
-    choices map[string]allocatorChoice,
+    choices []allocatorChoice,
     post map[string]rebalanceBalanceInfo,
-    fundedReceivers map[string]float64,
+    funded map[string]float64,
     pending map[string]rebalancePending,
 ) map[string]allocatorChoice
 ```
 
-Returns a MAP (not a slice) keyed by symbol. `post` is `rebalanceBalanceInfo` (not `*balanceInfo`). `pending` is a map of `rebalancePending` structs (not `float64`). `buildChoices(selectedChoices)` (from 5bugs Bug B) returns the `map[string]allocatorChoice` shape expected as the first argument.
+Takes a SLICE of `allocatorChoice` as the first argument (not a map). Returns a `map[string]allocatorChoice` keyed by symbol. `post` is `rebalanceBalanceInfo` (not `*balanceInfo`). `funded` is `map[string]float64`. `pending` is `map[string]rebalancePending` (struct, not `float64`). `buildChoices(selectedChoices)` at `engine.go:708` has signature `func(src []sequentialChoice) []allocatorChoice` — returns a slice that feeds the first argument directly.
 
 The last two arguments carry cross-exchange pending-funding intent (set by `executeRebalanceFundingPlan` on the result struct, which is `rebalanceExecutionResult` — note the lowercase; fields at `allocator.go:129-137`) and must be preserved in the executor-path gate.
 
