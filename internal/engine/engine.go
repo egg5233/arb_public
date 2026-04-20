@@ -618,64 +618,16 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 		}
 		bi.hasPositions = exchWithPositions[name]
 		balances[name] = bi
-		e.log.Info("rebalance: %s futures=%.2f spot=%.2f futuresTotal=%.2f marginRatio=%.4f maxTransferOut=%.2f hasPos=%v", name, bi.futures, bi.spot, bi.futuresTotal, bi.marginRatio, bi.maxTransferOut, bi.hasPositions)
+		e.log.Info("rebalance: %s futures=%.2f spot=%.2f futuresTotal=%.2f maintRatio=%.4f usageRatio=%.4f maxTransferOut=%.2f hasPos=%v",
+			name, bi.futures, bi.spot, bi.futuresTotal, bi.marginRatio, rebalanceUsageRatio(bi), bi.maxTransferOut, bi.hasPositions)
 	}
 
-	// ---------------------------------------------------------------------------
-	// Try pool allocator first (if enabled).
-	// ---------------------------------------------------------------------------
-	if e.cfg.EnablePoolAllocator {
-		allocSel, allocErr := e.runPoolAllocator(opps, balances, remainingSlots)
-		if allocErr != nil {
-			e.log.Warn("rebalance: pool allocator failed, falling back to sequential: %v", allocErr)
-		} else if allocSel != nil && allocSel.feasible {
-			e.log.Info("rebalance: pool allocator selected %d opps (value=%.4f, choices=%s)", len(allocSel.choices), allocSel.totalBaseValue, e.formatAllocatorSummary(allocSel))
-			result := e.executeRebalanceFundingPlan(allocSel.needs, balances, nil, allocSel.plan.Steps)
-
-			// Gate override storage on post-execution reality. Replay choices
-			// against PostBalances and drop any whose required legs are no
-			// longer funded, so the next :55 entry scan cannot be steered
-			// onto unfunded exchanges.
-			if !result.LocalTransferHappened && !result.CrossTransferHappened {
-				e.allocOverrideMu.Lock()
-				e.allocOverrides = nil
-				e.allocOverrideMu.Unlock()
-				e.log.Info("rebalance: no transfers executed, skipping allocator override store")
-				e.log.Info("rebalance: complete")
-				return
-			}
-			kept := e.keepFundedChoices(allocSel.choices, result.PostBalances, result.FundedReceivers)
-
-			e.allocOverrideMu.Lock()
-			e.allocOverrides = kept
-			e.allocOverrideMu.Unlock()
-
-			dropped := len(allocSel.choices) - len(kept)
-			if dropped > 0 {
-				e.log.Warn("rebalance: dropped %d/%d allocator overrides after executor outcome (kept=%d)",
-					dropped, len(allocSel.choices), len(kept))
-				for _, c := range allocSel.choices {
-					if _, ok := kept[c.symbol]; ok {
-						continue
-					}
-					reasonLong := result.SkipReasons[c.longExchange]
-					reasonShort := result.SkipReasons[c.shortExchange]
-					e.log.Info("rebalance: dropped override %s (%s/%s): longReason=%q shortReason=%q",
-						c.symbol, c.longExchange, c.shortExchange, reasonLong, reasonShort)
-				}
-			}
-			e.log.Info("rebalance: stored %d allocator overrides for entry scan", len(kept))
-
-			e.log.Info("rebalance: complete")
-			return
-		} else {
-			e.log.Warn("rebalance: pool allocator infeasible, falling through to sequential")
-			// Fall through to sequential path below
-		}
-	}
+	// Build transfer-aware cache once; used by Tier-1 approval calls.
+	// Pool allocator fallback rebuilds its own cache via the same helper internally.
+	prefetchCache := e.buildTransferableCache(balances)
 
 	// ---------------------------------------------------------------------------
-	// Sequential allocation fallback (original path).
+	// Tier-1: Rank-First sequential planner (PRIMARY).
 	// Budget-aware: iterate opps by score and only count needs for positions
 	// the exchanges can actually afford.
 	// ---------------------------------------------------------------------------
@@ -714,6 +666,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 
 	selected := 0
 	localTransferHappened := false
+	altOverrideNeeded := false
 
 	for _, opp := range opps {
 		if selected >= remainingSlots {
@@ -723,23 +676,117 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			continue
 		}
 
-		// Run full approval simulation (same checks as risk.Approve, no side effects)
-		approval, err := e.risk.SimulateApproval(opp, reserved)
-		if err != nil {
-			e.log.Info("rebalance: skip %s — simulate error: %v", opp.Symbol, err)
+		// Try primary pair first, then alternatives in order.
+		// Per-attempt errors are local (firstErr, diagnostic only) and do NOT gate
+		// the outer loop — mirrors allocator.go appendChoice behavior.
+		type pairAttempt struct {
+			longExch  string
+			shortExch string
+			alt       *models.AlternativePair // nil for primary
+		}
+		attempts := []pairAttempt{
+			{opp.LongExchange, opp.ShortExchange, nil},
+		}
+		for i := range opp.Alternatives {
+			a := &opp.Alternatives[i]
+			attempts = append(attempts, pairAttempt{a.LongExchange, a.ShortExchange, a})
+		}
+
+		var approvedAttempt *pairAttempt
+		var approvedApproval *models.RiskApproval
+		var firstCapitalAttempt *pairAttempt
+		var firstCapitalApproval *models.RiskApproval
+		var firstAnyAttempt *pairAttempt
+		var firstAnyApproval *models.RiskApproval
+		var firstErr error // diagnostic only
+
+		for i := range attempts {
+			att := attempts[i]
+			if att.alt != nil {
+				// Mirror pool allocator pre-approval guards (allocator.go:553-564).
+				if _, ok := e.exchanges[att.longExch]; !ok {
+					continue
+				}
+				if _, ok := e.exchanges[att.shortExch]; !ok {
+					continue
+				}
+				if att.alt.Spread <= 0 {
+					continue
+				}
+				altOpp := opp
+				altOpp.LongExchange = att.longExch
+				altOpp.ShortExchange = att.shortExch
+				altOpp.Spread = att.alt.Spread
+				altOpp.IntervalHours = att.alt.IntervalHours
+				altOpp.NextFunding = att.alt.NextFunding
+				if reason := e.discovery.CheckPairFilters(altOpp); reason != "" {
+					continue
+				}
+			}
+			a, aerr := e.risk.SimulateApprovalForPair(opp, att.longExch, att.shortExch, reserved, att.alt, prefetchCache)
+			if aerr != nil {
+				if firstErr == nil {
+					firstErr = aerr
+				}
+				e.log.Debug("rebalance: pair simulate error %s %s/%s: %v", opp.Symbol, att.longExch, att.shortExch, aerr)
+				continue
+			}
+			if a == nil {
+				continue
+			}
+			if a.Approved {
+				approvedAttempt = &attempts[i]
+				approvedApproval = a
+				break
+			}
+			if firstAnyApproval == nil {
+				firstAnyAttempt = &attempts[i]
+				firstAnyApproval = a
+			}
+			if a.Kind == models.RejectionKindCapital && firstCapitalApproval == nil {
+				firstCapitalAttempt = &attempts[i]
+				firstCapitalApproval = a
+			}
+		}
+
+		var approval *models.RiskApproval
+		var chosenAttempt pairAttempt
+		switch {
+		case approvedAttempt != nil:
+			approval = approvedApproval
+			chosenAttempt = *approvedAttempt
+		case firstCapitalAttempt != nil:
+			approval = firstCapitalApproval
+			chosenAttempt = *firstCapitalAttempt
+		case firstAnyAttempt != nil:
+			approval = firstAnyApproval
+			chosenAttempt = *firstAnyAttempt
+		default:
+			if firstErr != nil {
+				e.log.Info("rebalance: skip %s — no viable pair attempts (firstErr=%v, all filtered or errored)", opp.Symbol, firstErr)
+			} else {
+				e.log.Info("rebalance: skip %s — no viable pair attempts (all filtered)", opp.Symbol)
+			}
 			continue
 		}
+		if approval == nil {
+			e.log.Info("rebalance: skip %s — no approval result after pair walk", opp.Symbol)
+			continue
+		}
+
+		if chosenAttempt.alt != nil ||
+			chosenAttempt.longExch != opp.LongExchange ||
+			chosenAttempt.shortExch != opp.ShortExchange {
+			altOverrideNeeded = true
+		}
+
 		if !approval.Approved {
-			// Check if rejection is margin-related and cross-exchange transfer could help.
-			isMarginRejection := strings.Contains(approval.Reason, "insufficient margin buffer") ||
-				strings.Contains(approval.Reason, "post-trade margin ratio") ||
-				strings.Contains(approval.Reason, "insufficient capital")
-			if !isMarginRejection {
-				e.log.Info("rebalance: skip %s — %s", opp.Symbol, approval.Reason)
+			if approval.Kind != models.RejectionKindCapital {
+				e.log.Info("rebalance: skip %s — %s (kind=%s)", opp.Symbol, approval.Reason, approval.Kind)
 				continue
 			}
 
-			// Margin-related rejection: check if cross-exchange transfer from a donor could help.
+			// Capital rejection: check if cross-exchange transfer from a donor could help.
 			estMargin := e.effectiveCapitalPerLeg() * e.cfg.MarginSafetyMultiplier
 			if estMargin <= 0 {
 				if approval.RequiredMargin > 0 {
@@ -749,7 +796,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 				}
 			}
 			canRescue := true
-			for _, legExch := range []string{opp.LongExchange, opp.ShortExchange} {
+			for _, legExch := range []string{chosenAttempt.longExch, chosenAttempt.shortExch} {
 				bal := balances[legExch]
 				effectiveAvail := bal.futures - reserved[legExch]
 				if effectiveAvail >= estMargin {
@@ -761,7 +808,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 					if donorName == legExch {
 						continue
 					}
-					if balances[donorName].marginRatio >= e.cfg.MarginL4Threshold {
+					if !e.donorHasHeadroom(balances[donorName]) {
 						continue
 					}
 					donorSurplus := donorBal.futures + donorBal.spot - reserved[donorName] - plannedTransfers[donorName+"_out"]
@@ -771,10 +818,10 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 					} else if uc, ok := e.exchanges[donorName].(unifiedChecker); ok && uc.IsUnified() {
 						donorSurplus = donorBal.futures - reserved[donorName] - plannedTransfers[donorName+"_out"]
 					}
-					// Cap donor surplus by margin health to prevent draining exchanges with active positions.
-					if balances[donorName].hasPositions && balances[donorName].marginRatio > 0 && balances[donorName].futuresTotal > 0 && e.cfg.MarginL4Threshold > 0 {
-						maint := balances[donorName].marginRatio * balances[donorName].futuresTotal
-						healthCap := balances[donorName].futuresTotal - maint/e.cfg.MarginL4Threshold
+					// Cap donor surplus by margin health (usage L4 + maintenance L5) to
+					// prevent draining exchanges with active positions.
+					if balances[donorName].hasPositions {
+						healthCap := e.capByMarginHealth(balances[donorName])
 						if healthCap < donorSurplus {
 							donorSurplus = healthCap
 						}
@@ -801,17 +848,17 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			selectedChoices = append(selectedChoices, sequentialChoice{
 				choice: allocatorChoice{
 					symbol:         opp.Symbol,
-					longExchange:   opp.LongExchange,
-					shortExchange:  opp.ShortExchange,
+					longExchange:   chosenAttempt.longExch,
+					shortExchange:  chosenAttempt.shortExch,
 					requiredMargin: estMargin,
 				},
 				longNeed:  estMargin,
 				shortNeed: estMargin,
 			})
-			needs[opp.LongExchange] += estMargin
-			needs[opp.ShortExchange] += estMargin
-			reserved[opp.LongExchange] += estMargin
-			reserved[opp.ShortExchange] += estMargin
+			needs[chosenAttempt.longExch] += estMargin
+			needs[chosenAttempt.shortExch] += estMargin
+			reserved[chosenAttempt.longExch] += estMargin
+			reserved[chosenAttempt.shortExch] += estMargin
 			selectedSymbols[opp.Symbol] = true
 			selected++
 			e.log.Info("rebalance: selected %s via cross-exchange rescue (margin=%.2f per leg)", opp.Symbol, estMargin)
@@ -840,8 +887,8 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 			exchange string
 			margin   float64
 		}{
-			{opp.LongExchange, longMarginNeeded},
-			{opp.ShortExchange, shortMarginNeeded},
+			{chosenAttempt.longExch, longMarginNeeded},
+			{chosenAttempt.shortExch, shortMarginNeeded},
 		} {
 			bal := balances[leg.exchange]
 			effectiveAvail := bal.futures - reserved[leg.exchange]
@@ -859,13 +906,13 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 					} else if uc, ok := e.exchanges[donorName].(unifiedChecker); ok && uc.IsUnified() {
 						donorSurplus = donorBal.futures - reserved[donorName] - plannedTransfers[donorName+"_out"]
 					}
-					if balances[donorName].marginRatio >= e.cfg.MarginL4Threshold {
+					if !e.donorHasHeadroom(balances[donorName]) {
 						continue
 					}
-					// Cap donor surplus by margin health to prevent draining exchanges with active positions.
-					if balances[donorName].hasPositions && balances[donorName].marginRatio > 0 && balances[donorName].futuresTotal > 0 && e.cfg.MarginL4Threshold > 0 {
-						maint := balances[donorName].marginRatio * balances[donorName].futuresTotal
-						healthCap := balances[donorName].futuresTotal - maint/e.cfg.MarginL4Threshold
+					// Cap donor surplus by margin health (usage L4 + maintenance L5) to
+					// prevent draining exchanges with active positions.
+					if balances[donorName].hasPositions {
+						healthCap := e.capByMarginHealth(balances[donorName])
 						if healthCap < donorSurplus {
 							donorSurplus = healthCap
 						}
@@ -895,17 +942,17 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 		selectedChoices = append(selectedChoices, sequentialChoice{
 			choice: allocatorChoice{
 				symbol:         opp.Symbol,
-				longExchange:   opp.LongExchange,
-				shortExchange:  opp.ShortExchange,
+				longExchange:   chosenAttempt.longExch,
+				shortExchange:  chosenAttempt.shortExch,
 				requiredMargin: approval.RequiredMargin,
 			},
 			longNeed:  longMarginNeeded,
 			shortNeed: shortMarginNeeded,
 		})
-		needs[opp.LongExchange] += longMarginNeeded
-		needs[opp.ShortExchange] += shortMarginNeeded
-		reserved[opp.LongExchange] += longMarginNeeded
-		reserved[opp.ShortExchange] += shortMarginNeeded
+		needs[chosenAttempt.longExch] += longMarginNeeded
+		needs[chosenAttempt.shortExch] += shortMarginNeeded
+		reserved[chosenAttempt.longExch] += longMarginNeeded
+		reserved[chosenAttempt.shortExch] += shortMarginNeeded
 		selectedSymbols[opp.Symbol] = true
 		selected++
 		e.log.Info("rebalance: selected %s (longMargin=%.2f shortMargin=%.2f)", opp.Symbol, longMarginNeeded, shortMarginNeeded)
@@ -942,6 +989,61 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 	}
 
 	e.log.Info("rebalance: analyzed %d opportunities, selected %d, needs: %v, plannedTransfers: %v", len(opps), selected, needs, plannedTransfers)
+
+	if len(selectedChoices) == 0 {
+		// Tier-1 selected nothing — fall back to pool allocator.
+		// Branch point is here, BEFORE any balance-mutating step below.
+		if !e.cfg.EnablePoolAllocator {
+			e.log.Info("rebalance: tier1 infeasible, pool allocator disabled")
+			e.log.Info("rebalance: complete")
+			return
+		}
+		e.log.Info("rebalance: tier1 infeasible, falling back to pool allocator")
+		allocSel, allocErr := e.runPoolAllocator(opps, balances, remainingSlots)
+		if allocErr != nil {
+			e.log.Warn("rebalance: pool allocator failed: %v", allocErr)
+			e.log.Info("rebalance: complete")
+			return
+		}
+		if allocSel == nil || !allocSel.feasible {
+			e.log.Warn("rebalance: pool allocator infeasible")
+			e.log.Info("rebalance: complete")
+			return
+		}
+		e.log.Info("rebalance: pool allocator selected %d opps (value=%.4f, choices=%s)", len(allocSel.choices), allocSel.totalBaseValue, e.formatAllocatorSummary(allocSel))
+		result := e.executeRebalanceFundingPlan(allocSel.needs, balances, nil, allocSel.plan.Steps)
+		if !result.LocalTransferHappened && !result.CrossTransferHappened {
+			e.allocOverrideMu.Lock()
+			e.allocOverrides = nil
+			e.allocOverrideMu.Unlock()
+			e.log.Info("rebalance: no transfers executed, skipping allocator override store")
+			e.log.Info("rebalance: complete")
+			return
+		}
+		kept := e.keepFundedChoices(allocSel.choices, result.PostBalances, result.FundedReceivers, result.PendingDeposits)
+		e.allocOverrideMu.Lock()
+		e.allocOverrides = kept
+		e.allocOverrideMu.Unlock()
+		dropped := len(allocSel.choices) - len(kept)
+		if dropped > 0 {
+			e.log.Warn("rebalance: dropped %d/%d allocator overrides after executor outcome (kept=%d)",
+				dropped, len(allocSel.choices), len(kept))
+			for _, c := range allocSel.choices {
+				if _, ok := kept[c.symbol]; ok {
+					continue
+				}
+				reasonLong := result.SkipReasons[c.longExchange]
+				reasonShort := result.SkipReasons[c.shortExchange]
+				e.log.Info("rebalance: dropped override %s (%s/%s): longReason=%q shortReason=%q",
+					c.symbol, c.longExchange, c.shortExchange, reasonLong, reasonShort)
+			}
+		}
+		e.log.Info("rebalance: stored %d allocator overrides for entry scan", len(kept))
+		e.log.Info("rebalance: complete")
+		return
+	}
+
+	e.log.Info("rebalance: tier1 selected %d opps, skipping pool allocator fallback", len(selectedChoices))
 
 	// Phase 1: Same-exchange spot→futures transfers (instant).
 	type seqDeficit struct {
@@ -1075,8 +1177,8 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 	}
 
 	if len(crossDeficits) == 0 {
-		if localTransferHappened {
-			kept := e.keepFundedChoices(buildChoices(selectedChoices), balances, nil)
+		if localTransferHappened || altOverrideNeeded {
+			kept := e.keepFundedChoices(buildChoices(selectedChoices), balances, nil, nil)
 			e.allocOverrideMu.Lock()
 			e.allocOverrides = kept
 			e.allocOverrideMu.Unlock()
@@ -1096,13 +1198,13 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 	e.log.Info("rebalance: %d exchanges need cross-exchange funding, delegating to allocator executor", len(precomputed))
 	result := e.executeRebalanceFundingPlan(needs, balances, precomputed, nil)
 
-	if !(localTransferHappened || result.LocalTransferHappened || result.CrossTransferHappened) {
+	if !(localTransferHappened || result.LocalTransferHappened || result.CrossTransferHappened || altOverrideNeeded) {
 		e.allocOverrideMu.Lock()
 		e.allocOverrides = nil
 		e.allocOverrideMu.Unlock()
 		e.log.Info("rebalance: no transfers executed, skipping sequential override store")
 	} else {
-		kept := e.keepFundedChoices(buildChoices(selectedChoices), result.PostBalances, result.FundedReceivers)
+		kept := e.keepFundedChoices(buildChoices(selectedChoices), result.PostBalances, result.FundedReceivers, result.PendingDeposits)
 
 		e.allocOverrideMu.Lock()
 		e.allocOverrides = kept
@@ -1348,6 +1450,9 @@ func (e *Engine) run() {
 				e.log.Info("rotateScan: starting checkRotations")
 				e.checkRotations()
 				e.log.Info("rotateScan: checkRotations done")
+				// NOTE: When EnablePoolAllocator=false, rotate-scan intentionally skips
+				// rebalance; only the dedicated rebalance-scan minute triggers it.
+				// Tier-1 rank-first is invoked inside rebalanceFunds regardless.
 				if e.cfg.EnablePoolAllocator {
 					e.log.Info("rotateScan: starting rebalanceFunds")
 					e.rebalanceFunds()
@@ -1891,9 +1996,10 @@ func (e *Engine) handleReduce(action risk.HealthAction) {
 		if err != nil {
 			continue
 		}
-		if bal.MarginRatio < e.cfg.MarginL4Threshold {
+		liqRisk := risk.LiquidationRiskRatio(bal)
+		if liqRisk < e.cfg.MarginL4Threshold {
 			e.log.Info("L4 margin ratio %.4f now below threshold %.4f, stopping reductions",
-				bal.MarginRatio, e.cfg.MarginL4Threshold)
+				liqRisk, e.cfg.MarginL4Threshold)
 			break
 		}
 	}

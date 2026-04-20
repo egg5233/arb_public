@@ -1,6 +1,7 @@
 package risk
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -413,6 +414,50 @@ func TestHealthLevelString(t *testing.T) {
 	for _, tt := range tests {
 		if got := tt.level.String(); got != tt.want {
 			t.Errorf("HealthLevel(%d).String() = %q, want %q", tt.level, got, tt.want)
+		}
+	}
+}
+
+func TestCapitalUsageRatio(t *testing.T) {
+	cases := []struct {
+		name string
+		bal  *exchange.Balance
+		want float64
+	}{
+		{"nil", nil, 0},
+		{"zero total", &exchange.Balance{Total: 0, Available: 0}, 0},
+		{"empty account", &exchange.Balance{Total: 100, Available: 100}, 0},
+		{"fully used", &exchange.Balance{Total: 100, Available: 0}, 1.0},
+		{"half used", &exchange.Balance{Total: 100, Available: 50}, 0.5},
+		{"avail > total (edge)", &exchange.Balance{Total: 100, Available: 110}, 0},
+		{"negative avail", &exchange.Balance{Total: 100, Available: -1}, 1.0},
+		{"gateio incident", &exchange.Balance{Total: 259.50, Available: 64.93}, 0.7498},
+	}
+	for _, c := range cases {
+		got := CapitalUsageRatio(c.bal)
+		if math.Abs(got-c.want) > 1e-3 {
+			t.Errorf("%s: got %.4f want %.4f", c.name, got, c.want)
+		}
+	}
+}
+
+func TestLiquidationRiskRatio(t *testing.T) {
+	cases := []struct {
+		name string
+		bal  *exchange.Balance
+		want float64
+	}{
+		{"nil", nil, 0},
+		{"unavailable flag", &exchange.Balance{MarginRatio: 0.5, MarginRatioUnavailable: true}, 0},
+		{"normal", &exchange.Balance{MarginRatio: 0.0588}, 0.0588},
+		{"high risk", &exchange.Balance{MarginRatio: 0.85}, 0.85},
+		{"negative (sentinel)", &exchange.Balance{MarginRatio: -1}, 0},
+		{"zero", &exchange.Balance{MarginRatio: 0}, 0},
+	}
+	for _, c := range cases {
+		got := LiquidationRiskRatio(c.bal)
+		if math.Abs(got-c.want) > 1e-9 {
+			t.Errorf("%s: got %.4f want %.4f", c.name, got, c.want)
 		}
 	}
 }

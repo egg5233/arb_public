@@ -51,10 +51,40 @@ type rebalanceBalanceInfo struct {
 	futures                     float64
 	spot                        float64
 	futuresTotal                float64
-	marginRatio                 float64
+	marginRatio                 float64 // maintenance-style ratio from exchange (mm / equity)
 	maxTransferOut              float64
 	maxTransferOutAuthoritative bool
 	hasPositions                bool // true if this exchange has active perp-perp legs
+}
+
+// rebalanceUsageRatio computes capital usage (1 - avail/total) on demand
+// from the current snapshot. Computing on demand avoids stale state in
+// transfer-simulation paths where rebalanceBalanceInfo.futures /
+// futuresTotal are mutated.
+func rebalanceUsageRatio(bal rebalanceBalanceInfo) float64 {
+	if bal.futuresTotal <= 0 {
+		return 0
+	}
+	avail := bal.futures
+	if avail < 0 {
+		return 1.0
+	}
+	if avail > bal.futuresTotal {
+		return 0
+	}
+	return 1.0 - avail/bal.futuresTotal
+}
+
+// donorHasHeadroom reports whether an exchange has enough capital headroom
+// to act as a donor. Uses CAPITAL USAGE ratio (1 - avail/total), not
+// maintenance-margin ratio, because donor eligibility depends on whether
+// the donor has unlocked equity to give, not on how close it is to
+// liquidation.
+func (e *Engine) donorHasHeadroom(bal rebalanceBalanceInfo) bool {
+	if e.cfg.MarginL4Threshold <= 0 || e.cfg.MarginL4Threshold >= 1 {
+		return true
+	}
+	return rebalanceUsageRatio(bal) < e.cfg.MarginL4Threshold
 }
 
 // rebalanceDeficit records that an exchange needs additional funding from
@@ -88,14 +118,23 @@ type dryRunResult struct {
 //
 // PostBalances reflects actual balances after all successful transfers and
 // same-exchange relief moves. Unfunded/SkipReasons are diagnostic only.
+// rebalancePending records a submitted but not-yet-confirmed cross-exchange
+// deposit for override retention. Entry-time risk.Approve re-reads live
+// balances before trading, so this is intent bookkeeping only.
+type rebalancePending struct {
+	amount      float64
+	submittedAt time.Time
+}
+
 type rebalanceExecutionResult struct {
 	PostBalances map[string]rebalanceBalanceInfo
 	Unfunded     map[string]float64
 	SkipReasons  map[string]string
-	// FundedReceivers: exchanges that received a cross-exchange deposit AND
-	// successfully moved it to futures this cycle. Used as a trigger for the
-	// live-balance recheck in keepFundedChoices — not a bias for entry scan.
+	// FundedReceivers is now "funding intent retained for override replay":
+	// either confirmed receiver credit or a successfully submitted pending
+	// cross-exchange deposit.
 	FundedReceivers       map[string]float64
+	PendingDeposits       map[string]rebalancePending
 	LocalTransferHappened bool
 	CrossTransferHappened bool
 }
@@ -185,8 +224,31 @@ func (e *Engine) reserveAllocatorChoice(work map[string]rebalanceBalanceInfo, c 
 // post-execution balances, reserving capacity per kept choice. Choices that
 // cannot be satisfied after real transfers are dropped so stale overrides do
 // not leak into the next entry scan.
-func (e *Engine) keepFundedChoices(choices []allocatorChoice, post map[string]rebalanceBalanceInfo, funded map[string]float64) map[string]allocatorChoice {
+// applyPendingFundingIntent replays a pending cross-exchange deposit as
+// usable futures capacity in the given working balance map. Used by
+// keepFundedChoices to retain overrides for submitted-but-not-confirmed
+// deposits. Entry-time risk.Approve still re-reads live balances before
+// trading, so this is intent bookkeeping only.
+func (e *Engine) applyPendingFundingIntent(work map[string]rebalanceBalanceInfo, pending map[string]rebalancePending, exch string) {
+	if pending == nil {
+		return
+	}
+	p, ok := pending[exch]
+	if !ok || p.amount <= 0 {
+		return
+	}
+	bal := work[exch]
+	bal.futures += p.amount
+	bal.futuresTotal += p.amount
+	work[exch] = bal
+}
+
+func (e *Engine) keepFundedChoices(choices []allocatorChoice, post map[string]rebalanceBalanceInfo, funded map[string]float64, pending map[string]rebalancePending) map[string]allocatorChoice {
 	work := cloneRebalanceBalances(post)
+	for exch := range pending {
+		e.applyPendingFundingIntent(work, pending, exch)
+	}
+
 	kept := make(map[string]allocatorChoice, len(choices))
 
 	for _, c := range choices {
@@ -215,6 +277,10 @@ func (e *Engine) keepFundedChoices(choices []allocatorChoice, post map[string]re
 			continue
 		}
 
+		// Replace the two refreshed legs with live balances. Do not re-apply
+		// pending intent here: it was already accounted for in the initial
+		// working state above, and adding it again would double-count submitted
+		// capital when the deposit has already arrived or partially arrived.
 		liveWork[c.longExchange] = longBal
 		liveWork[c.shortExchange] = shortBal
 
@@ -279,40 +345,7 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 		}
 	}
 
-	// Compute max transferable surplus per exchange from all other healthy exchanges.
-	// This lets the allocator consider pairs where one leg is slightly underfunded
-	// but could receive a transfer from a donor exchange before entry.
-	transferable := make(map[string]float64, len(balances))
-	for recipient := range e.exchanges {
-		var totalSurplus float64
-		for donor, bal := range balances {
-			if donor == recipient {
-				continue
-			}
-			if bal.marginRatio >= e.cfg.MarginL4Threshold {
-				continue // skip unhealthy donors
-			}
-			surplus := e.rebalanceAvailable(donor, bal)
-			if bal.hasPositions {
-				healthCap := e.capByMarginHealth(bal)
-				if healthCap == math.MaxFloat64 {
-					e.log.Debug("allocator: capByHealth %s: MaxFloat64 (no positions)", donor)
-				}
-				if surplus > healthCap {
-					surplus = healthCap
-				}
-			}
-			if surplus > 0 {
-				totalSurplus += surplus
-			}
-		}
-		transferable[recipient] = totalSurplus
-	}
-	e.log.Debug("allocator: transferable: %v", transferable)
-
-	cache := &risk.PrefetchCache{
-		TransferablePerExchange: transferable,
-	}
+	cache := e.buildTransferableCache(balances)
 	candidates := e.buildAllocatorCandidates(opps, cache)
 	if len(candidates) == 0 {
 		e.log.Debug("allocator: no candidates built from %d opps", len(opps))
@@ -327,7 +360,7 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 
 	totalDonorSurplus := 0.0
 	for donor, bal := range balances {
-		if bal.marginRatio >= e.cfg.MarginL4Threshold {
+		if !e.donorHasHeadroom(bal) {
 			continue
 		}
 		surplus := e.rebalanceAvailable(donor, bal)
@@ -361,9 +394,7 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 	// sequential approval pattern (engine.go:1651-1734).
 	{
 		reserved := map[string]float64{}
-		revalCache := &risk.PrefetchCache{
-			TransferablePerExchange: transferable, // same transfer-aware view as buildAllocatorCandidates
-		}
+		revalCache := cache
 		validated := make([]allocatorChoice, 0, len(selected))
 		for _, choice := range selected {
 			opp := findOppBySymbol(opps, choice.symbol)
@@ -693,6 +724,43 @@ func allocatorUpperBound(candidates []allocatorCandidate, idx, slots int) float6
 }
 
 
+// buildTransferableCache computes per-exchange donor surplus identically to
+// the pool allocator's inline logic, and returns it as a PrefetchCache that
+// SimulateApprovalForPair can consume.
+// Extracted so both pool allocator and rank-first Tier-1 use the same math.
+func (e *Engine) buildTransferableCache(balances map[string]rebalanceBalanceInfo) *risk.PrefetchCache {
+	transferable := make(map[string]float64, len(balances))
+	for recipient := range e.exchanges {
+		var totalSurplus float64
+		for donor, bal := range balances {
+			if donor == recipient {
+				continue
+			}
+			if !e.donorHasHeadroom(bal) {
+				continue // skip donors without capital headroom
+			}
+			surplus := e.rebalanceAvailable(donor, bal)
+			if bal.hasPositions {
+				healthCap := e.capByMarginHealth(bal)
+				if healthCap == math.MaxFloat64 {
+					e.log.Debug("allocator: capByHealth %s: MaxFloat64 (no positions)", donor)
+				}
+				if surplus > healthCap {
+					surplus = healthCap
+				}
+			}
+			if surplus > 0 {
+				totalSurplus += surplus
+			}
+		}
+		transferable[recipient] = totalSurplus
+	}
+	e.log.Debug("allocator: transferable: %v", transferable)
+	return &risk.PrefetchCache{
+		TransferablePerExchange: transferable,
+	}
+}
+
 func (e *Engine) rebalanceAvailable(name string, bal rebalanceBalanceInfo) float64 {
 	total := bal.futures + bal.spot
 	type unifiedChecker interface{ IsUnified() bool }
@@ -776,14 +844,11 @@ func (e *Engine) allocatorDonorGrossCapacity(name string, bal rebalanceBalanceIn
 				e.log.Debug("allocator: donorGross %s split-account authoritative maxTransferOut=0, treating as unavailable", name)
 				return 0
 			}
-			// Field not populated — fall back to raw futures with L4-safety estimate.
+			// Field not populated — fall back to raw futures.
+			// capByMarginHealth() applies the usage L4 + maintenance L5
+			// caps below uniformly; the previous inline maintenance-only
+			// projection has been removed to avoid metric mixing.
 			futuresAvail = bal.futures
-			if bal.marginRatio > 0 && bal.futuresTotal > 0 && e.cfg.MarginL4Threshold > 0 {
-				safeMax := bal.futuresTotal * (1.0 - bal.marginRatio/e.cfg.MarginL4Threshold)
-				if safeMax < futuresAvail {
-					futuresAvail = safeMax
-				}
-			}
 		}
 	}
 
@@ -811,28 +876,48 @@ func (e *Engine) allocatorDonorGrossCapacity(name string, bal rebalanceBalanceIn
 		return 0
 	}
 
-	e.log.Debug("rebalance: donor %s capacity: futures=%.2f total=%.2f marginRatio=%.4f maxTransferOut=%.2f futuresAvail=%.2f surplus=%.2f unified=%v hasPos=%v",
-		name, bal.futures, bal.futuresTotal, bal.marginRatio, bal.maxTransferOut, futuresAvail, surplus, isUnified, bal.hasPositions)
+	e.log.Debug("rebalance: donor %s capacity: futures=%.2f total=%.2f maintRatio=%.4f usageRatio=%.4f maxTransferOut=%.2f futuresAvail=%.2f surplus=%.2f unified=%v hasPos=%v",
+		name, bal.futures, bal.futuresTotal, bal.marginRatio, rebalanceUsageRatio(bal), bal.maxTransferOut, futuresAvail, surplus, isUnified, bal.hasPositions)
 
 	return surplus
 }
 
-// capByMarginHealth returns the maximum amount that can be transferred out
-// of an exchange without pushing its margin ratio past the L4 threshold.
-// Returns math.MaxFloat64 when the exchange has no positions or the
-// calculation is not applicable (no margin data).
+// capByMarginHealth returns the maximum amount that can be transferred
+// out of an exchange without (a) raising its capital usage past the L4
+// threshold or (b) raising its liquidation-risk ratio past the L5
+// threshold. Returns math.MaxFloat64 when the exchange has no
+// positions or insufficient data.
 func (e *Engine) capByMarginHealth(bal rebalanceBalanceInfo) float64 {
-	if !bal.hasPositions {
+	if !bal.hasPositions || bal.futuresTotal <= 0 {
 		return math.MaxFloat64
 	}
-	if bal.marginRatio <= 0 || bal.futuresTotal <= 0 || e.cfg.MarginL4Threshold <= 0 {
-		return math.MaxFloat64
+
+	capUsage := math.MaxFloat64
+	if e.cfg.MarginL4Threshold > 0 && e.cfg.MarginL4Threshold < 1 {
+		frozen := bal.futuresTotal - bal.futures
+		if frozen < 0 {
+			frozen = 0
+		}
+		// usage = frozen / (total - x) <= L4  =>  x <= total - frozen/L4
+		limit := bal.futuresTotal - frozen/e.cfg.MarginL4Threshold
+		if limit < capUsage {
+			capUsage = limit
+		}
 	}
-	// maint = marginRatio * futuresTotal (estimated maintenance margin)
-	// After removing X: newRatio = maint / (futuresTotal - X) must stay < L4
-	// Solve: X < futuresTotal - maint / L4
-	maint := bal.marginRatio * bal.futuresTotal
-	cap := bal.futuresTotal - maint/e.cfg.MarginL4Threshold
+
+	capMaint := math.MaxFloat64
+	if bal.marginRatio > 0 && e.cfg.MarginL5Threshold > 0 {
+		maint := bal.marginRatio * bal.futuresTotal
+		limit := bal.futuresTotal - maint/e.cfg.MarginL5Threshold
+		if limit < capMaint {
+			capMaint = limit
+		}
+	}
+
+	cap := capUsage
+	if capMaint < cap {
+		cap = capMaint
+	}
 	if cap < 0 {
 		return 0
 	}
@@ -856,6 +941,8 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 		needs[c.longExchange] += c.requiredMargin
 		needs[c.shortExchange] += c.requiredMargin
 	}
+
+	e.log.Debug("dryRun: start — choices=%d recipients=%d needs=%v", len(choices), len(needs), needs)
 
 	var steps []transferStep
 	totalFee := 0.0
@@ -976,6 +1063,12 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 			deficit = ratioDeficit
 		}
 
+		e.log.Debug("dryRun: recipient %s starts: need=%.4f futures=%.4f futuresTotal=%.4f marginDeficit=%.4f ratioDeficit=%.4f transferNeed=%.4f",
+			exch, need, sim[exch].futures, sim[exch].futuresTotal, marginDeficit, ratioDeficit, deficit)
+
+		moveCount := 0
+		totalNetForRecipient := 0.0
+
 		// 3c. While deficit > 0, find best donor.
 		for deficit > 0 {
 			bestDonor := ""
@@ -984,7 +1077,7 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 				if donor == exch || triedDonors[donor] {
 					continue
 				}
-				if sim[donor].marginRatio >= e.cfg.MarginL4Threshold {
+				if !e.donorHasHeadroom(sim[donor]) {
 					continue
 				}
 				// Use pre-computed donor budget (decremented after each use)
@@ -997,6 +1090,9 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 			}
 			if bestDonor == "" {
 				e.log.Debug("dryRun: no donor for %s deficit=%.2f", exch, deficit)
+				e.log.Debug("dryRun: recipient %s INFEASIBLE — residualDeficit=%.4f after %d donor moves, totalNet=%.4f",
+					exch, deficit, moveCount, totalNetForRecipient)
+				e.log.Debug("dryRun: end — feasible=false reason=no_donor_for_recipient")
 				return dryRunResult{Feasible: false}
 			}
 
@@ -1235,7 +1331,17 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 			deficit -= move
 			// Decrement donor budget (matches executor's surplus[bestDonor] -= netAmount + fee)
 			donorBudget[bestDonor] -= move + fee
+
+			moveCount++
+			totalNetForRecipient += move
+			donorDebit := move + fee
+			netCredit := move
+			e.log.Debug("dryRun: moved %.4f from %s to %s (gross=%.4f fee=%.4f netCredit=%.4f donorBudgetAfter=%.4f recipientDeficitAfter=%.4f)",
+				move, bestDonor, exch, donorDebit, fee, netCredit, donorBudget[bestDonor], deficit)
 		}
+
+		e.log.Debug("dryRun: recipient %s funded — consumed %d donor moves, totalNet=%.4f",
+			exch, moveCount, totalNetForRecipient)
 	}
 
 	// 4. Simulate position opening: deduct actual margin per choice.
@@ -1273,9 +1379,12 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 		postRatios[name] = ratio
 		if !ok {
 			e.log.Debug("dryRun: %s post-ratio=%.4f >= L4=%.4f, infeasible", name, ratio, e.cfg.MarginL4Threshold)
+			e.log.Debug("dryRun: end — feasible=false reason=post_ratio_infeasible")
 			return dryRunResult{Feasible: false}
 		}
 	}
+
+	e.log.Debug("dryRun: end — feasible=true steps=%d totalFee=%.4f", len(steps), totalFee)
 
 	return dryRunResult{
 		Feasible:   true,
@@ -1480,7 +1589,6 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 	}
 
 	pendingDeposits := map[string]float64{}
-	pendingStartBal := map[string]float64{}
 
 	// Batch withdrawals: accumulate per donor→recipient, execute after loop.
 	type batchedWd struct {
@@ -1488,6 +1596,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 		chain, destAddr  string
 		netTotal         float64
 		fee              float64
+		minWd            float64
 		isGross          bool
 		isUnifiedDonor   bool
 		movedToSpot      float64
@@ -1544,8 +1653,9 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 					if name == exchName || s <= 0 {
 						continue
 					}
-					if balances[name].marginRatio >= e.cfg.MarginL4Threshold {
-						e.log.Info("rebalance: skipping donor %s (marginRatio=%.4f >= L4=%.4f)", name, balances[name].marginRatio, e.cfg.MarginL4Threshold)
+					if !e.donorHasHeadroom(balances[name]) {
+						e.log.Info("rebalance: skipping donor %s (usageRatio=%.4f >= L4=%.4f, maintRatio=%.4f)",
+							name, rebalanceUsageRatio(balances[name]), e.cfg.MarginL4Threshold, balances[name].marginRatio)
 						continue
 					}
 					// Deterministic tie-break: pick highest surplus, then alphabetical name
@@ -1699,22 +1809,17 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 						continue
 					}
 					maxMove = donorBal.futures - needs[bestDonor]
-					if donorBal.marginRatio > 0 && donorBal.futuresTotal > 0 && e.cfg.MarginL4Threshold > 0 {
-						safeMax := donorBal.futuresTotal * (1.0 - donorBal.marginRatio/e.cfg.MarginL4Threshold)
-						safeMax -= needs[bestDonor]
-						if safeMax < maxMove {
-							maxMove = safeMax
-						}
-					}
 				} else {
 					maxMove -= needs[bestDonor]
 				}
 				// Cap by margin health to prevent transfers that would push
-				// the donor exchange past the L4 threshold.
+				// the donor exchange past the L4 usage or L5 maintenance caps.
+				// capByMarginHealth handles both caps uniformly; no need for
+				// a separate inline maintenance projection above.
 				healthCap := e.capByMarginHealth(donorBal) - needs[bestDonor]
 				if healthCap < maxMove {
-					e.log.Info("rebalance: %s maxMove capped by healthCap: %.2f -> %.2f (marginRatio=%.4f, L4=%.4f)",
-						bestDonor, maxMove, healthCap, donorBal.marginRatio, e.cfg.MarginL4Threshold)
+					e.log.Info("rebalance: %s maxMove capped by healthCap: %.2f -> %.2f (maintRatio=%.4f usageRatio=%.4f, L4=%.4f)",
+						bestDonor, maxMove, healthCap, donorBal.marginRatio, rebalanceUsageRatio(donorBal), e.cfg.MarginL4Threshold)
 					maxMove = healthCap
 				}
 				if moveAmt > maxMove && maxMove > 0 {
@@ -1843,11 +1948,14 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				bw.debitFutures += iterFuturesDebit
 				bw.debitSpot += iterSpotDebit
 				bw.debitFuturesTotal += iterFuturesTotalDebit
+				if minWd > bw.minWd {
+					bw.minWd = minWd
+				}
 			} else {
 				batchedWds[wdKey] = &batchedWd{
 					donor: bestDonor, recipient: exchName,
 					chain: chain, destAddr: destAddr,
-					netTotal: netAmount, fee: fee,
+					netTotal: netAmount, fee: fee, minWd: minWd,
 					isGross: isGross, isUnifiedDonor: skipOuterTransfer,
 					movedToSpot:       movedToSpot,
 					debitFutures:      iterFuturesDebit,
@@ -1890,6 +1998,8 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 	lastWithdrawAt := make(map[string]time.Time, len(batchedWds))
 	for _, bk := range batchKeys {
 		bw := batchedWds[bk]
+		plannedNetTotal := bw.netTotal
+
 		withdrawAmtForAPI := bw.netTotal
 		if bw.isGross {
 			withdrawAmtForAPI = bw.netTotal + bw.fee
@@ -1907,15 +2017,58 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 			lastWithdrawAt[bw.donor] = time.Now()
 		}
 
-		e.log.Info("rebalance: batched withdraw %s->%s net=%.2f fee=%.4f amount=%.2f via %s",
-			bw.donor, bw.recipient, bw.netTotal, bw.fee, withdrawAmtForAPI, bw.chain)
+		var wdResult *exchange.WithdrawResult
+		var err error
 
-		wdResult, err := e.exchanges[bw.donor].Withdraw(exchange.WithdrawParams{
-			Coin:    "USDT",
-			Chain:   bw.chain,
-			Address: bw.destAddr,
-			Amount:  amtStr,
-		})
+		// BingX-specific pre-withdraw live balance check. BingX withdraws from
+		// walletType=1 Fund account; our in-memory donor spot can drift from
+		// live available due to TransferToSpot settlement lag, float precision,
+		// or bingx-side locks after a preceding withdraw from the same donor.
+		// Without this refresh, we observed 2026-04-19 09:45:47 incident
+		// "bingx API code=100437 Insufficient balance".
+		if bw.donor == "bingx" {
+			const bingxSafetyBuffer = 0.01
+			freshBal, bErr := e.exchanges[bw.donor].GetSpotBalance()
+			if bErr != nil {
+				e.log.Error("rebalance: bingx pre-withdraw balance check failed: %v", bErr)
+				err = fmt.Errorf("bingx pre-withdraw balance check: %w", bErr)
+			} else {
+				needed := withdrawAmtForAPI + bingxSafetyBuffer
+				if freshBal.Available < needed {
+					capped := freshBal.Available - bingxSafetyBuffer
+					if capped <= 0 {
+						e.log.Warn("rebalance: bingx live avail=%.4f < buffer %.2f, skipping withdraw and rolling back prep",
+							freshBal.Available, bingxSafetyBuffer)
+						err = fmt.Errorf("bingx live balance insufficient for any withdraw (avail=%.4f)", freshBal.Available)
+					} else if bw.minWd > 0 && capped < bw.minWd {
+						e.log.Warn("rebalance: bingx capped amount %.4f below min %.2f, skipping withdraw and rolling back prep",
+							capped, bw.minWd)
+						err = fmt.Errorf("bingx capped withdraw below minimum %.2f", bw.minWd)
+					} else if capped < withdrawAmtForAPI {
+						e.log.Warn("rebalance: bingx live avail=%.4f < need %.4f (incl buffer), capping API amount %.4f -> %.4f",
+							freshBal.Available, needed, withdrawAmtForAPI, capped)
+						withdrawAmtForAPI = capped
+						amtStr = fmt.Sprintf("%.4f", withdrawAmtForAPI)
+						if bw.isGross {
+							bw.netTotal = withdrawAmtForAPI - bw.fee
+						} else {
+							bw.netTotal = withdrawAmtForAPI
+						}
+					}
+				}
+			}
+		}
+
+		if err == nil {
+			e.log.Info("rebalance: batched withdraw %s->%s net=%.2f fee=%.4f amount=%.2f via %s",
+				bw.donor, bw.recipient, bw.netTotal, bw.fee, withdrawAmtForAPI, bw.chain)
+			wdResult, err = e.exchanges[bw.donor].Withdraw(exchange.WithdrawParams{
+				Coin:    "USDT",
+				Chain:   bw.chain,
+				Address: bw.destAddr,
+				Amount:  amtStr,
+			})
+		}
 		if err != nil {
 			e.log.Error("rebalance: batched withdraw from %s failed: %v", bw.donor, err)
 			rollbackOK := true
@@ -1972,9 +2125,18 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				}
 			}
 			// Track as unfunded for diagnostics regardless of rollback state.
-			result.Unfunded[bw.recipient] = bw.netTotal
+			result.Unfunded[bw.recipient] = plannedNetTotal
 			result.SkipReasons[bw.recipient] = fmt.Sprintf("withdraw from %s failed: %v (rollbackOK=%v)", bw.donor, err, rollbackOK)
 			continue
+		}
+
+		// Success branch: if bingx pre-check capped bw.netTotal below the
+		// planned batch amount, record the shortfall so the recipient ends up
+		// with less than planned but we still track it correctly.
+		if bw.netTotal < plannedNetTotal {
+			shortfall := plannedNetTotal - bw.netTotal
+			result.Unfunded[bw.recipient] += shortfall
+			result.SkipReasons[bw.recipient] = fmt.Sprintf("withdraw from %s capped short by %.4f before submit", bw.donor, shortfall)
 		}
 
 		recipientReceives := bw.netTotal
@@ -2010,144 +2172,36 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 			balances[bw.donor] = bi
 		}
 
-		if _, exists := pendingStartBal[bw.recipient]; !exists {
-			if uc, ok := e.exchanges[bw.recipient].(interface{ IsUnified() bool }); ok && uc.IsUnified() {
-				if fb, err := e.exchanges[bw.recipient].GetFuturesBalance(); err == nil {
-					pendingStartBal[bw.recipient] = fb.Available
-				} else {
-					e.log.Warn("rebalance: %s unified GetFuturesBalance for deposit baseline failed: %v, using futures snapshot fallback", bw.recipient, err)
-					pendingStartBal[bw.recipient] = balances[bw.recipient].futures
-				}
-			} else {
-				pendingStartBal[bw.recipient] = balances[bw.recipient].spot
-			}
-		}
 		pendingDeposits[bw.recipient] += recipientReceives
 	}
 
+	// Fire-and-forget: after withdraws are submitted, we do NOT synchronously
+	// wait for deposits to land. risk.Approve at entry time re-reads live
+	// balances and auto-moves spot->futures if funds have arrived. This keeps
+	// rebalance from blocking for 1-5+ minutes and preserves allocator
+	// overrides for :55 entry regardless of deposit timing.
+	if result.PendingDeposits == nil {
+		result.PendingDeposits = make(map[string]rebalancePending)
+	}
+	submittedAt := time.Now()
 	for recipient, totalPending := range pendingDeposits {
 		if totalPending <= 0 {
 			continue
 		}
-		recipientExch := e.exchanges[recipient]
-		startBal := pendingStartBal[recipient]
-		e.log.Info("rebalance: waiting for %.2f USDT total deposits on %s (startBal=%.2f)...", totalPending, recipient, startBal)
-		arrived := false
-		pollDeadline := time.Now().Add(5 * time.Minute)
-		for time.Now().Before(pollDeadline) {
-			time.Sleep(5 * time.Second)
-			// Unified accounts: deposits land in unified pool, poll via GetFuturesBalance.
-			var spotBal *exchange.Balance
-			var pollErr error
-			if uc, ok := recipientExch.(interface{ IsUnified() bool }); ok && uc.IsUnified() {
-				spotBal, pollErr = recipientExch.GetFuturesBalance()
-			} else {
-				spotBal, pollErr = recipientExch.GetSpotBalance()
-			}
-			if pollErr != nil {
-				continue
-			}
-			arrivedAmt := spotBal.Available - startBal
-			if arrivedAmt < totalPending*0.9 {
-				continue
-			}
-			e.log.Info("rebalance: deposit threshold met (90%%) on %s: %.2f arrived of %.2f target", recipient, arrivedAmt, totalPending)
-
-			moveAmt := math.Min(totalPending, arrivedAmt)
-			moveAmt = math.Floor(moveAmt*10000) / 10000
-			if moveAmt <= 0 {
-				continue
-			}
-
-			// Unified receivers (bybit UTA, gateio unified): deposit already
-			// sits in the unified pool — no spot→futures API call needed.
-			// Credit the PostBalances directly. Mirrors v0.32.21 Section A.
-			if uc, ok := recipientExch.(interface{ IsUnified() bool }); ok && uc.IsUnified() {
-				bi := balances[recipient]
-				bi.futures += moveAmt
-				bi.futuresTotal += moveAmt
-				balances[recipient] = bi
-				if result.FundedReceivers == nil {
-					result.FundedReceivers = make(map[string]float64)
-				}
-				result.FundedReceivers[recipient] += moveAmt
-				result.CrossTransferHappened = true
-				arrived = true
-				break
-			}
-
-			// Split-account receivers: actual spot→futures API call.
-			transferStr := fmt.Sprintf("%.4f", moveAmt)
-			if err := recipientExch.TransferToFutures("USDT", transferStr); err != nil {
-				e.log.Warn("rebalance: %s spot->futures %s USDT failed before %s: %v", recipient, transferStr, pollDeadline.Format(time.RFC3339), err)
-				continue
-			}
-
-			e.log.Info("rebalance: %s spot->futures %s USDT (rebalance deposit)", recipient, transferStr)
-			e.recordTransfer(recipient+" spot", recipient, "USDT", "internal", transferStr, "0", "", "completed", "rebalance-recv")
-			bi := balances[recipient]
-			bi.futures += moveAmt
-			bi.futuresTotal += moveAmt
-			bi.spot = math.Max(0, spotBal.Available-moveAmt)
-			balances[recipient] = bi
-			if result.FundedReceivers == nil {
-				result.FundedReceivers = make(map[string]float64)
-			}
-			result.FundedReceivers[recipient] += moveAmt
-			result.CrossTransferHappened = true
-			arrived = true
-			break
+		if result.FundedReceivers == nil {
+			result.FundedReceivers = make(map[string]float64)
 		}
-		if !arrived {
-			creditedAmt := 0.0
-
-			// Deadline hit: mirror the same balance source used by the poll loop,
-			// then preserve any late-arriving funds for override replay.
-			var liveBal *exchange.Balance
-			var balErr error
-			if uc, ok := recipientExch.(interface{ IsUnified() bool }); ok && uc.IsUnified() {
-				liveBal, balErr = recipientExch.GetFuturesBalance()
-			} else {
-				liveBal, balErr = recipientExch.GetSpotBalance()
-			}
-			if balErr == nil {
-				arrivedAmt := liveBal.Available - startBal
-				if arrivedAmt > 1.0 {
-					creditedAmt = math.Min(totalPending, arrivedAmt)
-
-					bi := balances[recipient]
-					if uc, ok := recipientExch.(interface{ IsUnified() bool }); ok && uc.IsUnified() {
-						bi.futures += creditedAmt
-						bi.futuresTotal += creditedAmt
-					} else {
-						bi.spot += creditedAmt
-					}
-					balances[recipient] = bi
-
-					if result.FundedReceivers == nil {
-						result.FundedReceivers = make(map[string]float64)
-					}
-					result.FundedReceivers[recipient] += creditedAmt
-					result.CrossTransferHappened = true
-					e.log.Info("rebalance: deadline hit on %s, credited %.2f late-arriving balance for override retention", recipient, creditedAmt)
-				}
-			}
-
-			shortfall := totalPending - creditedAmt
-			if shortfall > 0.0001 {
-				result.Unfunded[recipient] = shortfall
-				if creditedAmt > 0 {
-					result.SkipReasons[recipient] = fmt.Sprintf("deposit timeout after partial arrival %.2f/%.2f", creditedAmt, totalPending)
-				} else {
-					result.SkipReasons[recipient] = "deposit timeout"
-				}
-			}
-
-			e.log.Warn("rebalance: deposits on %s not confirmed within 5min, skipping spot->futures", recipient)
+		result.FundedReceivers[recipient] += totalPending
+		result.PendingDeposits[recipient] = rebalancePending{
+			amount:      totalPending,
+			submittedAt: submittedAt,
 		}
+		result.CrossTransferHappened = true
+		e.log.Info("rebalance: %s pending deposit %.2f USDT (submitted, not waiting for arrival)", recipient, totalPending)
 	}
 
-	e.log.Info("rebalance: complete (unfunded=%d skipReasons=%d)", len(result.Unfunded), len(result.SkipReasons))
+	e.log.Info("rebalance: complete (unfunded=%d skipReasons=%d pendingDeposits=%d)",
+		len(result.Unfunded), len(result.SkipReasons), len(result.PendingDeposits))
 	return result
 }
 
