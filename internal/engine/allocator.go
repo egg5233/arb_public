@@ -942,6 +942,8 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 		needs[c.shortExchange] += c.requiredMargin
 	}
 
+	e.log.Debug("dryRun: start — choices=%d recipients=%d needs=%v", len(choices), len(needs), needs)
+
 	var steps []transferStep
 	totalFee := 0.0
 
@@ -1061,6 +1063,12 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 			deficit = ratioDeficit
 		}
 
+		e.log.Debug("dryRun: recipient %s starts: need=%.4f futures=%.4f futuresTotal=%.4f marginDeficit=%.4f ratioDeficit=%.4f transferNeed=%.4f",
+			exch, need, sim[exch].futures, sim[exch].futuresTotal, marginDeficit, ratioDeficit, deficit)
+
+		moveCount := 0
+		totalNetForRecipient := 0.0
+
 		// 3c. While deficit > 0, find best donor.
 		for deficit > 0 {
 			bestDonor := ""
@@ -1082,6 +1090,9 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 			}
 			if bestDonor == "" {
 				e.log.Debug("dryRun: no donor for %s deficit=%.2f", exch, deficit)
+				e.log.Debug("dryRun: recipient %s INFEASIBLE — residualDeficit=%.4f after %d donor moves, totalNet=%.4f",
+					exch, deficit, moveCount, totalNetForRecipient)
+				e.log.Debug("dryRun: end — feasible=false reason=no_donor_for_recipient")
 				return dryRunResult{Feasible: false}
 			}
 
@@ -1320,7 +1331,17 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 			deficit -= move
 			// Decrement donor budget (matches executor's surplus[bestDonor] -= netAmount + fee)
 			donorBudget[bestDonor] -= move + fee
+
+			moveCount++
+			totalNetForRecipient += move
+			donorDebit := move + fee
+			netCredit := move
+			e.log.Debug("dryRun: moved %.4f from %s to %s (gross=%.4f fee=%.4f netCredit=%.4f donorBudgetAfter=%.4f recipientDeficitAfter=%.4f)",
+				move, bestDonor, exch, donorDebit, fee, netCredit, donorBudget[bestDonor], deficit)
 		}
+
+		e.log.Debug("dryRun: recipient %s funded — consumed %d donor moves, totalNet=%.4f",
+			exch, moveCount, totalNetForRecipient)
 	}
 
 	// 4. Simulate position opening: deduct actual margin per choice.
@@ -1358,9 +1379,12 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 		postRatios[name] = ratio
 		if !ok {
 			e.log.Debug("dryRun: %s post-ratio=%.4f >= L4=%.4f, infeasible", name, ratio, e.cfg.MarginL4Threshold)
+			e.log.Debug("dryRun: end — feasible=false reason=post_ratio_infeasible")
 			return dryRunResult{Feasible: false}
 		}
 	}
+
+	e.log.Debug("dryRun: end — feasible=true steps=%d totalFee=%.4f", len(steps), totalFee)
 
 	return dryRunResult{
 		Feasible:   true,

@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.34] - 2026-04-20
+
+### Added
+- **Per-recipient/per-donor debug trace logs in `dryRunTransferPlan`** (`internal/engine/allocator.go`) — 5 Debug-level log points for diagnosing rank-first Tier-1 prune decisions. Previously, `dryRun: no donor for X deficit=N` was the only visible infeasibility marker; it was impossible to trace from logs alone which donor sent how much to which recipient, whether min-withdraw overfunding consumed capacity, or whether post-trade-ratio headroom inflated the true transfer need. Five new logs:
+  1. Entry: `dryRun: start — choices=N recipients=M needs=<map>`
+  2. Per-recipient start: `dryRun: recipient X starts: need=... marginDeficit=... ratioDeficit=... transferNeed=...`
+  3. Per donor→recipient move applied: `dryRun: moved ... from Y to X (gross=... fee=... netCredit=... donorBudgetAfter=... recipientDeficitAfter=...)`
+  4. Per-recipient closeout (funded or infeasible with residual)
+  5. Function exit: `dryRun: end — feasible=T/F reason=...` before each return site
+  
+  Debug-level only (requires `DEBUG=true` env var) to avoid log pollution — rotate scan runs every 60 min; Info-level would add ~500-1200 lines/day. Plan file: `plans/PLAN-dryrun-transferplan-logs.md` v2 (ALL PASS on Codex review).
+
 ## [0.32.33] - 2026-04-20
 
 ### Added
