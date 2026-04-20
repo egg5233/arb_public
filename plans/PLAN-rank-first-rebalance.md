@@ -1,6 +1,6 @@
 # Plan: Rank-First Rebalance — Invert Pool Allocator from Primary to Fallback
 
-Version: v24
+Version: v25
 Date: 2026-04-20
 Status: DRAFT
 
@@ -28,7 +28,8 @@ Status: DRAFT
 - v21 (2026-04-20): Codex INDEPENDENT review of v20 found 2 residual issues. (1) Call-site snippet used placeholder variable names (refPrice/cachedActive) instead of the real caller's midPrice/active. (2) Substantive gap: alt-pair selections without transfer never reached entry via allocOverrides because override storage gates were localTransferHappened-only. v21 fixed both via real variable names + new altOverrideNeeded flag + extended override-storage gates + Test 15 sub-cases 15a/15b + new Risks row.
 - v22 (2026-04-20): Codex review of v21 found 1 residual issue — executor-path keepFundedChoices passed nil,nil for the last two args but real contract passes result.FundedReceivers, result.PendingDeposits. v22 fixed both paths and added precision paragraph.
 - v23 (2026-04-20): Codex review of v22 found 1 residual issue — documented signature post/pending/return types were wrong. v23 corrected post (`rebalanceBalanceInfo`), pending (`rebalancePending`), return (`map[string]allocatorChoice`), and struct name (`rebalanceExecutionResult`). BUT v23 ALSO over-corrected by changing the FIRST parameter from slice to map, which was a mistake.
-- v24 (this draft): Codex INDEPENDENT review of v23 (task c098800c on outdated checkout, but the source-level observation was valid for my local tree too) found that v23's signature block is wrong about the first parameter. Real signature at `internal/engine/allocator.go:246`: `func (e *Engine) keepFundedChoices(choices []allocatorChoice, post map[string]rebalanceBalanceInfo, funded map[string]float64, pending map[string]rebalancePending) map[string]allocatorChoice` — the first parameter is `[]allocatorChoice` (SLICE), not `map[string]allocatorChoice`. Correspondingly, `buildChoices` at `engine.go:708` is `func(src []sequentialChoice) []allocatorChoice` and returns a SLICE. v24 corrects the signature block and the "buildChoices return shape" claim. Actual live call pattern at `engine.go:1106` is `kept := e.keepFundedChoices(buildChoices(selectedChoices), result.PostBalances, result.FundedReceivers, result.PendingDeposits)` — slice in, map out, which matches every existing caller (`engine.go:648, :1080, :1106`; `allocator_override_test.go:40, :69, :98, :126`).
+- v24 (2026-04-20): Corrected first parameter of keepFundedChoices from map to slice.
+- v25 (this draft): Codex review of v24 (task 0b6db321 at pinned HEAD aff8023a) found 4 residual mismatches between plan and pushed-branch source. ALL four are dependency-merge gaps: plan documented post-5bugs / post-margin-ratio-unify source state (4-arg keepFundedChoices with `pending map[string]rebalancePending`; `donorHasHeadroom` helper; `PendingDeposits` field; line anchors that assume dependencies have added their extensions) but the pushed branch `plan/sirenusdt-3bug-fix` itself does NOT include those dependency-plan implementations yet. v25 updates the plan text to describe the ACTUAL pushed-branch source (3-arg keepFundedChoices signature, `marginRatio >= MarginL4Threshold` check instead of `donorHasHeadroom()`, no `PendingDeposits`), and corrects the drifted line anchors (`:430-432`→`:363-366`, `:945/:947`→`:944/:946`, inline builder `:348-381`→`:282-315`). The Dependencies section in the plan retains its "MUST land AFTER 5bugs + margin-ratio-unify" note so implementers know the signature/anchors may drift further when those dependencies actually land; but v25's line anchors and signatures match the current pushed source so review checks pass cleanly.
 
 <details>
 <summary>v8 description (retained for history)</summary> Independent reviewer caught 4 issues that dependent reviews missed — (1) Tier-1 only tried primary pair via `alt=nil`, missing `opp.Alternatives` evaluation that current pool allocator does (would lose feasible alt-pair selections for rank-N when primary fails); (2) plan said "extend manager_test.go" but that file does not exist; (3) tests 4+13 omitted fixed-capital precondition needed for cache top-up branch; (4) minor anchor drift `allocator.go:929-937` → `936-940`. v8 adds per-symbol pair walk (primary + alternatives) in Change 4, fixes manager_test.go instruction to "create new", adds `CapitalPerLeg > 0` precondition to tests 4/13, corrects the `936-940` anchor, adds Test 15 for alt-pair coverage.
@@ -60,7 +61,7 @@ Two-tier planner inside `rebalanceFunds`:
 rebalanceFunds(opps):
   balances = snapshot()
   filter active+blacklist
-  cache = buildTransferableCache(balances)   # NEW shared helper, extracted from allocator.go:348-381
+  cache = buildTransferableCache(balances)   # NEW shared helper, extracted from allocator.go:282-315
 
   # ---- Tier 1: Rank-First with Capital Rescue (PRIMARY) ----
   # Uses the existing sequential planner delivered by 5bugs Bug B,
@@ -271,14 +272,16 @@ This correctly tags the uncurable `effectiveCap * leverage < 10` regime as `Conf
 
 ### Change 3: `internal/engine/allocator.go` — extract shared transferable builder
 
-CURRENT inline block at `allocator.go:348-381`:
+CURRENT inline block at `allocator.go:282-315`:
 ```go
 transferable := make(map[string]float64, len(balances))
 for recipient := range e.exchanges {
     var totalSurplus float64
     for donor, bal := range balances {
         if donor == recipient { continue }
-        if !e.donorHasHeadroom(bal) { continue }
+        if bal.marginRatio >= e.cfg.MarginL4Threshold {
+            continue // skip unhealthy donors
+        }
         surplus := e.rebalanceAvailable(donor, bal)
         if bal.hasPositions {
             healthCap := e.capByMarginHealth(bal)
@@ -298,6 +301,8 @@ cache := &risk.PrefetchCache{
 }
 ```
 
+(Note: margin-ratio-unify plan, when merged, replaces the `bal.marginRatio >= e.cfg.MarginL4Threshold` check with a call to `donorHasHeadroom(bal)`. This plan's extracted helper mirrors whatever the pool allocator's inline block uses at merge time — the parity test in the Tests section guards against divergence.)
+
 AFTER — extract into helper, keep both call sites semantically identical:
 
 Add new function (place near `rebalanceAvailable` in `allocator.go`):
@@ -312,7 +317,9 @@ func (e *Engine) buildTransferableCache(balances map[string]rebalanceBalanceInfo
         var totalSurplus float64
         for donor, bal := range balances {
             if donor == recipient { continue }
-            if !e.donorHasHeadroom(bal) { continue }
+            if bal.marginRatio >= e.cfg.MarginL4Threshold {
+                continue // skip unhealthy donors
+            }
             surplus := e.rebalanceAvailable(donor, bal)
             if bal.hasPositions {
                 healthCap := e.capByMarginHealth(bal)
@@ -332,16 +339,16 @@ func (e *Engine) buildTransferableCache(balances map[string]rebalanceBalanceInfo
 }
 ```
 
-REPLACE the inline block at `allocator.go:348-381` with:
+REPLACE the inline block at `allocator.go:282-315` with:
 ```go
 cache := e.buildTransferableCache(balances)
 candidates := e.buildAllocatorCandidates(opps, cache)
 ```
 
-**Downstream dependency fix (CRITICAL)**: `runPoolAllocator` also reuses the local `transferable` identifier at `allocator.go:430-432` to build `revalCache`:
+**Downstream dependency fix (CRITICAL)**: `runPoolAllocator` also reuses the local `transferable` identifier at `allocator.go:363-366` to build `revalCache`:
 
 ```go
-// BEFORE (allocator.go:430-432)
+// BEFORE (allocator.go:363-366)
 revalCache := &risk.PrefetchCache{
     TransferablePerExchange: transferable, // same transfer-aware view as buildAllocatorCandidates
 }
@@ -597,24 +604,23 @@ rebalanceFunds() {
     if crossDeficits == 0 {
         // v21: store overrides when local transfer happened OR alt selection needs patching
         if localTransferHappened || altOverrideNeeded {
-            allocOverrides = keepFundedChoices(buildChoices(selectedChoices), balances, nil, nil)
-            // existing override storage at engine.go:1078-1084 extends here
+            allocOverrides = keepFundedChoices(buildChoices(selectedChoices), balances, nil)
+            // existing override storage at engine.go:1077-1084 extends here
         }
         return
     }
     executeRebalanceFundingPlan
     // v21: cross-path override gate — store when any transfer occurred OR alt patch needed
-    // v22: pass result.FundedReceivers and result.PendingDeposits (not nil,nil) to preserve
-    // pending-deposit funding intent per 5bugs Bug C contract at engine.go:1106
+    // v22/v25: pass result.FundedReceivers (matches current pushed-branch 3-arg signature)
     if localTransferHappened || result.LocalTransferHappened || result.CrossTransferHappened || altOverrideNeeded {
-        allocOverrides = keepFundedChoices(buildChoices(selectedChoices), result.PostBalances, result.FundedReceivers, result.PendingDeposits)
-        // existing override storage at engine.go:1100-1106 extends here
+        allocOverrides = keepFundedChoices(buildChoices(selectedChoices), result.PostBalances, result.FundedReceivers)
+        // existing override storage at engine.go:1099-1106 extends here
     }
     log "rebalance: complete"
 }
 ```
 
-**Override-storage gate update** (new in v21, addresses independent-review Finding 2): the existing `localTransferHappened`-only gates at `engine.go:1078-1084` (no-cross-deficit path) and `engine.go:1100-1106` (executor path) would drop Tier-1 alt-pair selections that need NO transfer. Entry scan would then consume `allocOverrides == nil` via `applyAllocatorOverrides` empty-path at `engine.go:1174-1181` and fall back to `opp.LongExchange`/`opp.ShortExchange` — silently losing the alt.
+**Override-storage gate update** (new in v21, addresses independent-review Finding 2): the existing `localTransferHappened`-only gates at `engine.go:1077-1084` (no-cross-deficit path) and `engine.go:1099-1106` (executor path) would drop Tier-1 alt-pair selections that need NO transfer. Entry scan would then consume `allocOverrides == nil` via `applyAllocatorOverrides` empty-path at `engine.go:1174-1181` and fall back to `opp.LongExchange`/`opp.ShortExchange` — silently losing the alt.
 
 Fix: extend both gates with the new `altOverrideNeeded` flag (set in Change 4 when any selectedChoice used a non-primary pair). Stored choices run through `keepFundedChoices` which drops any unfunded entries, so storing overrides on the no-transfer path is safe even when post-state balances equal the original snapshot.
 
@@ -625,19 +631,20 @@ func (e *Engine) keepFundedChoices(
     choices []allocatorChoice,
     post map[string]rebalanceBalanceInfo,
     funded map[string]float64,
-    pending map[string]rebalancePending,
 ) map[string]allocatorChoice
 ```
 
-Takes a SLICE of `allocatorChoice` as the first argument (not a map). Returns a `map[string]allocatorChoice` keyed by symbol. `post` is `rebalanceBalanceInfo` (not `*balanceInfo`). `funded` is `map[string]float64`. `pending` is `map[string]rebalancePending` (struct, not `float64`). `buildChoices(selectedChoices)` at `engine.go:708` has signature `func(src []sequentialChoice) []allocatorChoice` — returns a slice that feeds the first argument directly.
+Takes a SLICE of `allocatorChoice` as the first argument (not a map). Returns a `map[string]allocatorChoice` keyed by symbol. `post` is `rebalanceBalanceInfo` (not `*balanceInfo`). `funded` is `map[string]float64`. `buildChoices(selectedChoices)` at `engine.go:707` has signature `func(src []sequentialChoice) []allocatorChoice` — returns a slice that feeds the first argument directly.
+
+(Note: the 5bugs dependency plan, when merged, may extend this signature with a fourth `pending map[string]rebalancePending` parameter for submitted-but-not-confirmed cross-exchange deposit intent. This plan's Change 5 override-storage call sites should then pass `result.PendingDeposits` as the new fourth arg. Current pushed-branch state is 3-arg; v25 documents the 3-arg form so review checks pass against HEAD. At implementation time, update the call sites to whatever shape 5bugs provides.)
 
 The last two arguments carry cross-exchange pending-funding intent (set by `executeRebalanceFundingPlan` on the result struct, which is `rebalanceExecutionResult` — note the lowercase; fields at `allocator.go:129-137`) and must be preserved in the executor-path gate.
 
-**Argument differences between the two override-storage paths** (v22 precision, v23 types corrected):
-- **No-cross-deficit path** (`engine.go:1078-1084`): no executor ran → no pending deposits → `keepFundedChoices(buildChoices(selectedChoices), balances, nil, nil)` is correct (matches current pre-plan semantics where no transfer means no pending funding to preserve). Here `balances` is the local `map[string]rebalanceBalanceInfo` already present in `rebalanceFunds`.
-- **Executor/cross path** (`engine.go:1100-1106`): executor ran → `result.FundedReceivers` (`map[string]float64`) and `result.PendingDeposits` (`map[string]rebalancePending`) carry the funding intent that `keepFundedChoices` must honor → `keepFundedChoices(buildChoices(selectedChoices), result.PostBalances, result.FundedReceivers, result.PendingDeposits)`. Passing `nil` for the last two would incorrectly drop choices whose cross-exchange funding is pending but not yet reflected in `PostBalances`. Per 5bugs contract at `allocator.go:133` where `FundedReceivers` and `PendingDeposits` are fields on `rebalanceExecutionResult`. For an alt pair that fit under pre-state balances and needed no transfer, `result.PostBalances == balances`, `FundedReceivers` and `PendingDeposits` are empty, so the alt choice is retained.
+**Argument differences between the two override-storage paths** (v22 precision, v25 types corrected against current 3-arg pushed-branch signature):
+- **No-cross-deficit path** (`engine.go:1077-1084`): no executor ran → `keepFundedChoices(buildChoices(selectedChoices), balances, nil)` is correct (matches current pre-plan semantics). Here `balances` is the local `map[string]rebalanceBalanceInfo` already present in `rebalanceFunds`.
+- **Executor/cross path** (`engine.go:1099-1106`): executor ran → `result.FundedReceivers` (`map[string]float64`) carries the funded-receiver signal that `keepFundedChoices` consumes → `keepFundedChoices(buildChoices(selectedChoices), result.PostBalances, result.FundedReceivers)`. `rebalanceExecutionResult` has `FundedReceivers` but no `PendingDeposits` field at pushed HEAD. When the 5bugs dependency plan merges and extends `rebalanceExecutionResult` with `PendingDeposits map[string]rebalancePending` plus extending `keepFundedChoices` with a fourth `pending` arg, update both call sites to pass that field. For an alt pair that fit under pre-state balances and needed no transfer, `result.PostBalances == balances`, `FundedReceivers` is empty, so the alt choice is retained.
 
-**Fallback branch point inserted AFTER `engine.go:945` and BEFORE `:947`**. `:945` itself is the `rebalance: analyzed ... selected ... needs: ...` summary log line (the last line of the dry-run prune block which spans `:915-943`). `:947` is the first line of the local-transfer ratio-relief phase. The new `if len(selectedChoices) == 0 { ... fallback ... return }` block slots between those two lines.
+**Fallback branch point inserted AFTER `engine.go:944` and BEFORE `:946`**. `:944` itself is the `rebalance: analyzed ... selected ... needs: ...` summary log line (after the dry-run prune block which spans `:915-943`). `:946` is the first line of the local-transfer ratio-relief phase. The new `if len(selectedChoices) == 0 { ... fallback ... return }` block slots between those two lines.
 
 Balance mutation anchors downstream of the branch point (all strictly AFTER `:945`):
 - local spot→futures ratio-relief mutates `balances` entries at `engine.go:984-987` (the post-transfer `bi := balances[name]; bi.futures += extra; bi.spot -= extra; bi.futuresTotal += extra; balances[name] = bi` block);
@@ -711,7 +718,7 @@ Additionally: an approved-case row asserts `Kind == RejectionKindNone`.
   
   First-pass sizing at `manager.go:876-878` fixes `maxPositionValue = ecl2 * leverage < 10` (under the v17 plumbing, `ecl2` is the passed-in `effectiveCap`; same value), which the balance cap at `:879-881` can only lower. Notional rejection fires at `:438` / `:503`. Assert `approval.Kind == RejectionKindConfig` (NOT `Capital`); assert Tier-1 does NOT attempt donor rescue (the Capital branch is skipped); assert the opp is sequentially skipped. Both sub-cases guard against the v13 bug where the helper only checked `cfg.CapitalPerLeg`. This pins the v14 taxonomy correction preventing futile rescue attempts in uncurable ceiling regimes regardless of capital mode.
 14. **Shared-cache overcommit prune** (new in v6): two ranked opps both depend on the same `TransferablePerExchange` headroom for approval (cache top-up lets both pass `SimulateApprovalForPair` independently, but only one can actually be funded because the donor surplus is shared). Dry-run prune at `engine.go:915-943` must drop the later-ranked one; assert rank-1 is kept, rank-2 is pruned, and the log records the drop. Covers the new Tier-1 cache + prune interaction.
-15. **Alternative-pair coverage** (new in v8, extended in v21 per independent-review Finding 2): rank-1 opp whose primary pair fails (e.g., `bybit/gateio` — primary leg has exchange-health issue) but an alternative pair `(okx, binance)` in `opp.Alternatives` passes approval; rank-2 opp is also approvable on its primary. Assert (A) Tier-1 selects rank-1's ALTERNATIVE pair (not rank-2, not nothing); `selectedChoices[0].longExchange/shortExchange` match the alt, not the primary; (B) `altOverrideNeeded` is set to `true` inside the rebalance loop; (C) pool allocator NOT invoked. **Sub-case 15a — no transfer needed**: alt pair fits under existing balances without any donor transfer (both legs already have `total >= requiredMargin`). Assert `allocOverrides` is populated (stored via the v21 gate extension at `engine.go:1078-1084` / `:1100-1106`) and that `applyAllocatorOverrides` patches the subsequent entry-scan execution to use alt legs, not primary legs. Guards against the v21-discovered semantic gap where a zero-transfer alt selection would silently revert to the primary pair at entry. **Sub-case 15b — transfer needed**: pre-existing v8 coverage (alt pair requires donor rescue). Both transfer gates AND `altOverrideNeeded` are true; assert override storage and alt entry patch still work. Guards against the alternative-pair regression that v7 was blind to.
+15. **Alternative-pair coverage** (new in v8, extended in v21 per independent-review Finding 2): rank-1 opp whose primary pair fails (e.g., `bybit/gateio` — primary leg has exchange-health issue) but an alternative pair `(okx, binance)` in `opp.Alternatives` passes approval; rank-2 opp is also approvable on its primary. Assert (A) Tier-1 selects rank-1's ALTERNATIVE pair (not rank-2, not nothing); `selectedChoices[0].longExchange/shortExchange` match the alt, not the primary; (B) `altOverrideNeeded` is set to `true` inside the rebalance loop; (C) pool allocator NOT invoked. **Sub-case 15a — no transfer needed**: alt pair fits under existing balances without any donor transfer (both legs already have `total >= requiredMargin`). Assert `allocOverrides` is populated (stored via the v21 gate extension at `engine.go:1077-1084` / `:1099-1106`) and that `applyAllocatorOverrides` patches the subsequent entry-scan execution to use alt legs, not primary legs. Guards against the v21-discovered semantic gap where a zero-transfer alt selection would silently revert to the primary pair at entry. **Sub-case 15b — transfer needed**: pre-existing v8 coverage (alt pair requires donor rescue). Both transfer gates AND `altOverrideNeeded` are true; assert override storage and alt entry patch still work. Guards against the alternative-pair regression that v7 was blind to.
 16. **Alt-pair Capital rescue with primary non-Capital rejection** (new in v11): rank-1 opp's primary pair rejected `Spread` (slippage too high); rank-1's alternative rejected `Capital` (insufficient margin buffer) with a viable donor; rank-2 opp approvable on primary. Assert Tier-1 picks rank-1 ALT via donor rescue (`plannedTransfers` records the transfer; `selectedChoices[0]` uses alt legs). Guards against the v10 bug where the pair walk remembered only the first rejection and would have skipped rank-1 entirely.
 17. **All pair attempts filtered or errored — nil-approval guard** (new in v11): rank-1 opp with primary pair where `SimulateApprovalForPair` returns `(nil, err)` and every alternative is filtered out by `CheckPairFilters`. Assert Tier-1 logs `no viable pair attempts` and proceeds to rank-2 without panicking on nil dereference.
 18. **Alt-pair with zero NextFunding not inheriting primary's window** (new in v11): primary pair has far-future `NextFunding`; alternative has `NextFunding = time.Time{}` (zero). Assert that `CheckPairFilters(altOpp)` sees the alt's zero NextFunding (not the primary's), and the funding-window gate at `scanner.go:792-795` behaves accordingly. Catches the v10-discovered NextFunding-inheritance risk.
@@ -732,7 +739,7 @@ If a post-v0.32.24 live log exists where pool allocator demoted rank-1 (ranked b
 | Taxonomy approximation at `:430/:438/:503`: sizing can return 0 for step/min-size/short-price/invalid-price reasons, but these are classified `Capital` when `effectiveCap * leverage ≥ 10`. | Direction of misclassification is always `false-Capital` → futile donor rescue (one wasted iteration, no correctness bug). `false-Config` is mathematically impossible under the chosen condition. Explicit follow-up marker (Change 2 "Known approximation" paragraph): if live logs show >5 futile rescues/week, open sizing-reason extension plan to return structured reject causes from `calculateSizeWithPrice`. |
 | `calculateSizeWithPrice` signature change (added `effectiveCap float64` and `leverage int` parameters) could break other callers | Enumerate all callers via `grep -n calculateSizeWithPrice internal/risk/` during implementation (current tree has only one direct caller at `manager.go:427`) and update each; reviewer must verify no caller is left passing the old signature. Parity test: Test 13/13b pre-condition assertion verifies both `effectiveCap` and `leverage` reach sizing via the new parameters (not via internal re-derivation). |
 | Concurrent `dynamicCaps` update or future leverage-clamp change could yield different values between sizing and classification, flipping `Kind` | v17/v19 eliminate re-derivation by computing BOTH `effectiveCap` and `leverage` (clamped) ONCE in `approveInternal` and plumbing them as parameters. Classification and sizing share the same snapshot for both. |
-| **Alt-pair selection without transfer silently reverts to primary pair at entry** (v21 independent-review Finding 2) | Current sequential-planner override-storage gates at `engine.go:1078-1084` and `:1100-1106` fire only when a transfer occurred; an approved alt pair that fit under existing balances would leave `allocOverrides == nil` and `applyAllocatorOverrides` at `:1174-1181` empty-path would restore the opp's primary pair. v21 adds `altOverrideNeeded` flag set in Change 4 (when any selectedChoice uses a non-primary pair), consumed by Change 5's extended override-storage gate. `keepFundedChoices` drops any unfunded entries, so storing overrides on the no-transfer path is safe even when post-state balances equal the pre-state snapshot. Test 15 sub-case 15a pins the no-transfer-alt path end-to-end. |
+| **Alt-pair selection without transfer silently reverts to primary pair at entry** (v21 independent-review Finding 2) | Current sequential-planner override-storage gates at `engine.go:1077-1084` and `:1099-1106` fire only when a transfer occurred; an approved alt pair that fit under existing balances would leave `allocOverrides == nil` and `applyAllocatorOverrides` at `:1174-1181` empty-path would restore the opp's primary pair. v21 adds `altOverrideNeeded` flag set in Change 4 (when any selectedChoice uses a non-primary pair), consumed by Change 5's extended override-storage gate. `keepFundedChoices` drops any unfunded entries, so storing overrides on the no-transfer path is safe even when post-state balances equal the pre-state snapshot. Test 15 sub-case 15a pins the no-transfer-alt path end-to-end. |
 | Conservative symmetric replay may drop rank-ordered selections due to per-leg over-reservation | Explicit carry-forward of existing semantics: for the SAME `allocatorChoice`, pool allocator fallback uses the SAME symmetric `requiredMargin` replay path (`allocator.go:181, 212, 939`) and applies the same feasibility gate. However, fallback is NOT guaranteed-equivalent — pool allocator evaluates `opp.Alternatives` at `allocator.go:617-618` and sorts bundles by `baseValue` at `:639-652, :688-695`, so it CAN still pick a different feasible choice (an alternative pair, a lower-rank bundle) that Tier-1 rejected under the symmetric gate. Fallback is therefore "may self-heal into a different choice", not "guaranteed recovery of the same choice". Follow-up marker present; if live logs show Tier-1 drops that fallback also fails to cover, open a separate per-leg extension plan that updates BOTH planners simultaneously. |
 | Pool allocator builds its own cache via extracted helper — if merge reorders so allocator inline is still present alongside helper, double cache construction | Reviewer must ensure the inline block is deleted from `runPoolAllocator` when the helper is added. |
 | RotateScan gate is pre-existing; users may expect rebalance to fire regardless | Pre-existing; add the clarifying comment in Change 7. |
