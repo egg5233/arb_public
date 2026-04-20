@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.31] - 2026-04-20
+
+### Fixed
+- **Spot-Futures backtest toggles not saving from dashboard** (`internal/api/handlers.go`) — latent bug present since v0.32.21 (Dir B) and uncovered by v0.32.30 (Dir A CoinGlass fallback). The `spotFuturesUpdate` request struct and `configSpotFuturesResponse` response struct in the `/api/config` handler were both missing the four backtest fields (`backtest_enabled`, `backtest_days`, `backtest_min_profit`, `backtest_coinglass_fallback`). Dashboard POSTs parsed into a struct with no matching fields so values were silently dropped — the toggle UI would flip back on refresh because the GET response also lacked the fields. Fixed by wiring all four fields through the GET response (struct + build block) and the POST request (struct + apply block). Underlying `SaveJSON`/`Load` paths in `internal/config/config.go` were already correct; only the API handler was unplumbed.
+
 ## [0.32.30] - 2026-04-20
 
 ### Added
