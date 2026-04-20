@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.33] - 2026-04-20
+
+### Added
+- **Rank-first rebalance — invert pool allocator from primary to fallback** (plan v29 ALL PASS on normal + independent Codex review). `rebalanceFunds()` now runs the sequential rank-first planner as the PRIMARY path; the pool allocator runs only as FALLBACK when Tier-1 produces zero selected choices. Rank represents expected profitability from `discovery`, so capital now preferentially funds the highest-rank feasible combination rather than the `baseValue`-maximizing bundle.
+  - **New typed rejection taxonomy** (`internal/models/interfaces.go`): `RejectionKind` enum with `None/Capital/Capacity/Market/Spread/Health/Config`. `RiskApproval` carries `Kind` so callers can decide rescue eligibility without string matching.
+  - **Per-site annotations** (`internal/risk/manager.go`): all 22 rejection returns in `approveInternal` now set `Kind`. Notional-floor sites `:438`/`:503` use new `notionalRejectionKind(effectiveCap, leverage)` helper — tags as `Config` (unrescueable) when `effectiveCap * leverage < 10`, else `Capital`. Helper and call site use a single effectiveCap + leverage snapshot computed once in `approveInternal` and threaded into `calculateSizeWithPrice` as parameters, eliminating concurrent-cap-change race.
+  - **Shared transferable cache** (`internal/engine/allocator.go`): inline donor-surplus builder extracted into `(e *Engine) buildTransferableCache(balances)` — used by both pool allocator and rank-first Tier-1. `revalCache` in `runPoolAllocator` now reuses the extracted cache.
+  - **Per-symbol pair walk** (`internal/engine/engine.go`): Tier-1 evaluates primary + each `opp.Alternatives` pair before falling to rank-2. Mirrors pool allocator's alt enumeration. `firstErr` is diagnostic-only and never gates the outer loop.
+  - **Tier-1 / Tier-2 inversion**: rank-first runs first; pool allocator fallback inserted after the summary log, before Phase 1 balance mutation. `EnablePoolAllocator=false` skips fallback entirely. RotateScan dispatcher unchanged.
+  - **Alt-override gate extension**: `altOverrideNeeded` flag set when chosen attempt is alt or differs from primary; override-storage gates (no-cross and executor paths) store `allocOverrides` even without transfer so alt-pair selections reach the entry scan via `applyAllocatorOverrides` (fixes silent-revert-to-primary semantic gap).
+  - **Rejection taxonomy test coverage**: `internal/risk/manager_test.go` (new, 948 lines) pinning every rejection site to its Kind. `internal/engine/allocator_transferable_parity_test.go` (new, 287 lines) asserting `buildTransferableCache` matches pre-extraction inline logic. `internal/engine/engine_rank_first_test.go` (new, 924 lines) covering 20 plan scenarios including notional-floor sub-cases, alt-pair coverage (no-transfer + with-transfer), symmetric-replay drop, and RotateScan gate.
+
+### Notes
+- Throughput tradeoff (accepted per user intent): once Tier-1 keeps even one ranked choice, pool allocator is not invoked that cycle — it cannot backfill remaining slots with lower-ranked positive-value bundles. Total deployed capital per cycle may be lower than pool-allocator-first behavior when feasible bundle value > top-N rank value. Tier-1 success log `tier1 selected N opps, skipping pool allocator fallback` makes this observable.
+- Known approximation: notional-floor Kind classification uses `effectiveCap * leverage` alone; sizing-zero from step rounding / short-leg price discount / min-size / invalid price are tagged `Capital` (not `Config`) in that regime, triggering a futile donor-rescue attempt (no correctness bug, just wasted work). `false-Config` under the chosen condition is mathematically impossible. Follow-up marker: if live logs show > 5 futile rescues/week, open a sizing-reason extension plan to return structured reject causes from `calculateSizeWithPrice`.
+
 ## [0.32.32] - 2026-04-20
 
 ### Added
