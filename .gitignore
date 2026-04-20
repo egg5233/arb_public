@@ -35,6 +35,7 @@ coh
 paperclip*
 .agents/skills/*
 config.json.*
+config.bk
 *.db
 docs/*-plan.md
 graphify-out/memory/*
