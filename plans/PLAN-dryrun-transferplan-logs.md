@@ -1,8 +1,11 @@
 # Plan: dryRunTransferPlan — Add Per-Recipient Debug Logs
 
-Version: v1
+Version: v2
 Date: 2026-04-20
 Status: DRAFT
+
+## Review History
+- v1 (2026-04-20): Codex review found that log snippets used variable names and line anchors that don't match current source. v2 corrects all 5 log points to use the real locals (`deficit` not `transferNeed`, `bestDonor`/`move` not `donor`/`moveAmount`, etc.) and places infeasible/exit logs at the correct control-flow positions (before existing early returns, not after loop exits).
 
 ## Problem
 
@@ -33,50 +36,62 @@ Pure log additions to `internal/engine/allocator.go` inside `dryRunTransferPlan`
 
 Add the following `e.log.Debug(...)` calls at the marked points. All are `Debug` level (not `Info`) to avoid polluting normal-op logs; set `DEBUG=true` env var to enable.
 
-1. **At function entry, after computing `needs` map** (around `:943`, after the needs aggregation loop):
+1. **After `needs` map is built (`:943`)** — insert the log AFTER line 943 (end of the per-choice needs aggregation loop), before sortedRecipients construction:
    ```go
    e.log.Debug("dryRun: start — choices=%d recipients=%d needs=%v",
        len(choices), len(needs), needs)
    ```
-   Shows the raw `needs` map (symmetric `requiredMargin` per exchange) at entry.
 
-2. **At start of Pass 2 recipient loop, before per-recipient processing** (around `:1035-1040`, the main cross-exchange transfer loop):
-   For each recipient iteration, log starting state:
+2. **Per-recipient starting state** — insert AFTER `:1061` (end of the `deficit := max(marginDeficit, ratioDeficit)` line) and BEFORE `:1065` (start of donor loop). The real local is named `deficit` (not `transferNeed`):
    ```go
-   // inside the recipient for-loop, at the top
    e.log.Debug("dryRun: recipient %s starts: need=%.4f futures=%.4f futuresTotal=%.4f marginDeficit=%.4f ratioDeficit=%.4f transferNeed=%.4f",
        exch, need, sim[exch].futures, sim[exch].futuresTotal,
-       marginDeficit, ratioDeficit, transferNeed)
+       marginDeficit, ratioDeficit, deficit)
    ```
-   Where `transferNeed = max(marginDeficit, ratioDeficit)`. This exposes the post-trade-ratio headroom calculation that can inflate actual deficit vs raw `marginDeficit`.
-
-3. **After each donor-to-recipient move is applied** (around `:1320-1322`, where donor budget is decremented):
+   Also ADD two logging-only counters at the top of this recipient iteration (before line 1065):
    ```go
-   e.log.Debug("dryRun: moved %.4f from %s to %s (fee=%.4f netCredit=%.4f donorBudgetAfter=%.4f recipientDeficitAfter=%.4f)",
-       moveAmount, donor, exch, fee, netCredit, donorBudget[donor], remainingDeficit)
+   moveCount := 0
+   totalNetForRecipient := 0.0
    ```
-   Where `moveAmount` is the gross amount transferred (before fee), `netCredit` is what arrives at recipient, `remainingDeficit` is recipient's remaining need. Makes the donor→recipient routing explicit.
 
-4. **When a recipient closes out (either funded or infeasible)** (inside the same loop, after the donor loop exits per recipient):
+3. **Per donor→recipient move applied** — insert AFTER `:1322` (the `donorBudget[bestDonor] -= ...` line). The real locals are `bestDonor`, `exch`, `move`, `fee`, `deficit`. Compute `donorDebit` and `netCredit` inline from those:
    ```go
-   if recipientDeficit <= 0 {
-       e.log.Debug("dryRun: recipient %s funded — consumed %d donor moves, totalNet=%.4f",
-           exch, moveCount, totalNetForRecipient)
-   } else {
-       e.log.Debug("dryRun: recipient %s INFEASIBLE — residualDeficit=%.4f after %d donor moves",
-           exch, recipientDeficit, moveCount)
-   }
+   moveCount++
+   totalNetForRecipient += move
+   donorDebit := move + fee
+   netCredit := move
+   e.log.Debug("dryRun: moved %.4f from %s to %s (gross=%.4f fee=%.4f netCredit=%.4f donorBudgetAfter=%.4f recipientDeficitAfter=%.4f)",
+       move, bestDonor, exch, donorDebit, fee, netCredit, donorBudget[bestDonor], deficit)
    ```
-   Makes it explicit whether each recipient ended funded or not, without having to infer from absence of the existing "no donor for X" message.
 
-5. **At function exit, before return** (around `:1335+`):
+4. **Per-recipient closeout** — TWO log points:
+   - **Infeasible closeout**: insert BEFORE the existing `return dryRunResult{...}` early-return at `:1084-1085` (the "no donor" path). Can't wait until "after loop exits" because the function returns immediately:
+     ```go
+     e.log.Debug("dryRun: recipient %s INFEASIBLE — residualDeficit=%.4f after %d donor moves, totalNet=%.4f",
+         exch, deficit, moveCount, totalNetForRecipient)
+     return dryRunResult{Feasible: false, ...existing fields...}
+     ```
+   - **Funded closeout**: insert AFTER the inner donor while-loop exits normally (deficit reached ≤ 0) and BEFORE line 1324 (or wherever the next recipient iteration begins). Real condition is `deficit <= 0`:
+     ```go
+     e.log.Debug("dryRun: recipient %s funded — consumed %d donor moves, totalNet=%.4f",
+         exch, moveCount, totalNetForRecipient)
+     ```
+
+5. **Function exit** — there is NO `result` local in current code; the function returns `dryRunResult{...}` literals directly at `:1365-1370` (success) and at each early-return point. For the SUCCESS path, insert BEFORE line 1365:
    ```go
-   e.log.Debug("dryRun: end — feasible=%v steps=%d totalFee=%.4f",
-       result.Feasible, len(result.Steps), totalFee)
+   e.log.Debug("dryRun: end — feasible=true steps=%d totalFee=%.4f",
+       len(steps), totalFee)
    ```
-   Summary one-liner.
+   For EARLY-RETURN paths (at `:1084-1085`, `:1361` per review, plus any other `return dryRunResult{Feasible: false, ...}` site), insert BEFORE each:
+   ```go
+   e.log.Debug("dryRun: end — feasible=false reason=%s",
+       <short reason string for this specific failure site>)
+   ```
+   Use short reason strings like `"no_donor_for_recipient"`, `"post_ratio_infeasible"`, etc. matching the existing infeasibility log message at that site.
 
-The implementer may use slightly different local-variable names depending on what's already in scope at each log point. The intent is to capture the listed fields; exact formatting is flexible but must include all named fields.
+**Implementer guidance**: before editing, `grep -n "dryRunResult{" internal/engine/allocator.go` to enumerate every return site in `dryRunTransferPlan`. Every infeasible return gets an end-log line. The success path (the last `return` before function close) gets the `feasible=true` summary.
+
+Exact line numbers above are from `efd6006d`; implementer re-verifies against current HEAD before editing. The intent of each log is stated; formatting flexible but must include all named fields.
 
 ## Why Debug, Not Info
 
