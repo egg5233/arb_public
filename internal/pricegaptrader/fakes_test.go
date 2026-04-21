@@ -144,6 +144,19 @@ func (s *stubExchange) GetOrderFilledQty(orderID, _ string) (float64, error) {
 	return s.filledQty[orderID], nil
 }
 
+// GetOrderVwap — test-only optional interface hit (pricegaptrader.vwapReader).
+// Returns the scripted vwap for orderIDs minted by queueFill. Production
+// adapters do NOT implement this; only the stub does, to drive exact exit
+// PnL math in monitor_test.go.
+func (s *stubExchange) GetOrderVwap(orderID string) (float64, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sc, ok := s.orderIDFill[orderID]; ok {
+		return sc.vwap, true
+	}
+	return 0, false
+}
+
 func (s *stubExchange) GetPosition(symbol string) ([]exchange.Position, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
