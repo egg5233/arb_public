@@ -269,24 +269,29 @@ func (e *Engine) rebalancePass1(
 	}
 
 	// Step 3: first-pass dry-run transfer plan on rescue candidates.
+	// CRITICAL: pre-subtract case-(a) reservations from balances so the
+	// dry-run does not see earmarked capital as free. Without this, a
+	// rescue candidate sharing an exchange with an earlier case-(a) opp
+	// under-plans the transfer and strands funds.
 	feeCache := map[string]feeEntry{}
-	dryRun := e.dryRunTransferPlan(candidates, balances, feeCache)
+	replayBaseBalances := cloneBalancesWithReservations(balances, approvedCaseA)
+	dryRun := e.dryRunTransferPlan(candidates, replayBaseBalances, feeCache)
 
 	// Step 3.5: post-transfer approval replay (MANDATORY). Repeat until fixed
 	// point or sanity-iteration limit reached (3 rounds).
-	survivors, changed := e.postTransferReplayFilter(candidates, dryRun, cache, balances)
+	survivors, changed := e.postTransferReplayFilter(candidates, dryRun, cache, balances, approvedCaseA)
 	if changed {
 		// Candidates resized/dropped — re-run dry-run on the new survivor
 		// set. Do NOT execute the stale plan.
-		dryRun = e.dryRunTransferPlan(survivors, balances, feeCache)
+		dryRun = e.dryRunTransferPlan(survivors, replayBaseBalances, feeCache)
 	}
 
 	// Fixed-point iteration. postTransferReplayFilter internally iterates up
 	// to 3 rounds, but an outer guard protects against pathological cases.
 	for iter := 0; iter < 2 && changed; iter++ {
-		survivors, changed = e.postTransferReplayFilter(survivors, dryRun, cache, balances)
+		survivors, changed = e.postTransferReplayFilter(survivors, dryRun, cache, balances, approvedCaseA)
 		if changed {
-			dryRun = e.dryRunTransferPlan(survivors, balances, feeCache)
+			dryRun = e.dryRunTransferPlan(survivors, replayBaseBalances, feeCache)
 		}
 	}
 
@@ -365,20 +370,21 @@ func (e *Engine) postTransferReplayFilter(
 	dryRun dryRunResult,
 	origCache *risk.PrefetchCache,
 	balances map[string]rebalanceBalanceInfo,
+	approvedCaseA map[string]float64,
 ) ([]allocatorChoice, bool) {
 	if len(candidates) == 0 {
 		return candidates, false
 	}
 
-	// Build projected balances reflecting the planned transfer steps.
-	projected := cloneRebalanceBalances(balances)
+	// Bug 5 fix: start from balances that already have case-(a) reservations
+	// removed, so rescue candidates sharing an exchange with an earlier
+	// case-(a) symbol do not see that earmarked capital as free.
+	projected := cloneBalancesWithReservations(balances, approvedCaseA)
 	for _, step := range dryRun.Steps {
+		// Bug 6 fix: donor debit semantics differ for unified vs split-account
+		// exchanges. projectTransferStepOnBalance mirrors dryRunTransferPlan.
 		src := projected[step.From]
-		src.futures = math.Max(0, src.futures-step.Amount-step.Fee)
-		if src.maxTransferOut > 0 {
-			src.maxTransferOut = math.Max(0, src.maxTransferOut-step.Amount-step.Fee)
-		}
-		projected[step.From] = src
+		projected[step.From] = e.projectTransferStepOnBalance(step, src)
 
 		dst := projected[step.To]
 		dst.futures += step.Amount
@@ -407,6 +413,12 @@ func (e *Engine) postTransferReplayFilter(
 	}
 
 	survivors := make([]allocatorChoice, 0, len(candidates))
+	// replayReserved accumulates per-exchange margin from survivors already
+	// accepted earlier in this replay pass. Do NOT pass the outer `reserved`
+	// map: it already contains case-(a) reservations (baked into projected
+	// balances above) and speculative rescue reservations — using it would
+	// double-count.
+	replayReserved := map[string]float64{}
 	changed := false
 
 	for _, c := range candidates {
@@ -417,7 +429,7 @@ func (e *Engine) postTransferReplayFilter(
 			Spread:        c.spreadBpsH,
 			IntervalHours: c.intervalHours,
 		}
-		approval, err := e.risk.SimulateApprovalForPair(opp, c.longExchange, c.shortExchange, nil, c.altPair, replayCache)
+		approval, err := e.risk.SimulateApprovalForPair(opp, c.longExchange, c.shortExchange, replayReserved, c.altPair, replayCache)
 		if err != nil {
 			e.log.Info("rebalance: pass1 replay dropped %s %s/%s: approval error: %v",
 				c.symbol, c.longExchange, c.shortExchange, err)
@@ -475,6 +487,11 @@ func (e *Engine) postTransferReplayFilter(
 		updated.requiredMargin = required
 		updated.entryNotional = entryNotional
 		survivors = append(survivors, updated)
+
+		// Accumulate survivor reservation so later candidates in this replay
+		// pass see their margin consumed.
+		replayReserved[updated.longExchange] += longNeed
+		replayReserved[updated.shortExchange] += shortNeed
 	}
 
 	if len(survivors) != len(candidates) {
@@ -810,4 +827,41 @@ func (e *Engine) violatesDonorFloorFromSteps(
 		}
 	}
 	return false
+}
+
+// projectTransferStepOnBalance mirrors dryRunTransferPlan's actual debit
+// semantics so postTransferReplayFilter's projected balances match reality:
+//   - Unified-account donor (Bybit UTA, Gate.io cross): external withdrawal
+//     debits the unified futures pool, so subtract step.Amount+step.Fee
+//     from src.futures.
+//   - Split-account donor (Binance/OKX/Bitget/BingX): external withdrawal
+//     comes from the SPOT pool (after a prep futures→spot move inside
+//     dryRunTransferPlan). transferStep carries only the external withdrawal
+//     leg, so debit src.spot and leave src.futures alone.
+//
+// Without this split, postTransferReplayFilter would shrink a split-account
+// donor's futures even though dryRunTransferPlan left it untouched — any
+// other rescue candidate trading on that donor's futures side would be
+// falsely resized or dropped.
+func (e *Engine) projectTransferStepOnBalance(step transferStep, src rebalanceBalanceInfo) rebalanceBalanceInfo {
+	donorIsUnified := false
+	if exch, ok := e.exchanges[step.From]; ok {
+		if uc, ok := exch.(interface{ IsUnified() bool }); ok && uc.IsUnified() {
+			donorIsUnified = true
+		}
+	}
+
+	if donorIsUnified {
+		src.futures = math.Max(0, src.futures-step.Amount-step.Fee)
+		src.futuresTotal = math.Max(0, src.futuresTotal-step.Amount-step.Fee)
+		return src
+	}
+
+	// Split-account donor: debit spot only. maxTransferOut is also reduced
+	// since withdrawals consume it.
+	src.spot = math.Max(0, src.spot-step.Amount-step.Fee)
+	if src.maxTransferOut > 0 {
+		src.maxTransferOut = math.Max(0, src.maxTransferOut-step.Amount-step.Fee)
+	}
+	return src
 }
