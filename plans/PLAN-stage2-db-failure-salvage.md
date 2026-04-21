@@ -2,7 +2,13 @@
 
 **Author:** zxcnny930 + Claude
 **Date:** 2026-04-21
-**Status:** v1 — initial draft, awaiting review
+**Status:** v2 — addresses codex 07728398 must-fix #1–#4
+**Review log:**
+- codex 07728398 NEEDS-REVISION → v2 fixes 4:
+  1. §3.2/§3.4: `db.GetActivePositions()` returns `[]*models.ArbitragePosition`, not `[]*models.Position` (verified at `internal/database/state.go:164`, `internal/models/position.go:6`)
+  2. §5 test matrix: add T6 (all-stale `patched=nil, hadOverrides=true`) and T7 (multi-symbol partial, override={A,B}, Stage 1 opens A, Stage 2 opens B, salvage noop)
+  3. §5 failure injection: drop `miniredis.SetError(...)` speculation; use a thin failing `StateStore` stub (no such method exists in current engine tests — verified)
+  4. §3.4/§8: retry latency math corrected — one retry = one `time.Sleep(backoff)` per call site, so worst-case added backoff is `~300ms × 2 call sites = ~600ms` plus DB call time, not `600ms × 2 = 1.2s`
 **Branch:** `fix/allocator-unified` (continues existing branch; follow-up commits on top of 32bdb810)
 **Origin:** codex independent review `d1ac2563` verdict NEEDS-REVISION Finding #1 (HIGH).
 
@@ -74,8 +80,8 @@ Both are in-scope for this plan. Fix B is load-bearing; Fix A is insurance.
 ### 3.2 Real API signatures (no invented APIs)
 
 ```go
-// Existing in internal/database/state.go:
-func (db *Client) GetActivePositions() ([]*models.Position, error)
+// Existing in internal/database/state.go:164:
+func (db *Client) GetActivePositions() ([]*models.ArbitragePosition, error)
 
 // Existing in pkg/utils/logging.go:
 type Logger struct { ... }
@@ -207,7 +213,7 @@ Lives in `internal/engine/engine.go` near existing helpers (private method on `*
 // to survive transient Redis hiccups during the critical stage-1 → stage-2
 // transition. Used only by the entry-scan path where a dropped read leads
 // to fund stranding (see PLAN-stage2-db-failure-salvage.md).
-func (e *Engine) getActivePositionsWithRetry(maxAttempts int, backoff time.Duration) ([]*models.Position, error) {
+func (e *Engine) getActivePositionsWithRetry(maxAttempts int, backoff time.Duration) ([]*models.ArbitragePosition, error) {
     if maxAttempts < 1 {
         maxAttempts = 1
     }
@@ -230,6 +236,11 @@ func (e *Engine) getActivePositionsWithRetry(maxAttempts int, backoff time.Durat
 - `backoff=300ms` → bounded latency impact on the entry-scan loop.
 - Short, intentionally dumb; we do NOT want exponential escalation here because
   the entry scan window is short and the salvage path is the real safety net.
+- **Latency math**: one retry = one `time.Sleep(backoff)` per call site. With 2 call
+  sites (Stage 2 filter + salvage filter), worst case is `~300ms × 2 = ~600ms` of
+  added sleep, plus the DB round-trip time on each failed attempt. Negligible
+  relative to `executeArbitrage` which already runs synchronously on this goroutine
+  for >1s routinely.
 
 ---
 
@@ -239,7 +250,7 @@ func (e *Engine) getActivePositionsWithRetry(maxAttempts int, backoff time.Durat
 |---|---|---|
 | `internal/engine/engine.go` | New helper `getActivePositionsWithRetry`. | +15 |
 | `internal/engine/engine.go` | Rewrite of Stage 2 + salvage block (`:888-988`). | ~100 replaced |
-| `internal/engine/engine_stage2_salvage_test.go` (new) | 4 scenarios, miniredis-backed. | +~250 |
+| `internal/engine/engine_stage2_salvage_test.go` (new) | 7 scenarios T1–T7, failing-DB stub for T2/T4. | +~350 |
 
 No changes outside `internal/engine/`. No config, no API, no frontend, no Redis schema.
 
@@ -268,17 +279,37 @@ salvage block via the same entry scan entry point used in
 | T3 | Out-of-scan override recovered by salvage (Bug-7 existing behavior preserved) | `[A]` | `{B}` | `{A}` | OK | OK | Stage 2 execs nothing (`B` filtered out by `applyAllocatorOverrides`); salvage rescans `{B}` |
 | T4 | Both DB reads fail → clean skip, no crash, no duplicate | `[A, B]` | `{B}` | `{A}` | FAIL | FAIL | No Stage 2 exec, no salvage exec, warn logged, `e.allocOverrides` drained |
 | T5 | Stage 1 already opened override symbol → Stage 2 + salvage both skip | `[A, B]` | `{B}` | `{A, B}` | OK | OK | Stage 2 drops B as duplicate; salvage drops B via `openedByUs` (no duplicate open) |
+| T6 | **All-stale** case: `applyAllocatorOverrides` returns `(nil, true)` | `[A]` | `{B}` with stale alt | `{A}` | n/a (no patched) | OK | Stage 2 logs "all stale after filter", `stage2Attempted` empty. Salvage rescans `{B}` (not in `openedByUs`). `B` fails re-scan too → logged as "all … failed re-scan". No trade opened, no crash. |
+| T7 | **Multi-symbol partial**: Stage 1 opens A, Stage 2 opens B, salvage true noop | `[A, B]` | `{A, B}` | `{A}` | OK | OK | `applyAllocatorOverrides` returns `[A_patched, B_patched]`. Stage 2: `openedS1={A}` → drops A as duplicate, execs `[B]`. `stage2Attempted={A, B}`. Salvage: both excluded (A via `stage2Attempted`, B via `stage2Attempted` AND `openedByUs`). No salvage call. |
 
-### Miniredis failure injection
+### DB failure injection
 
-Use `miniredis.Mini.SetError("forced")` / `.SetError("")` to toggle DB errors
-mid-test — already used elsewhere in the codebase (verify with `grep -rn SetError
-internal/`; if absent, use a thin DB wrapper that the engine can use in tests).
+No `miniredis.SetError(...)` helper is used in the current engine tests (verified via
+`rg -n "SetError" internal/`). The recommended approach:
+
+1. **Preferred** — if a `StateStore` interface / wrapper already exists in the test
+   harness (check `engine_rank_first_test.go` and friends for existing test doubles),
+   introduce a thin `failingStateStore` variant that wraps the real store and returns
+   `errors.New("forced db error")` from `GetActivePositions()` for N consecutive calls,
+   then delegates to the real store. This isolates the failure to the one method under
+   test without affecting other Redis operations.
+2. **Fallback** — if the engine currently reads directly from `*database.Client` with
+   no interface in place, add a minimal `activePositionsGetter` interface
+   (`interface { GetActivePositions() ([]*models.ArbitragePosition, error) }`) plus a
+   `*Engine` field `activePosSource` defaulting to `e.db`. Tests override this field
+   with a failing stub. Production behavior unchanged. Single-line default assignment
+   in the engine constructor; zero risk to live trading.
+3. **Non-goal** — do NOT add package-level globals, do NOT introduce monkey-patching
+   or interface hacks beyond what is minimally required for these 5 new tests.
 
 ### Coverage target
 
-- `getActivePositionsWithRetry`: retry path hit in T2, success path hit in T1.
-- Stage 2 + salvage branches: all five matrix cells hit at least one unique code path.
+- `getActivePositionsWithRetry`: retry path hit in T2/T4, success path hit in T1/T3/T5/T6/T7.
+- Stage 2 + salvage branches: all 7 matrix cells hit at least one unique code path.
+- `stage2Attempted` decision branches:
+  - `stage2Attempted=empty` + in-scan symbol → salvage rescans (T2).
+  - `stage2Attempted={sym}` + salvage loop sees sym → skip (T1, T7 for B).
+  - `stage2Attempted` populated even when `openedS1` dropped the symbol (T5, T7 for A).
 
 ---
 
@@ -315,8 +346,8 @@ in this block).
 2. **Step 2** — Rewrite Stage 2 + salvage block (`internal/engine/engine.go:888-988`)
    per pseudocode in §3.3. Single commit, diff stays local to this 100-line region.
 3. **Step 3** — `go build ./...` + existing `go test ./internal/engine/...` → must stay green.
-4. **Step 4** — Create `internal/engine/engine_stage2_salvage_test.go` with tests T1–T5.
-5. **Step 5** — `go test ./internal/engine/ -run 'Stage2Salvage' -v` → 5/5 green.
+4. **Step 4** — Create `internal/engine/engine_stage2_salvage_test.go` with tests T1–T7.
+5. **Step 5** — `go test ./internal/engine/ -run 'Stage2Salvage' -v` → 7/7 green.
 6. **Step 6** — Full `go test ./...` + full `go vet ./...` green.
 7. **Step 7** — `rg -n "inScan" internal/engine/engine.go` → 0 matches.
 8. **Step 8** — Post-implementation review: `/codex:review` (follow
