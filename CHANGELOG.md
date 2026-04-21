@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.36] - 2026-04-21
+
+### Fixed
+- **Spot-futures Dir B exit stuck in 'exiting' when SpotSize is not aligned to Binance LOT_SIZE stepSize** (`internal/spotengine/execution.go`). Incident: `sf-degousdt-1776738361635` opened with `SpotSize=1258.1406`, futures leg closed successfully on delist-trigger exit, but every spot SELL retry was rejected by Binance with `-1013 Filter failure: LOT_SIZE` because `1258.1406` is not a multiple of DEGOUSDT's `stepSize=0.01`. Two root-cause fixes:
+  1. **Entry path** — `openDirBBuySpotShort` previously hardcoded `math.Floor(spotNetReceived*1e5) / 1e5` (fixed 5dp) when flooring net-received size after fee deduction. For coins whose LOT_SIZE stepSize is coarser than 5dp (DEGO=0.01), this left `SpotSize` stepSize-unaligned. Now floors to `rules.QtyStep` fetched from `SpotOrderRules(symbol)`, with 1e-5 as fallback if the rules lookup fails.
+  2. **Exit path (Dir B)** — `dirB-spot-sell` retryLeg closure now applies `utils.RoundToStep(remaining, rules.QtyStep)` before submitting the SELL order. If flooring produces zero (residue < step), short-circuits and marks the spot leg closed (dust residue ignored) instead of submitting a doomed order. Protects existing stuck positions — after deploy, the next 3-minute monitor retry for DEGO will successfully sell 1258.14 and dust-close the 0.0006 residue.
+  
+  Regression test added: `TestCloseDirectionB_SpotSellRoundsToLotStep` in `dust_close_test.go` reproduces the exact DEGO scenario (SpotSize=1258.1406, stepSize=0.01) and asserts the first `PlaceSpotMarginOrder` Size is `"1258.140000"` (step-aligned) and the position closes cleanly via the residue dust path.
+
 ## [0.32.35] - 2026-04-20
 
 ### Added

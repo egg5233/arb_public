@@ -392,6 +392,72 @@ func TestMonitorRetry_AutoHealsStuckDustPosition(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// DEGO regression: SpotSize unaligned to LOT_SIZE stepSize must be floored
+// before PlaceSpotMarginOrder, not sent as-is (Binance -1013 LOT_SIZE).
+// ---------------------------------------------------------------------------
+
+func TestCloseDirectionB_SpotSellRoundsToLotStep(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	futExch := &closeTestExchange{
+		orderUpdates: map[string]exchange.OrderUpdate{},
+		orderbook: &exchange.Orderbook{
+			Bids: []exchange.PriceLevel{{Price: 0.157, Quantity: 10000}},
+			Asks: []exchange.PriceLevel{{Price: 0.159, Quantity: 10000}},
+		},
+	}
+	// Binance DEGOUSDT spot: stepSize=0.01, minQty=0.01.
+	// First sell ordered at 1258.14 fills fully; residue 0.0006 must be dust-closed.
+	smExch := &closeTestSpotMargin{
+		spotRules: &exchange.SpotOrderRules{MinBaseQty: 0.01, QtyStep: 0.01, MinNotional: 5},
+		queryStates: []*exchange.SpotMarginOrderStatus{
+			{OrderID: "spot-close-1", Status: "filled", FilledQty: 1258.14, AvgPrice: 0.158},
+		},
+	}
+
+	engine.exchanges = map[string]exchange.Exchange{"binance": futExch}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{"binance": smExch}
+
+	pos := &models.SpotFuturesPosition{
+		ID:             "sf-degousdt-reproduction",
+		Symbol:         "DEGOUSDT",
+		BaseCoin:       "DEGO",
+		Exchange:       "binance",
+		Direction:      "buy_spot_short",
+		Status:         models.SpotStatusExiting,
+		SpotSize:       1258.1406, // unaligned to step=0.01 (the actual DEGO bug value)
+		SpotEntryPrice: 0.157339,
+		FuturesExit:    0.159040, // futures already closed
+		FuturesSize:    1259.4,
+		FuturesSide:    "short",
+		CreatedAt:      time.Now().UTC(),
+		UpdatedAt:      time.Now().UTC(),
+	}
+	if err := engine.db.SaveSpotPosition(pos); err != nil {
+		t.Fatalf("SaveSpotPosition: %v", err)
+	}
+
+	err := engine.ClosePosition(pos, "delist_DEGOUSDT", false)
+	if err != nil {
+		t.Fatalf("ClosePosition returned error: %v", err)
+	}
+
+	if smExch.placeCalls < 1 {
+		t.Fatalf("PlaceSpotMarginOrder never called (placeCalls=%d)", smExch.placeCalls)
+	}
+	// Critical assertion: the submitted Size must be step-aligned (1258.14), NOT
+	// the raw unaligned 1258.1406 that Binance rejects with -1013 LOT_SIZE.
+	firstSize := smExch.placeSizes[0]
+	if firstSize != "1258.140000" {
+		t.Fatalf("first PlaceSpotMarginOrder Size = %q, want %q (rounded to stepSize=0.01)", firstSize, "1258.140000")
+	}
+	if !pos.SpotExitFilled {
+		t.Fatal("SpotExitFilled should be true after rounded sell + dust close")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // helper: closeTestExchange variant that returns a configurable PlaceOrder error
 // ---------------------------------------------------------------------------
 
