@@ -2,8 +2,11 @@
 
 **Author:** zxcnny930 + Claude
 **Date:** 2026-04-21
-**Status:** v3 — addresses codex 9582ebaa NEEDS-REVISION must-fix #1–#2
+**Status:** v4 — addresses codex 62d8e2fb consistency fix
 **Review log:**
+- codex 62d8e2fb NEEDS-REVISION → v4 fixes 1:
+  1. §3.4 `getActivePositionsWithRetry` helper snippet now uses `e.activePosSource.GetActivePositions()` (matches §5 design). Previous v3 had `e.db.GetActivePositions()` directly, which bypassed the new injection hook and contradicted §5. W2a/W2b/W2c/W3/W4/W5 all PASS per codex 62d8e2fb.
+
 - codex 9582ebaa NEEDS-REVISION → v3 fixes 2:
   1. §5 DB failure injection: remove the speculative "preferred if a StateStore/wrapper already exists" branch. `Engine` currently holds a concrete `*database.Client`, so `activePositionsGetter` interface injection is the single explicit plan.
   2. §5 T6 expected outcome: drop the hard-coded "B fails re-scan" assertion. Rewrite as "salvage calls `RescanSymbols({B})`; test controls rescan stub outcome deterministically." Pick one path for the actual test case. §6 R4 no longer tied to T6's specific outcome.
@@ -212,17 +215,21 @@ e.log.Info("run loop: entryScan handler done (stage-1 + stage-2 + salvage)")
 Lives in `internal/engine/engine.go` near existing helpers (private method on `*Engine`).
 
 ```go
-// getActivePositionsWithRetry wraps db.GetActivePositions with a simple retry
-// to survive transient Redis hiccups during the critical stage-1 → stage-2
-// transition. Used only by the entry-scan path where a dropped read leads
-// to fund stranding (see PLAN-stage2-db-failure-salvage.md).
+// getActivePositionsWithRetry wraps the injected activePositionsGetter with a
+// simple retry to survive transient Redis hiccups during the critical
+// stage-1 → stage-2 transition. Used only by the entry-scan path where a
+// dropped read leads to fund stranding (see PLAN-stage2-db-failure-salvage.md).
+//
+// The call goes through e.activePosSource (NOT e.db directly) so that tests
+// can inject a failingActivePosGetter to exercise the retry + salvage branches.
+// e.activePosSource is wired to e.db in NewEngine; see §5.
 func (e *Engine) getActivePositionsWithRetry(maxAttempts int, backoff time.Duration) ([]*models.ArbitragePosition, error) {
     if maxAttempts < 1 {
         maxAttempts = 1
     }
     var lastErr error
     for i := 0; i < maxAttempts; i++ {
-        positions, err := e.db.GetActivePositions()
+        positions, err := e.activePosSource.GetActivePositions()
         if err == nil {
             return positions, nil
         }
