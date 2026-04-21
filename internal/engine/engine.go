@@ -889,8 +889,17 @@ func (e *Engine) run() {
 					e.executeArbitrage(result.Opps, perpCap)
 
 					// Stage 2: consume allocator overrides from rebalance Pass 1 / Pass 2.
-					// applyAllocatorOverrides atomically drains e.allocOverrides, so it is
-					// safe to call exactly once here.
+					// Snapshot overrides BEFORE applyAllocatorOverrides drains them — we
+					// need to detect symbols funded by rebalance that are missing from
+					// the current scan (Bug 7 fix: fund-stranding when a rebalance-funded
+					// symbol is absent from the new discovery pass).
+					e.allocOverrideMu.Lock()
+					overrideSnapshot := make(map[string]allocatorChoice, len(e.allocOverrides))
+					for k, v := range e.allocOverrides {
+						overrideSnapshot[k] = v
+					}
+					e.allocOverrideMu.Unlock()
+
 					patched, hadOverrides := e.applyAllocatorOverrides(result.Opps)
 					if len(patched) > 0 {
 						// Filter out symbols Stage 1 already opened — overrides must
@@ -930,7 +939,53 @@ func (e *Engine) run() {
 						// Stage 1 has already run, so no further action is needed.
 						e.log.Warn("entry stage-2: allocator overrides present but all stale after filter")
 					}
-					e.log.Info("run loop: entryScan handler done (stage-1 + stage-2)")
+
+					// Bug 7 fix (independent-review c5f61902): rebalance may have funded
+					// an override for a symbol that is absent from the current entry
+					// scan (discovery order can shift between :30 rebalance and :40
+					// entry). applyAllocatorOverrides only iterates result.Opps and
+					// silently drops such symbols, stranding the transfer. Detect
+					// those missing symbols and rescan them with fresh data — same
+					// RescanSymbols path the len(result.Opps)==0 branch uses.
+					if len(overrideSnapshot) > 0 {
+						inScan := make(map[string]bool, len(result.Opps))
+						for _, o := range result.Opps {
+							inScan[o.Symbol] = true
+						}
+						activeAfterS2, err := e.db.GetActivePositions()
+						openedByUs := map[string]bool{}
+						if err != nil {
+							e.log.Warn("entry stage-2 salvage: failed to load active positions: %v — skipping salvage to avoid duplicates", err)
+						} else {
+							for _, p := range activeAfterS2 {
+								if p.Status != models.StatusClosed {
+									openedByUs[p.Symbol] = true
+								}
+							}
+							var missingPairs []models.SymbolPair
+							for sym, choice := range overrideSnapshot {
+								if inScan[sym] || openedByUs[sym] {
+									continue
+								}
+								missingPairs = append(missingPairs, models.SymbolPair{
+									Symbol:        sym,
+									LongExchange:  choice.longExchange,
+									ShortExchange: choice.shortExchange,
+								})
+							}
+							if len(missingPairs) > 0 {
+								e.log.Info("entry stage-2 salvage: %d funded override(s) missing from scan, re-scanning to prevent transfer stranding", len(missingPairs))
+								salvageOpps := e.discovery.RescanSymbols(missingPairs)
+								if len(salvageOpps) > 0 {
+									e.log.Info("entry stage-2 salvage: %d/%d passed re-scan, executing", len(salvageOpps), len(missingPairs))
+									e.executeArbitrage(salvageOpps, perpCap)
+								} else {
+									e.log.Warn("entry stage-2 salvage: all %d symbols failed re-scan — transfers may be stranded until next cycle", len(missingPairs))
+								}
+							}
+						}
+					}
+					e.log.Info("run loop: entryScan handler done (stage-1 + stage-2 + salvage)")
 				} else {
 					// Fallback: discovery returned 0 opps but allocator overrides
 					// from :45 may exist. Re-scan those specific symbols with
