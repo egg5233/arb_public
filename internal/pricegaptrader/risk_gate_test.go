@@ -23,12 +23,20 @@ type fakeStore struct {
 	heldLocks    map[string]string // resource -> token (presence means held)
 	lockCounter  int
 	forceLockBusy bool // tests set true to simulate contention
+
+	// Plan 06: rolling slippage window + disabled-flag write recorder.
+	slipWindow      map[string][]models.SlippageSample // candidateID -> samples
+	disabledSetWith map[string]string                  // symbol -> reason passed to SetCandidateDisabled
+	history         []*models.PriceGapPosition         // AddPriceGapHistory recorder
+	removedActive   []string                           // RemoveActivePriceGapPosition recorder
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		disabled:  map[string]string{},
-		heldLocks: map[string]string{},
+		disabled:        map[string]string{},
+		heldLocks:       map[string]string{},
+		slipWindow:      map[string][]models.SlippageSample{},
+		disabledSetWith: map[string]string{},
 	}
 }
 
@@ -48,15 +56,39 @@ func (f *fakeStore) SavePriceGapPosition(p *models.PriceGapPosition) error {
 func (f *fakeStore) GetPriceGapPosition(id string) (*models.PriceGapPosition, error) {
 	return nil, nil
 }
-func (f *fakeStore) AddPriceGapHistory(p *models.PriceGapPosition) error    { return nil }
-func (f *fakeStore) RemoveActivePriceGapPosition(id string) error           { return nil }
-func (f *fakeStore) SetCandidateDisabled(symbol, reason string) error       { return nil }
-func (f *fakeStore) ClearCandidateDisabled(symbol string) error             { return nil }
-func (f *fakeStore) AppendSlippageSample(candidateID string, sample models.SlippageSample) error {
+func (f *fakeStore) AddPriceGapHistory(p *models.PriceGapPosition) error {
+	f.history = append(f.history, p)
 	return nil
 }
+func (f *fakeStore) RemoveActivePriceGapPosition(id string) error {
+	f.removedActive = append(f.removedActive, id)
+	return nil
+}
+func (f *fakeStore) SetCandidateDisabled(symbol, reason string) error {
+	f.disabledSetWith[symbol] = reason
+	f.disabled[symbol] = reason
+	return nil
+}
+func (f *fakeStore) ClearCandidateDisabled(symbol string) error {
+	delete(f.disabled, symbol)
+	delete(f.disabledSetWith, symbol)
+	return nil
+}
+func (f *fakeStore) AppendSlippageSample(candidateID string, sample models.SlippageSample) error {
+	f.slipWindow[candidateID] = append(f.slipWindow[candidateID], sample)
+	return nil
+}
+// GetSlippageWindow returns up to the most recent n samples, mimicking Redis LTRIM semantics.
 func (f *fakeStore) GetSlippageWindow(candidateID string, n int) ([]models.SlippageSample, error) {
-	return nil, nil
+	all := f.slipWindow[candidateID]
+	if n <= 0 || len(all) <= n {
+		out := make([]models.SlippageSample, len(all))
+		copy(out, all)
+		return out, nil
+	}
+	out := make([]models.SlippageSample, n)
+	copy(out, all[len(all)-n:])
+	return out, nil
 }
 
 // AcquirePriceGapLock simulates a mutex: returns (token, true, nil) on free,
