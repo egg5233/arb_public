@@ -1,0 +1,13 @@
+{
+  "id": "GWEI_USDT",
+  "base": "GWEI",
+  "quote": "USDT",
+  "fee": "0.2",
+  "min_base_amount": "1",
+  "min_quote_amount": "1",
+  "amount_precision": 0,
+  "precision": 6,
+  "trade_status": "tradable",
+  "sell_start": 0,
+  "buy_start": 0
+}

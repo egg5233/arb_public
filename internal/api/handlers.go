@@ -364,6 +364,10 @@ type configSpotFuturesResponse struct {
 	EnableMaintenanceGate      bool     `json:"enable_maintenance_gate"`
 	MaintenanceDefault         float64  `json:"maintenance_default"`
 	MaintenanceCacheTTL        int      `json:"maintenance_cache_ttl"`
+	BacktestEnabled            bool     `json:"backtest_enabled"`
+	BacktestDays               int      `json:"backtest_days"`
+	BacktestMinProfit          float64  `json:"backtest_min_profit"`
+	BacktestCoinGlassFallback  bool     `json:"backtest_coinglass_fallback"`
 }
 
 type configExchangeResponse struct {
@@ -383,19 +387,23 @@ type configAIResponse struct {
 }
 
 type configStrategyResponse struct {
-	TopOpportunities       int                     `json:"top_opportunities"`
-	ScanMinutes            []int                   `json:"scan_minutes"`
-	EntryScanMinute        int                     `json:"entry_scan_minute"`
-	ExitScanMinute         int                     `json:"exit_scan_minute"`
-	RotateScanMinute       int                     `json:"rotate_scan_minute"`
-	RebalanceScanMinute    int                     `json:"rebalance_scan_minute"`
-	EnablePoolAllocator    bool                    `json:"enable_pool_allocator"`
-	TopPairsPerSymbol      int                     `json:"top_pairs_per_symbol"`
-	AllocatorTimeoutMs int                     `json:"allocator_timeout_ms"`
-	Discovery          configDiscoveryResponse `json:"discovery"`
-	Entry                  configEntryResponse     `json:"entry"`
-	Exit                   configExitResponse      `json:"exit"`
-	Rotation               configRotationResponse  `json:"rotation"`
+	TopOpportunities    int                     `json:"top_opportunities"`
+	ScanMinutes         []int                   `json:"scan_minutes"`
+	EntryScanMinute     int                     `json:"entry_scan_minute"`
+	ExitScanMinute      int                     `json:"exit_scan_minute"`
+	RotateScanMinute    int                     `json:"rotate_scan_minute"`
+	RebalanceScanMinute int                     `json:"rebalance_scan_minute"`
+	EnablePoolAllocator bool                    `json:"enable_pool_allocator"`
+	TopPairsPerSymbol   int                     `json:"top_pairs_per_symbol"`
+	AllocatorTimeoutMs  int                     `json:"allocator_timeout_ms"`
+
+	RebalanceMinNetPnLUSDT float64 `json:"rebalance_min_net_pnl_usdt"`
+	RebalanceDonorFloorPct float64 `json:"rebalance_donor_floor_pct"`
+
+	Discovery           configDiscoveryResponse `json:"discovery"`
+	Entry               configEntryResponse     `json:"entry"`
+	Exit                configExitResponse      `json:"exit"`
+	Rotation            configRotationResponse  `json:"rotation"`
 }
 
 type configDiscoveryResponse struct {
@@ -466,6 +474,7 @@ type configRiskResponse struct {
 	MarginL5Threshold           float64 `json:"margin_l5_threshold"`
 	L4ReduceFraction            float64 `json:"l4_reduce_fraction"`
 	MarginSafetyMultiplier      float64 `json:"margin_safety_multiplier"`
+	WithdrawMinIntervalMs       int     `json:"withdraw_min_interval_ms"`
 	EntryMarginHeadroom         float64 `json:"entry_margin_headroom"`
 	RiskMonitorIntervalSec      int     `json:"risk_monitor_interval_sec"`
 	EnableLiqTrendTracking      bool    `json:"enable_liq_trend_tracking"`
@@ -520,15 +529,19 @@ func (s *Server) buildConfigResponse() configResponse {
 	resp := configResponse{
 		DryRun: s.cfg.DryRun,
 		Strategy: configStrategyResponse{
-			TopOpportunities:       s.cfg.TopOpportunities,
-			ScanMinutes:            s.cfg.ScanMinutes,
-			EntryScanMinute:        s.cfg.EntryScanMinute,
-			ExitScanMinute:         s.cfg.ExitScanMinute,
-			RotateScanMinute:       s.cfg.RotateScanMinute,
-			RebalanceScanMinute:    s.cfg.RebalanceScanMinute,
-			EnablePoolAllocator:    s.cfg.EnablePoolAllocator,
-			TopPairsPerSymbol:      s.cfg.TopPairsPerSymbol,
-			AllocatorTimeoutMs: s.cfg.AllocatorTimeoutMs,
+			TopOpportunities:    s.cfg.TopOpportunities,
+			ScanMinutes:         s.cfg.ScanMinutes,
+			EntryScanMinute:     s.cfg.EntryScanMinute,
+			ExitScanMinute:      s.cfg.ExitScanMinute,
+			RotateScanMinute:    s.cfg.RotateScanMinute,
+			RebalanceScanMinute: s.cfg.RebalanceScanMinute,
+			EnablePoolAllocator: s.cfg.EnablePoolAllocator,
+			TopPairsPerSymbol:   s.cfg.TopPairsPerSymbol,
+			AllocatorTimeoutMs:  s.cfg.AllocatorTimeoutMs,
+
+			RebalanceMinNetPnLUSDT: s.cfg.RebalanceMinNetPnLUSDT,
+			RebalanceDonorFloorPct: s.cfg.RebalanceDonorFloorPct,
+
 			Discovery: configDiscoveryResponse{
 				MinHoldTimeHours:        int(s.cfg.MinHoldTime.Hours()),
 				MaxCostRatio:            s.cfg.MaxCostRatio,
@@ -591,6 +604,7 @@ func (s *Server) buildConfigResponse() configResponse {
 			MarginL5Threshold:           s.cfg.MarginL5Threshold,
 			L4ReduceFraction:            s.cfg.L4ReduceFraction,
 			MarginSafetyMultiplier:      s.cfg.MarginSafetyMultiplier,
+			WithdrawMinIntervalMs:       s.cfg.WithdrawMinIntervalMs,
 			EntryMarginHeadroom:         s.cfg.EntryMarginHeadroom,
 			RiskMonitorIntervalSec:      s.cfg.RiskMonitorIntervalSec,
 			EnableLiqTrendTracking:      s.cfg.EnableLiqTrendTracking,
@@ -676,6 +690,10 @@ func (s *Server) buildConfigResponse() configResponse {
 		EnableMaintenanceGate:      s.cfg.SpotFuturesEnableMaintenanceGate,
 		MaintenanceDefault:         s.cfg.SpotFuturesMaintenanceDefault,
 		MaintenanceCacheTTL:        s.cfg.SpotFuturesMaintenanceCacheTTL,
+		BacktestEnabled:            s.cfg.SpotFuturesBacktestEnabled,
+		BacktestDays:               s.cfg.SpotFuturesBacktestDays,
+		BacktestMinProfit:          s.cfg.SpotFuturesBacktestMinProfit,
+		BacktestCoinGlassFallback:  s.cfg.SpotFuturesBacktestCoinGlassFallback,
 	}
 	return resp
 }
@@ -809,6 +827,10 @@ type spotFuturesUpdate struct {
 	EnableMaintenanceGate      *bool    `json:"enable_maintenance_gate"`
 	MaintenanceDefault         *float64 `json:"maintenance_default"`
 	MaintenanceCacheTTL        *int     `json:"maintenance_cache_ttl"`
+	BacktestEnabled            *bool    `json:"backtest_enabled"`
+	BacktestDays               *int     `json:"backtest_days"`
+	BacktestMinProfit          *float64 `json:"backtest_min_profit"`
+	BacktestCoinGlassFallback  *bool    `json:"backtest_coinglass_fallback"`
 }
 
 type exchangeUpdate struct {
@@ -827,19 +849,23 @@ type aiUpdate struct {
 }
 
 type strategyUpdate struct {
-	TopOpportunities       *int             `json:"top_opportunities"`
-	ScanMinutes            []int            `json:"scan_minutes"`
-	EntryScanMinute        *int             `json:"entry_scan_minute"`
-	ExitScanMinute         *int             `json:"exit_scan_minute"`
-	RotateScanMinute       *int             `json:"rotate_scan_minute"`
-	RebalanceScanMinute    *int             `json:"rebalance_scan_minute"`
-	EnablePoolAllocator    *bool            `json:"enable_pool_allocator"`
-	TopPairsPerSymbol      *int             `json:"top_pairs_per_symbol"`
-	AllocatorTimeoutMs *int             `json:"allocator_timeout_ms"`
-	Discovery          *discoveryUpdate `json:"discovery"`
-	Entry                  *entryUpdate     `json:"entry"`
-	Exit                   *exitUpdate      `json:"exit"`
-	Rotation               *rotationUpdate  `json:"rotation"`
+	TopOpportunities    *int             `json:"top_opportunities"`
+	ScanMinutes         []int            `json:"scan_minutes"`
+	EntryScanMinute     *int             `json:"entry_scan_minute"`
+	ExitScanMinute      *int             `json:"exit_scan_minute"`
+	RotateScanMinute    *int             `json:"rotate_scan_minute"`
+	RebalanceScanMinute *int             `json:"rebalance_scan_minute"`
+	EnablePoolAllocator *bool            `json:"enable_pool_allocator"`
+	TopPairsPerSymbol   *int             `json:"top_pairs_per_symbol"`
+	AllocatorTimeoutMs  *int             `json:"allocator_timeout_ms"`
+
+	RebalanceMinNetPnLUSDT *float64 `json:"rebalance_min_net_pnl_usdt"`
+	RebalanceDonorFloorPct *float64 `json:"rebalance_donor_floor_pct"`
+
+	Discovery           *discoveryUpdate `json:"discovery"`
+	Entry               *entryUpdate     `json:"entry"`
+	Exit                *exitUpdate      `json:"exit"`
+	Rotation            *rotationUpdate  `json:"rotation"`
 }
 
 type discoveryUpdate struct {
@@ -910,6 +936,7 @@ type riskUpdate struct {
 	MarginL5Threshold           *float64 `json:"margin_l5_threshold"`
 	L4ReduceFraction            *float64 `json:"l4_reduce_fraction"`
 	MarginSafetyMultiplier      *float64 `json:"margin_safety_multiplier"`
+	WithdrawMinIntervalMs       *int     `json:"withdraw_min_interval_ms"`
 	EntryMarginHeadroom         *float64 `json:"entry_margin_headroom"`
 	RiskMonitorIntervalSec      *int     `json:"risk_monitor_interval_sec"`
 	EnableLiqTrendTracking      *bool    `json:"enable_liq_trend_tracking"`
@@ -970,6 +997,12 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if st.AllocatorTimeoutMs != nil && *st.AllocatorTimeoutMs > 0 {
 			s.cfg.AllocatorTimeoutMs = *st.AllocatorTimeoutMs
+		}
+		if st.RebalanceMinNetPnLUSDT != nil && *st.RebalanceMinNetPnLUSDT >= 0 {
+			s.cfg.RebalanceMinNetPnLUSDT = *st.RebalanceMinNetPnLUSDT
+		}
+		if st.RebalanceDonorFloorPct != nil && *st.RebalanceDonorFloorPct >= 0 {
+			s.cfg.RebalanceDonorFloorPct = *st.RebalanceDonorFloorPct
 		}
 		if st.TopOpportunities != nil && *st.TopOpportunities > 0 {
 			s.cfg.TopOpportunities = *st.TopOpportunities
@@ -1129,6 +1162,9 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if rk.MarginSafetyMultiplier != nil && *rk.MarginSafetyMultiplier >= 1.0 {
 			s.cfg.MarginSafetyMultiplier = *rk.MarginSafetyMultiplier
+		}
+		if rk.WithdrawMinIntervalMs != nil && *rk.WithdrawMinIntervalMs >= 0 {
+			s.cfg.WithdrawMinIntervalMs = *rk.WithdrawMinIntervalMs
 		}
 		if rk.EntryMarginHeadroom != nil && *rk.EntryMarginHeadroom > 0 && *rk.EntryMarginHeadroom <= 1.0 {
 			s.cfg.EntryMarginHeadroom = *rk.EntryMarginHeadroom
@@ -1429,6 +1465,18 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		if sf.MaintenanceCacheTTL != nil && *sf.MaintenanceCacheTTL >= 1 {
 			s.cfg.SpotFuturesMaintenanceCacheTTL = *sf.MaintenanceCacheTTL
 		}
+		if sf.BacktestEnabled != nil {
+			s.cfg.SpotFuturesBacktestEnabled = *sf.BacktestEnabled
+		}
+		if sf.BacktestDays != nil && *sf.BacktestDays > 0 {
+			s.cfg.SpotFuturesBacktestDays = *sf.BacktestDays
+		}
+		if sf.BacktestMinProfit != nil && *sf.BacktestMinProfit >= 0 {
+			s.cfg.SpotFuturesBacktestMinProfit = *sf.BacktestMinProfit
+		}
+		if sf.BacktestCoinGlassFallback != nil {
+			s.cfg.SpotFuturesBacktestCoinGlassFallback = *sf.BacktestCoinGlassFallback
+		}
 	}
 
 	if sa := upd.Safety; sa != nil {
@@ -1527,8 +1575,10 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"rebalance_scan_minute":               strconv.Itoa(snapshot.Strategy.RebalanceScanMinute),
 		"enable_pool_allocator":               strconv.FormatBool(snapshot.Strategy.EnablePoolAllocator),
 		"top_pairs_per_symbol":                strconv.Itoa(snapshot.Strategy.TopPairsPerSymbol),
-		"allocator_timeout_ms": strconv.Itoa(snapshot.Strategy.AllocatorTimeoutMs),
-		"top_opportunities":   strconv.Itoa(snapshot.Strategy.TopOpportunities),
+		"allocator_timeout_ms":                strconv.Itoa(snapshot.Strategy.AllocatorTimeoutMs),
+		"rebalance_min_net_pnl_usdt":          strconv.FormatFloat(snapshot.Strategy.RebalanceMinNetPnLUSDT, 'f', -1, 64),
+		"rebalance_donor_floor_pct":           strconv.FormatFloat(snapshot.Strategy.RebalanceDonorFloorPct, 'f', -1, 64),
+		"top_opportunities":                   strconv.Itoa(snapshot.Strategy.TopOpportunities),
 		"entry_scan_minute":                   strconv.Itoa(snapshot.Strategy.EntryScanMinute),
 		"exit_scan_minute":                    strconv.Itoa(snapshot.Strategy.ExitScanMinute),
 		"rotate_scan_minute":                  strconv.Itoa(snapshot.Strategy.RotateScanMinute),
@@ -1546,6 +1596,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"margin_l5_threshold":                 strconv.FormatFloat(snapshot.Risk.MarginL5Threshold, 'f', -1, 64),
 		"l4_reduce_fraction":                  strconv.FormatFloat(snapshot.Risk.L4ReduceFraction, 'f', -1, 64),
 		"margin_safety_multiplier":            strconv.FormatFloat(snapshot.Risk.MarginSafetyMultiplier, 'f', -1, 64),
+		"withdraw_min_interval_ms":            strconv.Itoa(snapshot.Risk.WithdrawMinIntervalMs),
 		"risk_monitor_interval_sec":           strconv.Itoa(snapshot.Risk.RiskMonitorIntervalSec),
 		"enable_liq_trend_tracking":           strconv.FormatBool(snapshot.Risk.EnableLiqTrendTracking),
 		"liq_projection_minutes":              strconv.Itoa(snapshot.Risk.LiqProjectionMinutes),

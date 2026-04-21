@@ -1,10 +1,12 @@
 package binance
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"arb/pkg/exchange"
 )
@@ -221,6 +223,80 @@ func (b *Adapter) GetSpotBBO(symbol string) (exchange.BBO, error) {
 // ---------------------------------------------------------------------------
 // Spot Margin: Interest Rate
 // ---------------------------------------------------------------------------
+
+// GetMarginInterestRateHistory returns historical daily borrow rates for a coin
+// over [start, end], paginating in 30-day windows.
+// Binance granularity is daily; HourlyRate = dailyInterestRate / 24.
+func (b *Adapter) GetMarginInterestRateHistory(ctx context.Context, coin string, start, end time.Time) ([]exchange.MarginInterestRatePoint, error) {
+	const maxWindow = 30 * 24 * time.Hour
+	var all []exchange.MarginInterestRatePoint
+
+	windowStart := start
+	for windowStart.Before(end) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		windowEnd := windowStart.Add(maxWindow)
+		if windowEnd.After(end) {
+			windowEnd = end
+		}
+		params := map[string]string{
+			"asset":     coin,
+			"vipLevel":  "0",
+			"startTime": strconv.FormatInt(windowStart.UnixMilli(), 10),
+			"endTime":   strconv.FormatInt(windowEnd.UnixMilli(), 10),
+			"limit":     "100",
+		}
+		body, err := b.client.SpotGet("/sapi/v1/margin/interestRateHistory", params)
+		if err != nil {
+			return nil, fmt.Errorf("binance GetMarginInterestRateHistory: %w", err)
+		}
+		var resp []struct {
+			Asset             string `json:"asset"`
+			DailyInterestRate string `json:"dailyInterestRate"`
+			Timestamp         int64  `json:"timestamp"`
+			VipLevel          int    `json:"vipLevel"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("binance GetMarginInterestRateHistory unmarshal: %w", err)
+		}
+		// Expand each daily rate into 24 hourly-equivalent points so the
+		// SpotMarginExchange contract ("historical hourly borrow rates") is
+		// honored. Binance's endpoint returns one record per day; without this,
+		// engine-side coverage math that assumes hourly granularity would see
+		// only 7 points over a 7-day window (4% coverage) AND the sum of
+		// HourlyRate * 10000 across those 7 points would under-count the real
+		// borrow cost by 24× (since each point only covers 1 hour of its day).
+		// The hourly rate itself is unchanged (daily / 24); we just emit the
+		// same value 24 times, one per hour within [start, end].
+		for _, r := range resp {
+			daily, _ := strconv.ParseFloat(r.DailyInterestRate, 64)
+			dayStart := time.UnixMilli(r.Timestamp).UTC().Truncate(24 * time.Hour)
+			hourlyRate := daily / 24
+			vip := strconv.Itoa(r.VipLevel)
+			for h := 0; h < 24; h++ {
+				ts := dayStart.Add(time.Duration(h) * time.Hour)
+				if ts.Before(start) || ts.After(end) {
+					continue
+				}
+				all = append(all, exchange.MarginInterestRatePoint{
+					Timestamp:  ts,
+					HourlyRate: hourlyRate,
+					VipLevel:   vip,
+				})
+			}
+		}
+		windowStart = windowEnd
+		if len(resp) > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}
+	return all, nil
+}
 
 // GetMarginInterestRate returns the current borrow interest rate for a coin.
 func (b *Adapter) GetMarginInterestRate(coin string) (*exchange.MarginInterestRate, error) {

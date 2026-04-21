@@ -259,6 +259,7 @@ const en = {
   'cfg.system': 'System',
   'cfg.systemDesc': 'Operational mode',
   'cfg.section.poolAllocator': 'Pool Allocator',
+  'cfg.section.rebalanceTuning': 'Rebalance Tuning',
   'cfg.section.scanMinutes': 'Scan Minutes',
 
   // Config fields
@@ -307,6 +308,8 @@ const en = {
   'cfg.field.reservationTTLSec': 'Reservation TTL',
   'cfg.field.topPairsPerSymbol': 'Top Pairs Per Symbol',
   'cfg.field.allocatorTimeoutMs': 'Allocator Timeout',
+  'cfg.field.rebalanceMinNetPnLUSDT': 'Rebalance Min Net PnL',
+  'cfg.field.rebalanceDonorFloorPct': 'Rebalance Donor Floor',
   'cfg.field.enableSpreadStabilityGate': 'Enable Spread Stability Gate',
   'cfg.field.spreadVolatilityMaxCV': 'Spread Volatility Max CV',
   'cfg.field.spreadVolatilityMinSamples': 'Volatility Min Samples',
@@ -325,6 +328,7 @@ const en = {
   'cfg.field.stabilityOIRank4h': 'Stability OI Rank 4h',
   'cfg.field.stabilityRatio8h': 'Stability Ratio 8h',
   'cfg.field.stabilityOIRank8h': 'Stability OI Rank 8h',
+  'cfg.field.withdrawMinIntervalMs': 'Withdraw Min Interval (ms)',
   'cfg.field.riskMonitorInterval': 'Risk Monitor Interval',
   'cfg.field.enableLiqTrendTracking': 'Liq Trend Tracking',
   'cfg.field.liqProjectionMinutes': 'Liq Projection Window',
@@ -360,6 +364,7 @@ const en = {
   'cfg.persist.volatility': 'Volatility',
   'cfg.risk.overview': 'Margin Threshold Overview',
   'cfg.unsavedChanges': 'Unsaved changes',
+  'cfg.desc.withdrawMinIntervalMs': 'Minimum interval in milliseconds between batched rebalance withdraw requests from the same donor exchange. 0 = disabled.',
   'cfg.desc.riskMonitorInterval': 'Seconds between risk monitoring checks',
   'cfg.desc.enableLiqTrendTracking': 'Track exchange margin-ratio trend over time and issue pre-emptive reduce actions when the projected ratio is trending into L4. Default OFF for rollout safety.',
   'cfg.desc.liqProjectionMinutes': 'How many minutes ahead to project the current margin-ratio slope when evaluating trend risk.',
@@ -414,6 +419,8 @@ const en = {
   'cfg.desc.reservationTTLSec': 'How long a pending capital reservation stays live before auto-expiring if the trade never commits.',
   'cfg.desc.topPairsPerSymbol': 'How many ranked exchange-pair candidates to keep per symbol for the rebalance allocator. 1 preserves the legacy single-pair behavior.',
   'cfg.desc.allocatorTimeoutMs': 'Soft search budget for the pool allocator branch-and-bound solver in milliseconds. The live approval calls still dominate total runtime.',
+  'cfg.desc.rebalanceMinNetPnLUSDT': 'Minimum net PnL (expected funding minus transfer fees, USDT) for a capital-rescue transfer to proceed. Rescues below this are rejected as unprofitable.',
+  'cfg.desc.rebalanceDonorFloorPct': 'Reject any transfer that would leave a donor with less than this fraction of its initial gross capacity. Prevents draining a single donor dry. 0 disables the floor.',
   'cfg.desc.dryRun': 'When enabled, the bot logs all actions but does not execute any real trades',
 
   // Config - Safety
@@ -559,6 +566,27 @@ const en = {
   'cfg.sf.maintenanceDefaultDesc': 'Conservative fallback when exchange returns 0 or unknown maintenance rate. Decimal: 0.05 = 5%',
   'cfg.sf.maintenanceCacheTTL': 'Maintenance Cache TTL',
   'cfg.sf.maintenanceCacheTTLDesc': 'Minutes to cache tiered maintenance rate data before re-fetching from exchange. Default: 60',
+  'cfg.sf.backtestEnabled': 'Dir B Backtest',
+  'cfg.sf.backtestEnabledDesc': 'Enable historical funding filter for Dir B (buy_spot_short) opportunities. Rejects symbols without profitable funding history over the configured window. Default OFF.',
+  'cfg.sf.backtestDays': 'Backtest Days',
+  'cfg.sf.backtestDaysDesc': 'Days of historical futures funding data to check for Dir B opportunities. Default 7.',
+  'cfg.sf.backtestMinProfit': 'Min Profit (bps)',
+  'cfg.sf.backtestMinProfitDesc': 'Minimum cumulative funding in basis points over the backtest window to pass the filter. Default 0.',
+  'cfg.sf.backtestCoinGlassFallback': 'Dir A: CoinGlass Fallback (OKX/Bitget)',
+  'cfg.sf.backtestCoinGlassFallbackDesc': 'Enable Dir A (borrow_sell_long) backtest on OKX and Bitget using the CoinGlass-scraped history at coinGlassMarginFee:hist:*. Requires the fetch_margin_fee.js scraper to have accumulated data (~7 days for a full window). When disabled or Redis is empty, OKX/Bitget Dir A stays unsupported. Default OFF.',
+  'spotBacktest.modal.title': 'Dir B Backtest',
+  'spotBacktest.modal.run': 'Run',
+  'spotBacktest.modal.sumBps': 'Total Funding (bps)',
+  'spotBacktest.modal.projectedApr': 'Projected Net APR',
+  'spotBacktest.modal.settlements': 'Settlements',
+  'spotBacktest.modal.coverage': 'Coverage',
+  'spotBacktest.modal.notSupportedDirA': 'Backtest not yet supported for Dir A (borrow_sell_long)',
+  'spotBacktest.modal.fundingBps': 'Funding (bps)',
+  'spotBacktest.modal.borrowBps': 'Borrow (bps)',
+  'spotBacktest.modal.netBps': 'Net (bps)',
+  'spotBacktest.modal.notSupportedExchange': 'Backtest not yet supported on {exchange}',
+  'spotBacktest.modal.loading': 'Running backtest...',
+  'spotBacktest.modal.error': 'Backtest failed',
   'spot.sourceNative': 'Native',
   'spot.sourceCoinGlass': 'CoinGlass',
   'spot.sourceFallback': 'Fallback',
@@ -724,6 +752,13 @@ const en = {
   'cfg.analytics.enableAnalyticsDesc': 'Enable SQLite-backed performance analytics (PnL charts, strategy comparison, exchange metrics). Requires restart.',
   'cfg.analytics.dbPath': 'Database Path',
   'cfg.analytics.dbPathDesc': 'Path to the SQLite analytics database file',
+
+  // Config - Appearance
+  'cfg.tab.appearance': 'Appearance',
+  'cfg.appearance.theme': 'Dashboard Theme',
+  'cfg.appearance.theme.new': 'New Design',
+  'cfg.appearance.theme.classic': 'Classic',
+  'cfg.appearance.theme.desc': 'Changes apply immediately. Stored in your browser.',
 } as const;
 
 export type TranslationKey = keyof typeof en;

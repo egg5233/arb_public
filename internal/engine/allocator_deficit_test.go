@@ -44,7 +44,7 @@ func computeDeficit(totalNeed, available, marginSafetyMultiplier, futuresTotal, 
 
 func TestComputeDeficit(t *testing.T) {
 	const (
-		marginEpsilon          = 0.005
+		marginL4Headroom       = 0.05
 		marginSafetyMultiplier = 2.0
 		marginL4Threshold      = 0.80
 	)
@@ -76,15 +76,15 @@ func TestComputeDeficit(t *testing.T) {
 		{
 			// Large futuresTotal pushes ratioDeficit above marginDeficit.
 			// totalNeed=5, available=48 → marginDeficit=0 (avail>need)
-			// futuresTotal=1000, targetRatio=0.795, freeTarget=0.205, actualMargin=2.5
-			// ratioDeficit = (0.205*1000 - 48 + 2.5) / 0.795 = 159.5/0.795 ≈ 200.63
-			// max(0, 200.63) = 200.63 → ratio wins
+			// futuresTotal=1000, targetRatio=0.75, freeTarget=0.25, actualMargin=2.5
+			// ratioDeficit = (0.25*1000 - 48 + 2.5) / 0.75 = 204.5/0.75 ≈ 272.67
+			// max(0, 272.67) = 272.67 → ratio wins
 			name:         "ratioDeficit > marginDeficit (large futuresTotal, near L4 threshold)",
 			totalNeed:    5,
 			available:    48,
 			futuresTotal: 1000,
-			wantMin:      199,
-			wantMax:      202,
+			wantMin:      271,
+			wantMax:      274,
 			wantDominant: "ratio",
 		},
 		{
@@ -116,15 +116,15 @@ func TestComputeDeficit(t *testing.T) {
 			// marginSafetyMultiplier = 0 → actualMargin falls back to totalNeed.
 			// totalNeed=100, available=80, multiplier=0 → actualMargin=100 (fallback)
 			// marginDeficit = 100 - 80 = 20
-			// futuresTotal=200, targetRatio=0.795, freeTarget=0.205
-			// ratioDeficit = (0.205*200 - 80 + 100) / 0.795 = 61/0.795 ≈ 76.73
-			// max(20, 76.73) → ratio wins, result ≈ 76.73
+			// futuresTotal=200, targetRatio=0.75, freeTarget=0.25
+			// ratioDeficit = (0.25*200 - 80 + 100) / 0.75 = 70/0.75 ≈ 93.33
+			// max(20, 93.33) → ratio wins, result ≈ 93.33
 			name:                "edge: marginSafetyMultiplier = 0 (actualMargin falls back to totalNeed)",
 			totalNeed:           100,
 			available:           80,
 			futuresTotal:        200,
-			wantMin:             75,
-			wantMax:             78,
+			wantMin:             92,
+			wantMax:             95,
 			wantDominant:        "ratio",
 		},
 	}
@@ -136,7 +136,7 @@ func TestComputeDeficit(t *testing.T) {
 				multiplier = 0
 			}
 
-			got := computeDeficit(tt.totalNeed, tt.available, multiplier, tt.futuresTotal, marginL4Threshold, marginEpsilon)
+			got := computeDeficit(tt.totalNeed, tt.available, multiplier, tt.futuresTotal, marginL4Threshold, marginL4Headroom)
 
 			// Check range
 			if got < tt.wantMin || got > tt.wantMax {
@@ -153,7 +153,7 @@ func TestComputeDeficit(t *testing.T) {
 			if actualM <= 0 {
 				actualM = tt.totalNeed
 			}
-			targetRatio := marginL4Threshold - marginEpsilon
+			targetRatio := marginL4Threshold - marginL4Headroom
 			freeTarget := 1.0 - targetRatio
 			var ratioD float64
 			if freeTarget > 0 && tt.futuresTotal > 0 {
@@ -185,7 +185,7 @@ func TestComputeDeficit(t *testing.T) {
 // across a range of adversarial inputs.
 func TestComputeDeficitNeverNegative(t *testing.T) {
 	const (
-		marginEpsilon          = 0.005
+		marginL4Headroom       = 0.05
 		marginSafetyMultiplier = 2.0
 		marginL4Threshold      = 0.80
 	)
@@ -203,7 +203,7 @@ func TestComputeDeficitNeverNegative(t *testing.T) {
 
 	for _, c := range cases {
 		totalNeed, available, futuresTotal, mult := c[0], c[1], c[2], c[3]
-		got := computeDeficit(totalNeed, available, mult, futuresTotal, marginL4Threshold, marginEpsilon)
+		got := computeDeficit(totalNeed, available, mult, futuresTotal, marginL4Threshold, marginL4Headroom)
 		if got < 0 {
 			t.Errorf("computeDeficit(need=%.3f, avail=%.3f, futures=%.3f, mult=%.1f) = %.6f, want >= 0",
 				totalNeed, available, futuresTotal, mult, got)

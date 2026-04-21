@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -179,7 +180,9 @@ func main() {
 		}()
 	}
 	scorer := risk.NewExchangeScorer(cfg)
-	for name, exch := range exchanges {
+	// attachScorerCallbacks wires REST/WS/order metrics on a single adapter.
+	// Called at startup (initial wiring) and on ExchangeManager reload events.
+	attachScorerCallbacks := func(name string, exch exchange.Exchange) {
 		exchangeName := name
 		exch.SetMetricsCallback(func(endpoint string, latency time.Duration, err error) {
 			scorer.RecordLatency(exchangeName, endpoint, latency, err)
@@ -194,6 +197,9 @@ func main() {
 				scorer.RecordOrderEvent(exchangeName, event)
 			})
 		}
+	}
+	for name, exch := range exchanges {
+		attachScorerCallbacks(name, exch)
 	}
 	riskMgr := risk.NewManager(exchanges, db, cfg, allocator)
 	riskMgr.SetSpreadHistoryProvider(scanner.GetSpreadHistorySnapshot)
@@ -218,10 +224,10 @@ func main() {
 	// Ensure all exchanges are in cross-margin one-way mode.
 	for name, exch := range exchanges {
 		if err := exch.EnsureOneWayMode(); err != nil {
-			log.Error("EnsureOneWayMode on %s: %v", name, err)
-		} else {
-			log.Info("%s: one-way mode confirmed", name)
+			log.Error("FATAL: EnsureOneWayMode on %s failed: %v", name, err)
+			os.Exit(1)
 		}
+		log.Info("%s: one-way mode confirmed", name)
 	}
 
 	// Create shared rejection store and wire to all components.
@@ -371,6 +377,12 @@ func main() {
 	// Exchange hot-reload: rebuild adapters when API keys or enabled state change.
 	exchMgr := engine.NewExchangeManager(cfg)
 	exchMgr.SetExchanges(exchanges)
+	// Re-attach callbacks after a reload. Scorer wiring (main-owned) and engine
+	// wiring (SL/TP fill + algo-remap) must both re-fire or reload silently drops
+	// them on the new adapter — a latent bug for all existing *CallbackSetter
+	// implementations.
+	exchMgr.AddReloadHandler(attachScorerCallbacks)
+	exchMgr.AddReloadHandler(eng.AttachAdapterCallbacks)
 	go func() {
 		ch := notifier.Subscribe()
 		for range ch {
@@ -433,6 +445,9 @@ func main() {
 		apiSrv.SetSpotCloseHandler(spotEng.ManualClose)
 		apiSrv.SetSpotTestInjectHandler(spotEng.InjectTestOpportunity)
 		apiSrv.SetSpotMaintenanceWarning(spotEng.MaintenanceWarning)
+		apiSrv.SetSpotBacktestHandler(func(ctx context.Context, symbol, exchange, direction string, days int) (interface{}, error) {
+			return spotEng.RunSpotBacktestOnDemand(ctx, symbol, exchange, direction, days)
+		})
 		spotEng.Start()
 		eng.SetSpotCloseCallback(spotEng.ClosePosition)
 		log.Info("Spot-futures engine started")

@@ -1,6 +1,7 @@
 package spotengine
 
 import (
+	"context"
 	"errors"
 	"math"
 	"strings"
@@ -83,9 +84,11 @@ func (s *closeTestExchange) SetMetricsCallback(exchange.MetricsCallback) {}
 func (s *closeTestExchange) PlaceStopLoss(exchange.StopLossParams) (string, error) {
 	return "", nil
 }
-func (s *closeTestExchange) CancelStopLoss(string, string) error                      { return nil }
-func (s *closeTestExchange) PlaceTakeProfit(exchange.TakeProfitParams) (string, error) { return "", nil }
-func (s *closeTestExchange) CancelTakeProfit(string, string) error                     { return nil }
+func (s *closeTestExchange) CancelStopLoss(string, string) error { return nil }
+func (s *closeTestExchange) PlaceTakeProfit(exchange.TakeProfitParams) (string, error) {
+	return "", nil
+}
+func (s *closeTestExchange) CancelTakeProfit(string, string) error { return nil }
 func (s *closeTestExchange) GetUserTrades(string, time.Time, int) ([]exchange.Trade, error) {
 	return nil, nil
 }
@@ -99,9 +102,9 @@ func (s *closeTestExchange) WithdrawFeeInclusive() bool { return false }
 func (s *closeTestExchange) GetWithdrawFee(string, string) (float64, float64, error) {
 	return 0, 0, nil
 }
-func (s *closeTestExchange) EnsureOneWayMode() error  { return nil }
+func (s *closeTestExchange) EnsureOneWayMode() error      { return nil }
 func (s *closeTestExchange) CancelAllOrders(string) error { return nil }
-func (s *closeTestExchange) Close()                   {}
+func (s *closeTestExchange) Close()                       {}
 
 type closeTestSpotMargin struct {
 	placeCalls   int
@@ -114,6 +117,8 @@ type closeTestSpotMargin struct {
 	repayAmounts []string
 	marginBal    *exchange.MarginBalance
 	onPlace      func(call int, params exchange.SpotMarginOrderParams)
+	spotRules    *exchange.SpotOrderRules
+	spotRulesErr error
 }
 
 func (s *closeTestSpotMargin) MarginBorrow(exchange.MarginBorrowParams) error { return nil }
@@ -149,6 +154,12 @@ func (s *closeTestSpotMargin) GetSpotBBO(string) (exchange.BBO, error) {
 }
 func (s *closeTestSpotMargin) TransferToMargin(string, string) error   { return nil }
 func (s *closeTestSpotMargin) TransferFromMargin(string, string) error { return nil }
+func (s *closeTestSpotMargin) GetMarginInterestRateHistory(_ context.Context, _ string, _, _ time.Time) ([]exchange.MarginInterestRatePoint, error) {
+	return nil, exchange.ErrHistoricalBorrowNotSupported
+}
+func (s *closeTestSpotMargin) SpotOrderRules(string) (*exchange.SpotOrderRules, error) {
+	return s.spotRules, s.spotRulesErr
+}
 func (s *closeTestSpotMargin) GetSpotMarginOrder(string, string) (*exchange.SpotMarginOrderStatus, error) {
 	s.queryCalls++
 	if len(s.queryErrs) > 0 {
@@ -359,6 +370,35 @@ func TestClosePosition_RetriesOnlyRemainingSpotQtyAfterPartialExit(t *testing.T)
 	}
 	if stored.SpotExitFilledQty != 1 {
 		t.Fatalf("stored spot exit filled qty = %.2f, want 1", stored.SpotExitFilledQty)
+	}
+}
+
+func TestManualOpen_RejectsDelistedSymbol(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	engine.cfg = &config.Config{
+		SpotFuturesMaxPositions:   5,
+		SpotFuturesLeverage:       3,
+		SpotFuturesCapitalUnified: 100,
+		DelistFilterEnabled:       true,
+	}
+	engine.api = api.NewServer(engine.db, engine.cfg, nil)
+	engine.exchanges = map[string]exchange.Exchange{"stub": &closeTestExchange{}}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{"stub": &closeTestSpotMargin{}}
+	engine.latestOpps = []SpotArbOpportunity{
+		{Symbol: "DEGOUSDT", BaseCoin: "DEGO", Exchange: "stub", Direction: "buy_spot_short"},
+	}
+
+	// Simulate the discovery poller having written the delist blacklist entry.
+	mr.Set("arb:delist:DEGOUSDT", "1")
+
+	err := engine.ManualOpen("DEGOUSDT", "stub", "buy_spot_short")
+	if err == nil {
+		t.Fatal("expected ManualOpen to block delist-flagged symbol")
+	}
+	if !strings.Contains(err.Error(), "delist") {
+		t.Fatalf("error = %v, want delist-related message", err)
 	}
 }
 

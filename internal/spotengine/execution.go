@@ -110,6 +110,16 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		return fmt.Errorf("opportunity %s on %s (%s) is filtered: %s", symbol, exchName, direction, opp.FilterStatus)
 	}
 
+	// 1b2. Delist filter — same flag + same Redis key (arb:delist:{SYMBOL})
+	// used by the autoentry risk-gate and the monitor's active-position exit.
+	// Without this, ManualOpen would let users open positions on symbols that
+	// the monitor is about to force-exit. Incident: sf-degousdt-1776738361635
+	// on 2026-04-21 opened manually on a delist-flagged coin and then got
+	// emergency-exited minutes later by the monitor.
+	if e.cfg.DelistFilterEnabled && e.db.IsDelisted(symbol) {
+		return fmt.Errorf("%s is flagged for delist — refusing manual open (toggle DelistFilterEnabled off to override)", symbol)
+	}
+
 	// 1c. Check exchange supports SpotMarginExchange.
 	smExch, ok := e.spotMargin[exchName]
 	if !ok {
@@ -280,6 +290,7 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		FeePct:           opp.FeePct,
 		CurrentBorrowAPR: opp.BorrowAPR,
 		NotionalUSDT:     plannedNotional,
+		HedgeIntact:      true,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
@@ -564,9 +575,15 @@ func (e *SpotEngine) executeBuySpotShort(
 	if querier, ok := smExch.(exchange.SpotMarginOrderQuerier); ok {
 		if feeStatus, qErr := querier.GetSpotMarginOrder(spotOrderID, symbol); qErr == nil && feeStatus != nil && feeStatus.FeeDeducted > 0 {
 			spotNetReceived = spotFilled - feeStatus.FeeDeducted
-			// Floor to spot lot step (0.00001 = 5dp) so the exit sell passes LOT_SIZE.
-			spotNetReceived = math.Floor(spotNetReceived*1e5) / 1e5
-			e.log.Info("ManualOpen [buy_spot_short] step 1: fee deducted=%.8f net received=%.6f (gross=%.6f)", feeStatus.FeeDeducted, spotNetReceived, spotFilled)
+			// Floor to the spot LOT_SIZE step so the exit sell passes LOT_SIZE.
+			// Hardcoding 5dp (1e-5) previously caused DEGOUSDT (step=0.01) to
+			// store 1258.1406, which Binance later rejected on SELL with -1013.
+			qtyStep := 1e-5
+			if rules, rErr := smExch.SpotOrderRules(symbol); rErr == nil && rules != nil && rules.QtyStep > 0 {
+				qtyStep = rules.QtyStep
+			}
+			spotNetReceived = utils.RoundToStep(spotNetReceived, qtyStep)
+			e.log.Info("ManualOpen [buy_spot_short] step 1: fee deducted=%.8f net received=%.6f (gross=%.6f, step=%g)", feeStatus.FeeDeducted, spotNetReceived, spotFilled, qtyStep)
 		}
 	}
 
@@ -1265,6 +1282,60 @@ func (e *SpotEngine) retryLeg(name string, maxRetries int, delay time.Duration, 
 	return fmt.Errorf("%s failed after %d attempts: %w", name, maxRetries, lastErr)
 }
 
+// isSpotResidualDust reports whether remaining spot qty is below the exchange's
+// minimum tradeable size after flooring to QtyStep. Returns (isDust, effectiveQty).
+// On dust, callers mark the spot leg closed instead of retrying a doomed order.
+func isSpotResidualDust(rules *exchange.SpotOrderRules, remaining, priceHint float64) (bool, float64) {
+	effectiveQty := math.Floor(remaining/rules.QtyStep) * rules.QtyStep
+	if effectiveQty < rules.MinBaseQty {
+		return true, effectiveQty
+	}
+	if rules.MinNotional > 0 && effectiveQty*priceHint < rules.MinNotional {
+		return true, effectiveQty
+	}
+	return false, effectiveQty
+}
+
+// isAlreadyFlatError reports whether err indicates the futures position is already
+// closed at the exchange — used for idempotent close detection on monitor retries.
+func isAlreadyFlatError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "empty position") ||
+		strings.Contains(msg, "position not exist") ||
+		strings.Contains(msg, "no position") ||
+		strings.Contains(msg, "position is zero") ||
+		strings.Contains(msg, "reduce only order") ||
+		// Binance futures: "-2022 ReduceOnly Order is rejected" — no space in
+		// "ReduceOnly", so the above pattern doesn't match. Seen in the DEGO
+		// incident on 2026-04-21 when the monitor retry hit a position whose
+		// futures leg had been closed in an earlier attempt but the record
+		// still read as active.
+		strings.Contains(msg, "reduceonly order") ||
+		strings.Contains(msg, "code=-2022")
+}
+
+// verifyFuturesFlat double-checks with GetPosition whether the futures leg is
+// flat. Returns true only when the exchange confirms zero open contracts.
+func verifyFuturesFlat(futExch exchange.Exchange, symbol string) bool {
+	positions, err := futExch.GetPosition(symbol)
+	if err != nil {
+		return false
+	}
+	if len(positions) == 0 {
+		return true
+	}
+	for _, p := range positions {
+		size, parseErr := strconv.ParseFloat(p.Total, 64)
+		if parseErr != nil {
+			return false
+		}
+		if math.Abs(size) > 1e-8 {
+			return false
+		}
+	}
+	return true
+}
+
 // ClosePosition closes an active spot-futures position by unwinding both legs.
 // For Direction A (borrow_sell_long): close futures long → buy back spot → repay borrow.
 // For Direction B (buy_spot_short): close futures short → sell spot.
@@ -1273,6 +1344,12 @@ func (e *SpotEngine) retryLeg(name string, maxRetries int, delay time.Duration, 
 // The method updates pos.SpotExitPrice and pos.FuturesExit in place on success.
 func (e *SpotEngine) ClosePosition(pos *models.SpotFuturesPosition, reason string, isEmergency bool) error {
 	e.log.Info("ClosePosition: %s on %s reason=%s emergency=%v", pos.Symbol, pos.Exchange, reason, isEmergency)
+	pos.SyncHedgeState()
+	if pos.HedgeBroken {
+		e.log.Error("ClosePosition: refusing to close %s on %s because hedge is broken", pos.Symbol, pos.Exchange)
+		e.telegram.NotifySpotCloseBlocked(pos, reason)
+		return fmt.Errorf("hedge broken for %s on %s", pos.Symbol, pos.Exchange)
+	}
 
 	futExch, ok := e.exchanges[pos.Exchange]
 	if !ok {
@@ -1326,6 +1403,16 @@ func (e *SpotEngine) closeDirectionA(
 				ReduceOnly: true,
 			})
 			if placeErr != nil {
+				if isAlreadyFlatError(placeErr) && verifyFuturesFlat(futExch, pos.Symbol) {
+					e.log.Info("ClosePosition [Dir A]: futures already flat (idempotent): %v", placeErr)
+					if pos.FuturesExit == 0 {
+						if ob, obErr := futExch.GetOrderbook(pos.Symbol, 5); obErr == nil && len(ob.Bids) > 0 && len(ob.Asks) > 0 {
+							pos.FuturesExit = (ob.Bids[0].Price + ob.Asks[0].Price) / 2
+						}
+					}
+					futFilled, futAvg = pos.FuturesSize, pos.FuturesExit
+					return nil
+				}
 				return fmt.Errorf("close futures long failed: %w", placeErr)
 			}
 			filled, avg := e.confirmFuturesFill(futExch, orderID, pos.Symbol)
@@ -1391,6 +1478,31 @@ func (e *SpotEngine) closeDirectionA(
 	} else {
 		// Standard path: buy back spot with auto-repay.
 		e.log.Info("ClosePosition [Dir A] step 2: buy back spot BUY %s %s", pos.Symbol, utils.FormatSize(remainingSpotExitQty(pos), 6))
+		// Dust short-circuit: if the residue is below exchange minimum, verify no
+		// outstanding borrow before marking the spot leg closed (Dir A has borrow liability).
+		if rules, rulesErr := smExch.SpotOrderRules(pos.Symbol); rulesErr == nil && rules != nil {
+			remaining := remainingSpotExitQty(pos)
+			refPrice := pos.FuturesExit
+			if refPrice <= 0 {
+				refPrice = pos.SpotEntryPrice
+			}
+			if isDust, eff := isSpotResidualDust(rules, remaining, refPrice); isDust {
+				bal, balErr := smExch.GetMarginBalance(pos.BaseCoin)
+				borrowed := 0.0
+				if bal != nil {
+					borrowed = bal.Borrowed
+				}
+				if balErr == nil && borrowed <= rules.MinBaseQty*0.001 {
+					e.log.Warn("ClosePosition [Dir A]: spot residue %.6f (eff %.6f) is dust, borrow=%.8f cleared — marking closed",
+						remaining, eff, borrowed)
+					pos.SpotExitFilledQty = pos.SpotSize
+					pos.SpotExitFilled = true
+					pos.ExitReason += fmt.Sprintf(" (spot dust residue ignored: %.6f %s)", remaining, pos.BaseCoin)
+					return nil
+				}
+				e.log.Warn("ClosePosition [Dir A]: spot residue %.6f is dust but borrow=%.8f remains — continuing", remaining, borrowed)
+			}
+		}
 		err := e.retryLeg("dirA-spot-buyback", 3, 2*time.Second, func() error {
 			orderID := pos.PendingSpotExitOrderID
 			if orderID == "" {
@@ -1574,6 +1686,16 @@ func (e *SpotEngine) closeDirectionB(
 				ReduceOnly: true,
 			})
 			if placeErr != nil {
+				if isAlreadyFlatError(placeErr) && verifyFuturesFlat(futExch, pos.Symbol) {
+					e.log.Info("ClosePosition [Dir B]: futures already flat (idempotent): %v", placeErr)
+					if pos.FuturesExit == 0 {
+						if ob, obErr := futExch.GetOrderbook(pos.Symbol, 5); obErr == nil && len(ob.Bids) > 0 && len(ob.Asks) > 0 {
+							pos.FuturesExit = (ob.Bids[0].Price + ob.Asks[0].Price) / 2
+						}
+					}
+					futFilled, futAvg = pos.FuturesSize, pos.FuturesExit
+					return nil
+				}
 				return fmt.Errorf("close futures short failed: %w", placeErr)
 			}
 			filled, avg := e.confirmFuturesFill(futExch, orderID, pos.Symbol)
@@ -1609,6 +1731,27 @@ func (e *SpotEngine) closeDirectionB(
 		e.log.Info("ClosePosition [Dir B] step 2: spot already closed (exit=%.6f), skipping", pos.SpotExitPrice)
 	} else {
 		e.log.Info("ClosePosition [Dir B] step 2: sell spot SELL %s %s", pos.Symbol, utils.FormatSize(remainingSpotExitQty(pos), 6))
+		// Fetch rules once — used for dust short-circuit and for flooring the
+		// sell qty to LOT_SIZE step (avoids Binance -1013 when SpotSize from a
+		// quote-qty market buy is not aligned to stepSize, e.g. DEGOUSDT 1258.1406
+		// vs step=0.01).
+		var spotRules *exchange.SpotOrderRules
+		if rules, rulesErr := smExch.SpotOrderRules(pos.Symbol); rulesErr == nil && rules != nil {
+			spotRules = rules
+			remaining := remainingSpotExitQty(pos)
+			priceHint := pos.FuturesExit
+			if priceHint <= 0 {
+				priceHint = pos.SpotEntryPrice
+			}
+			if isDust, eff := isSpotResidualDust(rules, remaining, priceHint); isDust {
+				e.log.Warn("ClosePosition [Dir B]: spot residue %.6f (eff %.6f) below minBase=%.6f/minNotional=%.2f — marking closed",
+					remaining, eff, rules.MinBaseQty, rules.MinNotional)
+				pos.SpotExitFilledQty = pos.SpotSize
+				pos.SpotExitFilled = true
+				pos.ExitReason += fmt.Sprintf(" (spot dust residue ignored: %.6f %s)", remaining, pos.BaseCoin)
+				return nil
+			}
+		}
 		err := e.retryLeg("dirB-spot-sell", 3, 2*time.Second, func() error {
 			orderID := pos.PendingSpotExitOrderID
 			if orderID == "" {
@@ -1618,7 +1761,19 @@ func (e *SpotEngine) closeDirectionB(
 					pos.SpotExitFilled = true
 					return nil
 				}
-				remainingStr := utils.FormatSize(remaining, 6)
+				sellQty := remaining
+				if spotRules != nil && spotRules.QtyStep > 0 {
+					sellQty = utils.RoundToStep(remaining, spotRules.QtyStep)
+					if sellQty <= 0 {
+						// Floored to zero — residue below step is dust, mark closed.
+						e.log.Warn("ClosePosition [Dir B]: remaining %.8f floors to 0 at step=%g — marking closed", remaining, spotRules.QtyStep)
+						pos.SpotExitFilledQty = pos.SpotSize
+						pos.SpotExitFilled = true
+						pos.ExitReason += fmt.Sprintf(" (spot dust residue ignored: %.8f %s)", remaining, pos.BaseCoin)
+						return nil
+					}
+				}
+				remainingStr := utils.FormatSize(sellQty, 6)
 				var placeErr error
 				orderID, placeErr = smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
 					Symbol:    pos.Symbol,
@@ -1737,6 +1892,17 @@ func (e *SpotEngine) emergencyClose(
 			ReduceOnly: true,
 		})
 		if err != nil {
+			if isAlreadyFlatError(err) && verifyFuturesFlat(futExch, pos.Symbol) {
+				e.log.Info("EMERGENCY: futures already flat (idempotent): %v", err)
+				avg := pos.FuturesExit
+				if avg == 0 {
+					if ob, obErr := futExch.GetOrderbook(pos.Symbol, 5); obErr == nil && len(ob.Bids) > 0 && len(ob.Asks) > 0 {
+						avg = (ob.Bids[0].Price + ob.Asks[0].Price) / 2
+					}
+				}
+				ch <- result{leg: "futures", avg: avg}
+				return
+			}
 			ch <- result{leg: "futures", err: fmt.Errorf("futures close: %w", err)}
 			return
 		}
@@ -1753,7 +1919,52 @@ func (e *SpotEngine) emergencyClose(
 			ch <- result{leg: "spot", avg: pos.SpotExitPrice}
 			return
 		}
-		remainingStr := utils.FormatSize(remaining, 6)
+		// Fetch rules once — used for both dust short-circuit and step-aware
+		// rounding of the sell qty (codex review, v0.32.38). Without rounding
+		// here, a delist-triggered EMERGENCY first-attempt close of a position
+		// with LOT_SIZE-unaligned SpotSize (e.g. DEGOUSDT 1258.1406, step=0.01)
+		// is rejected with -1013 and only heals later via non-emergency retry.
+		var spotRules *exchange.SpotOrderRules
+		if rules, rulesErr := smExch.SpotOrderRules(pos.Symbol); rulesErr == nil && rules != nil {
+			spotRules = rules
+			if isDust, eff := isSpotResidualDust(rules, remaining, pos.SpotEntryPrice); isDust {
+				if pos.Direction == "borrow_sell_long" {
+					bal, balErr := smExch.GetMarginBalance(pos.BaseCoin)
+					borrowed := 0.0
+					if bal != nil {
+						borrowed = bal.Borrowed
+					}
+					if balErr == nil && borrowed <= rules.MinBaseQty*0.001 {
+						e.log.Warn("EMERGENCY: spot residue %.6f (eff %.6f) is dust, borrow=%.8f cleared — marking closed", remaining, eff, borrowed)
+						pos.SpotExitFilledQty = pos.SpotSize
+						pos.SpotExitFilled = true
+						ch <- result{leg: "spot", avg: pos.SpotExitPrice}
+						return
+					}
+					e.log.Warn("EMERGENCY: spot residue %.6f is dust but borrow=%.8f remains — attempting order", remaining, borrowed)
+				} else {
+					e.log.Warn("EMERGENCY: spot residue %.6f (eff %.6f) is dust — marking closed", remaining, eff)
+					pos.SpotExitFilledQty = pos.SpotSize
+					pos.SpotExitFilled = true
+					ch <- result{leg: "spot", avg: pos.SpotExitPrice}
+					return
+				}
+			}
+		}
+		sellQty := remaining
+		// Only round SELL (Dir-B exit). Dir-A buyback left untouched to preserve
+		// existing residual-borrow semantics handled downstream.
+		if spotSide == exchange.SideSell && spotRules != nil && spotRules.QtyStep > 0 {
+			sellQty = utils.RoundToStep(remaining, spotRules.QtyStep)
+			if sellQty <= 0 {
+				e.log.Warn("EMERGENCY: remaining %.8f floors to 0 at step=%g — marking closed", remaining, spotRules.QtyStep)
+				pos.SpotExitFilledQty = pos.SpotSize
+				pos.SpotExitFilled = true
+				ch <- result{leg: "spot", avg: pos.SpotExitPrice}
+				return
+			}
+		}
+		remainingStr := utils.FormatSize(sellQty, 6)
 		var quoteEst string
 		if spotSide == exchange.SideBuy {
 			quoteEst = utils.FormatSize(remaining*pos.SpotEntryPrice*1.02, 2)
@@ -1788,6 +1999,16 @@ func (e *SpotEngine) emergencyClose(
 			return
 		}
 		applySpotExitFill(pos, filled, avg)
+		// If we intentionally rounded sellQty down to step (Dir-B), the known
+		// residue between sellQty and original remaining is dust that can't be
+		// sold — mark the leg complete instead of reporting partial-fill error.
+		if spotSide == exchange.SideSell && sellQty < remaining && filled+spotQtyTolerance >= sellQty {
+			dustResidue := remaining - sellQty
+			e.log.Warn("EMERGENCY: spot fill=%.6f matches rounded sellQty=%.6f (dust residue %.8f ignored)",
+				filled, sellQty, dustResidue)
+			pos.SpotExitFilledQty = pos.SpotSize
+			pos.SpotExitFilled = true
+		}
 		if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
 			e.log.Error("EMERGENCY: failed to checkpoint spot exit fill for %s: %v", orderID, cpErr)
 		}

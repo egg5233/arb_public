@@ -676,12 +676,12 @@ func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 		Code string `json:"code"`
 		Msg  string `json:"msg"`
 		Data struct {
-			AccountEquity      string `json:"accountEquity"`
-			Available          string `json:"available"`
-			CrossedMaxAvail    string `json:"crossedMaxAvailable"`
-			Frozen             string `json:"locked"`
-			CrossedRiskRate    string `json:"crossedRiskRate"`
-			MaxTransferOut     string `json:"maxTransferOut"`
+			AccountEquity   string `json:"accountEquity"`
+			Available       string `json:"available"`
+			CrossedMaxAvail string `json:"crossedMaxAvailable"`
+			Frozen          string `json:"locked"`
+			CrossedRiskRate string `json:"crossedRiskRate"`
+			MaxTransferOut  string `json:"maxTransferOut"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(raw), &resp); err != nil {

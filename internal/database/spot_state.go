@@ -34,6 +34,7 @@ const (
 // active set; closed positions are removed.
 func (c *Client) SaveSpotPosition(pos *models.SpotFuturesPosition) error {
 	ctx := context.Background()
+	pos.SyncHedgeState()
 
 	data, err := json.Marshal(pos)
 	if err != nil {
@@ -70,6 +71,7 @@ func (c *Client) GetSpotPosition(id string) (*models.SpotFuturesPosition, error)
 	if err := json.Unmarshal(data, &pos); err != nil {
 		return nil, fmt.Errorf("unmarshal spot position: %w", err)
 	}
+	pos.SyncHedgeState()
 	return &pos, nil
 }
 
@@ -104,6 +106,7 @@ func (c *Client) GetActiveSpotPositions() ([]*models.SpotFuturesPosition, error)
 		if err := json.Unmarshal([]byte(s), &pos); err != nil {
 			continue
 		}
+		pos.SyncHedgeState()
 		positions = append(positions, &pos)
 	}
 	return positions, nil
@@ -162,6 +165,7 @@ func (c *Client) GetSpotHistory(limit int) ([]*models.SpotFuturesPosition, error
 		if err := json.Unmarshal([]byte(v), &pos); err != nil {
 			continue
 		}
+		pos.SyncHedgeState()
 		positions = append(positions, &pos)
 	}
 	return positions, nil

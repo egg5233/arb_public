@@ -45,16 +45,55 @@ type RiskChecker interface {
 	ApproveWithReserved(opp Opportunity, reserved map[string]float64) (*RiskApproval, error)
 }
 
+// RejectionKind classifies why a risk approval was rejected so callers can
+// decide whether the rejection is curable by cross-exchange transfer.
+// Zero value (RejectionKindNone) applies to approved opportunities.
+type RejectionKind int
+
+const (
+	RejectionKindNone     RejectionKind = iota // Approved=true
+	RejectionKindCapital                        // curable by transfer: insufficient capital / margin buffer / post-trade ratio / notional floor
+	RejectionKindCapacity                       // NOT curable: per-exchange capital cap
+	RejectionKindMarket                         // NOT curable: empty orderbook
+	RejectionKindSpread                         // NOT curable: slippage / gap / stability
+	RejectionKindHealth                         // NOT curable: exchange health scorer
+	RejectionKindConfig                         // NOT curable: max positions / exchange not configured
+)
+
+func (k RejectionKind) String() string {
+	switch k {
+	case RejectionKindCapital:
+		return "capital"
+	case RejectionKindCapacity:
+		return "capacity"
+	case RejectionKindMarket:
+		return "market"
+	case RejectionKindSpread:
+		return "spread"
+	case RejectionKindHealth:
+		return "health"
+	case RejectionKindConfig:
+		return "config"
+	default:
+		return "none"
+	}
+}
+
 // RiskApproval holds the result of a RiskChecker.Approve call.
 type RiskApproval struct {
-	Approved       bool    `json:"approved"`
-	Size           float64 `json:"size"`
-	Reason         string  `json:"reason"`
-	Price          float64 `json:"price"`
-	GapBPS         float64 `json:"gap_bps"`         // cross-exchange price gap at approval time
-	RequiredMargin   float64 `json:"required_margin"`    // max(long,short) margin with safety buffer (for reservation)
-	LongMarginNeeded float64 `json:"long_margin_needed"` // per-leg margin needed on long exchange (with buffer)
-	ShortMarginNeeded float64 `json:"short_margin_needed"` // per-leg margin needed on short exchange (with buffer)
+	Approved          bool          `json:"approved"`
+	Kind              RejectionKind `json:"kind"`                  // rejection classification
+	Size              float64       `json:"size"`
+	Reason            string        `json:"reason"`
+	Price             float64       `json:"price"`
+	GapBPS            float64       `json:"gap_bps"`               // cross-exchange price gap at approval time
+	// RequiredMargin is max(LongMarginNeeded, ShortMarginNeeded) with the
+	// safety buffer already applied (for reservation purposes).
+	// IMPORTANT: this value already includes the safety buffer — do NOT
+	// multiply by MarginSafetyMultiplier again at call sites.
+	RequiredMargin    float64       `json:"required_margin"`       // max(long,short) margin with safety buffer (for reservation)
+	LongMarginNeeded  float64       `json:"long_margin_needed"`    // per-leg margin needed on long exchange (with buffer)
+	ShortMarginNeeded float64       `json:"short_margin_needed"`   // per-leg margin needed on short exchange (with buffer)
 }
 
 // RiskAlert represents an alert emitted by the risk monitor for dashboard

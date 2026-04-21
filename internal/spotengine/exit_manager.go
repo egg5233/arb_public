@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"arb/internal/models"
+	"arb/internal/risk"
 	"arb/pkg/exchange"
 )
 
@@ -158,21 +159,24 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 		futExch, futOk := e.exchanges[pos.Exchange]
 		if futOk {
 			bal, err := futExch.GetFuturesBalance()
-			if err == nil && bal.MarginRatio > 0 {
-				futUtilPct := bal.MarginRatio * 100
-				if futUtilPct > pos.MarginUtilizationPct {
-					pos.MarginUtilizationPct = futUtilPct
-				}
+			if err == nil {
+				liqRisk := risk.LiquidationRiskRatio(bal)
+				if liqRisk > 0 {
+					futUtilPct := liqRisk * 100
+					if futUtilPct > pos.MarginUtilizationPct {
+						pos.MarginUtilizationPct = futUtilPct
+					}
 
-				if futUtilPct > marginEmergencyPct {
-					e.log.Error("exit trigger: %s EMERGENCY futures margin ratio %.1f%% > %.1f%%",
-						pos.Symbol, futUtilPct, marginEmergencyPct)
-					return "margin_health_exit", true
-				}
-				if futUtilPct > marginExitPct {
-					e.log.Warn("exit trigger: %s futures margin ratio %.1f%% > %.1f%%",
-						pos.Symbol, futUtilPct, marginExitPct)
-					return "margin_health_exit", false
+					if futUtilPct > marginEmergencyPct {
+						e.log.Error("exit trigger: %s EMERGENCY futures margin ratio %.1f%% > %.1f%%",
+							pos.Symbol, futUtilPct, marginEmergencyPct)
+						return "margin_health_exit", true
+					}
+					if futUtilPct > marginExitPct {
+						e.log.Warn("exit trigger: %s futures margin ratio %.1f%% > %.1f%%",
+							pos.Symbol, futUtilPct, marginExitPct)
+						return "margin_health_exit", false
+					}
 				}
 			} else if err != nil {
 				e.log.Warn("exit check: %s GetFuturesBalance failed: %v", pos.Symbol, err)
@@ -183,8 +187,9 @@ func (e *SpotEngine) checkExitTriggers(pos *models.SpotFuturesPosition) (reason 
 		futExch, ok := e.exchanges[pos.Exchange]
 		if ok {
 			bal, err := futExch.GetFuturesBalance()
-			if err == nil && bal.MarginRatio > 0 {
-				utilPct := bal.MarginRatio * 100
+			liqRisk := risk.LiquidationRiskRatio(bal)
+			if err == nil && liqRisk > 0 {
+				utilPct := liqRisk * 100
 				pos.MarginUtilizationPct = utilPct
 
 				if utilPct > marginEmergencyPct {
@@ -427,6 +432,13 @@ func (e *SpotEngine) estimateUnwindSlippage(pos *models.SpotFuturesPosition) flo
 // initiateExit runs the full exit sequence for a position. It should be called
 // in a goroutine for automated exits, or synchronously for manual closes.
 func (e *SpotEngine) initiateExit(pos *models.SpotFuturesPosition, reason string, isEmergency bool) {
+	pos.SyncHedgeState()
+	if pos.HedgeBroken {
+		e.log.Error("initiateExit: refusing exit for %s on %s — hedge broken (reason=%s)", pos.ID, pos.Exchange, reason)
+		e.telegram.NotifySpotCloseBlocked(pos, reason)
+		return
+	}
+
 	// Mark as exiting (prevent double-trigger).
 	e.exitMu.Lock()
 	e.exitState.exiting[pos.ID] = true

@@ -23,6 +23,14 @@ import (
 
 var errPartialEntry = errors.New("partial entry: consolidator will reconcile")
 
+// activePositionsGetter is a minimal interface over the DB read used by the
+// staged entry-scan path. The indirection allows tests to inject a failing stub
+// to exercise the retry + salvage branches without needing a real Redis server.
+// Production code wires e.activePosSource = e.db in NewEngine.
+type activePositionsGetter interface {
+	GetActivePositions() ([]*models.ArbitragePosition, error)
+}
+
 // isAlreadySetError detects harmless "already set" responses from exchanges
 // when setting leverage or margin mode to the current value.
 func isAlreadySetError(err error) bool {
@@ -98,10 +106,10 @@ type Engine struct {
 	apiErrMu     sync.Mutex
 	apiErrCounts map[string]int // exchange name -> consecutive failure count
 
-	// SL fill detection: reverse index from (exchange:orderID) → (posID, leg).
+	// SL/TP fill detection: reverse index from (exchange:orderID) → (posID, leg, kind).
 	slIndexMu sync.RWMutex
-	slIndex   map[string]slEntry // "exchange:orderID" → posID + leg
-	slFillCh  chan slFillEvent   // buffered channel for non-blocking WS callbacks
+	slIndex   map[string]stopOrderEntry // "exchange:orderID" → posID + leg + kind
+	slFillCh  chan slFillEvent          // buffered channel for non-blocking WS callbacks
 
 	// ownOrders tracks order IDs placed by the engine itself.
 	// Used by handleSLFill method 2 to avoid false-triggering on our own
@@ -118,6 +126,21 @@ type Engine struct {
 	allocOverrideMu sync.Mutex
 	allocOverrides  map[string]allocatorChoice // symbol → chosen pair
 
+	// activePosSource is the seam used by getActivePositionsWithRetry.
+	// Production: wired to e.db in NewEngine. Tests: swapped for a
+	// failingActivePosGetter to exercise retry + salvage branches.
+	activePosSource activePositionsGetter
+
+	// testExecuteArbitrageHook is called at the start of executeArbitrage when
+	// non-nil. Used only in tests to capture which opportunities are passed to
+	// executeArbitrage without running the real trade-execution path.
+	testExecuteArbitrageHook func([]models.Opportunity)
+
+	// testRescanHook is called instead of e.discovery.RescanSymbols when
+	// non-nil. Used only in tests to stub the rescan result and capture which
+	// pairs were requested.
+	testRescanHook func([]models.SymbolPair) []models.Opportunity
+
 	// spotCloseCallback dispatches spot-futures health actions to SpotEngine.
 	// Set via SetSpotCloseCallback after both engines are initialized.
 	spotCloseCallback func(pos *models.SpotFuturesPosition, reason string, isEmergency bool) error
@@ -128,10 +151,11 @@ type Engine struct {
 	prewarmedKeys  []string             // keys acquired by prewarmDepthForEntry
 }
 
-// slEntry maps a stop-loss order to its position and leg.
-type slEntry struct {
+// stopOrderEntry maps a stop-loss or take-profit order to its position, leg, and kind.
+type stopOrderEntry struct {
 	PosID string
 	Leg   string // "long" or "short"
+	Kind  string // "sl" or "tp"
 }
 
 // depthRef tracks reference count for a depth subscription.
@@ -168,12 +192,13 @@ func NewEngine(
 		exitDone:        make(map[string]chan struct{}),
 		preSettleActive: make(map[string]bool),
 		entryActive:     make(map[string]string),
-		slIndex:         make(map[string]slEntry),
+		slIndex:         make(map[string]stopOrderEntry),
 		slFillCh:        make(chan slFillEvent, 64),
 		apiErrCounts:       make(map[string]int),
 		consolidateRetries: make(map[string]int),
 		depthRefs:          make(map[string]*depthRef),
 	}
+	e.activePosSource = e.db
 	return e
 }
 
@@ -392,13 +417,15 @@ func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bo
 		return fmt.Errorf("risk check failed: %v", err)
 	}
 	if !approval.Approved {
+		// Rejected approvals now carry populated Size/Price/RequiredMargin for
+		// RejectionKindCapital (used by allocator rescue). ManualOpen must not
+		// execute on those fields — risk rejection is final here.
+		e.capacityMu.Unlock()
+		lock.Release()
 		if force {
-			e.log.Info("ManualOpen %s: force=true, overriding risk rejection: %s", symbol, approval.Reason)
-		} else {
-			e.capacityMu.Unlock()
-			lock.Release()
-			return fmt.Errorf("risk rejected: %s", approval.Reason)
+			return fmt.Errorf("force open cannot execute from rejected risk approval: %s", approval.Reason)
 		}
+		return fmt.Errorf("risk rejected: %s", approval.Reason)
 	}
 
 	// 6. Dry run check
@@ -509,9 +536,9 @@ func (e *Engine) Start() {
 		}
 	}
 
-	// Set up SL fill detection callbacks on all exchanges.
+	// Set up SL/TP fill detection callbacks on all exchanges.
 	e.setupSLCallbacks()
-	e.rebuildSLIndex()
+	e.rebuildStopIndex()
 	go e.consumeSLFills()
 
 	go e.run()
@@ -524,12 +551,16 @@ func (e *Engine) Start() {
 }
 
 // rebalanceFunds analyzes upcoming opportunities and ensures each exchange
-// has enough margin. Performs same-exchange spot→futures transfers first,
-// then cross-exchange withdrawals for remaining deficits.
+// has enough margin. Two-pass flow (§4.3/§4.5 of
+// plans/PLAN-allocator-unified.md):
+//   - rebalancePass1: rank-first sequential walk with inline capital rescue
+//     and post-transfer approval replay.
+//   - runPoolAllocatorPass2: alt-pair fallback using existing pool allocator
+//     with Pass-1 reservations carried forward.
 func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
-	// Clear any stale allocator overrides from the previous cycle.
-	// If the prior entry scan had 0 opportunities, applyAllocatorOverrides
-	// was never called and the old overrides would leak into the next cycle.
+	// Clear any stale allocator overrides from the previous cycle so early
+	// returns inside Pass 1 / Pass 2 never leak prior-cycle overrides into
+	// the next entry scan.
 	e.allocOverrideMu.Lock()
 	if e.allocOverrides != nil {
 		e.log.Info("rebalance: clearing %d stale allocator overrides from previous cycle", len(e.allocOverrides))
@@ -537,483 +568,105 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 	}
 	e.allocOverrideMu.Unlock()
 
-	var opps []models.Opportunity
-	if len(passedOpps) > 0 && len(passedOpps[0]) > 0 {
-		opps = passedOpps[0]
-	} else {
-		opps = e.discovery.GetOpportunities()
-	}
-	if len(opps) == 0 {
-		e.log.Info("rebalance: no opportunities, skipping")
+	opps, active, balances, ok := e.prepareRebalanceContext(passedOpps...)
+	if !ok {
 		return
 	}
 
-	// Determine capital needs per exchange by simulating the full entry
-	// approval filter chain (matching risk/manager.go approveInternal)
-	// without locks, orders, or side effects.
+	kept, pass2Input, reserved := e.rebalancePass1(opps, active, balances)
+
+	// Count Pass-1-reserved slots (rescue-kept + case-a approved-sufficient).
+	// Case-a symbols are removed from pass2Input but will be opened by entry
+	// scan Stage 1, so they consume slot capacity just like rescue-kept.
+	pass2Symbols := make(map[string]struct{}, len(pass2Input))
+	for _, opp := range pass2Input {
+		pass2Symbols[opp.Symbol] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(opps))
+	pass1ReservedSlots := 0
+	for _, opp := range opps {
+		if _, dup := seen[opp.Symbol]; dup {
+			continue
+		}
+		seen[opp.Symbol] = struct{}{}
+		if _, stillPass2 := pass2Symbols[opp.Symbol]; !stillPass2 {
+			pass1ReservedSlots++
+		}
+	}
+
+	// Build Pass-2 reservations = reserved − rescue-kept reservations.
+	// After projectBalancesAfterFunding subtracts kept margin from balances,
+	// passing the full `reserved` to cloneBalancesWithReservations would
+	// double-subtract rescue-kept. Keep only case-a reservations.
+	pass2Reservations := cloneFloatMap(reserved)
+	for exch, amt := range reservationsFromKept(kept) {
+		next := pass2Reservations[exch] - amt
+		if next > 0 {
+			pass2Reservations[exch] = next
+		} else {
+			delete(pass2Reservations, exch)
+		}
+	}
+
+	if len(kept) > 0 {
+		e.executePicks(kept)
+		balances = projectBalancesAfterFunding(balances, kept)
+	}
+
+	if len(pass2Input) > 0 {
+		e.log.Info("rebalance: pass-2 invoked with %d opportunities (kept=%d reservedSlots=%d)",
+			len(pass2Input), len(kept), pass1ReservedSlots)
+		e.runPoolAllocatorPass2(pass2Input, balances, pass2Reservations, pass1ReservedSlots)
+	}
+}
+
+// fetchLiveRebalanceBalance queries a single exchange's current balances and
+// returns a rebalanceBalanceInfo populated in the same way as the rebalance
+// snapshot site (edit 4a). Returns false if any required call fails.
+func (e *Engine) fetchLiveRebalanceBalance(name string) (rebalanceBalanceInfo, bool) {
+	exch, ok := e.exchanges[name]
+	if !ok {
+		return rebalanceBalanceInfo{}, false
+	}
+
+	// Mirror the rebalance snapshot site exactly:
+	// - always read GetFuturesBalance()
+	// - always read GetSpotBalance()
+	// - no unified-vs-split special case here
+	futBal, err := exch.GetFuturesBalance()
+	if err != nil {
+		return rebalanceBalanceInfo{}, false
+	}
+
+	spotBal, err := exch.GetSpotBalance()
+	if err != nil {
+		return rebalanceBalanceInfo{}, false
+	}
+
+	hasPositions := false
 	active, err := e.db.GetActivePositions()
 	if err != nil {
-		e.log.Error("rebalance: failed to get active positions: %v", err)
-		return
+		return rebalanceBalanceInfo{}, false
 	}
-	remainingSlots := e.cfg.MaxPositions - len(active)
-	if remainingSlots <= 0 {
-		e.log.Info("rebalance: at max capacity (%d/%d), skipping", len(active), e.cfg.MaxPositions)
-		return
-	}
-
-	// Build occupied symbols set (same logic as executeArbitrage)
-	activeSymbols := make(map[string]bool)
-	for _, p := range active {
-		if p.Status != models.StatusClosed {
-			activeSymbols[p.Symbol] = true
-		}
-	}
-
-	// Pre-filter: remove opps whose symbol already has an active position or is blacklisted.
-	var newOpps []models.Opportunity
-	for _, opp := range opps {
-		if activeSymbols[opp.Symbol] {
-			continue
-		}
-		if blocked, err := e.db.IsBlacklisted(opp.Symbol); err == nil && blocked {
-			continue
-		}
-		newOpps = append(newOpps, opp)
-	}
-	if len(newOpps) == 0 {
-		e.log.Info("rebalance: all %d opps already have active positions, skipping", len(opps))
-		return
-	}
-	if len(newOpps) < len(opps) {
-		e.log.Info("rebalance: filtered %d/%d opps (active symbols removed)", len(newOpps), len(opps))
-	}
-	opps = newOpps
-
-	// Build set of exchanges that have active position legs (used to cap
-	// donor transfers so we don't drain margin from exchanges holding positions).
-	exchWithPositions := make(map[string]bool)
 	for _, p := range active {
 		if p.Status == models.StatusClosed {
 			continue
 		}
-		exchWithPositions[p.LongExchange] = true
-		exchWithPositions[p.ShortExchange] = true
-	}
-
-	// Query all exchange balances (futures + spot) BEFORE calculating needs
-	// so we can do budget-aware allocation.
-	balances := map[string]rebalanceBalanceInfo{}
-	for name, exch := range e.exchanges {
-		var bi rebalanceBalanceInfo
-		if futBal, err := exch.GetFuturesBalance(); err == nil {
-			bi.futures = futBal.Available
-			bi.futuresTotal = futBal.Total
-			bi.marginRatio = futBal.MarginRatio
-			bi.maxTransferOut = futBal.MaxTransferOut
-		}
-		if spotBal, err := exch.GetSpotBalance(); err == nil {
-			bi.spot = spotBal.Available
-		}
-		bi.hasPositions = exchWithPositions[name]
-		balances[name] = bi
-		e.log.Info("rebalance: %s futures=%.2f spot=%.2f futuresTotal=%.2f marginRatio=%.4f maxTransferOut=%.2f hasPos=%v", name, bi.futures, bi.spot, bi.futuresTotal, bi.marginRatio, bi.maxTransferOut, bi.hasPositions)
-	}
-
-	// ---------------------------------------------------------------------------
-	// Try pool allocator first (if enabled).
-	// ---------------------------------------------------------------------------
-	if e.cfg.EnablePoolAllocator {
-		allocSel, allocErr := e.runPoolAllocator(opps, balances, remainingSlots)
-		if allocErr != nil {
-			e.log.Warn("rebalance: pool allocator failed, falling back to sequential: %v", allocErr)
-		} else if allocSel != nil && allocSel.feasible {
-			e.log.Info("rebalance: pool allocator selected %d opps (value=%.4f, choices=%s)", len(allocSel.choices), allocSel.totalBaseValue, e.formatAllocatorSummary(allocSel))
-			result := e.executeRebalanceFundingPlan(allocSel.needs, balances, nil)
-
-			// Gate override storage on post-execution reality. Replay choices
-			// against PostBalances and drop any whose required legs are no
-			// longer funded, so the next :55 entry scan cannot be steered
-			// onto unfunded exchanges.
-			kept := e.keepFundedChoices(allocSel.choices, result.PostBalances)
-
-			e.allocOverrideMu.Lock()
-			e.allocOverrides = kept
-			e.allocOverrideMu.Unlock()
-
-			dropped := len(allocSel.choices) - len(kept)
-			if dropped > 0 {
-				e.log.Warn("rebalance: dropped %d/%d allocator overrides after executor outcome (kept=%d)",
-					dropped, len(allocSel.choices), len(kept))
-				for _, c := range allocSel.choices {
-					if _, ok := kept[c.symbol]; ok {
-						continue
-					}
-					reasonLong := result.SkipReasons[c.longExchange]
-					reasonShort := result.SkipReasons[c.shortExchange]
-					e.log.Info("rebalance: dropped override %s (%s/%s): longReason=%q shortReason=%q",
-						c.symbol, c.longExchange, c.shortExchange, reasonLong, reasonShort)
-				}
-			}
-			e.log.Info("rebalance: stored %d allocator overrides for entry scan", len(kept))
-
-			e.log.Info("rebalance: complete")
-			return
-		} else {
-			e.log.Warn("rebalance: pool allocator infeasible, falling through to sequential")
-			// Fall through to sequential path below
-		}
-	}
-
-	// ---------------------------------------------------------------------------
-	// Sequential allocation fallback (original path).
-	// Budget-aware: iterate opps by score and only count needs for positions
-	// the exchanges can actually afford.
-	// ---------------------------------------------------------------------------
-	available := map[string]float64{}
-	for name, bal := range balances {
-		total := bal.futures + bal.spot
-		// Unified accounts: spot and futures share the same pool, don't double-count.
-		type unifiedChecker interface{ IsUnified() bool }
-		if name == "okx" || name == "bybit" {
-			total = bal.futures
-		} else if uc, ok := e.exchanges[name].(unifiedChecker); ok && uc.IsUnified() {
-			total = bal.futures
-		}
-		available[name] = total
-	}
-
-	needs := map[string]float64{}
-	selectedSymbols := make(map[string]bool)     // prevent same-batch duplicates
-	reserved := map[string]float64{}             // cumulative margin reserved per exchange
-	plannedTransfers := map[string]float64{}     // cross-exchange transfer plan: recipient → amount
-	selected := 0
-
-	for _, opp := range opps {
-		if selected >= remainingSlots {
+		if p.LongExchange == name || p.ShortExchange == name {
+			hasPositions = true
 			break
 		}
-		if activeSymbols[opp.Symbol] || selectedSymbols[opp.Symbol] {
-			continue
-		}
-
-		// Run full approval simulation (same checks as risk.Approve, no side effects)
-		approval, err := e.risk.SimulateApproval(opp, reserved)
-		if err != nil {
-			e.log.Info("rebalance: skip %s — simulate error: %v", opp.Symbol, err)
-			continue
-		}
-		if !approval.Approved {
-			// Check if rejection is margin-related and cross-exchange transfer could help.
-			isMarginRejection := strings.Contains(approval.Reason, "insufficient margin buffer") ||
-				strings.Contains(approval.Reason, "post-trade margin ratio") ||
-				strings.Contains(approval.Reason, "insufficient capital")
-			if !isMarginRejection {
-				e.log.Info("rebalance: skip %s — %s", opp.Symbol, approval.Reason)
-				continue
-			}
-
-			// Margin-related rejection: check if cross-exchange transfer from a donor could help.
-			estMargin := e.effectiveCapitalPerLeg() * e.cfg.MarginSafetyMultiplier
-			if estMargin <= 0 {
-				if approval.RequiredMargin > 0 {
-					estMargin = approval.RequiredMargin
-				} else {
-					estMargin = 50 * e.cfg.MarginSafetyMultiplier
-				}
-			}
-			canRescue := true
-			for _, legExch := range []string{opp.LongExchange, opp.ShortExchange} {
-				bal := balances[legExch]
-				effectiveAvail := bal.futures - reserved[legExch]
-				if effectiveAvail >= estMargin {
-					continue
-				}
-				deficit := estMargin - effectiveAvail
-				foundDonor := false
-				for donorName, donorBal := range balances {
-					if donorName == legExch {
-						continue
-					}
-					if balances[donorName].marginRatio >= e.cfg.MarginL4Threshold {
-						continue
-					}
-					donorSurplus := donorBal.futures + donorBal.spot - reserved[donorName] - plannedTransfers[donorName+"_out"]
-					type unifiedChecker interface{ IsUnified() bool }
-					if donorName == "okx" || donorName == "bybit" {
-						donorSurplus = donorBal.futures - reserved[donorName] - plannedTransfers[donorName+"_out"]
-					} else if uc, ok := e.exchanges[donorName].(unifiedChecker); ok && uc.IsUnified() {
-						donorSurplus = donorBal.futures - reserved[donorName] - plannedTransfers[donorName+"_out"]
-					}
-					// Cap donor surplus by margin health to prevent draining exchanges with active positions.
-					if balances[donorName].hasPositions && balances[donorName].marginRatio > 0 && balances[donorName].futuresTotal > 0 && e.cfg.MarginL4Threshold > 0 {
-						maint := balances[donorName].marginRatio * balances[donorName].futuresTotal
-						healthCap := balances[donorName].futuresTotal - maint/e.cfg.MarginL4Threshold
-						if healthCap < donorSurplus {
-							donorSurplus = healthCap
-						}
-					}
-					if donorSurplus > 10 {
-						plannedTransfers[legExch] += deficit
-						plannedTransfers[donorName+"_out"] += deficit
-						foundDonor = true
-						e.log.Info("rebalance: %s needs %.2f transfer from %s for %s (margin rescue)",
-							legExch, deficit, donorName, opp.Symbol)
-						break
-					}
-				}
-				if !foundDonor {
-					canRescue = false
-					break
-				}
-			}
-			if !canRescue {
-				e.log.Info("rebalance: skip %s — %s (no donor available)", opp.Symbol, approval.Reason)
-				continue
-			}
-
-			needs[opp.LongExchange] += estMargin
-			needs[opp.ShortExchange] += estMargin
-			reserved[opp.LongExchange] += estMargin
-			reserved[opp.ShortExchange] += estMargin
-			selectedSymbols[opp.Symbol] = true
-			selected++
-			e.log.Info("rebalance: selected %s via cross-exchange rescue (margin=%.2f per leg)", opp.Symbol, estMargin)
-			continue
-		}
-
-		// Approval passed. Check if exchanges need cross-exchange transfers.
-		// Use per-exchange margins when available, falling back to symmetric RequiredMargin.
-		longMarginNeeded := approval.LongMarginNeeded
-		if longMarginNeeded <= 0 {
-			longMarginNeeded = approval.RequiredMargin
-		}
-		if longMarginNeeded <= 0 {
-			longMarginNeeded = e.effectiveCapitalPerLeg() * e.cfg.MarginSafetyMultiplier
-		}
-		shortMarginNeeded := approval.ShortMarginNeeded
-		if shortMarginNeeded <= 0 {
-			shortMarginNeeded = approval.RequiredMargin
-		}
-		if shortMarginNeeded <= 0 {
-			shortMarginNeeded = e.effectiveCapitalPerLeg() * e.cfg.MarginSafetyMultiplier
-		}
-
-		needsTransfer := false
-		for _, leg := range []struct {
-			exchange string
-			margin   float64
-		}{
-			{opp.LongExchange, longMarginNeeded},
-			{opp.ShortExchange, shortMarginNeeded},
-		} {
-			bal := balances[leg.exchange]
-			effectiveAvail := bal.futures - reserved[leg.exchange]
-			if effectiveAvail < leg.margin {
-				deficit := leg.margin - effectiveAvail
-				foundDonor := false
-				for donorName, donorBal := range balances {
-					if donorName == leg.exchange {
-						continue
-					}
-					donorSurplus := donorBal.futures + donorBal.spot - reserved[donorName] - plannedTransfers[donorName+"_out"]
-					type unifiedChecker interface{ IsUnified() bool }
-					if donorName == "okx" || donorName == "bybit" {
-						donorSurplus = donorBal.futures - reserved[donorName] - plannedTransfers[donorName+"_out"]
-					} else if uc, ok := e.exchanges[donorName].(unifiedChecker); ok && uc.IsUnified() {
-						donorSurplus = donorBal.futures - reserved[donorName] - plannedTransfers[donorName+"_out"]
-					}
-					if balances[donorName].marginRatio >= e.cfg.MarginL4Threshold {
-						continue
-					}
-					// Cap donor surplus by margin health to prevent draining exchanges with active positions.
-					if balances[donorName].hasPositions && balances[donorName].marginRatio > 0 && balances[donorName].futuresTotal > 0 && e.cfg.MarginL4Threshold > 0 {
-						maint := balances[donorName].marginRatio * balances[donorName].futuresTotal
-						healthCap := balances[donorName].futuresTotal - maint/e.cfg.MarginL4Threshold
-						if healthCap < donorSurplus {
-							donorSurplus = healthCap
-						}
-					}
-					if donorSurplus > 10 {
-						plannedTransfers[leg.exchange] += deficit
-						plannedTransfers[donorName+"_out"] += deficit
-						foundDonor = true
-						e.log.Debug("rebalance: %s needs %.2f transfer from %s for %s",
-							leg.exchange, deficit, donorName, opp.Symbol)
-						break
-					}
-				}
-				if !foundDonor {
-					e.log.Debug("rebalance: skip %s — no donor for %s deficit=%.2f",
-						opp.Symbol, leg.exchange, deficit)
-					needsTransfer = true
-					break
-				}
-			}
-		}
-		if needsTransfer {
-			e.log.Debug("rebalance: sequential skip %s: needsTransfer=true", opp.Symbol)
-			continue
-		}
-
-		needs[opp.LongExchange] += longMarginNeeded
-		needs[opp.ShortExchange] += shortMarginNeeded
-		reserved[opp.LongExchange] += longMarginNeeded
-		reserved[opp.ShortExchange] += shortMarginNeeded
-		selectedSymbols[opp.Symbol] = true
-		selected++
-		e.log.Info("rebalance: selected %s (longMargin=%.2f shortMargin=%.2f)", opp.Symbol, longMarginNeeded, shortMarginNeeded)
 	}
 
-	e.log.Info("rebalance: analyzed %d opportunities, selected %d, needs: %v, plannedTransfers: %v", len(opps), selected, needs, plannedTransfers)
-
-	// Phase 1: Same-exchange spot→futures transfers (instant).
-	type seqDeficit struct {
-		exchange string
-		amount   float64
-	}
-	var crossDeficits []seqDeficit
-
-	for name, need := range needs {
-		bal := balances[name]
-		targetFreeRatio := 1 - e.cfg.MarginL4Threshold
-		if targetFreeRatio <= 0 {
-			targetFreeRatio = 0.20
-		}
-
-		if bal.futures >= need {
-			if bal.spot > 0 && bal.futuresTotal > 0 {
-				projectedAvail := bal.futures - need
-				if projectedAvail < 0 {
-					projectedAvail = 0
-				}
-				projectedRatio := 1 - projectedAvail/bal.futuresTotal
-				if projectedRatio >= e.cfg.MarginL4Threshold {
-					extra := (need - bal.futuresTotal*targetFreeRatio) / targetFreeRatio
-					if extra > bal.spot {
-						extra = bal.spot
-					}
-					if extra >= 1.0 {
-						amtStr := fmt.Sprintf("%.4f", extra)
-						postRatio := 1 - (bal.futures+extra-need)/(bal.futuresTotal+extra)
-						e.log.Info("rebalance: %s spot→futures %s USDT (margin ratio relief, projected=%.2f post=%.2f L4=%.2f)",
-							name, amtStr, projectedRatio, postRatio, e.cfg.MarginL4Threshold)
-						if !e.cfg.DryRun {
-							if err := e.exchanges[name].TransferToFutures("USDT", amtStr); err != nil {
-								e.log.Error("rebalance: %s spot→futures failed: %v", name, err)
-							} else {
-								bi := balances[name]
-								bi.futures += extra
-								bi.spot -= extra
-								bi.futuresTotal += extra
-								balances[name] = bi
-								bal = balances[name]
-							}
-						}
-					}
-				}
-			}
-			// Post-trade L4 check: even with sufficient futures, opening this
-			// position may push margin ratio past L4. Queue cross-exchange
-			// transfer if needed. (Previously skipped by unconditional continue.)
-			if bal.futuresTotal > 0 {
-				actualMargin := need / e.cfg.MarginSafetyMultiplier
-				if actualMargin <= 0 {
-					actualMargin = need
-				}
-				projectedAvail := bal.futures - actualMargin
-				if projectedAvail < 0 {
-					projectedAvail = 0
-				}
-				projectedRatio := 1 - projectedAvail/bal.futuresTotal
-				if projectedRatio >= e.cfg.MarginL4Threshold {
-					targetRatio := e.cfg.MarginL4Threshold - marginEpsilon
-					freeTarget := 1.0 - targetRatio
-					ratioDeficit := (freeTarget*bal.futuresTotal - bal.futures + actualMargin) / targetRatio
-					if ratioDeficit > 0 {
-						e.log.Info("rebalance: %s post-trade ratio=%.4f >= L4=%.4f, queueing cross-exchange deficit=%.2f (seq)",
-							name, projectedRatio, e.cfg.MarginL4Threshold, ratioDeficit)
-						crossDeficits = append(crossDeficits, seqDeficit{name, ratioDeficit})
-					}
-				}
-			}
-			continue
-		}
-
-		marginDeficit := need - bal.futures
-		if marginDeficit < 0 {
-			marginDeficit = 0
-		}
-		actualMargin := need / e.cfg.MarginSafetyMultiplier
-		if actualMargin <= 0 {
-			actualMargin = need
-		}
-		targetRatio := e.cfg.MarginL4Threshold - marginEpsilon
-		freeTarget := 1.0 - targetRatio
-		var ratioDeficit float64
-		if freeTarget > 0 && bal.futuresTotal > 0 {
-			ratioDeficit = (freeTarget*bal.futuresTotal - bal.futures + actualMargin) / targetRatio
-			if ratioDeficit < 0 {
-				ratioDeficit = 0
-			}
-		}
-		transferAmt := marginDeficit
-		if ratioDeficit > transferAmt {
-			transferAmt = ratioDeficit
-		}
-		e.log.Debug("rebalance: seq deficit %s: need=%.2f futures=%.2f marginDef=%.2f ratioDef=%.2f transferAmt=%.2f", name, need, bal.futures, marginDeficit, ratioDeficit, transferAmt)
-		if bal.spot > 0 {
-			actualTransfer := transferAmt
-			if actualTransfer > bal.spot {
-				actualTransfer = bal.spot
-			}
-			if actualTransfer < 1.0 {
-				e.log.Debug("rebalance: %s spot→futures skip (%.4f USDT below minimum)", name, actualTransfer)
-				if transferAmt > 10 {
-					crossDeficits = append(crossDeficits, seqDeficit{name, transferAmt})
-				}
-				continue
-			}
-			postTotal := bal.futuresTotal + actualTransfer
-			postRatio := 1 - (bal.futures+actualTransfer-need)/postTotal
-			amtStr := fmt.Sprintf("%.4f", actualTransfer)
-			e.log.Info("rebalance: %s spot→futures %s USDT (same-exchange, instant, post-ratio=%.2f L4=%.2f)", name, amtStr, postRatio, e.cfg.MarginL4Threshold)
-			if !e.cfg.DryRun {
-				if err := e.exchanges[name].TransferToFutures("USDT", amtStr); err != nil {
-					e.log.Error("rebalance: %s spot→futures failed: %v", name, err)
-				} else {
-					transferAmt -= actualTransfer
-					bi := balances[name]
-					bi.futures += actualTransfer
-					bi.spot -= actualTransfer
-					bi.futuresTotal += actualTransfer // keep parity with the sufficient-futures branch and allocator relief paths
-					balances[name] = bi
-				}
-			}
-		}
-		if transferAmt > 10 {
-			crossDeficits = append(crossDeficits, seqDeficit{name, transferAmt})
-		}
-	}
-
-	if len(crossDeficits) == 0 {
-		e.log.Info("rebalance: all exchanges funded, no cross-exchange transfers needed")
-		return
-	}
-
-	// Convert seqDeficits to rebalanceDeficit and delegate to the existing
-	// cross-exchange executor (same path the pool allocator uses).
-	// Pass full 'needs' map so the lower-half can correctly calculate donor surplus.
-	precomputed := make([]rebalanceDeficit, len(crossDeficits))
-	for i, cd := range crossDeficits {
-		precomputed[i] = rebalanceDeficit{exchange: cd.exchange, amount: cd.amount}
-	}
-	e.log.Info("rebalance: %d exchanges need cross-exchange funding, delegating to allocator executor", len(precomputed))
-	// Sequential fallback does not use allocOverrides; signature aligned but
-	// result not consumed.
-	_ = e.executeRebalanceFundingPlan(needs, balances, precomputed)
-
-	e.log.Info("rebalance: complete")
+	return rebalanceBalanceInfo{
+		futures:                     futBal.Available,
+		spot:                        spotBal.Available,
+		futuresTotal:                futBal.Total,
+		marginRatio:                 futBal.MarginRatio,
+		maxTransferOut:              futBal.MaxTransferOut,
+		maxTransferOutAuthoritative: futBal.MaxTransferOutAuthoritative,
+		hasPositions:                hasPositions,
+	}, true
 }
 
 // applyAllocatorOverrides consumes stored allocator choices and uses them to
@@ -1128,6 +781,153 @@ func (e *Engine) applyAllocatorOverrides(opps []models.Opportunity) ([]models.Op
 	return filtered, true
 }
 
+// getActivePositionsWithRetry wraps the injected activePositionsGetter with a
+// simple retry to survive transient Redis hiccups during the critical
+// stage-1 → stage-2 transition. Used only by the entry-scan path where a
+// dropped read leads to fund stranding (see PLAN-stage2-db-failure-salvage.md).
+//
+// The call goes through e.activePosSource (NOT e.db directly) so that tests
+// can inject a failingActivePosGetter to exercise the retry + salvage branches.
+// e.activePosSource is wired to e.db in NewEngine; see §5.
+func (e *Engine) getActivePositionsWithRetry(maxAttempts int, backoff time.Duration) ([]*models.ArbitragePosition, error) {
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	var lastErr error
+	for i := 0; i < maxAttempts; i++ {
+		positions, err := e.activePosSource.GetActivePositions()
+		if err == nil {
+			return positions, nil
+		}
+		lastErr = err
+		if i < maxAttempts-1 {
+			time.Sleep(backoff)
+		}
+	}
+	return nil, lastErr
+}
+
+// runStage2AndSalvage implements the Stage 2 override execution + Bug-7 salvage
+// block for the entry scan path. It is called immediately after Stage 1
+// executeArbitrage completes.
+//
+// Stage 2 consumes any allocator overrides published by the most recent
+// rebalance Pass 1/Pass 2, filters out symbols Stage 1 already opened, and
+// executes the remainder with the pre-approved (long, short) exchange pair.
+//
+// The salvage block handles two failure classes:
+//  1. Stage 2 DB read failed — stage2Attempted is empty, so salvage considers
+//     ALL override symbols (including those present in the scan) rather than
+//     only out-of-scan symbols as the previous guard did.
+//  2. Bug-7: rebalance funded a symbol absent from the current scan —
+//     salvage rescans it via RescanSymbols to prevent fund stranding.
+//
+// See PLAN-stage2-db-failure-salvage.md for the full design rationale.
+func (e *Engine) runStage2AndSalvage(opps []models.Opportunity, perpCap float64) {
+	// Snapshot BEFORE drain (Bug 7 invariant preserved).
+	e.allocOverrideMu.Lock()
+	overrideSnapshot := make(map[string]allocatorChoice, len(e.allocOverrides))
+	for k, v := range e.allocOverrides {
+		overrideSnapshot[k] = v
+	}
+	e.allocOverrideMu.Unlock()
+
+	patched, hadOverrides := e.applyAllocatorOverrides(opps)
+
+	// Track which override symbols Stage 2 actually got to try.
+	// Default: empty. Populated only when Stage 2 DB read succeeds AND executeArbitrage runs.
+	stage2Attempted := map[string]bool{}
+
+	if len(patched) > 0 {
+		// Finding #1 Fix A: retry DB read once on transient failure.
+		activeAfterS1, err := e.getActivePositionsWithRetry(2, 300*time.Millisecond)
+		if err != nil {
+			e.log.Warn("entry stage-2: GetActivePositions failed after retry: %v — deferring to salvage", err)
+			// Intentionally do NOT early-return: fall through to salvage with
+			// stage2Attempted empty, so salvage covers in-scan symbols too.
+		} else {
+			openedS1 := make(map[string]bool, len(activeAfterS1))
+			for _, p := range activeAfterS1 {
+				if p.Status != models.StatusClosed {
+					openedS1[p.Symbol] = true
+				}
+			}
+			var stage2Opps []models.Opportunity
+			dropped := 0
+			for _, o := range patched {
+				// Mark attempted regardless of duplicate-filter outcome.
+				// openedS1 symbols are already active — salvage would be a noop anyway.
+				stage2Attempted[o.Symbol] = true
+				if openedS1[o.Symbol] {
+					dropped++
+					continue
+				}
+				stage2Opps = append(stage2Opps, o)
+			}
+			if dropped > 0 {
+				e.log.Info("entry stage-2: %d override(s) skipped (already opened by stage-1)", dropped)
+			}
+			if len(stage2Opps) > 0 {
+				e.log.Info("entry stage-2: executing %d override opportunities (tier-2-rebalance-overrides)", len(stage2Opps))
+				e.executeArbitrage(stage2Opps, perpCap)
+			} else {
+				e.log.Info("entry stage-2: no override opportunities remain after stage-1 filter")
+			}
+		}
+	} else if hadOverrides {
+		e.log.Warn("entry stage-2: allocator overrides present but all stale after filter")
+		// NOTE: stage2Attempted stays empty. Salvage will consider these symbols.
+		// applyAllocatorOverrides already logged per-symbol reasons. Symbols that
+		// were legitimately stale-rejected will fail RescanSymbols too, so salvage
+		// is a noop for them — no extra cost.
+	}
+
+	// --- Salvage block ---
+	if len(overrideSnapshot) > 0 {
+		activeForSalvage, err := e.getActivePositionsWithRetry(2, 300*time.Millisecond)
+		if err != nil {
+			e.log.Warn("entry stage-2 salvage: GetActivePositions failed after retry: %v — transfers may be stranded until next cycle", err)
+		} else {
+			openedByUs := make(map[string]bool, len(activeForSalvage))
+			for _, p := range activeForSalvage {
+				if p.Status != models.StatusClosed {
+					openedByUs[p.Symbol] = true
+				}
+			}
+			var missingPairs []models.SymbolPair
+			for sym, choice := range overrideSnapshot {
+				// Finding #1 Fix B: the exclusion is now stage2Attempted (what we
+				// actually tried) + openedByUs (what's actually active).
+				// The previous per-scan exclusion was an over-approximation that
+				// excluded symbols Stage 2 never got to attempt.
+				if stage2Attempted[sym] || openedByUs[sym] {
+					continue
+				}
+				missingPairs = append(missingPairs, models.SymbolPair{
+					Symbol:        sym,
+					LongExchange:  choice.longExchange,
+					ShortExchange: choice.shortExchange,
+				})
+			}
+			if len(missingPairs) > 0 {
+				e.log.Info("entry stage-2 salvage: %d funded override(s) need rescan (stage2-skipped or out-of-scan), re-scanning", len(missingPairs))
+				var salvageOpps []models.Opportunity
+				if e.testRescanHook != nil {
+					salvageOpps = e.testRescanHook(missingPairs)
+				} else {
+					salvageOpps = e.discovery.RescanSymbols(missingPairs)
+				}
+				if len(salvageOpps) > 0 {
+					e.log.Info("entry stage-2 salvage: %d/%d passed re-scan, executing", len(salvageOpps), len(missingPairs))
+					e.executeArbitrage(salvageOpps, perpCap)
+				} else {
+					e.log.Warn("entry stage-2 salvage: all %d symbols failed re-scan — transfers may be stranded until next cycle", len(missingPairs))
+				}
+			}
+		}
+	}
+	e.log.Info("run loop: entryScan handler done (stage-1 + stage-2 + salvage)")
+}
 
 // recordTransfer saves a transfer record to the database for dashboard display.
 func (e *Engine) recordTransfer(from, to, coin, chain, amount, fee, txID, status, reason string) {
@@ -1201,6 +1001,9 @@ func (e *Engine) run() {
 				e.log.Info("rotateScan: starting checkRotations")
 				e.checkRotations()
 				e.log.Info("rotateScan: checkRotations done")
+				// NOTE: When EnablePoolAllocator=false, rotate-scan intentionally skips
+				// rebalance; only the dedicated rebalance-scan minute triggers it.
+				// Pass 1 rank-first is invoked inside rebalanceFunds regardless.
 				if e.cfg.EnablePoolAllocator {
 					e.log.Info("rotateScan: starting rebalanceFunds")
 					e.rebalanceFunds()
@@ -1240,34 +1043,22 @@ func (e *Engine) run() {
 				if len(result.Opps) > 0 {
 					e.log.Info("entry scan complete, triggering trade execution")
 
-					var entryOpps []models.Opportunity
-					tier := "none"
-
-					// Tier 2: Fall back to :35 allocator overrides.
-					if len(entryOpps) == 0 {
-						patched, hadOverrides := e.applyAllocatorOverrides(result.Opps)
-						if len(patched) > 0 {
-							tier = "tier-2-rebalance-overrides"
-							e.log.Info("entry: %s using %d opps", tier, len(patched))
-							entryOpps = patched
-						} else if hadOverrides {
-							// Allocator ran but all overrides stale — don't block tier-3.
-							// Stale overrides only mean the allocator's specific pair choices
-							// failed, not that all exchanges lack funds. Tier-3 will
-							// re-evaluate with current balances via risk.Approve.
-							e.log.Warn("entry: allocator overrides all stale, falling through to tier-3")
-						}
-					}
-
-					// Tier 3: rank-based — only if allocator did NOT run
-					if len(entryOpps) == 0 && tier == "none" {
-						tier = "tier-3-rank-based"
-						e.log.Info("entry: %s with %d opps", tier, len(result.Opps))
-						entryOpps = result.Opps
-					}
-
-					e.executeArbitrage(entryOpps, perpCap)
-					e.log.Info("run loop: entryScan handler done (via %s)", tier)
+					// Canonical two-stage flow per PLAN-allocator-unified §4.1 / §8 Step 4.5:
+					//   Stage 1: rank-based execution over the full scan result FIRST.
+					//            This covers both "already had enough capital" opps
+					//            (rebalance Pass 1 case a) and "just received transferred
+					//            capital" opps (post-Pass 1 replay).
+					//   Stage 2: AFTER Stage 1 completes, consume any allocator overrides
+					//            published by rebalance Pass 1 / Pass 2, filter out symbols
+					//            Stage 1 already opened, and execute the remainder with
+					//            the pre-approved (long, short) exchange pair.
+					//
+					// Stage 1 MUST run before Stage 2 — overrides must never short-circuit
+					// the rank path. Symbols selected by Stage 1 are filtered out of
+					// Stage 2 via the active-positions check below.
+					e.log.Info("entry stage-1: rank-based executeArbitrage with %d opps", len(result.Opps))
+					e.executeArbitrage(result.Opps, perpCap)
+					e.runStage2AndSalvage(result.Opps, perpCap)
 				} else {
 					// Fallback: discovery returned 0 opps but allocator overrides
 					// from :45 may exist. Re-scan those specific symbols with
@@ -1477,22 +1268,26 @@ func (e *Engine) checkDelistPositions() {
 	}
 }
 
-// registerSLOrders adds stop-loss order IDs to the SL index for instant fill detection.
-func (e *Engine) registerSLOrders(pos *models.ArbitragePosition) {
+// registerStopOrders adds stop-loss and take-profit order IDs to the SL/TP index
+// for instant fill detection. Registers all 4 IDs: long/short × sl/tp.
+func (e *Engine) registerStopOrders(pos *models.ArbitragePosition) {
 	e.slIndexMu.Lock()
 	defer e.slIndexMu.Unlock()
-	if pos.LongSLOrderID != "" {
-		key := pos.LongExchange + ":" + pos.LongSLOrderID
-		e.slIndex[key] = slEntry{PosID: pos.ID, Leg: "long"}
+	regs := []struct{ ex, oid, leg, kind string }{
+		{pos.LongExchange, pos.LongSLOrderID, "long", "sl"},
+		{pos.ShortExchange, pos.ShortSLOrderID, "short", "sl"},
+		{pos.LongExchange, pos.LongTPOrderID, "long", "tp"},
+		{pos.ShortExchange, pos.ShortTPOrderID, "short", "tp"},
 	}
-	if pos.ShortSLOrderID != "" {
-		key := pos.ShortExchange + ":" + pos.ShortSLOrderID
-		e.slIndex[key] = slEntry{PosID: pos.ID, Leg: "short"}
+	for _, r := range regs {
+		if r.oid != "" {
+			e.slIndex[r.ex+":"+r.oid] = stopOrderEntry{PosID: pos.ID, Leg: r.leg, Kind: r.kind}
+		}
 	}
 }
 
-// unregisterSLOrders removes stop-loss order IDs from the SL index.
-func (e *Engine) unregisterSLOrders(pos *models.ArbitragePosition) {
+// unregisterStopOrders removes stop-loss and take-profit order IDs from the SL/TP index.
+func (e *Engine) unregisterStopOrders(pos *models.ArbitragePosition) {
 	e.slIndexMu.Lock()
 	defer e.slIndexMu.Unlock()
 	if pos.LongSLOrderID != "" {
@@ -1500,6 +1295,12 @@ func (e *Engine) unregisterSLOrders(pos *models.ArbitragePosition) {
 	}
 	if pos.ShortSLOrderID != "" {
 		delete(e.slIndex, pos.ShortExchange+":"+pos.ShortSLOrderID)
+	}
+	if pos.LongTPOrderID != "" {
+		delete(e.slIndex, pos.LongExchange+":"+pos.LongTPOrderID)
+	}
+	if pos.ShortTPOrderID != "" {
+		delete(e.slIndex, pos.ShortExchange+":"+pos.ShortTPOrderID)
 	}
 }
 
@@ -1578,6 +1379,10 @@ func (e *Engine) handleSLFill(exchName string, upd exchange.OrderUpdate) {
 		if err != nil {
 			continue // can't verify, skip
 		}
+		// Subtract any spot-futures futures leg on the same (exchange, symbol, side)
+		// so an SF reduce-only fill doesn't mark a healthy PP leg as SL-triggered.
+		_, sfSizeOffset := e.buildSpotFuturesMaps()
+		remaining = sfSubtract(remaining, sfSizeOffset, exchName, pos.Symbol, leg)
 		if remaining > 0 {
 			// Leg still has size — this was a partial close (trim, L4 reduction, etc.), not SL.
 			continue
@@ -1601,10 +1406,10 @@ func (e *Engine) triggerEmergencyClose(exchName, posID, leg string, upd exchange
 		return
 	}
 
-	e.unregisterSLOrders(pos)
+	e.unregisterStopOrders(pos)
 	e.cancelExitGoroutine(pos.ID)
 
-	e.log.Warn("SL TRIGGERED: order %s on %s filled (pos=%s leg=%s size=%.6f)",
+	e.log.Warn("SL/TP TRIGGERED: order %s on %s filled (pos=%s leg=%s size=%.6f)",
 		upd.OrderID, exchName, posID, leg, upd.FilledVolume)
 
 	e.api.BroadcastAlert(map[string]string{
@@ -1641,34 +1446,63 @@ func (e *Engine) consumeSLFills() {
 
 // setupSLCallbacks registers non-blocking SL fill callbacks on all exchange adapters.
 // Sends events to slFillCh which is consumed by consumeSLFills goroutine.
+// Also registers algo-remap callbacks on adapters that implement AlgoRemapCallbackSetter.
 func (e *Engine) setupSLCallbacks() {
 	for name, exch := range e.exchanges {
-		exchName := name // capture for closure
-		exch.SetOrderCallback(func(upd exchange.OrderUpdate) {
-			// Non-blocking send — drop if channel full (consumeSLFills will catch up).
-			select {
-			case e.slFillCh <- slFillEvent{Exchange: exchName, Update: upd}:
-			default:
-				e.log.Warn("SL fill channel full, dropping event for %s on %s", upd.OrderID, exchName)
-			}
+		e.AttachAdapterCallbacks(name, exch)
+	}
+}
+
+// AttachAdapterCallbacks wires engine-owned callbacks (order fills, algo remap)
+// onto a single exchange adapter. Safe to call on initial startup and on
+// ExchangeManager reload events.
+func (e *Engine) AttachAdapterCallbacks(name string, exch exchange.Exchange) {
+	exchName := name
+	// SL/TP fill event callback.
+	exch.SetOrderCallback(func(upd exchange.OrderUpdate) {
+		// Non-blocking send — drop if channel full (consumeSLFills will catch up).
+		select {
+		case e.slFillCh <- slFillEvent{Exchange: exchName, Update: upd}:
+		default:
+			e.log.Warn("SL fill channel full, dropping event for %s on %s", upd.OrderID, exchName)
+		}
+	})
+	// Algo-trigger remap callback (Binance uses algoId at placement and a different
+	// matching-engine orderID on trigger; without this alias, slIndex lookups miss).
+	if setter, ok := exch.(exchange.AlgoRemapCallbackSetter); ok {
+		setter.SetAlgoRemapCallback(func(remap exchange.AlgoRemap) {
+			e.handleAlgoRemap(exchName, remap)
 		})
 	}
 }
 
-// rebuildSLIndex loads all active positions and registers their SL orders.
-func (e *Engine) rebuildSLIndex() {
+// handleAlgoRemap aliases a previously-stored algo order ID to the new
+// matching-engine order ID so subsequent ORDER_TRADE_UPDATE events map
+// back to the correct position leg/kind.
+func (e *Engine) handleAlgoRemap(exchName string, remap exchange.AlgoRemap) {
+	e.slIndexMu.Lock()
+	defer e.slIndexMu.Unlock()
+	if entry, ok := e.slIndex[exchName+":"+remap.AlgoID]; ok {
+		e.slIndex[exchName+":"+remap.RealID] = entry
+		e.log.Info("algoRemap %s: %s → %s (leg=%s kind=%s)",
+			exchName, remap.AlgoID, remap.RealID, entry.Leg, entry.Kind)
+	}
+}
+
+// rebuildStopIndex loads all active positions and registers their SL/TP orders.
+func (e *Engine) rebuildStopIndex() {
 	positions, err := e.db.GetActivePositions()
 	if err != nil {
-		e.log.Error("rebuildSLIndex: %v", err)
+		e.log.Error("rebuildStopIndex: %v", err)
 		return
 	}
 	for _, pos := range positions {
-		e.registerSLOrders(pos)
+		e.registerStopOrders(pos)
 	}
 	e.slIndexMu.RLock()
 	count := len(e.slIndex)
 	e.slIndexMu.RUnlock()
-	e.log.Info("SL index rebuilt: %d entries from %d positions", count, len(positions))
+	e.log.Info("SL/TP index rebuilt: %d entries from %d positions", count, len(positions))
 }
 
 func (e *Engine) handleReduce(action risk.HealthAction) {
@@ -1701,9 +1535,10 @@ func (e *Engine) handleReduce(action risk.HealthAction) {
 		if err != nil {
 			continue
 		}
-		if bal.MarginRatio < e.cfg.MarginL4Threshold {
+		liqRisk := risk.LiquidationRiskRatio(bal)
+		if liqRisk < e.cfg.MarginL4Threshold {
 			e.log.Info("L4 margin ratio %.4f now below threshold %.4f, stopping reductions",
-				bal.MarginRatio, e.cfg.MarginL4Threshold)
+				liqRisk, e.cfg.MarginL4Threshold)
 			break
 		}
 	}
@@ -1820,6 +1655,12 @@ func (e *Engine) handleOrphanClose(action risk.HealthAction) {
 			// Verify flat after close.
 			time.Sleep(500 * time.Millisecond)
 			remaining, verifyErr := getExchangePositionSize(exch, pos.Symbol, action.OrphanSide)
+			// Subtract any spot-futures leg on the same side so we don't import SF size
+			// into the PP record on revert.
+			if verifyErr == nil {
+				_, sfOff := e.buildSpotFuturesMaps()
+				remaining = sfSubtract(remaining, sfOff, action.OrphanExchange, pos.Symbol, action.OrphanSide)
+			}
 			if verifyErr != nil || remaining > 0 {
 				e.log.Error("[orphan-cleanup] position %s NOT flat after close (remaining=%.6f, err=%v) — reverting to active",
 					pos.ID, remaining, verifyErr)
@@ -2069,6 +1910,11 @@ func (e *Engine) SimExecuteTradeV2(opp models.Opportunity, size, price, gapBPS f
 // Phase 2 executes approved trades in parallel goroutines.
 // dynamicCap, when > 0, overrides the strategy cap for capital reservations (CA-04).
 func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64) {
+	// Test seam: when set, capture the opps and skip real execution.
+	if e.testExecuteArbitrageHook != nil {
+		e.testExecuteArbitrageHook(opps)
+		return
+	}
 	e.log.Info("executeArbitrage: acquiring capacity lock...")
 	e.capacityMu.Lock()
 	e.log.Info("executeArbitrage: capacity lock acquired")
@@ -2109,6 +1955,15 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 			activeSymbols[p.Symbol] = true
 		}
 	}
+	spotFuturesKeys, _ := e.buildSpotFuturesMaps()
+	spotFuturesOccupied := make(map[string]bool, len(spotFuturesKeys))
+	for key := range spotFuturesKeys {
+		parts := strings.SplitN(key, ":", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		spotFuturesOccupied[parts[0]+":"+parts[1]] = true
+	}
 
 	if slots <= 0 {
 		e.capacityMu.Unlock()
@@ -2126,6 +1981,10 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 	symbolPairs := map[prefetchKey]bool{}
 	for _, opp := range opps {
 		if activeSymbols[opp.Symbol] {
+			continue
+		}
+		if blockedExchange, blocked := ppCrossEngineBlocked(opp, spotFuturesOccupied); blocked {
+			e.log.Info("[engine] entry filter: %s skipped — SF active on %s (cross-engine block)", opp.Symbol, blockedExchange)
 			continue
 		}
 		exchangeSet[opp.LongExchange] = true
@@ -2274,6 +2133,10 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 	for _, opp := range opps {
 		if activeSymbols[opp.Symbol] {
 			continue // skip — symbol already has an active position
+		}
+		if blockedExchange, blocked := ppCrossEngineBlocked(opp, spotFuturesOccupied); blocked {
+			e.log.Info("[engine] entry filter: %s skipped — SF active on %s (cross-engine block)", opp.Symbol, blockedExchange)
+			continue
 		}
 		// Check blacklist
 		if blocked, err := e.db.IsBlacklisted(opp.Symbol); err == nil && blocked {
@@ -2575,6 +2438,10 @@ func (e *Engine) MergeExistingDuplicates() {
 				}
 				fresh.LongSize = totalLong
 				fresh.ShortSize = totalShort
+				// H2.2: update CloseSize to match merged size so reconcile gate
+				// still knows the post-merge intended close size.
+				fresh.LongCloseSize = totalLong
+				fresh.ShortCloseSize = totalShort
 				fresh.FundingCollected += p.FundingCollected
 				fresh.RotationPnL += p.RotationPnL
 				fresh.EntryFees += p.EntryFees
@@ -2680,6 +2547,21 @@ func deriveFailureStage(reason string) string {
 	}
 }
 
+// queryAvgFillPrice attempts to read the real average fill price for an order
+// from the adapter's WS-populated order store. Falls back to a 200ms retry if
+// the first read shows AvgPrice==0 (WS may lag slightly). Returns 0 if no
+// average price is yet available — caller decides the fallback.
+func (e *Engine) queryAvgFillPrice(exch exchange.Exchange, orderID string) float64 {
+	if upd, ok := exch.GetOrderUpdate(orderID); ok && upd.AvgPrice > 0 {
+		return upd.AvgPrice
+	}
+	time.Sleep(200 * time.Millisecond)
+	if upd, ok := exch.GetOrderUpdate(orderID); ok && upd.AvgPrice > 0 {
+		return upd.AvgPrice
+	}
+	return 0
+}
+
 // retrySecondLeg retries the second leg of a trade with escalating slippage.
 // Attempts 0-1 use normal slippage, 2-3 use double slippage. If IOC attempts
 // fail, switches to market orders and retries until filled or margin error.
@@ -2695,7 +2577,13 @@ func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol 
 		}
 
 		bbo, ok := exch.GetBBO(symbol)
-		if !ok {
+		// H1B: symmetric ±20% BBO sanity clamp against refPrice. Reject garbage
+		// BBO snapshots (e.g. stale or corrupted feed) by falling back to refPrice.
+		if !ok || bbo.Bid <= 0 || bbo.Ask <= 0 ||
+			bbo.Bid > refPrice*1.20 || bbo.Bid < refPrice*0.80 ||
+			bbo.Ask > refPrice*1.20 || bbo.Ask < refPrice*0.80 {
+			e.log.Warn("retrySecondLeg: BBO sanity failed (bid=%.6f ask=%.6f ref=%.6f) — fallback to refPrice",
+				bbo.Bid, bbo.Ask, refPrice)
 			bbo = exchange.BBO{Bid: refPrice, Ask: refPrice}
 		}
 
@@ -2741,11 +2629,20 @@ func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol 
 			continue
 		}
 		if filledQty > 0 {
+			// H1A: use the adapter's WS-reported AvgPrice; fall back to
+			// orderPrice (limit price, reasonable approximation for filled IOC)
+			// if WS hasn't populated yet after two attempts.
+			avgPrice := e.queryAvgFillPrice(exch, orderID)
+			if avgPrice <= 0 {
+				avgPrice = orderPrice
+				e.log.Warn("retrySecondLeg[IOC-%d] %s: avgPrice unavailable, using orderPrice=%.6f",
+					attempt, exchName, orderPrice)
+			}
 			totalFilled += filledQty
-			totalNotional += filledQty * orderPrice
+			totalNotional += filledQty * avgPrice
 			remainingSize -= filledQty
-			e.log.Info("retrySecondLeg[IOC-%d] %s %s: filled=%.6f remaining=%.6f",
-				attempt, exchName, symbol, filledQty, remainingSize)
+			e.log.Info("retrySecondLeg[IOC-%d] %s %s: filled=%.6f avg=%.6f remaining=%.6f",
+				attempt, exchName, symbol, filledQty, avgPrice, remainingSize)
 		} else {
 			e.log.Info("retrySecondLeg[IOC-%d] %s %s: no fill", attempt, exchName, symbol)
 		}
@@ -2756,11 +2653,6 @@ func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol 
 	for mktAttempt := 0; remainingSize > 0 && mktAttempt < 10; mktAttempt++ {
 		if mktAttempt > 0 {
 			time.Sleep(500 * time.Millisecond)
-		}
-
-		bbo, ok := exch.GetBBO(symbol)
-		if !ok {
-			bbo = exchange.BBO{Bid: refPrice, Ask: refPrice}
 		}
 
 		sizeStr := e.formatSize(exchName, symbol, remainingSize)
@@ -2789,12 +2681,20 @@ func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol 
 			continue
 		}
 		if filledQty > 0 {
-			fillPrice := (bbo.Bid + bbo.Ask) / 2
+			// H1A: use real AvgPrice; fall back to refPrice (last known good
+			// reference price) rather than a synthetic BBO-mid. BBO-mid is the
+			// root cause of the SIRENUSDT VWAP inflation incident.
+			avgPrice := e.queryAvgFillPrice(exch, orderID)
+			if avgPrice <= 0 {
+				avgPrice = refPrice
+				e.log.Warn("retrySecondLeg[MKT-%d] %s: avgPrice unavailable, using refPrice=%.6f",
+					mktAttempt, exchName, refPrice)
+			}
 			totalFilled += filledQty
-			totalNotional += filledQty * fillPrice
+			totalNotional += filledQty * avgPrice
 			remainingSize -= filledQty
-			e.log.Info("retrySecondLeg[MKT-%d] %s %s: filled=%.6f remaining=%.6f",
-				mktAttempt, exchName, symbol, filledQty, remainingSize)
+			e.log.Info("retrySecondLeg[MKT-%d] %s %s: filled=%.6f avg=%.6f remaining=%.6f",
+				mktAttempt, exchName, symbol, filledQty, avgPrice, remainingSize)
 		} else {
 			e.log.Info("retrySecondLeg[MKT-%d] %s %s: no fill", mktAttempt, exchName, symbol)
 		}
@@ -3096,6 +2996,10 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 	// Activate as new position.
 	pos.LongSize = minFill
 	pos.ShortSize = minFill
+	// H2.2: CloseSize tracks the position's intended full close size. Set at
+	// entry completion; NOT zeroed by depth-exit. Reconcile gate uses this.
+	pos.LongCloseSize = minFill
+	pos.ShortCloseSize = minFill
 	pos.LongEntry = finalLongEntry
 	pos.ShortEntry = finalShortEntry
 
@@ -3130,6 +3034,16 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 	return nil
 }
 
+func ppCrossEngineBlocked(opp models.Opportunity, occupied map[string]bool) (string, bool) {
+	if occupied[opp.LongExchange+":"+opp.Symbol] {
+		return opp.LongExchange, true
+	}
+	if occupied[opp.ShortExchange+":"+opp.Symbol] {
+		return opp.ShortExchange, true
+	}
+	return "", false
+}
+
 // formatSize rounds a size to the contract step size for a given exchange/symbol.
 func (e *Engine) formatSize(exchName, symbol string, size float64) string {
 	if e.contracts != nil {
@@ -3159,6 +3073,19 @@ func (e *Engine) commonTradeableSize(longExch, shortExch, symbol string, size fl
 		size = common // retry with the smaller formatted value
 	}
 	return size
+}
+
+func (e *Engine) refetchMarginCappedSize(exch exchange.Exchange, longExchange, shortExchange, symbol string, leverage, price, minSize, minChunkUSDT, currentSize float64) (float64, *exchange.Balance, error) {
+	liveBal, err := exch.GetFuturesBalance()
+	if err != nil {
+		return 0, nil, err
+	}
+	downsized := (liveBal.Available * leverage) / price
+	downsized = e.commonTradeableSize(longExchange, shortExchange, symbol, downsized)
+	if downsized <= 0 || downsized >= currentSize || downsized < minSize || downsized*price < minChunkUSDT {
+		return 0, liveBal, fmt.Errorf("refetched size below minimum (avail=%.2f price=%.6f)", liveBal.Available, price)
+	}
+	return downsized, liveBal, nil
 }
 
 // executeTradeV2 opens a delta-neutral position using depth-driven sequential
@@ -3591,14 +3518,25 @@ fillLoop:
 				Size:      shortSizeStr,
 				Force:     "ioc",
 			})
+			if err != nil && isMarginError(err) {
+				e.log.Warn("depth tick: short IOC margin insufficient for %s, refetching live balance", opp.Symbol)
+				lastBalCheck = time.Time{}
+				downsized, liveBal, resizeErr := e.refetchMarginCappedSize(shortExch, opp.LongExchange, opp.ShortExchange, opp.Symbol, leverage, bidPrice, minSize, e.cfg.MinChunkUSDT, size)
+				if liveBal != nil {
+					cachedShortBal = liveBal
+				}
+				if resizeErr != nil {
+					e.log.Warn("depth tick: short IOC margin insufficient for %s after refetch, aborting entry: %v", opp.Symbol, resizeErr)
+					break fillLoop
+				}
+				size = downsized
+				shortSizeStr = e.formatSize(opp.ShortExchange, opp.Symbol, size)
+				e.log.Warn("depth tick: short IOC margin insufficient for %s, retrying once with downsized size=%s", opp.Symbol, shortSizeStr)
+				shortOID, err = shortExch.PlaceOrder(exchange.PlaceOrderParams{Symbol: opp.Symbol, Side: exchange.SideSell, OrderType: "limit", Price: shortPriceStr, Size: shortSizeStr, Force: "ioc"})
+			}
 			if err != nil {
 				shortConsecFails++
 				e.recordAPIError(opp.ShortExchange, err)
-				// On margin error, refresh balance to get accurate state
-				if isMarginError(err) {
-					e.log.Warn("depth tick: short IOC margin insufficient for %s, invalidating cache", opp.Symbol)
-					lastBalCheck = time.Time{} // force immediate refresh next tick
-				}
 				e.log.Warn("depth tick: short IOC failed (%d/%d): %v", shortConsecFails, maxConsecFails, err)
 				continue
 			}
@@ -3612,6 +3550,11 @@ fillLoop:
 				_ = shortExch.CancelOrder(opp.Symbol, shortOID)
 				// Check if fill actually happened using existing helper
 				exchSize, exchErr := getExchangePositionSize(shortExch, opp.Symbol, "short")
+				if exchErr == nil {
+					// Subtract any spot-futures short leg so PP doesn't absorb SF size.
+					_, sfOff := e.buildSpotFuturesMaps()
+					exchSize = sfSubtract(exchSize, sfOff, opp.ShortExchange, opp.Symbol, "short")
+				}
 				if exchErr == nil && exchSize > 0 {
 					e.log.Warn("first leg %s: confirmFill failed but exchange shows short position %.6f", opp.Symbol, exchSize)
 					// Update the EXISTING pending position (pos is already created and passed in)
@@ -3672,6 +3615,11 @@ fillLoop:
 								e.log.Warn("depth tick: top-up fill state unknown: %v", topUpCFErr)
 								_ = shortExch.CancelOrder(opp.Symbol, topUpOID)
 								exchSize, exchErr := getExchangePositionSize(shortExch, opp.Symbol, "short")
+								if exchErr == nil {
+									// Subtract SF short leg so cross-engine fills aren't attributed as PP top-up.
+									_, sfOff := e.buildSpotFuturesMaps()
+									exchSize = sfSubtract(exchSize, sfOff, opp.ShortExchange, opp.Symbol, "short")
+								}
 								priorTotal := confirmedShort + shortFilled
 								if exchErr == nil && exchSize > priorTotal {
 									actualTopUp := exchSize - priorTotal
@@ -3820,14 +3768,25 @@ fillLoop:
 				Size:      longSizeStr,
 				Force:     "ioc",
 			})
+			if err != nil && isMarginError(err) {
+				e.log.Warn("depth tick: long IOC margin insufficient for %s, refetching live balance", opp.Symbol)
+				lastBalCheck = time.Time{}
+				downsized, liveBal, resizeErr := e.refetchMarginCappedSize(longExch, opp.LongExchange, opp.ShortExchange, opp.Symbol, leverage, askPrice, minSize, e.cfg.MinChunkUSDT, size)
+				if liveBal != nil {
+					cachedLongBal = liveBal
+				}
+				if resizeErr != nil {
+					e.log.Warn("depth tick: long IOC margin insufficient for %s after refetch, aborting entry: %v", opp.Symbol, resizeErr)
+					break fillLoop
+				}
+				size = downsized
+				longSizeStr = e.formatSize(opp.LongExchange, opp.Symbol, size)
+				e.log.Warn("depth tick: long IOC margin insufficient for %s, retrying once with downsized size=%s", opp.Symbol, longSizeStr)
+				longOID, err = longExch.PlaceOrder(exchange.PlaceOrderParams{Symbol: opp.Symbol, Side: exchange.SideBuy, OrderType: "limit", Price: longPriceStr, Size: longSizeStr, Force: "ioc"})
+			}
 			if err != nil {
 				longConsecFails++
 				e.recordAPIError(opp.LongExchange, err)
-				// On margin error, refresh balance to get accurate state
-				if isMarginError(err) {
-					e.log.Warn("depth tick: long IOC margin insufficient for %s, invalidating cache", opp.Symbol)
-					lastBalCheck = time.Time{} // force immediate refresh next tick
-				}
 				e.log.Warn("depth tick: long IOC failed (%d/%d): %v", longConsecFails, maxConsecFails, err)
 				continue
 			}
@@ -3839,6 +3798,11 @@ fillLoop:
 				_ = longExch.CancelOrder(opp.Symbol, longOID)
 				// Check if fill actually happened using existing helper
 				exchSize, exchErr := getExchangePositionSize(longExch, opp.Symbol, "long")
+				if exchErr == nil {
+					// Subtract any spot-futures long leg so PP doesn't absorb SF size.
+					_, sfOff := e.buildSpotFuturesMaps()
+					exchSize = sfSubtract(exchSize, sfOff, opp.LongExchange, opp.Symbol, "long")
+				}
 				if exchErr == nil && exchSize > 0 {
 					e.log.Warn("first leg %s: confirmFill failed but exchange shows long position %.6f", opp.Symbol, exchSize)
 					// Update the EXISTING pending position (pos is already created and passed in)
@@ -3896,6 +3860,11 @@ fillLoop:
 								e.log.Warn("depth tick: top-up fill state unknown: %v", topUpCFErr)
 								_ = longExch.CancelOrder(opp.Symbol, topUpOID)
 								exchSize, exchErr := getExchangePositionSize(longExch, opp.Symbol, "long")
+								if exchErr == nil {
+									// Subtract SF long leg so cross-engine fills aren't attributed as PP top-up.
+									_, sfOff := e.buildSpotFuturesMaps()
+									exchSize = sfSubtract(exchSize, sfOff, opp.LongExchange, opp.Symbol, "long")
+								}
 								priorTotal := confirmedLong + longFilled
 								if exchErr == nil && exchSize > priorTotal {
 									actualTopUp := exchSize - priorTotal
@@ -4209,6 +4178,10 @@ fillLoop:
 	// Activate position
 	pos.LongSize = minFill
 	pos.ShortSize = minFill
+	// H2.2: CloseSize tracks the position's intended full close size. Set at
+	// entry completion; NOT zeroed by depth-exit. Reconcile gate uses this.
+	pos.LongCloseSize = minFill
+	pos.ShortCloseSize = minFill
 	pos.LongEntry = finalLongEntry
 	pos.ShortEntry = finalShortEntry
 	pos.EntryNotional = math.Max(pos.LongEntry*pos.LongSize, pos.ShortEntry*pos.ShortSize)
@@ -4290,6 +4263,8 @@ func (e *Engine) confirmFill(exch exchange.Exchange, orderID, symbol string) (fi
 			} else {
 				e.log.Warn("confirmFill: timeout %s on %s: no WS update at all", orderID, exch.Name())
 			}
+			// BingX 109400 is normalized to nil by its adapter, so "already gone"
+			// falls through to the REST query below instead of spamming WARNs.
 			// Cancel any resting/partial order to prevent untracked fills.
 			if err := exch.CancelOrder(symbol, orderID); err != nil {
 				e.log.Warn("confirmFill: cancel %s on %s: %v", orderID, exch.Name(), err)
@@ -4540,15 +4515,15 @@ func (e *Engine) attachStopLosses(pos *models.ArbitragePosition) {
 		pos.ShortTPOrderID = shortTPID
 	}
 
-	// Register in SL index for instant fill detection.
-	e.registerSLOrders(pos)
+	// Register in SL/TP index for instant fill detection.
+	e.registerStopOrders(pos)
 }
 
 // cancelStopLosses cancels any active stop-loss and take-profit orders on both legs.
 // Logs errors but does not block exit.
 func (e *Engine) cancelStopLosses(pos *models.ArbitragePosition) {
-	// Unregister from SL index first to prevent stale triggers.
-	e.unregisterSLOrders(pos)
+	// Unregister from SL/TP index first to prevent stale triggers.
+	e.unregisterStopOrders(pos)
 
 	if pos.LongSLOrderID != "" {
 		if exch, ok := e.exchanges[pos.LongExchange]; ok {

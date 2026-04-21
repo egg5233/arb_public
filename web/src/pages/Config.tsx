@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import type { FC, FormEvent } from 'react';
 import { useLocale, type TranslationKey } from '../i18n/index.ts';
+import { useTheme, type Theme } from '../theme/index.ts';
 
 interface ConfigProps {
   getConfig: () => Promise<Record<string, unknown>>;
@@ -12,7 +13,7 @@ interface ConfigProps {
 // ---------------------------------------------------------------------------
 // Tab definitions
 // ---------------------------------------------------------------------------
-type Strategy = 'exchanges' | 'perp' | 'spot' | 'risk' | 'safety' | 'analytics' | 'allocation';
+type Strategy = 'exchanges' | 'perp' | 'spot' | 'risk' | 'safety' | 'analytics' | 'allocation' | 'appearance';
 type PerpTabId = 'fund' | 'schedule' | 'discovery' | 'persist' | 'entry' | 'exit';
 type SpotTabId = 'sf-general' | 'sf-sizing' | 'sf-discovery' | 'sf-exit';
 type RiskTabId = 'risk-margins' | 'risk-liq';
@@ -321,6 +322,7 @@ const ReadOnlyNumberField: FC<{
 // ---------------------------------------------------------------------------
 const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBlacklistRemove }) => {
   const { t } = useLocale();
+  const { theme, setTheme } = useTheme();
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
@@ -668,6 +670,24 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
           value={getByPath(config, ['strategy', 'allocator_timeout_ms'])}
           unit="ms"
           onChange={(v) => handleChange(['strategy', 'allocator_timeout_ms'], v)}
+        />
+
+        {/* Rebalance tuning */}
+        <div className="sm:col-span-2 border-t border-gray-800 pt-4 mt-2">
+          <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">{t('cfg.section.rebalanceTuning')}</h4>
+        </div>
+        <NumberField
+          label={t('cfg.field.rebalanceMinNetPnLUSDT')}
+          desc={t('cfg.desc.rebalanceMinNetPnLUSDT')}
+          value={getByPath(config, ['strategy', 'rebalance_min_net_pnl_usdt'])}
+          unit="USDT"
+          onChange={(v) => handleChange(['strategy', 'rebalance_min_net_pnl_usdt'], v)}
+        />
+        <NumberField
+          label={t('cfg.field.rebalanceDonorFloorPct')}
+          desc={t('cfg.desc.rebalanceDonorFloorPct')}
+          value={getByPath(config, ['strategy', 'rebalance_donor_floor_pct'])}
+          onChange={(v) => handleChange(['strategy', 'rebalance_donor_floor_pct'], v)}
         />
 
         {/* Scan Minutes */}
@@ -1103,6 +1123,14 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
           />
 
           <NumberField
+            label={t('cfg.field.withdrawMinIntervalMs')}
+            desc={t('cfg.desc.withdrawMinIntervalMs')}
+            value={getByPath(config, ['risk', 'withdraw_min_interval_ms'])}
+            unit="ms"
+            onChange={(v) => handleChange(['risk', 'withdraw_min_interval_ms'], v)}
+          />
+
+          <NumberField
             label={t('cfg.field.riskMonitorInterval')}
             desc={t('cfg.desc.riskMonitorInterval')}
             value={getByPath(config, ['risk', 'risk_monitor_interval_sec'])}
@@ -1345,6 +1373,7 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
   const renderSfDiscoveryTab = () => {
     const sfScannerMode = String(getByPath(config, ['spot_futures', 'scanner_mode']) ?? 'native');
     const sfEnablePriceGapGate = getByPath(config, ['spot_futures', 'enable_price_gap_gate']) === true;
+    const sfBacktestEnabled = getByPath(config, ['spot_futures', 'backtest_enabled']) === true;
 
     return (
       <div className="space-y-4">
@@ -1420,6 +1449,63 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
                 unit="%"
                 onChange={(v) => handleChange(['spot_futures', 'max_price_gap_pct'], v)}
               />
+            </div>
+          </div>
+        </div>
+
+        {/* Dir B Backtest section */}
+        <div className="border-t border-gray-800 pt-4 mt-4">
+          <h4 className="text-sm font-semibold text-gray-400 mb-3">Dir B Backtest</h4>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+              <div className="flex items-center gap-2 mb-2">
+                <label className="text-sm font-medium">{t('cfg.sf.backtestEnabled')}</label>
+                <Tooltip text={t('cfg.sf.backtestEnabledDesc')} />
+              </div>
+              <div className="flex items-center gap-3">
+                <ToggleSwitch
+                  on={sfBacktestEnabled}
+                  onChange={(v) => handleBoolChange(['spot_futures', 'backtest_enabled'], v)}
+                />
+                <span className={`text-sm font-semibold ${sfBacktestEnabled ? 'text-green-400' : 'text-red-400'}`}>
+                  {sfBacktestEnabled ? 'ON' : 'OFF'}
+                </span>
+              </div>
+            </div>
+            <div className={!sfBacktestEnabled ? 'opacity-50' : ''}>
+              <NumberField
+                label={t('cfg.sf.backtestDays')}
+                desc={t('cfg.sf.backtestDaysDesc')}
+                value={getByPath(config, ['spot_futures', 'backtest_days'])}
+                unit="d"
+                onChange={(v) => handleChange(['spot_futures', 'backtest_days'], v)}
+              />
+            </div>
+            <div className={!sfBacktestEnabled ? 'opacity-50' : ''}>
+              <NumberField
+                label={t('cfg.sf.backtestMinProfit')}
+                desc={t('cfg.sf.backtestMinProfitDesc')}
+                value={getByPath(config, ['spot_futures', 'backtest_min_profit'])}
+                unit="bps"
+                onChange={(v) => handleChange(['spot_futures', 'backtest_min_profit'], v)}
+              />
+            </div>
+            <div className={!sfBacktestEnabled ? 'opacity-50' : ''}>
+              <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+                <div className="flex items-center gap-2 mb-2">
+                  <label className="text-sm font-medium">{t('cfg.sf.backtestCoinGlassFallback')}</label>
+                  <Tooltip text={t('cfg.sf.backtestCoinGlassFallbackDesc')} />
+                </div>
+                <div className="flex items-center gap-3">
+                  <ToggleSwitch
+                    on={getByPath(config, ['spot_futures', 'backtest_coinglass_fallback']) === true}
+                    onChange={(v) => handleBoolChange(['spot_futures', 'backtest_coinglass_fallback'], v)}
+                  />
+                  <span className={`text-sm font-semibold ${getByPath(config, ['spot_futures', 'backtest_coinglass_fallback']) === true ? 'text-green-400' : 'text-red-400'}`}>
+                    {getByPath(config, ['spot_futures', 'backtest_coinglass_fallback']) === true ? 'ON' : 'OFF'}
+                  </span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -1887,11 +1973,37 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
     </div>
   );
 
+  const renderAppearanceTab = () => (
+    <div className="max-w-lg space-y-6">
+      <div>
+        <h3 className="text-sm font-semibold text-gray-300 mb-1">{t('cfg.appearance.theme')}</h3>
+        <p className="text-xs text-gray-500 mb-4">{t('cfg.appearance.theme.desc')}</p>
+        <div className="flex gap-2">
+          {(['new', 'classic'] as Theme[]).map((opt) => (
+            <button
+              key={opt}
+              type="button"
+              onClick={() => setTheme(opt)}
+              className={`px-5 py-2 rounded-full text-sm font-semibold transition-all duration-150 ${
+                theme === opt
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'bg-gray-800 text-gray-400 hover:text-gray-200 hover:bg-gray-700 border border-gray-700'
+              }`}
+            >
+              {opt === 'new' ? t('cfg.appearance.theme.new') : t('cfg.appearance.theme.classic')}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
   const renderTabContent = () => {
     if (strategy === 'exchanges') return renderExchangesTab();
     if (strategy === 'safety') return renderSafetyTab();
     if (strategy === 'analytics') return renderAnalyticsTab();
     if (strategy === 'allocation') return renderAllocationTab();
+    if (strategy === 'appearance') return renderAppearanceTab();
     switch (activeTab) {
       case 'fund': return renderFundTab();
       case 'schedule': return renderScheduleTab();
@@ -1993,10 +2105,21 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
         >
           {t('cfg.tab.allocation')}
         </button>
+        <button
+          type="button"
+          onClick={() => setStrategy('appearance')}
+          className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all duration-150 ${
+            strategy === 'appearance'
+              ? 'bg-gray-600 text-gray-100 shadow-sm'
+              : 'text-gray-500 hover:text-gray-300'
+          }`}
+        >
+          {t('cfg.tab.appearance')}
+        </button>
       </div>
 
-      {/* Tab bar (hidden for exchanges, safety, analytics, allocation — no sub-tabs) */}
-      {strategy !== 'exchanges' && strategy !== 'safety' && strategy !== 'analytics' && strategy !== 'allocation' && <div
+      {/* Tab bar (hidden for exchanges, safety, analytics, allocation, appearance — no sub-tabs) */}
+      {strategy !== 'exchanges' && strategy !== 'safety' && strategy !== 'analytics' && strategy !== 'allocation' && strategy !== 'appearance' && <div
         ref={tabBarRef}
         className="flex gap-1 overflow-x-auto pb-3 mb-4 scrollbar-none"
         style={{ scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' }}

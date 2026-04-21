@@ -261,6 +261,7 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.system': '系統',
   'cfg.systemDesc': '運行模式',
   'cfg.section.poolAllocator': '池分配器',
+  'cfg.section.rebalanceTuning': '再平衡調參',
   'cfg.section.scanMinutes': '掃描分鐘',
 
   // Config fields
@@ -324,6 +325,7 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.field.stabilityOIRank4h': '穩定性OI排名 4h',
   'cfg.field.stabilityRatio8h': '穩定性比率 8h',
   'cfg.field.stabilityOIRank8h': '穩定性OI排名 8h',
+  'cfg.field.withdrawMinIntervalMs': '提現最小間隔 (毫秒)',
   'cfg.field.riskMonitorInterval': '風控監控間隔',
   'cfg.field.enableLiqTrendTracking': '爆倉趨勢追蹤',
   'cfg.field.liqProjectionMinutes': '爆倉預測視窗',
@@ -359,6 +361,7 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.persist.volatility': '波動性',
   'cfg.risk.overview': 'Margin 閾值總覽',
   'cfg.unsavedChanges': '變更尚未儲存',
+  'cfg.desc.withdrawMinIntervalMs': '同一來源交易所在批次再平衡提現請求之間的最小間隔（毫秒）。0 = 停用。',
   'cfg.desc.riskMonitorInterval': '風控監控檢查的間隔秒數',
   'cfg.desc.enableLiqTrendTracking': '持續追蹤交易所保證金率趨勢，當預測值往 L4 風險區間上升時提前觸發減倉。為了安全上線，預設關閉。',
   'cfg.desc.liqProjectionMinutes': '用目前的保證金率斜率向前預測多少分鐘來評估趨勢風險。',
@@ -555,6 +558,27 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.sf.maintenanceDefaultDesc': '當交易所回傳 0 或未知維持保證金率時的保守預設值。小數：0.05 = 5%',
   'cfg.sf.maintenanceCacheTTL': '維持保證金率快取有效期',
   'cfg.sf.maintenanceCacheTTLDesc': '重新從交易所取得分級維持保證金率資料前的快取分鐘數。預設：60',
+  'cfg.sf.backtestEnabled': '方向 B 回測',
+  'cfg.sf.backtestEnabledDesc': '啟用方向 B (buy_spot_short) 的歷史資金費率篩選。拒絕無獲利歷史的幣種。預設關閉。',
+  'cfg.sf.backtestDays': '回測天數',
+  'cfg.sf.backtestDaysDesc': '用於方向 B 的歷史合約資金費率天數。預設 7。',
+  'cfg.sf.backtestMinProfit': '最低利潤 (bps)',
+  'cfg.sf.backtestMinProfitDesc': '通過篩選所需的回測視窗內最低累計資金費率（基點）。預設 0。',
+  'cfg.sf.backtestCoinGlassFallback': '方向 A: CoinGlass 後備來源 (OKX/Bitget)',
+  'cfg.sf.backtestCoinGlassFallbackDesc': '使用 CoinGlass 抓取的借貸利率歷史（Redis 鍵 coinGlassMarginFee:hist:*）為 OKX 與 Bitget 的方向 A (borrow_sell_long) 回測提供資料。需要 fetch_margin_fee.js 爬蟲累積約 7 天才能取得完整視窗。關閉或 Redis 無資料時，OKX/Bitget 的方向 A 仍不支援。預設關閉。',
+  'spotBacktest.modal.title': '方向 B 回測',
+  'spotBacktest.modal.run': '執行',
+  'spotBacktest.modal.sumBps': '總資金費率 (bps)',
+  'spotBacktest.modal.projectedApr': '預估淨年化率',
+  'spotBacktest.modal.settlements': '結算次數',
+  'spotBacktest.modal.coverage': '資料覆蓋率',
+  'spotBacktest.modal.notSupportedDirA': '方向 A (borrow_sell_long) 暫不支援回測',
+  'spotBacktest.modal.fundingBps': '資金費 (bps)',
+  'spotBacktest.modal.borrowBps': '借款成本 (bps)',
+  'spotBacktest.modal.netBps': '淨值 (bps)',
+  'spotBacktest.modal.notSupportedExchange': '尚未支援 {exchange} 的回測',
+  'spotBacktest.modal.loading': '回測執行中...',
+  'spotBacktest.modal.error': '回測失敗',
   'spot.sourceNative': '原生',
   'spot.sourceCoinGlass': 'CoinGlass',
   'spot.sourceFallback': '備用',
@@ -674,6 +698,10 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.desc.enablePoolAllocator': '啟用再平衡資金池配置器。它會為每個幣保留多組交易所配對候選，並挑選可實際轉帳落地的組合。預設關閉，方便分階段上線。',
   'cfg.desc.topPairsPerSymbol': '每個幣最多保留幾組排序後的交易所配對候選供再平衡配置器選擇。設為 1 時，行為最接近舊版單一配對邏輯。',
   'cfg.desc.allocatorTimeoutMs': '資金池配置器 branch-and-bound 搜尋的軟性時間預算，單位為毫秒。實際總耗時仍可能主要由即時風控模擬 API 呼叫決定。',
+  'cfg.field.rebalanceMinNetPnLUSDT': '再平衡最低淨 PnL',
+  'cfg.field.rebalanceDonorFloorPct': '再平衡捐助者下限',
+  'cfg.desc.rebalanceMinNetPnLUSDT': '資金拯救轉帳所需的最低淨 PnL（預估資金費率收益 − 轉帳手續費，USDT）。低於此值的 rescue 會被判為不夠划算而拒絕。',
+  'cfg.desc.rebalanceDonorFloorPct': '若任一捐助者轉出後，剩餘毛額低於其初始毛額的此比例，就拒絕該轉帳。避免把單一捐助者抽光。設為 0 則停用。',
 
   // Navigation - Analytics
   'nav.analytics': '分析',
@@ -726,6 +754,13 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.analytics.enableAnalyticsDesc': '啟用基於 SQLite 的效能分析（損益圖表、策略比較、交易所指標）。需要重啟。',
   'cfg.analytics.dbPath': '資料庫路徑',
   'cfg.analytics.dbPathDesc': 'SQLite 分析資料庫檔案路徑',
+
+  // Config - Appearance
+  'cfg.tab.appearance': '外觀',
+  'cfg.appearance.theme': '儀表板主題',
+  'cfg.appearance.theme.new': '新版設計',
+  'cfg.appearance.theme.classic': '經典版',
+  'cfg.appearance.theme.desc': '變更立即生效，儲存於瀏覽器本機。',
 };
 
 export default zhTW;

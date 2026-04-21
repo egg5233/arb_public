@@ -1,12 +1,14 @@
 package okx
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"arb/pkg/exchange"
 )
@@ -392,4 +394,9 @@ func (a *Adapter) TransferToMargin(_ string, _ string) error {
 // In the unified account, funds are shared across trading modes.
 func (a *Adapter) TransferFromMargin(_ string, _ string) error {
 	return nil
+}
+
+// GetMarginInterestRateHistory is not supported on OKX — no public historical borrow-rate API.
+func (a *Adapter) GetMarginInterestRateHistory(_ context.Context, _ string, _, _ time.Time) ([]exchange.MarginInterestRatePoint, error) {
+	return nil, exchange.ErrHistoricalBorrowNotSupported
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +14,17 @@ import (
 )
 
 const marginEpsilon = 0.005 // margin buffer to avoid hitting L4 boundary exactly
+
+// rebalanceTargetRatio returns the post-rebalance margin ratio target.
+// Uses MarginL4Headroom (default 0.05) for meaningful headroom below L4
+// so entry scans don't immediately re-hit the L4 gate after a transfer.
+func (e *Engine) rebalanceTargetRatio() float64 {
+	target := e.cfg.MarginL4Threshold - e.cfg.MarginL4Headroom
+	if target <= 0 || target >= e.cfg.MarginL4Threshold {
+		target = e.cfg.MarginL4Threshold - marginEpsilon
+	}
+	return target
+}
 
 // feeEntry caches a single GetWithdrawFee result (fee + minWithdraw).
 // valid=false means the lookup failed or was not yet attempted.
@@ -36,12 +48,43 @@ var allocatorExchangeFees = map[string]allocatorFeeSchedule{
 }
 
 type rebalanceBalanceInfo struct {
-	futures        float64
-	spot           float64
-	futuresTotal   float64
-	marginRatio    float64
-	maxTransferOut float64
-	hasPositions   bool // true if this exchange has active perp-perp legs
+	futures                     float64
+	spot                        float64
+	futuresTotal                float64
+	marginRatio                 float64 // maintenance-style ratio from exchange (mm / equity)
+	maxTransferOut              float64
+	maxTransferOutAuthoritative bool
+	hasPositions                bool // true if this exchange has active perp-perp legs
+}
+
+// rebalanceUsageRatio computes capital usage (1 - avail/total) on demand
+// from the current snapshot. Computing on demand avoids stale state in
+// transfer-simulation paths where rebalanceBalanceInfo.futures /
+// futuresTotal are mutated.
+func rebalanceUsageRatio(bal rebalanceBalanceInfo) float64 {
+	if bal.futuresTotal <= 0 {
+		return 0
+	}
+	avail := bal.futures
+	if avail < 0 {
+		return 1.0
+	}
+	if avail > bal.futuresTotal {
+		return 0
+	}
+	return 1.0 - avail/bal.futuresTotal
+}
+
+// donorHasHeadroom reports whether an exchange has enough capital headroom
+// to act as a donor. Uses CAPITAL USAGE ratio (1 - avail/total), not
+// maintenance-margin ratio, because donor eligibility depends on whether
+// the donor has unlocked equity to give, not on how close it is to
+// liquidation.
+func (e *Engine) donorHasHeadroom(bal rebalanceBalanceInfo) bool {
+	if e.cfg.MarginL4Threshold <= 0 || e.cfg.MarginL4Threshold >= 1 {
+		return true
+	}
+	return rebalanceUsageRatio(bal) < e.cfg.MarginL4Threshold
 }
 
 // rebalanceDeficit records that an exchange needs additional funding from
@@ -53,10 +96,12 @@ type rebalanceDeficit struct {
 }
 
 type transferStep struct {
-	From, To string
-	Amount   float64
-	Fee      float64
-	Chain    string
+	From        string
+	To          string
+	Amount      float64
+	Fee         float64
+	Chain       string
+	MinWithdraw float64
 }
 
 type dryRunResult struct {
@@ -73,10 +118,25 @@ type dryRunResult struct {
 //
 // PostBalances reflects actual balances after all successful transfers and
 // same-exchange relief moves. Unfunded/SkipReasons are diagnostic only.
+// rebalancePending records a submitted but not-yet-confirmed cross-exchange
+// deposit for override retention. Entry-time risk.Approve re-reads live
+// balances before trading, so this is intent bookkeeping only.
+type rebalancePending struct {
+	amount      float64
+	submittedAt time.Time
+}
+
 type rebalanceExecutionResult struct {
 	PostBalances map[string]rebalanceBalanceInfo
 	Unfunded     map[string]float64
 	SkipReasons  map[string]string
+	// FundedReceivers is now "funding intent retained for override replay":
+	// either confirmed receiver credit or a successfully submitted pending
+	// cross-exchange deposit.
+	FundedReceivers       map[string]float64
+	PendingDeposits       map[string]rebalancePending
+	LocalTransferHappened bool
+	CrossTransferHappened bool
 }
 
 // cloneRebalanceBalances returns a shallow copy of the map. rebalanceBalanceInfo
@@ -124,17 +184,32 @@ func (e *Engine) canReserveAllocatorChoice(work map[string]rebalanceBalanceInfo,
 	if !okL || !okS {
 		return false
 	}
-	// Buffered sufficiency: same threshold the allocator used for selection.
-	if long.futures < c.requiredMargin || short.futures < c.requiredMargin {
+	long = e.replayUsableAllocatorBalance(c.longExchange, long)
+	short = e.replayUsableAllocatorBalance(c.shortExchange, short)
+	longNeed, shortNeed := c.marginNeeds()
+	if long.futures < longNeed || short.futures < shortNeed {
 		return false
 	}
-	// Unbuffered projected-ratio check mirroring dryRunTransferPlan's
-	// post-trade L4 gate, so replay matches feasibility semantics.
-	margin := c.requiredMargin
+	longMargin := longNeed
+	shortMargin := shortNeed
 	if e.cfg.MarginSafetyMultiplier > 0 {
-		margin = c.requiredMargin / e.cfg.MarginSafetyMultiplier
+		longMargin = longNeed / e.cfg.MarginSafetyMultiplier
+		shortMargin = shortNeed / e.cfg.MarginSafetyMultiplier
 	}
-	return e.replayProjectedRatioOK(long, margin) && e.replayProjectedRatioOK(short, margin)
+	return e.replayProjectedRatioOK(long, longMargin) && e.replayProjectedRatioOK(short, shortMargin)
+}
+
+func (e *Engine) replayUsableAllocatorBalance(name string, bal rebalanceBalanceInfo) rebalanceBalanceInfo {
+	if uc, ok := e.exchanges[name].(interface{ IsUnified() bool }); ok && uc.IsUnified() {
+		return bal
+	}
+	if bal.spot <= 0 {
+		return bal
+	}
+	bal.futures += bal.spot
+	bal.futuresTotal += bal.spot
+	bal.spot = 0
+	return bal
 }
 
 // reserveAllocatorChoice subtracts requiredMargin from BOTH legs (not /2),
@@ -142,8 +217,9 @@ func (e *Engine) canReserveAllocatorChoice(work map[string]rebalanceBalanceInfo,
 func (e *Engine) reserveAllocatorChoice(work map[string]rebalanceBalanceInfo, c allocatorChoice) {
 	long := work[c.longExchange]
 	short := work[c.shortExchange]
-	long.futures -= c.requiredMargin
-	short.futures -= c.requiredMargin
+	longNeed, shortNeed := c.marginNeeds()
+	long.futures -= longNeed
+	short.futures -= shortNeed
 	work[c.longExchange] = long
 	work[c.shortExchange] = short
 }
@@ -152,29 +228,117 @@ func (e *Engine) reserveAllocatorChoice(work map[string]rebalanceBalanceInfo, c 
 // post-execution balances, reserving capacity per kept choice. Choices that
 // cannot be satisfied after real transfers are dropped so stale overrides do
 // not leak into the next entry scan.
-func (e *Engine) keepFundedChoices(choices []allocatorChoice, post map[string]rebalanceBalanceInfo) map[string]allocatorChoice {
+// applyPendingFundingIntent replays a pending cross-exchange deposit as
+// usable futures capacity in the given working balance map. Used by
+// keepFundedChoices to retain overrides for submitted-but-not-confirmed
+// deposits. Entry-time risk.Approve still re-reads live balances before
+// trading, so this is intent bookkeeping only.
+func (e *Engine) applyPendingFundingIntent(work map[string]rebalanceBalanceInfo, pending map[string]rebalancePending, exch string) {
+	if pending == nil {
+		return
+	}
+	p, ok := pending[exch]
+	if !ok || p.amount <= 0 {
+		return
+	}
+	bal := work[exch]
+	bal.futures += p.amount
+	bal.futuresTotal += p.amount
+	work[exch] = bal
+}
+
+func (e *Engine) keepFundedChoices(choices []allocatorChoice, post map[string]rebalanceBalanceInfo, funded map[string]float64, pending map[string]rebalancePending) map[string]allocatorChoice {
 	work := cloneRebalanceBalances(post)
+	for exch := range pending {
+		e.applyPendingFundingIntent(work, pending, exch)
+	}
+
 	kept := make(map[string]allocatorChoice, len(choices))
+
 	for _, c := range choices {
-		if !e.canReserveAllocatorChoice(work, c) {
+		if e.canReserveAllocatorChoice(work, c) {
+			e.reserveAllocatorChoice(work, c)
+			kept[c.symbol] = c
 			continue
 		}
-		e.reserveAllocatorChoice(work, c)
+
+		_, longFunded := funded[c.longExchange]
+		_, shortFunded := funded[c.shortExchange]
+		if !longFunded && !shortFunded {
+			continue
+		}
+
+		// Start from the CURRENT reserved working view so any prior kept choices
+		// remain deducted. Refresh only the two legs involved in this choice.
+		liveWork := cloneRebalanceBalances(work)
+
+		longBal, okLong := e.fetchLiveRebalanceBalance(c.longExchange)
+		if !okLong {
+			continue
+		}
+		shortBal, okShort := e.fetchLiveRebalanceBalance(c.shortExchange)
+		if !okShort {
+			continue
+		}
+
+		// Replace the two refreshed legs with live balances. Do not re-apply
+		// pending intent here: it was already accounted for in the initial
+		// working state above, and adding it again would double-count submitted
+		// capital when the deposit has already arrived or partially arrived.
+		liveWork[c.longExchange] = longBal
+		liveWork[c.shortExchange] = shortBal
+
+		if !e.canReserveAllocatorChoice(liveWork, c) {
+			continue
+		}
+
+		// Reserve against LIVE refreshed balances, then promote that reserved
+		// live view to be the new working state for subsequent choices.
+		e.reserveAllocatorChoice(liveWork, c)
+		work = liveWork
 		kept[c.symbol] = c
+
+		e.log.Info(
+			"allocator: override %s retained via live-balance recheck (funded receiver: long=%v short=%v)",
+			c.symbol, longFunded, shortFunded,
+		)
 	}
+
 	return kept
 }
 
 type allocatorChoice struct {
-	symbol         string
-	longExchange   string
-	shortExchange  string
-	spreadBpsH     float64
-	intervalHours  float64
-	requiredMargin float64
-	entryNotional  float64
-	baseValue      float64
-	altPair        *models.AlternativePair // nil for primary pair, set for alternatives
+	symbol              string
+	longExchange        string
+	shortExchange       string
+	spreadBpsH          float64
+	intervalHours       float64
+	requiredMargin      float64 // max(long,short) margin with safety buffer — kept for compat at legacy call sites
+	longRequiredMargin  float64 // per-leg margin needed on long exchange (with buffer)
+	shortRequiredMargin float64 // per-leg margin needed on short exchange (with buffer)
+	entryNotional       float64
+	baseValue           float64
+	altPair             *models.AlternativePair // nil for primary pair, set for alternatives
+}
+
+// marginNeeds returns per-leg margin needs. Falls back to the symmetric
+// requiredMargin when per-leg fields are zero (not yet populated by caller).
+func (c allocatorChoice) marginNeeds() (long, short float64) {
+	if c.longRequiredMargin > 0 && c.shortRequiredMargin > 0 {
+		return c.longRequiredMargin, c.shortRequiredMargin
+	}
+	return c.requiredMargin, c.requiredMargin // symmetric fallback
+}
+
+// maxRequiredMargin returns the larger of the two per-leg needs.
+// Used at legacy call sites that still expect a single margin value
+// (e.g., sort tie-break at line 606).
+func (c allocatorChoice) maxRequiredMargin() float64 {
+	l, s := c.marginNeeds()
+	if l > s {
+		return l
+	}
+	return s
 }
 
 type allocatorCandidate struct {
@@ -187,6 +351,7 @@ type allocatorSelection struct {
 	needs          map[string]float64
 	totalBaseValue float64
 	feasible       bool
+	plan           dryRunResult
 }
 
 type exchNeedsMap map[string]float64
@@ -206,40 +371,7 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 		}
 	}
 
-	// Compute max transferable surplus per exchange from all other healthy exchanges.
-	// This lets the allocator consider pairs where one leg is slightly underfunded
-	// but could receive a transfer from a donor exchange before entry.
-	transferable := make(map[string]float64, len(balances))
-	for recipient := range e.exchanges {
-		var totalSurplus float64
-		for donor, bal := range balances {
-			if donor == recipient {
-				continue
-			}
-			if bal.marginRatio >= e.cfg.MarginL4Threshold {
-				continue // skip unhealthy donors
-			}
-			surplus := e.rebalanceAvailable(donor, bal)
-			if bal.hasPositions {
-				healthCap := e.capByMarginHealth(bal)
-				if healthCap == math.MaxFloat64 {
-					e.log.Debug("allocator: capByHealth %s: MaxFloat64 (no positions)", donor)
-				}
-				if surplus > healthCap {
-					surplus = healthCap
-				}
-			}
-			if surplus > 0 {
-				totalSurplus += surplus
-			}
-		}
-		transferable[recipient] = totalSurplus
-	}
-	e.log.Debug("allocator: transferable: %v", transferable)
-
-	cache := &risk.PrefetchCache{
-		TransferablePerExchange: transferable,
-	}
+	cache := e.buildTransferableCache(balances)
 	candidates := e.buildAllocatorCandidates(opps, cache)
 	if len(candidates) == 0 {
 		e.log.Debug("allocator: no candidates built from %d opps", len(opps))
@@ -254,7 +386,7 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 
 	totalDonorSurplus := 0.0
 	for donor, bal := range balances {
-		if bal.marginRatio >= e.cfg.MarginL4Threshold {
+		if !e.donorHasHeadroom(bal) {
 			continue
 		}
 		surplus := e.rebalanceAvailable(donor, bal)
@@ -288,9 +420,7 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 	// sequential approval pattern (engine.go:1651-1734).
 	{
 		reserved := map[string]float64{}
-		revalCache := &risk.PrefetchCache{
-			TransferablePerExchange: transferable, // same transfer-aware view as buildAllocatorCandidates
-		}
+		revalCache := cache
 		validated := make([]allocatorChoice, 0, len(selected))
 		for _, choice := range selected {
 			opp := findOppBySymbol(opps, choice.symbol)
@@ -309,14 +439,19 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 					}())
 				continue
 			}
+			choice.longRequiredMargin = approval.LongMarginNeeded
+			choice.shortRequiredMargin = approval.ShortMarginNeeded
 			choice.requiredMargin = approval.RequiredMargin
 			if choice.requiredMargin <= 0 {
 				choice.requiredMargin = e.cfg.CapitalPerLeg * e.cfg.MarginSafetyMultiplier
 				e.log.Debug("allocator: re-validate %s fallback margin=%.2f", choice.symbol, choice.requiredMargin)
 			}
+			// If per-leg fields are not populated by the risk simulator, fall back
+			// to symmetric requiredMargin via the helper's fallback path.
+			longNeed, shortNeed := choice.marginNeeds()
 			validated = append(validated, choice)
-			reserved[choice.longExchange] += approval.RequiredMargin
-			reserved[choice.shortExchange] += approval.RequiredMargin
+			reserved[choice.longExchange] += longNeed
+			reserved[choice.shortExchange] += shortNeed
 		}
 		selected = validated
 	}
@@ -327,8 +462,9 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 	needs := make(map[string]float64)
 	totalValue := 0.0
 	for _, choice := range selected {
-		needs[choice.longExchange] += choice.requiredMargin
-		needs[choice.shortExchange] += choice.requiredMargin
+		longNeed, shortNeed := choice.marginNeeds()
+		needs[choice.longExchange] += longNeed
+		needs[choice.shortExchange] += shortNeed
 		totalValue += choice.baseValue
 	}
 
@@ -356,8 +492,9 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 		needs = make(map[string]float64, len(selected)*2)
 		totalValue = 0
 		for _, choice := range selected {
-			needs[choice.longExchange] += choice.requiredMargin
-			needs[choice.shortExchange] += choice.requiredMargin
+			longNeed, shortNeed := choice.marginNeeds()
+			needs[choice.longExchange] += longNeed
+			needs[choice.shortExchange] += shortNeed
 			totalValue += choice.baseValue
 		}
 		recheck := e.dryRunTransferPlan(selected, balances, feeCache)
@@ -366,8 +503,9 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 
 	// Post-solver simulation: verify that planned transfers + position openings
 	// won't push any exchange to L4+ health level.
+	var simResult dryRunResult
 	if feasible && len(selected) > 0 {
-		simResult := e.dryRunTransferPlan(selected, balances, feeCache)
+		simResult = e.dryRunTransferPlan(selected, balances, feeCache)
 		for !simResult.Feasible && len(selected) > 0 {
 			worstIdx := 0
 			worstVal := selected[0].baseValue
@@ -392,8 +530,9 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 		needs = make(map[string]float64, len(selected)*2)
 		totalValue = 0
 		for _, choice := range selected {
-			needs[choice.longExchange] += choice.requiredMargin
-			needs[choice.shortExchange] += choice.requiredMargin
+			longNeed, shortNeed := choice.marginNeeds()
+			needs[choice.longExchange] += longNeed
+			needs[choice.shortExchange] += shortNeed
 			totalValue += choice.baseValue
 		}
 		feasible = len(selected) > 0
@@ -410,6 +549,7 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 		needs:          needs,
 		totalBaseValue: totalValue,
 		feasible:       feasible,
+		plan:           simResult,
 	}, nil
 }
 
@@ -455,22 +595,34 @@ func (e *Engine) buildAllocatorCandidates(opps []models.Opportunity, cache *risk
 			}
 
 			entryNotional := approval.Size * approval.Price
+			longMargin := approval.LongMarginNeeded
+			shortMargin := approval.ShortMarginNeeded
 			requiredMargin := approval.RequiredMargin
 			if requiredMargin <= 0 {
 				requiredMargin = e.cfg.CapitalPerLeg * e.cfg.MarginSafetyMultiplier
 			}
-			choices = append(choices, allocatorChoice{
-				symbol:         opp.Symbol,
-				longExchange:   longExch,
-				shortExchange:  shortExch,
-				spreadBpsH:     spread,
-				intervalHours:  intervalHours,
-				requiredMargin: requiredMargin,
-				entryNotional:  entryNotional,
-				baseValue:      computeAllocatorBaseValue(spread, entryNotional, longExch, shortExch, e.cfg.MinHoldTime.Hours(), fees),
-				altPair:        alt,
-			})
-			e.log.Debug("allocator: choice added %s %s/%s: margin=%.2f baseValue=%.4f notional=%.2f", opp.Symbol, longExch, shortExch, requiredMargin, choices[len(choices)-1].baseValue, entryNotional)
+			choice := allocatorChoice{
+				symbol:              opp.Symbol,
+				longExchange:        longExch,
+				shortExchange:       shortExch,
+				spreadBpsH:          spread,
+				intervalHours:       intervalHours,
+				longRequiredMargin:  longMargin,
+				shortRequiredMargin: shortMargin,
+				requiredMargin:      requiredMargin,
+				entryNotional:       entryNotional,
+				baseValue:           computeAllocatorBaseValue(spread, entryNotional, longExch, shortExch, e.cfg.MinHoldTime.Hours(), fees),
+				altPair:             alt,
+			}
+			// Keep legacy requiredMargin in sync with per-leg max so the sort
+			// tie-break at choices sorting stays well-defined even when the
+			// risk simulator begins populating per-leg fields with different
+			// values.
+			if m := choice.maxRequiredMargin(); m > 0 {
+				choice.requiredMargin = m
+			}
+			choices = append(choices, choice)
+			e.log.Debug("allocator: choice added %s %s/%s: margin=%.2f (long=%.2f short=%.2f) baseValue=%.4f notional=%.2f", opp.Symbol, longExch, shortExch, choice.requiredMargin, longMargin, shortMargin, choice.baseValue, entryNotional)
 		}
 
 		appendChoice(opp.LongExchange, opp.ShortExchange, opp.Spread, opp.IntervalHours, nil)
@@ -564,8 +716,9 @@ func (e *Engine) solveAllocator(candidates []allocatorCandidate, capacity map[st
 
 		for _, choice := range candidates[idx].choices {
 			nextCap := cloneFloatMap(cap)
-			nextCap[choice.longExchange] = math.Max(0, nextCap[choice.longExchange]-choice.requiredMargin)
-			nextCap[choice.shortExchange] = math.Max(0, nextCap[choice.shortExchange]-choice.requiredMargin)
+			longNeed, shortNeed := choice.marginNeeds()
+			nextCap[choice.longExchange] = math.Max(0, nextCap[choice.longExchange]-longNeed)
+			nextCap[choice.shortExchange] = math.Max(0, nextCap[choice.shortExchange]-shortNeed)
 			e.log.Debug("allocator: B&B try %s %s/%s", choice.symbol, choice.longExchange, choice.shortExchange)
 			next := append(current, choice)
 			branch(idx+1, nextCap, slots-1, next, currentValue+choice.baseValue)
@@ -593,10 +746,11 @@ func (e *Engine) greedyAllocatorSeed(candidates []allocatorCandidate, capacity m
 				e.log.Debug("allocator: greedy skip %s %s/%s: dryRun infeasible", choice.symbol, choice.longExchange, choice.shortExchange)
 				continue
 			}
-			capacity[choice.longExchange] = math.Max(0, capacity[choice.longExchange]-choice.requiredMargin)
-			capacity[choice.shortExchange] = math.Max(0, capacity[choice.shortExchange]-choice.requiredMargin)
-			e.log.Debug("allocator: greedy selected %s %s/%s margin=%.2f",
-				choice.symbol, choice.longExchange, choice.shortExchange, choice.requiredMargin)
+			longNeed, shortNeed := choice.marginNeeds()
+			capacity[choice.longExchange] = math.Max(0, capacity[choice.longExchange]-longNeed)
+			capacity[choice.shortExchange] = math.Max(0, capacity[choice.shortExchange]-shortNeed)
+			e.log.Debug("allocator: greedy selected %s %s/%s margin=%.2f (long=%.2f short=%.2f)",
+				choice.symbol, choice.longExchange, choice.shortExchange, choice.requiredMargin, longNeed, shortNeed)
 			selected = append(selected, choice)
 			remainingSlots--
 			break
@@ -617,6 +771,43 @@ func allocatorUpperBound(candidates []allocatorCandidate, idx, slots int) float6
 	return sum
 }
 
+
+// buildTransferableCache computes per-exchange donor surplus identically to
+// the pool allocator's inline logic, and returns it as a PrefetchCache that
+// SimulateApprovalForPair can consume.
+// Extracted so both pool allocator and rank-first Tier-1 use the same math.
+func (e *Engine) buildTransferableCache(balances map[string]rebalanceBalanceInfo) *risk.PrefetchCache {
+	transferable := make(map[string]float64, len(balances))
+	for recipient := range e.exchanges {
+		var totalSurplus float64
+		for donor, bal := range balances {
+			if donor == recipient {
+				continue
+			}
+			if !e.donorHasHeadroom(bal) {
+				continue // skip donors without capital headroom
+			}
+			surplus := e.rebalanceAvailable(donor, bal)
+			if bal.hasPositions {
+				healthCap := e.capByMarginHealth(bal)
+				if healthCap == math.MaxFloat64 {
+					e.log.Debug("allocator: capByHealth %s: MaxFloat64 (no positions)", donor)
+				}
+				if surplus > healthCap {
+					surplus = healthCap
+				}
+			}
+			if surplus > 0 {
+				totalSurplus += surplus
+			}
+		}
+		transferable[recipient] = totalSurplus
+	}
+	e.log.Debug("allocator: transferable: %v", transferable)
+	return &risk.PrefetchCache{
+		TransferablePerExchange: transferable,
+	}
+}
 
 func (e *Engine) rebalanceAvailable(name string, bal rebalanceBalanceInfo) float64 {
 	total := bal.futures + bal.spot
@@ -695,13 +886,17 @@ func (e *Engine) allocatorDonorGrossCapacity(name string, bal rebalanceBalanceIn
 	} else {
 		futuresAvail = bal.maxTransferOut
 		if futuresAvail <= 0 {
-			futuresAvail = bal.futures
-			if bal.marginRatio > 0 && bal.futuresTotal > 0 && e.cfg.MarginL4Threshold > 0 {
-				safeMax := bal.futuresTotal * (1.0 - bal.marginRatio/e.cfg.MarginL4Threshold)
-				if safeMax < futuresAvail {
-					futuresAvail = safeMax
-				}
+			if bal.maxTransferOutAuthoritative {
+				// Exchange authoritatively reports zero withdrawable. Don't
+				// override with an estimate; skip this donor.
+				e.log.Debug("allocator: donorGross %s split-account authoritative maxTransferOut=0, treating as unavailable", name)
+				return 0
 			}
+			// Field not populated — fall back to raw futures.
+			// capByMarginHealth() applies the usage L4 + maintenance L5
+			// caps below uniformly; the previous inline maintenance-only
+			// projection has been removed to avoid metric mixing.
+			futuresAvail = bal.futures
 		}
 	}
 
@@ -729,28 +924,48 @@ func (e *Engine) allocatorDonorGrossCapacity(name string, bal rebalanceBalanceIn
 		return 0
 	}
 
-	e.log.Info("rebalance: donor %s capacity: futures=%.2f total=%.2f marginRatio=%.4f maxTransferOut=%.2f futuresAvail=%.2f surplus=%.2f unified=%v hasPos=%v",
-		name, bal.futures, bal.futuresTotal, bal.marginRatio, bal.maxTransferOut, futuresAvail, surplus, isUnified, bal.hasPositions)
+	e.log.Debug("rebalance: donor %s capacity: futures=%.2f total=%.2f maintRatio=%.4f usageRatio=%.4f maxTransferOut=%.2f futuresAvail=%.2f surplus=%.2f unified=%v hasPos=%v",
+		name, bal.futures, bal.futuresTotal, bal.marginRatio, rebalanceUsageRatio(bal), bal.maxTransferOut, futuresAvail, surplus, isUnified, bal.hasPositions)
 
 	return surplus
 }
 
-// capByMarginHealth returns the maximum amount that can be transferred out
-// of an exchange without pushing its margin ratio past the L4 threshold.
-// Returns math.MaxFloat64 when the exchange has no positions or the
-// calculation is not applicable (no margin data).
+// capByMarginHealth returns the maximum amount that can be transferred
+// out of an exchange without (a) raising its capital usage past the L4
+// threshold or (b) raising its liquidation-risk ratio past the L5
+// threshold. Returns math.MaxFloat64 when the exchange has no
+// positions or insufficient data.
 func (e *Engine) capByMarginHealth(bal rebalanceBalanceInfo) float64 {
-	if !bal.hasPositions {
+	if !bal.hasPositions || bal.futuresTotal <= 0 {
 		return math.MaxFloat64
 	}
-	if bal.marginRatio <= 0 || bal.futuresTotal <= 0 || e.cfg.MarginL4Threshold <= 0 {
-		return math.MaxFloat64
+
+	capUsage := math.MaxFloat64
+	if e.cfg.MarginL4Threshold > 0 && e.cfg.MarginL4Threshold < 1 {
+		frozen := bal.futuresTotal - bal.futures
+		if frozen < 0 {
+			frozen = 0
+		}
+		// usage = frozen / (total - x) <= L4  =>  x <= total - frozen/L4
+		limit := bal.futuresTotal - frozen/e.cfg.MarginL4Threshold
+		if limit < capUsage {
+			capUsage = limit
+		}
 	}
-	// maint = marginRatio * futuresTotal (estimated maintenance margin)
-	// After removing X: newRatio = maint / (futuresTotal - X) must stay < L4
-	// Solve: X < futuresTotal - maint / L4
-	maint := bal.marginRatio * bal.futuresTotal
-	cap := bal.futuresTotal - maint/e.cfg.MarginL4Threshold
+
+	capMaint := math.MaxFloat64
+	if bal.marginRatio > 0 && e.cfg.MarginL5Threshold > 0 {
+		maint := bal.marginRatio * bal.futuresTotal
+		limit := bal.futuresTotal - maint/e.cfg.MarginL5Threshold
+		if limit < capMaint {
+			capMaint = limit
+		}
+	}
+
+	cap := capUsage
+	if capMaint < cap {
+		cap = capMaint
+	}
 	if cap < 0 {
 		return 0
 	}
@@ -769,11 +984,15 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 	}
 
 	// 2. Aggregate margin needs per exchange from all choices.
+	// Per-leg: long's margin accumulates on long's exchange, short's on short's.
 	needs := make(map[string]float64)
 	for _, c := range choices {
-		needs[c.longExchange] += c.requiredMargin
-		needs[c.shortExchange] += c.requiredMargin
+		longNeed, shortNeed := c.marginNeeds()
+		needs[c.longExchange] += longNeed
+		needs[c.shortExchange] += shortNeed
 	}
+
+	e.log.Debug("dryRun: start — choices=%d recipients=%d needs=%v", len(choices), len(needs), needs)
 
 	var steps []transferStep
 	totalFee := 0.0
@@ -880,7 +1099,7 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 		if actualMargin <= 0 {
 			actualMargin = need
 		}
-		targetRatio := e.cfg.MarginL4Threshold - marginEpsilon
+		targetRatio := e.rebalanceTargetRatio()
 		freeTarget := 1.0 - targetRatio
 		var ratioDeficit float64
 		if freeTarget > 0 && sim[exch].futuresTotal > 0 {
@@ -894,6 +1113,12 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 			deficit = ratioDeficit
 		}
 
+		e.log.Debug("dryRun: recipient %s starts: need=%.4f futures=%.4f futuresTotal=%.4f marginDeficit=%.4f ratioDeficit=%.4f transferNeed=%.4f",
+			exch, need, sim[exch].futures, sim[exch].futuresTotal, marginDeficit, ratioDeficit, deficit)
+
+		moveCount := 0
+		totalNetForRecipient := 0.0
+
 		// 3c. While deficit > 0, find best donor.
 		for deficit > 0 {
 			bestDonor := ""
@@ -902,7 +1127,7 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 				if donor == exch || triedDonors[donor] {
 					continue
 				}
-				if sim[donor].marginRatio >= e.cfg.MarginL4Threshold {
+				if !e.donorHasHeadroom(sim[donor]) {
 					continue
 				}
 				// Use pre-computed donor budget (decremented after each use)
@@ -915,6 +1140,9 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 			}
 			if bestDonor == "" {
 				e.log.Debug("dryRun: no donor for %s deficit=%.2f", exch, deficit)
+				e.log.Debug("dryRun: recipient %s INFEASIBLE — residualDeficit=%.4f after %d donor moves, totalNet=%.4f",
+					exch, deficit, moveCount, totalNetForRecipient)
+				e.log.Debug("dryRun: end — feasible=false reason=no_donor_for_recipient")
 				return dryRunResult{Feasible: false}
 			}
 
@@ -1013,6 +1241,12 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 					// Subtract own margin needs first, then cap (executor pattern at allocator.go:1348-1364)
 					maxMove := donorBal.maxTransferOut
 					if maxMove <= 0 {
+						if donorBal.maxTransferOutAuthoritative {
+							// Exchange authoritatively reports zero transferable collateral.
+							// Do not synthesize a donor budget from raw futures.
+							triedDonors[bestDonor] = true
+							continue
+						}
 						maxMove = donorBal.futures
 					}
 					maxMove -= needs[bestDonor]
@@ -1135,25 +1369,52 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 			r.futuresTotal += move
 			sim[exch] = r
 
-			steps = append(steps, transferStep{From: bestDonor, To: exch, Amount: move, Fee: fee, Chain: chain})
+			steps = append(steps, transferStep{
+				From:        bestDonor,
+				To:          exch,
+				Amount:      move,
+				Fee:         fee,
+				Chain:       chain,
+				MinWithdraw: minWd,
+			})
 			totalFee += fee
 			deficit -= move
 			// Decrement donor budget (matches executor's surplus[bestDonor] -= netAmount + fee)
 			donorBudget[bestDonor] -= move + fee
+
+			moveCount++
+			totalNetForRecipient += move
+			donorDebit := move + fee
+			netCredit := move
+			e.log.Debug("dryRun: moved %.4f from %s to %s (gross=%.4f fee=%.4f netCredit=%.4f donorBudgetAfter=%.4f recipientDeficitAfter=%.4f)",
+				move, bestDonor, exch, donorDebit, fee, netCredit, donorBudget[bestDonor], deficit)
 		}
+
+		e.log.Debug("dryRun: recipient %s funded — consumed %d donor moves, totalNet=%.4f",
+			exch, moveCount, totalNetForRecipient)
 	}
 
 	// 4. Simulate position opening: deduct actual margin per choice.
+	// Per-leg: long's actual margin comes off long's futures, short's off short's.
 	for _, c := range choices {
-		margin := c.requiredMargin / e.cfg.MarginSafetyMultiplier
-		if margin <= 0 {
-			margin = c.requiredMargin
+		longNeed, shortNeed := c.marginNeeds()
+		longMargin := longNeed
+		shortMargin := shortNeed
+		if e.cfg.MarginSafetyMultiplier > 0 {
+			longMargin = longNeed / e.cfg.MarginSafetyMultiplier
+			shortMargin = shortNeed / e.cfg.MarginSafetyMultiplier
+		}
+		if longMargin <= 0 {
+			longMargin = longNeed
+		}
+		if shortMargin <= 0 {
+			shortMargin = shortNeed
 		}
 		lb := sim[c.longExchange]
-		lb.futures -= margin
+		lb.futures -= longMargin
 		sim[c.longExchange] = lb
 		sb := sim[c.shortExchange]
-		sb.futures -= margin
+		sb.futures -= shortMargin
 		sim[c.shortExchange] = sb
 	}
 
@@ -1178,9 +1439,12 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 		postRatios[name] = ratio
 		if !ok {
 			e.log.Debug("dryRun: %s post-ratio=%.4f >= L4=%.4f, infeasible", name, ratio, e.cfg.MarginL4Threshold)
+			e.log.Debug("dryRun: end — feasible=false reason=post_ratio_infeasible")
 			return dryRunResult{Feasible: false}
 		}
 	}
+
+	e.log.Debug("dryRun: end — feasible=true steps=%d totalFee=%.4f", len(steps), totalFee)
 
 	return dryRunResult{
 		Feasible:   true,
@@ -1202,7 +1466,7 @@ func (e *Engine) formatAllocatorSummary(sel *allocatorSelection) string {
 	return strings.Join(names, ", ")
 }
 
-func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances map[string]rebalanceBalanceInfo, precomputedDeficits []rebalanceDeficit) rebalanceExecutionResult {
+func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances map[string]rebalanceBalanceInfo, precomputedDeficits []rebalanceDeficit, plannedSteps []transferStep) rebalanceExecutionResult {
 	// PostBalances starts as a clone of caller balances. The executor mutates
 	// `balances` in place throughout (same-exchange relief, eager donor
 	// decrements, etc). We mirror those mutations into PostBalances only at
@@ -1268,6 +1532,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 								bi.futuresTotal += extra
 								balances[name] = bi
 								bal = balances[name] // refresh local copy for L4 check below
+								result.LocalTransferHappened = true
 							}
 						}
 					}
@@ -1296,7 +1561,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 					name, need, actualMargin, bal.futures, bal.futuresTotal, projectedAvail, projectedRatio, e.cfg.MarginL4Threshold)
 				if projectedRatio >= e.cfg.MarginL4Threshold {
 					// Compute ratio deficit: how much extra needed so ratio < L4
-					targetRatio := e.cfg.MarginL4Threshold - marginEpsilon
+					targetRatio := e.rebalanceTargetRatio()
 					freeTarget := 1.0 - targetRatio
 					ratioDeficit := (freeTarget*bal.futuresTotal - bal.futures + actualMargin) / targetRatio
 					if ratioDeficit > 0 {
@@ -1318,7 +1583,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 		if actualMargin <= 0 {
 			actualMargin = need
 		}
-		targetRatio := e.cfg.MarginL4Threshold - marginEpsilon
+		targetRatio := e.rebalanceTargetRatio()
 		freeTarget := 1.0 - targetRatio
 		var ratioDeficit float64
 		if freeTarget > 0 && bal.futuresTotal > 0 {
@@ -1358,6 +1623,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 					bi.spot -= actualTransfer
 					bi.futuresTotal += actualTransfer // same-exchange relief: futures pool grows, keep PostBalances consistent with the other relief branch at 1150-1155
 					balances[name] = bi
+					result.LocalTransferHappened = true
 				}
 			}
 		}
@@ -1377,8 +1643,12 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 		surplus[name] = e.allocatorDonorGrossCapacity(name, balances[name], needs[name])
 	}
 
+	plannedByRecipient := map[string][]transferStep{}
+	for _, step := range plannedSteps {
+		plannedByRecipient[step.To] = append(plannedByRecipient[step.To], step)
+	}
+
 	pendingDeposits := map[string]float64{}
-	pendingStartBal := map[string]float64{}
 
 	// Batch withdrawals: accumulate per donor→recipient, execute after loop.
 	type batchedWd struct {
@@ -1386,6 +1656,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 		chain, destAddr  string
 		netTotal         float64
 		fee              float64
+		minWd            float64
 		isGross          bool
 		isUnifiedDonor   bool
 		movedToSpot      float64
@@ -1402,34 +1673,67 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 		remaining := crossDeficits[i].amount
 		exchName := crossDeficits[i].exchange
 		origDeficit := remaining
+		planned := plannedByRecipient[exchName]
+		plannedIdx := 0
 		e.log.Debug("rebalance: processing crossDeficit %s amount=%.2f", exchName, remaining)
 		// FIX 9: removed remaining < 1.0 skip — intentional over-transfer when deficit < minWd
 		for remaining > 0 {
-			var bestDonor string
-			var bestSurplus float64
-			for name, s := range surplus {
-				if name == exchName || s <= 0 {
-					continue
-				}
-				if balances[name].marginRatio >= e.cfg.MarginL4Threshold {
-					e.log.Info("rebalance: skipping donor %s (marginRatio=%.4f >= L4=%.4f)", name, balances[name].marginRatio, e.cfg.MarginL4Threshold)
-					continue
-				}
-				// Deterministic tie-break: pick highest surplus, then alphabetical name
-				if s > bestSurplus || (s == bestSurplus && (bestDonor == "" || name < bestDonor)) {
-					bestDonor = name
-					bestSurplus = s
-				}
-			}
-			if bestDonor == "" {
-				e.log.Warn("rebalance: no donor found for %s remaining deficit=%.2f", exchName, remaining)
-				result.SkipReasons[exchName] = fmt.Sprintf("no donor found (deficit=%.2f)", remaining)
-				break
-			}
+			var bestDonor, chain string
+			var bestSurplus, fee, minWd, contribution float64
 
-			contribution := remaining
-			if contribution > bestSurplus {
-				contribution = bestSurplus
+			if len(plannedSteps) > 0 {
+				if plannedIdx >= len(planned) {
+					result.SkipReasons[exchName] = fmt.Sprintf("planned steps exhausted (remaining=%.2f)", remaining)
+					break
+				}
+				step := planned[plannedIdx]
+				plannedIdx++
+
+				if step.To != exchName {
+					result.SkipReasons[exchName] = fmt.Sprintf("planned step routed to %s, expected %s", step.To, exchName)
+					break
+				}
+
+				bestDonor = step.From
+				bestSurplus = surplus[bestDonor]
+				fee = step.Fee
+				minWd = step.MinWithdraw
+				contribution = step.Amount
+				chain = step.Chain
+
+				if contribution > remaining {
+					contribution = remaining
+				}
+				if contribution > bestSurplus {
+					contribution = bestSurplus
+				}
+			} else {
+				// Existing greedy donor-selection block (fallback when no plan)
+				for name, s := range surplus {
+					if name == exchName || s <= 0 {
+						continue
+					}
+					if !e.donorHasHeadroom(balances[name]) {
+						e.log.Info("rebalance: skipping donor %s (usageRatio=%.4f >= L4=%.4f, maintRatio=%.4f)",
+							name, rebalanceUsageRatio(balances[name]), e.cfg.MarginL4Threshold, balances[name].marginRatio)
+						continue
+					}
+					// Deterministic tie-break: pick highest surplus, then alphabetical name
+					if s > bestSurplus || (s == bestSurplus && (bestDonor == "" || name < bestDonor)) {
+						bestDonor = name
+						bestSurplus = s
+					}
+				}
+				if bestDonor == "" {
+					e.log.Warn("rebalance: no donor found for %s remaining deficit=%.2f", exchName, remaining)
+					result.SkipReasons[exchName] = fmt.Sprintf("no donor found (deficit=%.2f)", remaining)
+					break
+				}
+
+				contribution = remaining
+				if contribution > bestSurplus {
+					contribution = bestSurplus
+				}
 			}
 
 			e.cfg.RLock()
@@ -1445,27 +1749,42 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				break
 			}
 
-			var chain, destAddr string
-			for _, c := range []string{"APT", "BEP20"} {
-				if addr, ok := recipientAddrs[c]; ok && addr != "" {
-					chain = c
+			var destAddr string
+			if len(plannedSteps) > 0 {
+				// Planned path: chain already set from step; just resolve destAddr.
+				if addr, ok := recipientAddrs[chain]; ok && addr != "" {
 					destAddr = addr
+				}
+				if chain == "" || destAddr == "" {
+					e.log.Warn("rebalance: planned chain %q has no deposit address for %s", chain, exchName)
+					result.SkipReasons[exchName] = fmt.Sprintf("planned chain %q missing deposit address", chain)
 					break
 				}
-			}
-			if chain == "" {
-				e.log.Warn("rebalance: no shared chain between %s and %s", bestDonor, exchName)
-				surplus[bestDonor] = 0
-				continue
-			}
+				e.log.Info("rebalance: %s withdraw fee=%.4f minWd=%.4f USDT via %s (planned)", bestDonor, fee, minWd, chain)
+			} else {
+				// Greedy path: discover chain and fetch live fee.
+				for _, c := range []string{"APT", "BEP20"} {
+					if addr, ok := recipientAddrs[c]; ok && addr != "" {
+						chain = c
+						destAddr = addr
+						break
+					}
+				}
+				if chain == "" {
+					e.log.Warn("rebalance: no shared chain between %s and %s", bestDonor, exchName)
+					surplus[bestDonor] = 0
+					continue
+				}
 
-			fee, minWd, feeErr := e.exchanges[bestDonor].GetWithdrawFee("USDT", chain)
-			if feeErr != nil {
-				e.log.Warn("rebalance: %s GetWithdrawFee failed: %v, skipping donor", bestDonor, feeErr)
-				surplus[bestDonor] = 0
-				continue
+				var feeErr error
+				fee, minWd, feeErr = e.exchanges[bestDonor].GetWithdrawFee("USDT", chain)
+				if feeErr != nil {
+					e.log.Warn("rebalance: %s GetWithdrawFee failed: %v, skipping donor", bestDonor, feeErr)
+					surplus[bestDonor] = 0
+					continue
+				}
+				e.log.Info("rebalance: %s withdraw fee=%.4f minWd=%.4f USDT via %s", bestDonor, fee, minWd, chain)
 			}
-			e.log.Info("rebalance: %s withdraw fee=%.4f minWd=%.4f USDT via %s", bestDonor, fee, minWd, chain)
 
 			// FIX 6a: fee-mode aware cap — keep existing net-fee path, add fee-inclusive path.
 			isGross := e.exchanges[bestDonor].WithdrawFeeInclusive()
@@ -1502,13 +1821,21 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 					netFloor = 0
 				}
 				if contribution < netFloor {
+					scheduled := origDeficit - remaining
+					if scheduled >= origDeficit*0.9 {
+						e.log.Info("rebalance: residual %.2f on %s below %s minWd floor %.2f after %.2f/%.2f already scheduled; not overfunding",
+							remaining, exchName, bestDonor, netFloor, scheduled, origDeficit)
+						result.Unfunded[exchName] = remaining
+						if _, ok := result.SkipReasons[exchName]; !ok {
+							result.SkipReasons[exchName] = fmt.Sprintf("residual %.2f below %s minWd floor %.2f", remaining, bestDonor, netFloor)
+						}
+						break
+					}
 					cappedFloor := math.Min(netFloor, bestSurplus-fee)
 					if cappedFloor <= 0 {
-						e.log.Debug("rebalance: %s contribution %.2f below minWd net floor %.2f and no room to bump, skipping", bestDonor, contribution, netFloor)
 						surplus[bestDonor] = 0
 						continue
 					}
-					e.log.Info("rebalance: %s bumping contribution %.2f -> %.2f to meet minWd net floor %.2f", bestDonor, contribution, cappedFloor, netFloor)
 					contribution = cappedFloor
 				}
 			}
@@ -1536,23 +1863,23 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				moveAmt := requiredSpot - donorBal.spot
 				maxMove := donorBal.maxTransferOut
 				if maxMove <= 0 {
-					maxMove = donorBal.futures - needs[bestDonor]
-					if donorBal.marginRatio > 0 && donorBal.futuresTotal > 0 && e.cfg.MarginL4Threshold > 0 {
-						safeMax := donorBal.futuresTotal * (1.0 - donorBal.marginRatio/e.cfg.MarginL4Threshold)
-						safeMax -= needs[bestDonor]
-						if safeMax < maxMove {
-							maxMove = safeMax
-						}
+					if donorBal.maxTransferOutAuthoritative {
+						e.log.Info("rebalance: %s donor skipped — authoritative maxTransferOut=0", bestDonor)
+						surplus[bestDonor] = 0
+						continue
 					}
+					maxMove = donorBal.futures - needs[bestDonor]
 				} else {
 					maxMove -= needs[bestDonor]
 				}
 				// Cap by margin health to prevent transfers that would push
-				// the donor exchange past the L4 threshold.
+				// the donor exchange past the L4 usage or L5 maintenance caps.
+				// capByMarginHealth handles both caps uniformly; no need for
+				// a separate inline maintenance projection above.
 				healthCap := e.capByMarginHealth(donorBal) - needs[bestDonor]
 				if healthCap < maxMove {
-					e.log.Info("rebalance: %s maxMove capped by healthCap: %.2f -> %.2f (marginRatio=%.4f, L4=%.4f)",
-						bestDonor, maxMove, healthCap, donorBal.marginRatio, e.cfg.MarginL4Threshold)
+					e.log.Info("rebalance: %s maxMove capped by healthCap: %.2f -> %.2f (maintRatio=%.4f usageRatio=%.4f, L4=%.4f)",
+						bestDonor, maxMove, healthCap, donorBal.marginRatio, rebalanceUsageRatio(donorBal), e.cfg.MarginL4Threshold)
 					maxMove = healthCap
 				}
 				if moveAmt > maxMove && maxMove > 0 {
@@ -1575,6 +1902,14 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 					continue
 				}
 				moveStr := fmt.Sprintf("%.4f", moveAmt)
+				// Post-format zero guard: moveAmt can be a tiny positive (e.g. 0.00003)
+				// that passes float checks but rounds to "0.0000" via %.4f. Exchanges
+				// reject zero-amount transfers (bitget code=40020).
+				if parsed, _ := strconv.ParseFloat(moveStr, 64); parsed <= 0 {
+					e.log.Warn("rebalance: %s moveAmt %.6f rounds to zero string, skipping", bestDonor, moveAmt)
+					surplus[bestDonor] = 0
+					continue
+				}
 				e.log.Info("rebalance: %s futures->spot %s USDT", bestDonor, moveStr)
 				if err := e.exchanges[bestDonor].TransferToSpot("USDT", moveStr); err != nil {
 					e.log.Error("rebalance: %s futures->spot failed: %v", bestDonor, err)
@@ -1673,11 +2008,14 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				bw.debitFutures += iterFuturesDebit
 				bw.debitSpot += iterSpotDebit
 				bw.debitFuturesTotal += iterFuturesTotalDebit
+				if minWd > bw.minWd {
+					bw.minWd = minWd
+				}
 			} else {
 				batchedWds[wdKey] = &batchedWd{
 					donor: bestDonor, recipient: exchName,
 					chain: chain, destAddr: destAddr,
-					netTotal: netAmount, fee: fee,
+					netTotal: netAmount, fee: fee, minWd: minWd,
 					isGross: isGross, isUnifiedDonor: skipOuterTransfer,
 					movedToSpot:       movedToSpot,
 					debitFutures:      iterFuturesDebit,
@@ -1717,22 +2055,80 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 		batchKeys = append(batchKeys, k)
 	}
 	sort.Strings(batchKeys)
+	lastWithdrawAt := make(map[string]time.Time, len(batchedWds))
 	for _, bk := range batchKeys {
 		bw := batchedWds[bk]
+		plannedNetTotal := bw.netTotal
+
 		withdrawAmtForAPI := bw.netTotal
 		if bw.isGross {
 			withdrawAmtForAPI = bw.netTotal + bw.fee
 		}
 		amtStr := fmt.Sprintf("%.4f", withdrawAmtForAPI)
-		e.log.Info("rebalance: batched withdraw %s->%s net=%.2f fee=%.4f amount=%.2f via %s",
-			bw.donor, bw.recipient, bw.netTotal, bw.fee, withdrawAmtForAPI, bw.chain)
 
-		wdResult, err := e.exchanges[bw.donor].Withdraw(exchange.WithdrawParams{
-			Coin:    "USDT",
-			Chain:   bw.chain,
-			Address: bw.destAddr,
-			Amount:  amtStr,
-		})
+		if minMs := e.cfg.WithdrawMinIntervalMs; minMs > 0 {
+			if last, ok := lastWithdrawAt[bw.donor]; ok {
+				wait := time.Duration(minMs)*time.Millisecond - time.Since(last)
+				if wait > 0 {
+					e.log.Info("rebalance: withdraw throttle donor=%s wait=%v", bw.donor, wait.Round(time.Millisecond))
+					time.Sleep(wait)
+				}
+			}
+			lastWithdrawAt[bw.donor] = time.Now()
+		}
+
+		var wdResult *exchange.WithdrawResult
+		var err error
+
+		// BingX-specific pre-withdraw live balance check. BingX withdraws from
+		// walletType=1 Fund account; our in-memory donor spot can drift from
+		// live available due to TransferToSpot settlement lag, float precision,
+		// or bingx-side locks after a preceding withdraw from the same donor.
+		// Without this refresh, we observed 2026-04-19 09:45:47 incident
+		// "bingx API code=100437 Insufficient balance".
+		if bw.donor == "bingx" {
+			const bingxSafetyBuffer = 0.01
+			freshBal, bErr := e.exchanges[bw.donor].GetSpotBalance()
+			if bErr != nil {
+				e.log.Error("rebalance: bingx pre-withdraw balance check failed: %v", bErr)
+				err = fmt.Errorf("bingx pre-withdraw balance check: %w", bErr)
+			} else {
+				needed := withdrawAmtForAPI + bingxSafetyBuffer
+				if freshBal.Available < needed {
+					capped := freshBal.Available - bingxSafetyBuffer
+					if capped <= 0 {
+						e.log.Warn("rebalance: bingx live avail=%.4f < buffer %.2f, skipping withdraw and rolling back prep",
+							freshBal.Available, bingxSafetyBuffer)
+						err = fmt.Errorf("bingx live balance insufficient for any withdraw (avail=%.4f)", freshBal.Available)
+					} else if bw.minWd > 0 && capped < bw.minWd {
+						e.log.Warn("rebalance: bingx capped amount %.4f below min %.2f, skipping withdraw and rolling back prep",
+							capped, bw.minWd)
+						err = fmt.Errorf("bingx capped withdraw below minimum %.2f", bw.minWd)
+					} else if capped < withdrawAmtForAPI {
+						e.log.Warn("rebalance: bingx live avail=%.4f < need %.4f (incl buffer), capping API amount %.4f -> %.4f",
+							freshBal.Available, needed, withdrawAmtForAPI, capped)
+						withdrawAmtForAPI = capped
+						amtStr = fmt.Sprintf("%.4f", withdrawAmtForAPI)
+						if bw.isGross {
+							bw.netTotal = withdrawAmtForAPI - bw.fee
+						} else {
+							bw.netTotal = withdrawAmtForAPI
+						}
+					}
+				}
+			}
+		}
+
+		if err == nil {
+			e.log.Info("rebalance: batched withdraw %s->%s net=%.2f fee=%.4f amount=%.2f via %s",
+				bw.donor, bw.recipient, bw.netTotal, bw.fee, withdrawAmtForAPI, bw.chain)
+			wdResult, err = e.exchanges[bw.donor].Withdraw(exchange.WithdrawParams{
+				Coin:    "USDT",
+				Chain:   bw.chain,
+				Address: bw.destAddr,
+				Amount:  amtStr,
+			})
+		}
 		if err != nil {
 			e.log.Error("rebalance: batched withdraw from %s failed: %v", bw.donor, err)
 			rollbackOK := true
@@ -1789,9 +2185,18 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				}
 			}
 			// Track as unfunded for diagnostics regardless of rollback state.
-			result.Unfunded[bw.recipient] = bw.netTotal
+			result.Unfunded[bw.recipient] = plannedNetTotal
 			result.SkipReasons[bw.recipient] = fmt.Sprintf("withdraw from %s failed: %v (rollbackOK=%v)", bw.donor, err, rollbackOK)
 			continue
+		}
+
+		// Success branch: if bingx pre-check capped bw.netTotal below the
+		// planned batch amount, record the shortfall so the recipient ends up
+		// with less than planned but we still track it correctly.
+		if bw.netTotal < plannedNetTotal {
+			shortfall := plannedNetTotal - bw.netTotal
+			result.Unfunded[bw.recipient] += shortfall
+			result.SkipReasons[bw.recipient] = fmt.Sprintf("withdraw from %s capped short by %.4f before submit", bw.donor, shortfall)
 		}
 
 		recipientReceives := bw.netTotal
@@ -1827,76 +2232,36 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 			balances[bw.donor] = bi
 		}
 
-		if _, exists := pendingStartBal[bw.recipient]; !exists {
-			if uc, ok := e.exchanges[bw.recipient].(interface{ IsUnified() bool }); ok && uc.IsUnified() {
-				if fb, err := e.exchanges[bw.recipient].GetFuturesBalance(); err == nil {
-					pendingStartBal[bw.recipient] = fb.Available
-				} else {
-					e.log.Warn("rebalance: %s unified GetFuturesBalance for deposit baseline failed: %v, using spot fallback", bw.recipient, err)
-					pendingStartBal[bw.recipient] = balances[bw.recipient].spot
-				}
-			} else {
-				pendingStartBal[bw.recipient] = balances[bw.recipient].spot
-			}
-		}
 		pendingDeposits[bw.recipient] += recipientReceives
 	}
 
+	// Fire-and-forget: after withdraws are submitted, we do NOT synchronously
+	// wait for deposits to land. risk.Approve at entry time re-reads live
+	// balances and auto-moves spot->futures if funds have arrived. This keeps
+	// rebalance from blocking for 1-5+ minutes and preserves allocator
+	// overrides for :55 entry regardless of deposit timing.
+	if result.PendingDeposits == nil {
+		result.PendingDeposits = make(map[string]rebalancePending)
+	}
+	submittedAt := time.Now()
 	for recipient, totalPending := range pendingDeposits {
 		if totalPending <= 0 {
 			continue
 		}
-		recipientExch := e.exchanges[recipient]
-		startBal := pendingStartBal[recipient]
-		e.log.Info("rebalance: waiting for %.2f USDT total deposits on %s (startBal=%.2f)...", totalPending, recipient, startBal)
-		arrived := false
-		pollDeadline := time.Now().Add(5 * time.Minute)
-		for time.Now().Before(pollDeadline) {
-			time.Sleep(5 * time.Second)
-			// Unified accounts: deposits land in unified pool, poll via GetFuturesBalance.
-			var spotBal *exchange.Balance
-			var pollErr error
-			if uc, ok := recipientExch.(interface{ IsUnified() bool }); ok && uc.IsUnified() {
-				spotBal, pollErr = recipientExch.GetFuturesBalance()
-			} else {
-				spotBal, pollErr = recipientExch.GetSpotBalance()
-			}
-			if pollErr != nil {
-				continue
-			}
-			if spotBal.Available >= startBal+totalPending*0.9 {
-				arrived = true
-				e.log.Info("rebalance: all deposits confirmed on %s (bal=%.2f)", recipient, spotBal.Available)
-				break
-			}
+		if result.FundedReceivers == nil {
+			result.FundedReceivers = make(map[string]float64)
 		}
-		if !arrived {
-			e.log.Warn("rebalance: deposits on %s not confirmed within 5min, skipping spot->futures", recipient)
-			continue
+		result.FundedReceivers[recipient] += totalPending
+		result.PendingDeposits[recipient] = rebalancePending{
+			amount:      totalPending,
+			submittedAt: submittedAt,
 		}
-		if totalPending <= 0 {
-			continue
-		}
-		transferStr := fmt.Sprintf("%.4f", totalPending)
-		if err := recipientExch.TransferToFutures("USDT", transferStr); err != nil {
-			e.log.Error("rebalance: %s spot->futures failed: %v", recipient, err)
-		} else {
-			e.log.Info("rebalance: %s spot->futures %s USDT (rebalance deposit)", recipient, transferStr)
-			e.recordTransfer(recipient+" spot", recipient, "USDT", "internal", transferStr, "0", "", "completed", "rebalance-recv")
-			// Update PostBalances so keepFundedChoices sees the recipient's real
-			// funded state. spot->futures is atomic, so we can credit immediately.
-			bi := balances[recipient]
-			bi.futures += totalPending
-			bi.futuresTotal += totalPending
-			bi.spot -= totalPending
-			if bi.spot < 0 {
-				bi.spot = 0
-			}
-			balances[recipient] = bi
-		}
+		result.CrossTransferHappened = true
+		e.log.Info("rebalance: %s pending deposit %.2f USDT (submitted, not waiting for arrival)", recipient, totalPending)
 	}
 
-	e.log.Info("rebalance: complete (unfunded=%d skipReasons=%d)", len(result.Unfunded), len(result.SkipReasons))
+	e.log.Info("rebalance: complete (unfunded=%d skipReasons=%d pendingDeposits=%d)",
+		len(result.Unfunded), len(result.SkipReasons), len(result.PendingDeposits))
 	return result
 }
 

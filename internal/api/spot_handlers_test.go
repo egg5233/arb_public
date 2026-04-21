@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -273,5 +274,70 @@ func TestHandleSpotManualOpen_ReturnsAcceptedForPendingConfirmation(t *testing.T
 	}
 	if resp.Data["status"] != "pending" {
 		t.Fatalf("expected pending status, got %v", resp.Data["status"])
+	}
+}
+
+// TestHandleSpotBacktest_AcceptsBothDirections verifies the handler routes
+// Dir B (buy_spot_short) and Dir A (borrow_sell_long) to the engine, and
+// rejects unknown directions with 400 before hitting the engine.
+func TestHandleSpotBacktest_AcceptsBothDirections(t *testing.T) {
+	s, mr := newTestServer(t)
+	defer mr.Close()
+
+	var gotDirections []string
+	s.spotRunBacktest = func(_ context.Context, symbol, exchange, direction string, days int) (interface{}, error) {
+		gotDirections = append(gotDirections, direction)
+		return map[string]any{"symbol": symbol, "exchange": exchange, "direction": direction, "days": days}, nil
+	}
+
+	cases := []struct {
+		name       string
+		direction  string
+		wantStatus int
+	}{
+		{"dirB", "buy_spot_short", http.StatusOK},
+		{"dirA", "borrow_sell_long", http.StatusOK},
+		{"unknown", "long_only", http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"symbol":"BTCUSDT","exchange":"binance","direction":"` + tc.direction + `","days":7}`
+			req := httptest.NewRequest(http.MethodPost, "/api/spot/backtest", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			s.handleSpotBacktest(w, req)
+			if w.Code != tc.wantStatus {
+				t.Fatalf("%s: expected %d, got %d: %s", tc.name, tc.wantStatus, w.Code, w.Body.String())
+			}
+		})
+	}
+
+	// Engine must have been called for Dir B and Dir A but NOT for unknown.
+	if len(gotDirections) != 2 {
+		t.Fatalf("engine should have been called twice (Dir B + Dir A), got %d: %v", len(gotDirections), gotDirections)
+	}
+	if gotDirections[0] != "buy_spot_short" || gotDirections[1] != "borrow_sell_long" {
+		t.Fatalf("unexpected direction order: %v", gotDirections)
+	}
+}
+
+// TestHandleSpotBacktest_EngineErrorSurfacesAs400 verifies the handler maps
+// engine errors (e.g. "unsupported on okx") to 400 so the UI can show them inline.
+func TestHandleSpotBacktest_EngineErrorSurfacesAs400(t *testing.T) {
+	s, mr := newTestServer(t)
+	defer mr.Close()
+
+	s.spotRunBacktest = func(_ context.Context, _, _, _ string, _ int) (interface{}, error) {
+		return nil, errors.New("historical borrow rate not supported on okx")
+	}
+
+	body := `{"symbol":"BTCUSDT","exchange":"okx","direction":"borrow_sell_long","days":7}`
+	req := httptest.NewRequest(http.MethodPost, "/api/spot/backtest", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handleSpotBacktest(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 }

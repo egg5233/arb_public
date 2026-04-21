@@ -43,6 +43,8 @@ type Adapter struct {
 	orderCallback        func(exchange.OrderUpdate)
 	wsMetricsCallback    exchange.WSMetricsCallback
 	orderMetricsCallback exchange.OrderMetricsCallback
+	algoRemapCallback    exchange.AlgoRemapCallback
+	algoRemapMu          sync.Mutex
 
 	isUnified bool // true when Portfolio Margin is enabled
 }
@@ -63,6 +65,21 @@ func (b *Adapter) SetOrderMetricsCallback(fn exchange.OrderMetricsCallback) {
 
 func (b *Adapter) SetOrderCallback(fn func(exchange.OrderUpdate)) {
 	b.orderCallback = fn
+}
+
+// SetAlgoRemapCallback registers a callback that fires when a Binance algo order
+// (TAKE_PROFIT / STOP_MARKET conditional) is triggered and mapped to a matching-engine order ID.
+func (b *Adapter) SetAlgoRemapCallback(fn exchange.AlgoRemapCallback) {
+	b.algoRemapMu.Lock()
+	b.algoRemapCallback = fn
+	b.algoRemapMu.Unlock()
+}
+
+// getAlgoRemapCallback returns the current algoRemapCallback under the mutex.
+func (b *Adapter) getAlgoRemapCallback() exchange.AlgoRemapCallback {
+	b.algoRemapMu.Lock()
+	defer b.algoRemapMu.Unlock()
+	return b.algoRemapCallback
 }
 
 func (b *Adapter) SignTradFi() error {
@@ -102,7 +119,7 @@ func (b *Adapter) CheckPermissions() exchange.PermissionResult {
 		Read: toBool(resp.EnableReading), FuturesTrade: toBool(resp.EnableFutures),
 		Withdraw: toBool(resp.EnableWithdrawals),
 		Transfer: toBool(resp.EnableInternalTransfer || resp.PermitsUniversalTransfer),
-		Method: "direct",
+		Method:   "direct",
 	}
 }
 
@@ -681,13 +698,13 @@ func (b *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 		TotalMarginBalance string `json:"totalMarginBalance"`
 		TotalMaintMargin   string `json:"totalMaintMargin"`
 		AvailableBalance   string `json:"availableBalance"`
-		MaxWithdrawAmount string `json:"maxWithdrawAmount"`
-		Assets            []struct {
-			Asset              string `json:"asset"`
-			WalletBalance      string `json:"walletBalance"`
-			MarginBalance      string `json:"marginBalance"`
-			AvailableBalance   string `json:"availableBalance"`
-			MaxWithdrawAmount  string `json:"maxWithdrawAmount"`
+		MaxWithdrawAmount  string `json:"maxWithdrawAmount"`
+		Assets             []struct {
+			Asset             string `json:"asset"`
+			WalletBalance     string `json:"walletBalance"`
+			MarginBalance     string `json:"marginBalance"`
+			AvailableBalance  string `json:"availableBalance"`
+			MaxWithdrawAmount string `json:"maxWithdrawAmount"`
 		} `json:"assets"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -717,12 +734,13 @@ func (b *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 			maxTransferOut, _ := strconv.ParseFloat(asset.MaxWithdrawAmount, 64)
 
 			return &exchange.Balance{
-				Total:          total,
-				Available:      available,
-				Frozen:         total - available,
-				Currency:       "USDT",
-				MarginRatio:    marginRatio,
-				MaxTransferOut: maxTransferOut,
+				Total:                       total,
+				Available:                   available,
+				Frozen:                      total - available,
+				Currency:                    "USDT",
+				MarginRatio:                 marginRatio,
+				MaxTransferOut:              maxTransferOut,
+				MaxTransferOutAuthoritative: true,
 			}, nil
 		}
 	}

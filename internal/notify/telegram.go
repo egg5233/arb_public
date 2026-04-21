@@ -141,6 +141,52 @@ func (t *TelegramNotifier) NotifyEmergencyClose(pos *models.SpotFuturesPosition,
 	go t.send(text)
 }
 
+func (t *TelegramNotifier) NotifySpotHedgeBroken(pos *models.SpotFuturesPosition, exchangeSide string, exchangeSize float64) {
+	if t == nil || pos == nil {
+		return
+	}
+	if !t.checkCooldown("spot_hedge_broken:" + pos.ID) {
+		return
+	}
+	text := fmt.Sprintf(
+		"\xE2\x9A\xA0 *SF HEDGE BROKEN*\n"+
+			"Position: `%s`\n"+
+			"Symbol: `%s`\n"+
+			"Exchange: %s\n"+
+			"Recorded: %s %.6f\n"+
+			"Exchange: %s %.6f\n"+
+			"Manual intervention required",
+		pos.ID,
+		pos.Symbol,
+		pos.Exchange,
+		pos.FuturesSide, pos.FuturesSize,
+		exchangeSide, exchangeSize,
+	)
+	go t.send(text)
+}
+
+func (t *TelegramNotifier) NotifySpotCloseBlocked(pos *models.SpotFuturesPosition, reason string) {
+	if t == nil || pos == nil {
+		return
+	}
+	if !t.checkCooldown("spot_close_blocked:" + pos.ID + ":" + reason) {
+		return
+	}
+	text := fmt.Sprintf(
+		"\xE2\x9A\xA0 *SF CLOSE BLOCKED*\n"+
+			"Position: `%s`\n"+
+			"Symbol: `%s`\n"+
+			"Exchange: %s\n"+
+			"Reason: %s\n"+
+			"Hedge marked broken; manual intervention required",
+		pos.ID,
+		pos.Symbol,
+		pos.Exchange,
+		strings.ReplaceAll(reason, "_", " "),
+	)
+	go t.send(text)
+}
+
 // ---------------------------------------------------------------------------
 // Cooldown: per-event-type dedup (5 minutes)
 // ---------------------------------------------------------------------------

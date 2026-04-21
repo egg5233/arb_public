@@ -983,3 +983,48 @@ func (s *Server) handleSpotBatchCheckGap(w http.ResponseWriter, r *http.Request)
 
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: results})
 }
+
+// handleSpotBacktest runs an on-demand historical funding backtest for a spot-futures opportunity.
+// Accepts both Dir B (buy_spot_short) and Dir A (borrow_sell_long). Per-exchange capability for
+// Dir A is enforced by the engine's RunSpotBacktestOnDemand, which returns a descriptive error
+// for unsupported exchanges that this handler surfaces as 400.
+func (s *Server) handleSpotBacktest(w http.ResponseWriter, r *http.Request) {
+	if s.spotRunBacktest == nil {
+		writeJSON(w, http.StatusServiceUnavailable, Response{Error: "spot engine not available"})
+		return
+	}
+
+	var req struct {
+		Symbol    string `json:"symbol"`
+		Exchange  string `json:"exchange"`
+		Direction string `json:"direction"`
+		Days      int    `json:"days"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "invalid JSON"})
+		return
+	}
+	req.Symbol = strings.ToUpper(strings.TrimSpace(req.Symbol))
+	req.Exchange = strings.ToLower(strings.TrimSpace(req.Exchange))
+	req.Direction = strings.TrimSpace(req.Direction)
+	if req.Symbol == "" || req.Exchange == "" || req.Direction == "" {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "symbol, exchange, direction required"})
+		return
+	}
+	if req.Direction != "buy_spot_short" && req.Direction != "borrow_sell_long" {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "direction must be buy_spot_short or borrow_sell_long"})
+		return
+	}
+	if req.Days <= 0 {
+		req.Days = 7
+	}
+
+	result, err := s.spotRunBacktest(r.Context(), req.Symbol, req.Exchange, req.Direction, req.Days)
+	if err != nil {
+		// Engine errors that reflect a bad request (unsupported exchange for Dir A, etc.)
+		// should surface as 400 so the UI can render them inline without alarming the user.
+		writeJSON(w, http.StatusBadRequest, Response{Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: result})
+}

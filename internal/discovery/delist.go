@@ -10,10 +10,10 @@ import (
 )
 
 const (
-	binanceDelistURL    = "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query?type=1&catalogId=161&pageNo=1&pageSize=20"
-	delistPollInterval  = 6 * time.Hour
-	delistRedisPrefix   = "arb:delist:"
-	delistBufferDays    = 7 // keep blacklist for 7 days after delist date
+	binanceDelistURL   = "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query?type=1&catalogId=161&pageNo=1&pageSize=20"
+	delistPollInterval = 6 * time.Hour
+	delistRedisPrefix  = "arb:delist:"
+	delistBufferDays   = 7 // keep blacklist for 7 days after delist date
 )
 
 // Regex patterns for parsing delist announcements.
@@ -43,7 +43,7 @@ type binanceDelistResponse struct {
 
 // delistEntry represents a parsed delist announcement.
 type delistEntry struct {
-	Symbol    string // e.g. "NTRN"
+	Symbol     string // e.g. "NTRN"
 	DelistDate time.Time
 }
 

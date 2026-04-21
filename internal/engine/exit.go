@@ -976,6 +976,10 @@ marketFallback:
 			fresh.Status = models.StatusActive
 			fresh.LongSize = longRemainder
 			fresh.ShortSize = shortRemainder
+			// H2.2: size legitimately changed — update CloseSize to match the
+			// remaining size so the reconcile gate uses the right expected total.
+			fresh.LongCloseSize = longRemainder
+			fresh.ShortCloseSize = shortRemainder
 			fresh.UpdatedAt = time.Now().UTC()
 			return true
 		}); err != nil {
@@ -1152,6 +1156,28 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 		return false // retry — exchange may not have finalized the position yet
 	}
 
+	// H2.3 Phase 1: pre-split Tier 1 completeness gate.
+	// When pos AND all siblings have CloseSize populated, require raw
+	// exchange-aggregated CloseSize to match the sum of expected sizes.
+	// Prevents accepting partial exchange data when local PnL was contaminated.
+	const sizeEpsilon = 1e-6
+	longSiblings := e.siblingsFor(pos, "long")
+	shortSiblings := e.siblingsFor(pos, "short")
+	useTier1 := pos.LongCloseSize > 0 && pos.ShortCloseSize > 0 &&
+		allSiblingsHaveCloseSize(longSiblings, "long") &&
+		allSiblingsHaveCloseSize(shortSiblings, "short")
+
+	if useTier1 {
+		longExpected := pos.LongCloseSize + sumSiblingCloseSize(longSiblings, "long")
+		shortExpected := pos.ShortCloseSize + sumSiblingCloseSize(shortSiblings, "short")
+		if longAgg.CloseSize < longExpected-sizeEpsilon || shortAgg.CloseSize < shortExpected-sizeEpsilon {
+			e.log.Warn("reconcile %s [attempt %d]: incomplete close data (longRawClose=%.6f/%.6f shortRawClose=%.6f/%.6f), retrying",
+				pos.ID, attempt, longAgg.CloseSize, longExpected, shortAgg.CloseSize, shortExpected)
+			return false
+		}
+	}
+
+	// H2.3 Phase 2: split + diff calculation.
 	// When multiple local positions share the same exchange+symbol+side,
 	// the exchange only has one merged position. Split the exchange-reported
 	// PnL proportionally by each position's size.
@@ -1174,18 +1200,33 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 	e.log.Info("reconcile %s [attempt %d]: exchange PnL=%.4f (long=%.4f short=%.4f rotation=%.4f fees=%.4f funding=%.4f) local=%.4f diff=%.4f",
 		pos.ID, attempt, reconciledPnL, longAgg.NetPnL, shortAgg.NetPnL, pos.RotationPnL, totalFees, reconciledFunding, oldPnL, diff)
 
-	// Sanity check: diff should not exceed position notional.
-	longNotional := pos.LongEntry * pos.LongSize
-	shortNotional := pos.ShortEntry * pos.ShortSize
-	notional := math.Max(longNotional, shortNotional)
-	if notional <= 0 {
-		// Sizes zeroed (depth-exit path) — estimate from exchange-reported close sizes.
-		notional = math.Max(longAgg.CloseSize*longAgg.EntryPrice, shortAgg.CloseSize*shortAgg.EntryPrice)
+	// H2.3 Phase 3: post-split Tier 2 / Tier 3 (only if Tier 1 wasn't used).
+	if !useTier1 {
+		if pos.LongSize > 0 || pos.ShortSize > 0 {
+			// Tier 2: pre-migration with non-zero live size (normal closePositionWithMode path).
+			// Retain old abs(diff) > notional guard for the current position only; do NOT
+			// reconstruct sibling totals from mixed history (normal-close siblings keep
+			// sizes, depth-exit siblings are zeroed — sibling sum can undercount).
+			longNotional := pos.LongEntry * pos.LongSize
+			shortNotional := pos.ShortEntry * pos.ShortSize
+			notional := math.Max(longNotional, shortNotional)
+			if notional > 0 && math.Abs(diff) > notional {
+				e.log.Warn("reconcile %s [attempt %d]: pre-migration diff %.4f exceeds notional %.4f, retrying",
+					pos.ID, attempt, diff, notional)
+				return false
+			}
+		} else {
+			// Tier 3: pre-migration depth-exit (both CloseSize and LongSize zero).
+			// Rely on longOK && shortOK (already checked at :1149-1152).
+			e.log.Warn("reconcile %s [attempt %d]: pre-migration depth-exit, no size info — relying on longOK && shortOK",
+				pos.ID, attempt)
+		}
 	}
-	if notional > 0 && math.Abs(diff) > notional {
-		e.log.Warn("reconcile %s [attempt %d]: diff %.4f exceeds notional %.4f — likely incomplete data, retrying",
-			pos.ID, attempt, diff, notional)
-		return false
+
+	// Informational variance log AFTER tiers pass.
+	if pos.EntryNotional > 0 && math.Abs(longAgg.NetPnL+shortAgg.NetPnL) > pos.EntryNotional*0.5 {
+		e.log.Warn("reconcile %s [attempt %d]: large delta-neutral variance long+short=%.4f vs entryNotional %.4f (informational, proceeding)",
+			pos.ID, attempt, longAgg.NetPnL+shortAgg.NetPnL, pos.EntryNotional)
 	}
 
 	// Only update if meaningful difference (>$0.01).
@@ -1373,27 +1414,23 @@ func aggregateClosePnLBySide(records []exchange.ClosePnL, side string) (exchange
 	return agg, found
 }
 
-// splitSharedPnL checks if multiple local positions shared the same exchange+symbol
-// on the given side (e.g. two positions both long on gateio WAXPUSDT). If so, the
-// exchange only had one merged position, and the PnL must be split proportionally.
-// Since closed positions have sizes zeroed, we use entry prices as a proxy for
-// notional weight. When entry prices are similar, this effectively divides evenly.
-func (e *Engine) splitSharedPnL(agg exchange.ClosePnL, pos *models.ArbitragePosition, side string) exchange.ClosePnL {
+// siblingsFor returns other recently-closed positions that shared the same
+// exchange+symbol+side as pos within a 5-minute close window. Shared by
+// splitSharedPnL (for proportional PnL split) and the H2.3 Tier 1 completeness
+// gate (for expected-CloseSize calculation).
+func (e *Engine) siblingsFor(pos *models.ArbitragePosition, side string) []*models.ArbitragePosition {
 	exchName := pos.LongExchange
-	myEntry := pos.LongEntry
 	if side == "short" {
 		exchName = pos.ShortExchange
-		myEntry = pos.ShortEntry
 	}
 
-	// Find siblings: other recently-closed positions with the same symbol+exchange+side.
 	history, err := e.db.GetHistory(50)
 	if err != nil {
-		return agg
+		return nil
 	}
 
 	closeWindow := 5 * time.Minute
-	siblingCount := 0
+	var siblings []*models.ArbitragePosition
 	for _, h := range history {
 		if h.Symbol != pos.Symbol || h.ID == pos.ID {
 			continue
@@ -1408,8 +1445,59 @@ func (e *Engine) splitSharedPnL(agg exchange.ClosePnL, pos *models.ArbitragePosi
 		if math.Abs(h.UpdatedAt.Sub(pos.UpdatedAt).Seconds()) > closeWindow.Seconds() {
 			continue
 		}
-		siblingCount++
+		siblings = append(siblings, h)
 	}
+	return siblings
+}
+
+// allSiblingsHaveCloseSize returns true iff every sibling has its CloseSize
+// (for the given side) populated. Used by the H2.3 Tier 1 gate: Tier 1 only
+// applies when the entire cohort has migrated to the CloseSize scheme.
+func allSiblingsHaveCloseSize(siblings []*models.ArbitragePosition, side string) bool {
+	for _, s := range siblings {
+		if side == "long" {
+			if s.LongCloseSize <= 0 {
+				return false
+			}
+		} else {
+			if s.ShortCloseSize <= 0 {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// sumSiblingCloseSize sums LongCloseSize or ShortCloseSize across siblings.
+// Used by the H2.3 Tier 1 gate to compute the expected exchange-aggregated
+// close size for the shared exchange position.
+func sumSiblingCloseSize(siblings []*models.ArbitragePosition, side string) float64 {
+	sum := 0.0
+	for _, s := range siblings {
+		if side == "long" {
+			sum += s.LongCloseSize
+		} else {
+			sum += s.ShortCloseSize
+		}
+	}
+	return sum
+}
+
+// splitSharedPnL checks if multiple local positions shared the same exchange+symbol
+// on the given side (e.g. two positions both long on gateio WAXPUSDT). If so, the
+// exchange only had one merged position, and the PnL must be split proportionally.
+// Since closed positions have sizes zeroed, we use entry prices as a proxy for
+// notional weight. When entry prices are similar, this effectively divides evenly.
+func (e *Engine) splitSharedPnL(agg exchange.ClosePnL, pos *models.ArbitragePosition, side string) exchange.ClosePnL {
+	exchName := pos.LongExchange
+	myEntry := pos.LongEntry
+	if side == "short" {
+		exchName = pos.ShortExchange
+		myEntry = pos.ShortEntry
+	}
+
+	siblings := e.siblingsFor(pos, side)
+	siblingCount := len(siblings)
 
 	if siblingCount == 0 {
 		return agg // no siblings — use full PnL
@@ -1892,6 +1980,19 @@ func (e *Engine) closePositionWithMode(pos *models.ArbitragePosition, emergency 
 	time.Sleep(500 * time.Millisecond) // brief delay for exchange state to settle
 	actualLong, longVerifyErr := getExchangePositionSize(longExch, pos.Symbol, "long")
 	actualShort, shortVerifyErr := getExchangePositionSize(shortExch, pos.Symbol, "short")
+
+	// Subtract any spot-futures futures leg on the same (exchange, symbol, side)
+	// so an SF hedge doesn't keep PP Active with imported SF size. Direct twin
+	// of the v0.32.13 rotation-verify fix at exit.go:2775.
+	if longVerifyErr == nil || shortVerifyErr == nil {
+		_, sfSizeOffset := e.buildSpotFuturesMaps()
+		if longVerifyErr == nil {
+			actualLong = sfSubtract(actualLong, sfSizeOffset, pos.LongExchange, pos.Symbol, "long")
+		}
+		if shortVerifyErr == nil {
+			actualShort = sfSubtract(actualShort, sfSizeOffset, pos.ShortExchange, pos.Symbol, "short")
+		}
+	}
 
 	// If verification failed (API error), treat as NOT confirmed flat — safer to keep active.
 	notFlat := false
@@ -2646,6 +2747,17 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 	slippage := e.cfg.SlippageBPS / 10000.0
 	sizeStr := e.formatSize(newExchName, pos.Symbol, closeSize)
 
+	// Pre-check: step-size rounding must not lose significant size.
+	// If the new exchange rounds the position down (e.g. 349 → 300 due to step size),
+	// the remainder would stay on the old exchange, causing the post-close "NOT flat"
+	// check to abort and leave the position unhedged. Skip the rotation instead.
+	formattedSize, _ := strconv.ParseFloat(sizeStr, 64)
+	if formattedSize < closeSize*0.99 {
+		e.log.Warn("rotation: skipping %s — new exchange %s step-size rounds %.6f → %s (%.1f%% loss, remainder would stay on %s)",
+			pos.ID, newExchName, closeSize, sizeStr, (1-formattedSize/closeSize)*100, oldExchName)
+		return
+	}
+
 	// Pre-check: position notional must meet minimum to avoid partial-fill loops.
 	const minNotionalUSDT = 10.0
 	if closeSize*refPrice < minNotionalUSDT {
@@ -2784,21 +2896,75 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 		return
 	}
 	if remainingOnExch > 0 {
-		e.log.Error("CRITICAL: rotation close for %s — old leg NOT flat on %s (remaining=%.6f), aborting. Closing new leg back.",
-			pos.ID, oldExchName, remainingOnExch)
-		// Write remaining old-leg size back to position before aborting.
-		_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
-			if legSide == "short" {
-				fresh.ShortSize = remainingOnExch
-			} else {
-				fresh.LongSize = remainingOnExch
-			}
-			return true
-		})
+		// Check if the remainder is expected (step-size rounding caused a partial rotation)
+		// vs unexpected (genuinely failed close or another position sharing the exchange).
+		expectedRemaining := closeSize - closeQty // closeSize is the original pos size, closeQty is what was actually closed
+		tolerance := closeSize * 0.01             // 1% tolerance
+		if remainingOnExch <= expectedRemaining+tolerance && expectedRemaining > 0 {
+			// Step-size partial rotation: the close filled what was asked, but the
+			// position was larger than what the new exchange could handle.
+			// This should have been caught by the pre-check, but handle gracefully.
+			e.log.Warn("rotation close for %s — old leg has expected remainder %.6f on %s (pos=%.6f closed=%.6f). Closing new leg to revert.",
+				pos.ID, remainingOnExch, oldExchName, closeSize, closeQty)
+		} else {
+			e.log.Error("CRITICAL: rotation close for %s — old leg NOT flat on %s (remaining=%.6f, expected=%.6f), aborting.",
+				pos.ID, oldExchName, remainingOnExch, expectedRemaining)
+		}
+
+		// Revert: close the new leg back AND re-open the old leg to restore delta-neutral.
 		rem := e.closeFullyWithRetry(newExch, pos.Symbol, closeSide, openFilled)
 		if rem > 0 {
 			e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", pos.Symbol, closeSide, rem, newExch.Name())
 		}
+
+		// Re-open only the exposure actually lost on the old exchange.
+		// remainingOnExch is what's still open; we only need to restore the delta.
+		actualClosed := closeQty - remainingOnExch
+		if actualClosed < 0 {
+			actualClosed = 0
+		}
+		if actualClosed == 0 {
+			e.log.Info("rotation revert: old leg still fully open on %s (remaining=%.6f), no re-open needed", oldExchName, remainingOnExch)
+			return
+		}
+		reopenSizeStr := utils.FormatSize(actualClosed, 6)
+		reopenPrice := ""
+		oldBBO, olok := e.getBBOWithFallback(oldExch, pos.Symbol)
+		if olok {
+			if legSide == "short" {
+				reopenPrice = e.formatPrice(oldExchName, pos.Symbol, oldBBO.Bid*(1-slippage))
+			} else {
+				reopenPrice = e.formatPrice(oldExchName, pos.Symbol, oldBBO.Ask*(1+slippage))
+			}
+			e.log.Info("rotation revert: re-opening %s %s on %s size=%s @ %s", openSide, pos.Symbol, oldExchName, reopenSizeStr, reopenPrice)
+			reopenOID, reopenErr := oldExch.PlaceOrder(exchange.PlaceOrderParams{
+				Symbol:    pos.Symbol,
+				Side:      openSide,
+				OrderType: "limit",
+				Price:     reopenPrice,
+				Size:      reopenSizeStr,
+				Force:     "ioc",
+			})
+			if reopenErr != nil {
+				e.log.Error("ORPHAN EXPOSURE: rotation revert re-open on %s failed: %v — position %s lost %.6f %s exposure, manual intervention needed",
+					oldExchName, reopenErr, pos.ID, actualClosed, pos.Symbol)
+			} else {
+				deadline := time.Now().Add(30 * time.Second)
+				reopenFilled, _ := e.waitForFill(oldExch, reopenOID, pos.Symbol, deadline)
+				e.log.Info("rotation revert: re-opened %.6f/%.6f on %s", reopenFilled, actualClosed, oldExchName)
+				if reopenFilled < actualClosed*0.5 {
+					e.log.Error("ORPHAN EXPOSURE: rotation revert re-open partial on %s: filled=%.6f of %.6f — manual intervention needed",
+						oldExchName, reopenFilled, actualClosed)
+				}
+			}
+		} else {
+			e.log.Error("ORPHAN EXPOSURE: rotation revert — BBO unavailable on %s, cannot re-open %.6f %s — manual intervention needed",
+				oldExchName, actualClosed, pos.Symbol)
+		}
+
+		// DO NOT overwrite position sizes here. The re-open attempt restores the
+		// original exchange state. Let the consolidator reconcile any differences
+		// on the next 5-minute tick.
 		return
 	}
 	// Checkpoint 3: after closing old leg, before DB swap.
@@ -2815,10 +2981,13 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 				f.ShortExchange = newExchName
 				f.ShortSize = openFilled
 				f.ShortEntry = openAvg
+				// H2.2: mirror CloseSize to the actual live size.
+				f.ShortCloseSize = openFilled
 			} else {
 				f.LongExchange = newExchName
 				f.LongSize = openFilled
 				f.LongEntry = openAvg
+				f.LongCloseSize = openFilled
 			}
 			return true
 		})
@@ -2834,10 +3003,14 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 			fresh.ShortExchange = newExchName
 			fresh.ShortSize = openFilled
 			fresh.ShortEntry = openAvg
+			// H2.2: rotation may land a partial (openFilled < closeSize target) —
+			// keep CloseSize in sync with the new live size.
+			fresh.ShortCloseSize = openFilled
 		} else {
 			fresh.LongExchange = newExchName
 			fresh.LongSize = openFilled
 			fresh.LongEntry = openAvg
+			fresh.LongCloseSize = openFilled
 		}
 		fresh.LastRotatedFrom = oldExchName
 		fresh.LastRotatedAt = time.Now().UTC()
@@ -2901,10 +3074,13 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 				f.ShortExchange = newExchName
 				f.ShortSize = openFilled
 				f.ShortEntry = openAvg
+				// H2.2: mirror CloseSize to the actual live size.
+				f.ShortCloseSize = openFilled
 			} else {
 				f.LongExchange = newExchName
 				f.LongSize = openFilled
 				f.LongEntry = openAvg
+				f.LongCloseSize = openFilled
 			}
 			return true
 		})
@@ -3148,10 +3324,12 @@ func (e *Engine) updateRotationStopLoss(pos *models.ArbitragePosition, legSide, 
 		pos.LongTPOrderID = tpOID
 	}
 
-	// Register new SL in slIndex for instant fill detection (mirrors attachStopLosses).
+	// Register new SL and TP in slIndex for instant fill detection (mirrors attachStopLosses).
 	e.slIndexMu.Lock()
-	key := newExchName + ":" + oid
-	e.slIndex[key] = slEntry{PosID: pos.ID, Leg: legSide}
+	e.slIndex[newExchName+":"+oid] = stopOrderEntry{PosID: pos.ID, Leg: legSide, Kind: "sl"}
+	if tpOID != "" {
+		e.slIndex[newExchName+":"+tpOID] = stopOrderEntry{PosID: pos.ID, Leg: legSide, Kind: "tp"}
+	}
 	e.slIndexMu.Unlock()
 }
 

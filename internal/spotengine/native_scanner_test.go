@@ -1,6 +1,7 @@
 package spotengine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -51,6 +52,12 @@ func (s *nativeScannerStubExchange) GetSpotBBO(string) (exchange.BBO, error) {
 }
 func (s *nativeScannerStubExchange) TransferToMargin(string, string) error   { return nil }
 func (s *nativeScannerStubExchange) TransferFromMargin(string, string) error { return nil }
+func (s *nativeScannerStubExchange) GetMarginInterestRateHistory(_ context.Context, _ string, _, _ time.Time) ([]exchange.MarginInterestRatePoint, error) {
+	return nil, exchange.ErrHistoricalBorrowNotSupported
+}
+func (s *nativeScannerStubExchange) SpotOrderRules(string) (*exchange.SpotOrderRules, error) {
+	return nil, nil
+}
 
 // mockLorisServer creates an httptest.Server that returns Loris funding rate data.
 func mockLorisServer(resp models.LorisResponse) *httptest.Server {
@@ -94,8 +101,8 @@ func TestNativeScannerDirA(t *testing.T) {
 		"binance": stubExch,
 	}
 	engine.cfg = &config.Config{
-		SpotFuturesScannerMode: "native",
-		SpotFuturesMinNetYieldAPR:       0.01, // 1%
+		SpotFuturesScannerMode:    "native",
+		SpotFuturesMinNetYieldAPR: 0.01, // 1%
 	}
 
 	// Loris rate: 10 bps 8h-equiv -> bpsPerHour = 10/8 = 1.25
@@ -153,8 +160,8 @@ func TestNativeScannerDirB(t *testing.T) {
 		"bybit": stubExch,
 	}
 	engine.cfg = &config.Config{
-		SpotFuturesScannerMode: "native",
-		SpotFuturesMinNetYieldAPR:       0.01,
+		SpotFuturesScannerMode:    "native",
+		SpotFuturesMinNetYieldAPR: 0.01,
 	}
 
 	lorisResp := buildTestLorisResponse(
@@ -204,8 +211,8 @@ func TestNativeScannerBothDirections(t *testing.T) {
 		"binance": stubExch,
 	}
 	engine.cfg = &config.Config{
-		SpotFuturesScannerMode: "native",
-		SpotFuturesMinNetYieldAPR:       0.01,
+		SpotFuturesScannerMode:    "native",
+		SpotFuturesMinNetYieldAPR: 0.01,
 	}
 
 	lorisResp := buildTestLorisResponse(
@@ -255,8 +262,8 @@ func TestNetYieldRanking(t *testing.T) {
 		},
 	}
 	engine.cfg = &config.Config{
-		SpotFuturesScannerMode: "native",
-		SpotFuturesMinNetYieldAPR:       0.0,
+		SpotFuturesScannerMode:    "native",
+		SpotFuturesMinNetYieldAPR: 0.0,
 	}
 
 	lorisResp := buildTestLorisResponse(
@@ -314,8 +321,8 @@ func TestNativeScannerLorisNormalization(t *testing.T) {
 		"binance": stubExch,
 	}
 	engine.cfg = &config.Config{
-		SpotFuturesScannerMode: "native",
-		SpotFuturesMinNetYieldAPR:       0.0,
+		SpotFuturesScannerMode:    "native",
+		SpotFuturesMinNetYieldAPR: 0.0,
 	}
 
 	// rawRate = 80 bps 8h-equiv
@@ -424,8 +431,8 @@ func TestNativeScannerSkipsNoSpotMarginExchange(t *testing.T) {
 		},
 	}
 	engine.cfg = &config.Config{
-		SpotFuturesScannerMode: "native",
-		SpotFuturesMinNetYieldAPR:       0.0,
+		SpotFuturesScannerMode:    "native",
+		SpotFuturesMinNetYieldAPR: 0.0,
 	}
 
 	lorisResp := buildTestLorisResponse(
@@ -464,9 +471,9 @@ func TestNativeScannerFilterStatus(t *testing.T) {
 		"binance": stubExch,
 	}
 	engine.cfg = &config.Config{
-		SpotFuturesScannerMode: "native",
-		SpotFuturesMinNetYieldAPR:       0.50, // 50% min net yield
-		SpotFuturesMaxBorrowAPR:         0.20, // 20% max borrow
+		SpotFuturesScannerMode:    "native",
+		SpotFuturesMinNetYieldAPR: 0.50, // 50% min net yield
+		SpotFuturesMaxBorrowAPR:   0.20, // 20% max borrow
 	}
 
 	// Low funding rate: 2 bps 8h-equiv -> fundingAPR = (2/8) * 8760/10000 = 0.219 (21.9%)
@@ -504,8 +511,8 @@ func TestNativeScannerCachesMissingSpotMarketAcrossRestart(t *testing.T) {
 		"okx": stubExch,
 	}
 	engine.cfg = &config.Config{
-		SpotFuturesScannerMode: "native",
-		SpotFuturesMinNetYieldAPR:       0.01,
+		SpotFuturesScannerMode:    "native",
+		SpotFuturesMinNetYieldAPR: 0.01,
 	}
 
 	lorisResp := buildTestLorisResponse(
@@ -582,8 +589,8 @@ func TestNativeScannerAbortsQuicklyOnShutdown(t *testing.T) {
 		"okx": stubExch,
 	}
 	engine.cfg = &config.Config{
-		SpotFuturesScannerMode: "native",
-		SpotFuturesMinNetYieldAPR:       0.01,
+		SpotFuturesScannerMode:    "native",
+		SpotFuturesMinNetYieldAPR: 0.01,
 	}
 
 	close(engine.stopCh)
@@ -651,8 +658,8 @@ func TestNativeScannerSourceField(t *testing.T) {
 		"binance": stubExch,
 	}
 	engine.cfg = &config.Config{
-		SpotFuturesScannerMode: "native",
-		SpotFuturesMinNetYieldAPR:       0.0,
+		SpotFuturesScannerMode:    "native",
+		SpotFuturesMinNetYieldAPR: 0.0,
 	}
 
 	lorisResp := buildTestLorisResponse(

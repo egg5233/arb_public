@@ -201,6 +201,36 @@ func (m *Manager) ApproveRotation(exchName string, symbol string, size float64, 
 	return true, ""
 }
 
+// notionalRejectionKind returns RejectionKindConfig when the per-leg capital
+// ceiling is so low that no transfer can raise sizing above the $10 notional floor,
+// and RejectionKindCapital otherwise (transfer top-up may cure the rejection).
+func notionalRejectionKind(effectiveCap float64, leverage int) models.RejectionKind {
+	if effectiveCap > 0 && effectiveCap*float64(leverage) < 10 {
+		return models.RejectionKindConfig
+	}
+	return models.RejectionKindCapital
+}
+
+// pricedCapitalRejection builds a RejectionKindCapital approval carrying full
+// sizing/pricing data so downstream callers (Pass 1 rescue) can score and
+// fund a rescue transfer. Long-side rejections that fire before shortMargin is
+// computed should pass shortMargin=0; the helper fills the missing leg from
+// the other side so RequiredMargin is always non-zero when size>0.
+func pricedCapitalRejection(reason string, size, price, longMargin, shortMargin float64) *models.RiskApproval {
+	if shortMargin <= 0 {
+		shortMargin = longMargin
+	}
+	if longMargin <= 0 {
+		longMargin = shortMargin
+	}
+	required := math.Max(longMargin, shortMargin)
+	return &models.RiskApproval{
+		Approved: false, Kind: models.RejectionKindCapital, Reason: reason,
+		Size: size, Price: price, RequiredMargin: required,
+		LongMarginNeeded: longMargin, ShortMarginNeeded: shortMargin,
+	}
+}
+
 // approveInternal is the shared implementation for Approve and ApproveWithReserved.
 // When cache is non-nil, pre-fetched balances and orderbooks are used instead of
 // live API calls. Cache misses fall back to live calls transparently.
@@ -224,20 +254,20 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	if len(active) >= m.cfg.MaxPositions {
 		reason := fmt.Sprintf("max positions reached (%d/%d)", len(active), m.cfg.MaxPositions)
 		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-		return &models.RiskApproval{Approved: false, Reason: reason}, nil
+		return &models.RiskApproval{Approved: false, Kind: models.RejectionKindConfig, Reason: reason}, nil
 	}
 
 	longExch, ok := m.exchanges[opp.LongExchange]
 	if !ok {
 		reason := fmt.Sprintf("long exchange %s not configured", opp.LongExchange)
 		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-		return &models.RiskApproval{Approved: false, Reason: reason}, nil
+		return &models.RiskApproval{Approved: false, Kind: models.RejectionKindConfig, Reason: reason}, nil
 	}
 	shortExch, ok := m.exchanges[opp.ShortExchange]
 	if !ok {
 		reason := fmt.Sprintf("short exchange %s not configured", opp.ShortExchange)
 		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-		return &models.RiskApproval{Approved: false, Reason: reason}, nil
+		return &models.RiskApproval{Approved: false, Kind: models.RejectionKindConfig, Reason: reason}, nil
 	}
 
 	// b. Capital check — get balances from both exchanges (use cache if available).
@@ -262,19 +292,22 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		}
 	}
 
-	needed := m.effectiveCapitalPerLeg(string(StrategyPerpPerp))
+	// Single-snapshot effective capital — reused at sizing and notional-floor
+	// classification to eliminate concurrent dynamicCaps mutation window.
+	// Clamped leverage is computed below (after the balance fetch) as the existing
+	// `leverage` local at the leverage-check block, and threaded into sizing there.
+	effectiveCap := m.effectiveCapitalPerLeg(string(StrategyPerpPerp))
+
+	needed := effectiveCap
 	if !dryRun {
+		const sweepTarget = 1e9
 		if needed > 0 {
-			bufferedNeed := needed * m.cfg.MarginSafetyMultiplier
-			m.ensureFuturesBalance(opp.LongExchange, longExch, longBal, bufferedNeed)
-			m.ensureFuturesBalance(opp.ShortExchange, shortExch, shortBal, bufferedNeed)
+			// Fixed-capital mode still needs the full split-account sweep; otherwise
+			// post-trade L4 uses an artificially low futures total and can reject a
+			// trade that already has idle spot available.
+			m.ensureFuturesBalance(opp.LongExchange, longExch, longBal, sweepTarget)
+			m.ensureFuturesBalance(opp.ShortExchange, shortExch, shortBal, sweepTarget)
 		} else {
-			// Auto-size: sweep all available spot into futures to maximize position sizing.
-			// On split-account exchanges (Binance, Bitget, Gate.io), spot balance
-			// is invisible to futures sizing — transfer it before approval.
-			// ensureFuturesBalance transfers min(deficit, spotAvailable), so passing
-			// a large 'needed' effectively sweeps all spot into futures.
-			const sweepTarget = 1e9
 			m.ensureFuturesBalance(opp.LongExchange, longExch, longBal, sweepTarget)
 			m.ensureFuturesBalance(opp.ShortExchange, shortExch, shortBal, sweepTarget)
 		}
@@ -421,16 +454,16 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	}
 	if len(longOB.Asks) == 0 || len(longOB.Bids) == 0 {
 		m.log.Debug("approval rejected %s: empty orderbook on %s", opp.Symbol, opp.LongExchange)
-		return &models.RiskApproval{Approved: false, Reason: "empty orderbook on long exchange"}, nil
+		return &models.RiskApproval{Approved: false, Kind: models.RejectionKindMarket, Reason: "empty orderbook on long exchange"}, nil
 	}
 	longMid := (longOB.Bids[0].Price + longOB.Asks[0].Price) / 2.0
 	midPrice := longMid // used as reference for sizing (preserves existing behavior)
 
 	// Calculate position size (pass midPrice to avoid redundant orderbook fetch).
-	size := m.calculateSizeWithPrice(opp, balances, midPrice, active)
+	size := m.calculateSizeWithPrice(opp, balances, midPrice, active, effectiveCap, leverage)
 	if size <= 0 {
 		m.log.Debug("approval rejected %s: insufficient capital for minimum position size (long=%s=%.2f short=%s=%.2f)", opp.Symbol, opp.LongExchange, effectiveLongAvail, opp.ShortExchange, effectiveShortAvail)
-		return &models.RiskApproval{Approved: false, Reason: "insufficient capital for minimum position size"}, nil
+		return &models.RiskApproval{Approved: false, Kind: models.RejectionKindCapital, Reason: "insufficient capital for minimum position size"}, nil
 	}
 
 	// $10 per-leg notional floor (4.1): reject if either leg's notional < $10
@@ -438,7 +471,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	if longNotional < 10.0 {
 		reason := fmt.Sprintf("long-leg notional $%.2f < $10 minimum on %s", longNotional, opp.LongExchange)
 		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-		return &models.RiskApproval{Approved: false, Reason: reason}, nil
+		return &models.RiskApproval{Approved: false, Kind: notionalRejectionKind(effectiveCap, leverage), Reason: reason}, nil
 	}
 
 	// Verify enough free margin per leg (with configurable safety buffer).
@@ -450,7 +483,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	if effectiveLongAvail < longMarginWithBuffer {
 		reason := fmt.Sprintf("insufficient margin buffer on %s: need %.2f (including %.0f%% safety buffer), have %.2f", opp.LongExchange, longMarginWithBuffer, safetyPct, effectiveLongAvail)
 		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-		return &models.RiskApproval{Approved: false, Reason: reason}, nil
+		return pricedCapitalRejection(reason, size, longMid, longMarginWithBuffer, 0), nil
 	}
 
 	// Short-leg margin check is deferred until after shortOB is fetched (see below).
@@ -465,7 +498,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		if projectedRatio >= m.cfg.MarginL4Threshold {
 			reason := fmt.Sprintf("post-trade margin ratio would reach %.2f on %s (L4 threshold: %.2f)", projectedRatio, opp.LongExchange, m.cfg.MarginL4Threshold)
 			m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-			return &models.RiskApproval{Approved: false, Reason: reason}, nil
+			return pricedCapitalRejection(reason, size, longMid, longMarginWithBuffer, 0), nil
 		}
 	}
 
@@ -490,7 +523,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	if len(shortOB.Asks) == 0 || len(shortOB.Bids) == 0 {
 		reason := fmt.Sprintf("empty orderbook on %s", opp.ShortExchange)
 		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-		return &models.RiskApproval{Approved: false, Reason: reason}, nil
+		return &models.RiskApproval{Approved: false, Kind: models.RejectionKindMarket, Reason: reason}, nil
 	}
 
 	// Compute short mid price from short exchange orderbook.
@@ -503,7 +536,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	if shortNotional < 10.0 {
 		reason := fmt.Sprintf("short-leg notional $%.2f < $10 minimum on %s", shortNotional, opp.ShortExchange)
 		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-		return &models.RiskApproval{Approved: false, Reason: reason}, nil
+		return &models.RiskApproval{Approved: false, Kind: notionalRejectionKind(effectiveCap, leverage), Reason: reason}, nil
 	}
 
 	// Short-leg margin check (deferred from above — needed shortMid)
@@ -512,7 +545,10 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	if effectiveShortAvail < shortMarginWithBuffer {
 		reason := fmt.Sprintf("insufficient margin buffer on %s: need %.2f (including %.0f%% safety buffer), have %.2f", opp.ShortExchange, shortMarginWithBuffer, safetyPct, effectiveShortAvail)
 		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-		return &models.RiskApproval{Approved: false, Reason: reason}, nil
+		// Use midPrice (= longMid, the sizing reference) so Pass 1 rescue's
+		// entryNotional = Size * Price matches calculateSizeWithPrice's basis.
+		// Using shortMid would skew scoring when long/short prices diverge.
+		return pricedCapitalRejection(reason, size, midPrice, longMarginWithBuffer, shortMarginWithBuffer), nil
 	}
 
 	// Post-trade margin ratio projection (short leg)
@@ -525,7 +561,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		if projectedRatio >= m.cfg.MarginL4Threshold {
 			reason := fmt.Sprintf("post-trade margin ratio would reach %.2f on %s (L4 threshold: %.2f)", projectedRatio, opp.ShortExchange, m.cfg.MarginL4Threshold)
 			m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-			return &models.RiskApproval{Approved: false, Reason: reason}, nil
+			return pricedCapitalRejection(reason, size, midPrice, longMarginWithBuffer, shortMarginWithBuffer), nil
 		}
 	}
 
@@ -563,7 +599,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 			}
 			reason := fmt.Sprintf("slippage too high on %s: %.1f bps > %.1f bps limit", bottleneck, bps, m.cfg.SlippageBPS)
 			m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-			return &models.RiskApproval{Approved: false, Reason: reason}, nil
+			return &models.RiskApproval{Approved: false, Kind: models.RejectionKindSpread, Reason: reason}, nil
 		}
 
 		// Min size = contract minimum from exchange
@@ -588,7 +624,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 			reason := fmt.Sprintf("slippage %.1f bps at minimum size %.0f ($%.2f) on %s (limit=%.1f bps)",
 				bottleneckBps, adaptiveMinSize, adaptiveMinSize*midPrice/float64(leverage), bottleneck, m.cfg.SlippageBPS)
 			m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-			return &models.RiskApproval{Approved: false, Reason: reason}, nil
+			return &models.RiskApproval{Approved: false, Kind: models.RejectionKindSpread, Reason: reason}, nil
 		}
 
 		originalNotional := size * midPrice / float64(leverage)
@@ -613,7 +649,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	if absGapBps > m.cfg.MaxPriceGapBPS {
 		reason := fmt.Sprintf("price gap too high: %.1f bps > %.1f bps hard cap (long=%.6f short=%.6f)", absGapBps, m.cfg.MaxPriceGapBPS, longVWAP, shortVWAP)
 		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-		return &models.RiskApproval{Approved: false, Reason: reason}, nil
+		return &models.RiskApproval{Approved: false, Kind: models.RejectionKindSpread, Reason: reason}, nil
 	}
 
 	// For cost-based recovery check, only consider unfavorable gap (we pay more than receive).
@@ -627,7 +663,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		if opp.Spread <= 0 {
 			reason := fmt.Sprintf("price gap %.1f bps with zero funding spread", gapBps)
 			m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-			return &models.RiskApproval{Approved: false, Reason: reason}, nil
+			return &models.RiskApproval{Approved: false, Kind: models.RejectionKindSpread, Reason: reason}, nil
 		}
 		recoveryHours := gapBps / opp.Spread
 		intervalHours := opp.IntervalHours
@@ -639,7 +675,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		if recoveryHours > maxRecoveryHours {
 			reason := fmt.Sprintf("price gap %.1f bps, recovery %.1f intervals > %.1f limit (%.0fh interval)", gapBps, recoveryIntervals, m.cfg.MaxGapRecoveryIntervals, intervalHours)
 			m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-			return &models.RiskApproval{Approved: false, Reason: reason}, nil
+			return &models.RiskApproval{Approved: false, Kind: models.RejectionKindSpread, Reason: reason}, nil
 		}
 		m.log.Info("price gap %.1f bps for %s, recovery %.1f intervals (within %.1f limit, %.0fh interval)", gapBps, opp.Symbol, recoveryIntervals, m.cfg.MaxGapRecoveryIntervals, intervalHours)
 	}
@@ -649,7 +685,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		return nil, fmt.Errorf("spread stability check: %w", err)
 	} else if reason != "" {
 		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-		return &models.RiskApproval{Approved: false, Reason: reason}, nil
+		return &models.RiskApproval{Approved: false, Kind: models.RejectionKindSpread, Reason: reason}, nil
 	}
 
 	if m.cfg.EnableExchangeHealthScoring && m.scorer != nil {
@@ -657,13 +693,13 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		if longSnapshot.Score < m.scorer.minScore() {
 			reason := fmt.Sprintf("exchange health too low on %s: %.2f < %.2f", opp.LongExchange, longSnapshot.Score, m.scorer.minScore())
 			m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-			return &models.RiskApproval{Approved: false, Reason: reason}, nil
+			return &models.RiskApproval{Approved: false, Kind: models.RejectionKindHealth, Reason: reason}, nil
 		}
 		shortSnapshot := m.scorer.Snapshot(opp.ShortExchange)
 		if shortSnapshot.Score < m.scorer.minScore() {
 			reason := fmt.Sprintf("exchange health too low on %s: %.2f < %.2f", opp.ShortExchange, shortSnapshot.Score, m.scorer.minScore())
 			m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-			return &models.RiskApproval{Approved: false, Reason: reason}, nil
+			return &models.RiskApproval{Approved: false, Kind: models.RejectionKindHealth, Reason: reason}, nil
 		}
 	}
 
@@ -697,12 +733,12 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 			if longExposure > maxExposure {
 				reason := fmt.Sprintf("would exceed %.0f%% capital cap on %s: exposure=%.2f cap=%.2f", maxExposurePct*100, opp.LongExchange, longExposure, maxExposure)
 				m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-				return &models.RiskApproval{Approved: false, Reason: reason}, nil
+				return &models.RiskApproval{Approved: false, Kind: models.RejectionKindCapacity, Reason: reason}, nil
 			}
 			if shortExposure > maxExposure {
 				reason := fmt.Sprintf("would exceed %.0f%% capital cap on %s: exposure=%.2f cap=%.2f", maxExposurePct*100, opp.ShortExchange, shortExposure, maxExposure)
 				m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-				return &models.RiskApproval{Approved: false, Reason: reason}, nil
+				return &models.RiskApproval{Approved: false, Kind: models.RejectionKindCapacity, Reason: reason}, nil
 			}
 		}
 	}
@@ -842,12 +878,12 @@ func (m *Manager) CalculateSize(opp models.Opportunity, balances map[string]floa
 // price instead of fetching a separate orderbook. This avoids a redundant API
 // call when the caller (approveInternal) already has an orderbook.
 // When cachedActive is non-nil, it is used instead of querying the DB again.
-func (m *Manager) calculateSizeWithPrice(opp models.Opportunity, balances map[string]float64, refPrice float64, cachedActive []*models.ArbitragePosition) float64 {
+func (m *Manager) calculateSizeWithPrice(opp models.Opportunity, balances map[string]float64, refPrice float64, cachedActive []*models.ArbitragePosition, effectiveCap float64, leverage int) float64 {
 	balA := balances[opp.LongExchange]
 	balB := balances[opp.ShortExchange]
 	availableCapital := math.Min(balA, balB)
 
-	ecl2 := m.effectiveCapitalPerLeg(string(StrategyPerpPerp))
+	ecl2 := effectiveCap
 	m.log.Info("[sizing] %s: %s=%.4f %s=%.4f availCap=%.4f capPerLeg=%.2f lev=%d",
 		opp.Symbol, opp.LongExchange, balA, opp.ShortExchange, balB,
 		availableCapital, ecl2, m.cfg.Leverage)
@@ -855,11 +891,6 @@ func (m *Manager) calculateSizeWithPrice(opp models.Opportunity, balances map[st
 	if availableCapital <= 0 {
 		m.log.Info("[sizing] %s: rejected — zero available capital", opp.Symbol)
 		return 0
-	}
-
-	leverage := m.cfg.Leverage
-	if leverage > MaxLeverage() {
-		leverage = MaxLeverage()
 	}
 
 	active := cachedActive

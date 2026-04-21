@@ -51,10 +51,12 @@ type Config struct {
 	// Margin health thresholds (marginRatio values, 0-1 scale where 1.0 = liquidation)
 	MarginL3Threshold      float64 // trigger fund transfer (default: 0.50)
 	MarginL4Threshold      float64 // trigger position reduction (default: 0.80)
+	MarginL4Headroom       float64 // extra cushion below L4 for rebalance deficit sizing (default: 0.05)
 	MarginL5Threshold      float64 // trigger emergency close (default: 0.95)
 	L4ReduceFraction       float64 // fraction to reduce at L4 (default: 0.50)
 	MarginSafetyMultiplier float64 // margin buffer multiplier for entry check (default: 2.0)
 	EntryMarginHeadroom    float64 // fraction of L3 threshold used as entry limit (default: 0.80, i.e. L3×0.80)
+	WithdrawMinIntervalMs  int     // min interval (ms) between withdraws from same donor in batched rebalance (default: 11000; 0 = disabled)
 
 	// Exit strategy
 	ExitDepthTimeoutSec int     // depth-fill exit loop timeout before market fallback (default 300)
@@ -127,6 +129,10 @@ type Config struct {
 	EnablePoolAllocator bool
 	TopPairsPerSymbol   int
 	AllocatorTimeoutMs  int
+
+	// Rebalance tuning (used by Pass 1 rank-first + Pool Allocator Pass 2)
+	RebalanceMinNetPnLUSDT float64
+	RebalanceDonorFloorPct float64
 
 	// Leg rotation parameters
 	RotationThresholdBPS float64 // min spread improvement to trigger rotation (default: 20)
@@ -220,6 +226,12 @@ type Config struct {
 	SpotFuturesEnableMaintenanceGate bool    // enable maintenance_rate pre-entry and runtime liq distance checks (default: false)
 	SpotFuturesMaintenanceDefault    float64 // conservative default when rate=0/unknown (default: 0.05 = 5%)
 	SpotFuturesMaintenanceCacheTTL   int     // cache TTL in minutes for tiered rate data (default: 60)
+
+	// Backtest filter for spot-futures Dir B (buy_spot_short only)
+	SpotFuturesBacktestEnabled           bool    // filter Dir B opps by historical funding sum (default: false)
+	SpotFuturesBacktestDays              int     // historical funding window in days (default: 7)
+	SpotFuturesBacktestMinProfit         float64 // minimum sum of funding bps over window to pass (default: 0)
+	SpotFuturesBacktestCoinGlassFallback bool    // use CoinGlass-scraped history for OKX/Bitget Dir A (default: false)
 
 	// Telegram notifications
 	TelegramBotToken string
@@ -350,6 +362,12 @@ type jsonSpotFutures struct {
 	EnableMaintenanceGate *bool    `json:"enable_maintenance_gate"`
 	MaintenanceDefault    *float64 `json:"maintenance_default"`
 	MaintenanceCacheTTL   *int     `json:"maintenance_cache_ttl"`
+
+	// Backtest filter for spot-futures Dir B
+	BacktestEnabled           *bool    `json:"backtest_enabled"`
+	BacktestDays              *int     `json:"backtest_days"`
+	BacktestMinProfit         *float64 `json:"backtest_min_profit"`
+	BacktestCoinGlassFallback *bool    `json:"backtest_coinglass_fallback"`
 }
 
 type jsonExchange struct {
@@ -388,6 +406,9 @@ type jsonStrategy struct {
 	EnablePoolAllocator *bool          `json:"enable_pool_allocator"`
 	TopPairsPerSymbol   *int           `json:"top_pairs_per_symbol"`
 	AllocatorTimeoutMs  *int           `json:"allocator_timeout_ms"`
+
+	RebalanceMinNetPnLUSDT *float64 `json:"rebalance_min_net_pnl_usdt"`
+	RebalanceDonorFloorPct *float64 `json:"rebalance_donor_floor_pct"`
 	Discovery           *jsonDiscovery `json:"discovery"`
 	Entry               *jsonEntry     `json:"entry"`
 	Exit                *jsonExit      `json:"exit"`
@@ -463,10 +484,12 @@ type jsonFund struct {
 type jsonRisk struct {
 	MarginL3Threshold           *float64 `json:"margin_l3_threshold"`
 	MarginL4Threshold           *float64 `json:"margin_l4_threshold"`
+	MarginL4Headroom            *float64 `json:"margin_l4_headroom"`
 	MarginL5Threshold           *float64 `json:"margin_l5_threshold"`
 	L4ReduceFraction            *float64 `json:"l4_reduce_fraction"`
 	MarginSafetyMultiplier      *float64 `json:"margin_safety_multiplier"`
 	EntryMarginHeadroom         *float64 `json:"entry_margin_headroom"`
+	WithdrawMinIntervalMs       *int     `json:"withdraw_min_interval_ms"`
 	RiskMonitorIntervalSec      *int     `json:"risk_monitor_interval_sec"`
 	EnableLiqTrendTracking      *bool    `json:"enable_liq_trend_tracking"`
 	LiqProjectionMinutes        *int     `json:"liq_projection_minutes"`
@@ -516,6 +539,8 @@ func Load() *Config {
 		EnablePoolAllocator:              false,
 		TopPairsPerSymbol:                10,
 		AllocatorTimeoutMs:               30000,
+		RebalanceMinNetPnLUSDT:           0.50,
+		RebalanceDonorFloorPct:           0.05,
 		TopOpportunities:                 25,
 		PriceGapFreeBPS:                  40,
 		MaxPriceGapBPS:                   200,
@@ -524,10 +549,12 @@ func Load() *Config {
 		MinChunkUSDT:                     10,
 		MarginL3Threshold:                0.50,
 		MarginL4Threshold:                0.80,
+		MarginL4Headroom:                 0.05,
 		MarginL5Threshold:                0.95,
 		L4ReduceFraction:                 0.30,
 		MarginSafetyMultiplier:           2.0,
 		EntryMarginHeadroom:              0.80,
+		WithdrawMinIntervalMs:            11000,
 		ExitDepthTimeoutSec:              300,
 		ExitMaxGapBPS:                    10.0,
 		RiskMonitorIntervalSec:           300,
@@ -615,6 +642,12 @@ func Load() *Config {
 		SpotFuturesEnableMaintenanceGate: false,
 		SpotFuturesMaintenanceDefault:    0.05,
 		SpotFuturesMaintenanceCacheTTL:   60,
+
+		// Backtest filter defaults (OFF per new-feature rollout rule)
+		SpotFuturesBacktestEnabled:           false,
+		SpotFuturesBacktestDays:              7,
+		SpotFuturesBacktestMinProfit:         0,
+		SpotFuturesBacktestCoinGlassFallback: false,
 
 		// Unified capital allocation defaults (Phase 5)
 		EnableUnifiedCapital:   false,
@@ -760,6 +793,12 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		}
 		if s.AllocatorTimeoutMs != nil && *s.AllocatorTimeoutMs > 0 {
 			c.AllocatorTimeoutMs = *s.AllocatorTimeoutMs
+		}
+		if s.RebalanceMinNetPnLUSDT != nil && *s.RebalanceMinNetPnLUSDT >= 0 {
+			c.RebalanceMinNetPnLUSDT = *s.RebalanceMinNetPnLUSDT
+		}
+		if s.RebalanceDonorFloorPct != nil && *s.RebalanceDonorFloorPct >= 0 {
+			c.RebalanceDonorFloorPct = *s.RebalanceDonorFloorPct
 		}
 
 		// Discovery
@@ -932,6 +971,9 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if rk.MarginL4Threshold != nil && *rk.MarginL4Threshold > 0 {
 			c.MarginL4Threshold = *rk.MarginL4Threshold
 		}
+		if rk.MarginL4Headroom != nil && *rk.MarginL4Headroom > 0 {
+			c.MarginL4Headroom = *rk.MarginL4Headroom
+		}
 		if rk.MarginL5Threshold != nil && *rk.MarginL5Threshold > 0 {
 			c.MarginL5Threshold = *rk.MarginL5Threshold
 		}
@@ -943,6 +985,9 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		}
 		if rk.EntryMarginHeadroom != nil && *rk.EntryMarginHeadroom > 0 {
 			c.EntryMarginHeadroom = *rk.EntryMarginHeadroom
+		}
+		if rk.WithdrawMinIntervalMs != nil && *rk.WithdrawMinIntervalMs >= 0 {
+			c.WithdrawMinIntervalMs = *rk.WithdrawMinIntervalMs
 		}
 		if rk.RiskMonitorIntervalSec != nil && *rk.RiskMonitorIntervalSec > 0 {
 			c.RiskMonitorIntervalSec = *rk.RiskMonitorIntervalSec
@@ -1218,6 +1263,19 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if sf.MaintenanceCacheTTL != nil && *sf.MaintenanceCacheTTL >= 1 {
 			c.SpotFuturesMaintenanceCacheTTL = *sf.MaintenanceCacheTTL
 		}
+		// Backtest filter
+		if sf.BacktestEnabled != nil {
+			c.SpotFuturesBacktestEnabled = *sf.BacktestEnabled
+		}
+		if sf.BacktestDays != nil && *sf.BacktestDays > 0 {
+			c.SpotFuturesBacktestDays = *sf.BacktestDays
+		}
+		if sf.BacktestMinProfit != nil && *sf.BacktestMinProfit >= 0 {
+			c.SpotFuturesBacktestMinProfit = *sf.BacktestMinProfit
+		}
+		if sf.BacktestCoinGlassFallback != nil {
+			c.SpotFuturesBacktestCoinGlassFallback = *sf.BacktestCoinGlassFallback
+		}
 	}
 
 	// Telegram
@@ -1293,6 +1351,57 @@ type ExchangeSecretOverride struct {
 	Passphrase string
 }
 
+// keepNonZero is a tripwire used by SaveJSON to protect critical numeric config
+// fields (capital per leg, max positions, leverage) from being silently zeroed
+// by stale dashboard state or buggy update paths. If newVal is numeric zero AND
+// existing (the on-disk value just read) is numeric non-zero, returns existing
+// unchanged and logs a loud warning including the caller so the zeroing source
+// can be traced. Otherwise returns newVal normally.
+//
+// Incoming 0 for these fields is almost always a bug — legitimate operational
+// changes (e.g. disabling spot-futures) flip *Enabled booleans rather than
+// zeroing out capital/leverage. Added in v0.32.32 after a live incident where
+// spot_futures.{max_positions, leverage, capital_unified_usdt} were unexpectedly
+// zeroed by an unknown update path. The tripwire is intentionally narrow; it
+// does not block the save, only preserves the specific field.
+func keepNonZero(existing, newVal interface{}, fieldName string) interface{} {
+	if !isNumericZero(newVal) {
+		return newVal
+	}
+	if !isNumericNonZero(existing) {
+		return newVal
+	}
+	_, caller, line, _ := runtime.Caller(1)
+	fmt.Fprintf(os.Stderr,
+		"[config] TRIPWIRE: refusing to zero %s (disk=%v, in-memory=%v) — keeping disk value. caller=%s:%d\n",
+		fieldName, existing, newVal, caller, line)
+	return existing
+}
+
+func isNumericZero(v interface{}) bool {
+	switch x := v.(type) {
+	case int:
+		return x == 0
+	case int64:
+		return x == 0
+	case float64:
+		return x == 0
+	}
+	return false
+}
+
+func isNumericNonZero(v interface{}) bool {
+	switch x := v.(type) {
+	case int:
+		return x != 0
+	case int64:
+		return x != 0
+	case float64:
+		return x != 0
+	}
+	return false
+}
+
 // SaveJSON writes the current runtime config back to config.json while
 // preserving exchange secrets from the original file.
 func (c *Config) SaveJSON() error {
@@ -1361,6 +1470,8 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	strategy["enable_pool_allocator"] = c.EnablePoolAllocator
 	strategy["top_pairs_per_symbol"] = c.TopPairsPerSymbol
 	strategy["allocator_timeout_ms"] = c.AllocatorTimeoutMs
+	strategy["rebalance_min_net_pnl_usdt"] = c.RebalanceMinNetPnLUSDT
+	strategy["rebalance_donor_floor_pct"] = c.RebalanceDonorFloorPct
 
 	disc := getMap(strategy, "discovery")
 	disc["min_hold_time_hours"] = int(c.MinHoldTime.Hours())
@@ -1423,10 +1534,12 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	risk := getMap(raw, "risk")
 	risk["margin_l3_threshold"] = c.MarginL3Threshold
 	risk["margin_l4_threshold"] = c.MarginL4Threshold
+	risk["margin_l4_headroom"] = c.MarginL4Headroom
 	risk["margin_l5_threshold"] = c.MarginL5Threshold
 	risk["l4_reduce_fraction"] = c.L4ReduceFraction
 	risk["margin_safety_multiplier"] = c.MarginSafetyMultiplier
 	risk["entry_margin_headroom"] = c.EntryMarginHeadroom
+	risk["withdraw_min_interval_ms"] = c.WithdrawMinIntervalMs
 	risk["risk_monitor_interval_sec"] = c.RiskMonitorIntervalSec
 	risk["enable_liq_trend_tracking"] = c.EnableLiqTrendTracking
 	risk["liq_projection_minutes"] = c.LiqProjectionMinutes
@@ -1502,8 +1615,13 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 
 	sf := getMap(raw, "spot_futures")
 	sf["enabled"] = c.SpotFuturesEnabled
-	sf["max_positions"] = c.SpotFuturesMaxPositions
-	sf["leverage"] = c.SpotFuturesLeverage
+	// Tripwire: refuse to overwrite on-disk non-zero numeric values with zero for
+	// safety-critical runtime parameters. An incoming zero for these fields is
+	// almost always the result of a bug (stale dashboard state, missing guard in
+	// an update path, etc.) rather than an intentional change. Logs loudly so the
+	// culprit can be traced. See CHANGELOG v0.32.32.
+	sf["max_positions"] = keepNonZero(sf["max_positions"], c.SpotFuturesMaxPositions, "spot_futures.max_positions")
+	sf["leverage"] = keepNonZero(sf["leverage"], c.SpotFuturesLeverage, "spot_futures.leverage")
 	sf["monitor_interval_sec"] = c.SpotFuturesMonitorIntervalSec
 	sf["min_net_yield_apr"] = c.SpotFuturesMinNetYieldAPR
 	sf["max_borrow_apr"] = c.SpotFuturesMaxBorrowAPR
@@ -1523,8 +1641,8 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	sf["auto_dry_run"] = c.SpotFuturesDryRun
 	sf["persistence_scans"] = c.SpotFuturesPersistenceScans
 	sf["profit_transfer_enabled"] = c.SpotFuturesProfitTransferEnabled
-	sf["capital_separate_usdt"] = c.SpotFuturesCapitalSeparate
-	sf["capital_unified_usdt"] = c.SpotFuturesCapitalUnified
+	sf["capital_separate_usdt"] = keepNonZero(sf["capital_separate_usdt"], c.SpotFuturesCapitalSeparate, "spot_futures.capital_separate_usdt")
+	sf["capital_unified_usdt"] = keepNonZero(sf["capital_unified_usdt"], c.SpotFuturesCapitalUnified, "spot_futures.capital_unified_usdt")
 	sf["scanner_mode"] = c.SpotFuturesScannerMode
 	delete(sf, "native_scanner_enabled") // clean old key
 	sf["enable_min_hold"] = c.SpotFuturesEnableMinHold
@@ -1538,6 +1656,10 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	sf["enable_maintenance_gate"] = c.SpotFuturesEnableMaintenanceGate
 	sf["maintenance_default"] = c.SpotFuturesMaintenanceDefault
 	sf["maintenance_cache_ttl"] = c.SpotFuturesMaintenanceCacheTTL
+	sf["backtest_enabled"] = c.SpotFuturesBacktestEnabled
+	sf["backtest_days"] = c.SpotFuturesBacktestDays
+	sf["backtest_min_profit"] = c.SpotFuturesBacktestMinProfit
+	sf["backtest_coinglass_fallback"] = c.SpotFuturesBacktestCoinGlassFallback
 	delete(sf, "capital_per_position") // removed field
 
 	// Allocation (Phase 5)
@@ -1606,6 +1728,16 @@ func (c *Config) loadEnvOverrides() {
 	if v := os.Getenv("SLIPPAGE_LIMIT_BPS"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			c.SlippageBPS = f
+		}
+	}
+	if v := os.Getenv("REBALANCE_MIN_NET_PNL_USDT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+			c.RebalanceMinNetPnLUSDT = f
+		}
+	}
+	if v := os.Getenv("REBALANCE_DONOR_FLOOR_PCT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+			c.RebalanceDonorFloorPct = f
 		}
 	}
 	if v := os.Getenv("REBALANCE_SCAN_MINUTE"); v != "" {
@@ -1823,6 +1955,22 @@ func (c *Config) loadEnvOverrides() {
 	if v := os.Getenv("SPOT_FUTURES_MAINTENANCE_CACHE_TTL"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
 			c.SpotFuturesMaintenanceCacheTTL = n
+		}
+	}
+	if v := os.Getenv("SPOT_FUTURES_BACKTEST_ENABLED"); v != "" {
+		c.SpotFuturesBacktestEnabled = v == "1" || v == "true" || v == "yes"
+	}
+	if v := os.Getenv("SPOT_FUTURES_BACKTEST_DAYS"); v != "" {
+		if i, err := strconv.Atoi(v); err == nil && i > 0 {
+			c.SpotFuturesBacktestDays = i
+		}
+	}
+	if v := os.Getenv("SPOT_FUTURES_BACKTEST_COINGLASS_FALLBACK"); v != "" {
+		c.SpotFuturesBacktestCoinGlassFallback = v == "1" || v == "true" || v == "yes"
+	}
+	if v := os.Getenv("SPOT_FUTURES_BACKTEST_MIN_PROFIT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+			c.SpotFuturesBacktestMinProfit = f
 		}
 	}
 

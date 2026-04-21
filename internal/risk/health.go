@@ -237,8 +237,10 @@ func (h *HealthMonitor) checkExchangeHealth(name string, positions []*models.Arb
 		if spotBal, err := exch.GetSpotBalance(); err == nil && spotBal.Available > 0 {
 			spotStr = fmt.Sprintf(" spot=%.2f", spotBal.Available)
 		}
-		h.log.Info("%s health: %s (marginRatio=%.4f pnl=%.4f positions=%d[perp=%d spot=%d] futBal=%.2f (avail=%.2f|frozen=%.2f)%s)",
-			name, level, bal.MarginRatio, totalPnL, totalPositionCount, len(exchPositions), len(exchSpotPositions),
+		liqRisk := LiquidationRiskRatio(bal)
+		usage := CapitalUsageRatio(bal)
+		h.log.Info("%s health: %s (normalized=%.4f liqRisk=%.4f usage=%.4f pnl=%.4f positions=%d[perp=%d spot=%d] futBal=%.2f (avail=%.2f|frozen=%.2f)%s)",
+			name, level, marginRatio, liqRisk, usage, totalPnL, totalPositionCount, len(exchPositions), len(exchSpotPositions),
 			bal.Total, bal.Available, bal.Frozen, spotStr)
 	}
 
@@ -254,6 +256,52 @@ func (h *HealthMonitor) checkExchangeHealth(name string, positions []*models.Arb
 	h.handleTrend(name, state, exchPositions, trend)
 }
 
+// CapitalUsageRatio returns the fraction of total equity already committed
+// to position margin / open orders. Range [0, 1]. Used by donor selection
+// and entry capacity gating — answers "is there room for new positions?".
+//
+// Formula: 1 - (Available / Total). Returns 0 when Total <= 0.
+func CapitalUsageRatio(bal *exchange.Balance) float64 {
+	if bal == nil || bal.Total <= 0 {
+		return 0
+	}
+	if bal.Available < 0 {
+		return 1.0
+	}
+	if bal.Available > bal.Total {
+		return 0
+	}
+	return 1.0 - bal.Available/bal.Total
+}
+
+// LiquidationRiskRatio returns the maintenance-margin pressure on the
+// account. Range [0, 1+]. Used for L3/L4/L5 emergency-action gating —
+// answers "how close to forced liquidation?".
+//
+// Returns the exchange-reported MarginRatio when available. When the
+// exchange does not report a maintenance-style ratio (MarginRatio<=0 or
+// flagged unavailable), returns 0 — callers must treat 0 as "unknown",
+// not "safe".
+func LiquidationRiskRatio(bal *exchange.Balance) float64 {
+	if bal == nil || bal.MarginRatioUnavailable {
+		return 0
+	}
+	if bal.MarginRatio < 0 {
+		return 0
+	}
+	return bal.MarginRatio
+}
+
+// normalizeMarginRatio returns the metric the health monitor uses for
+// L3/L4/L5 escalation. The health monitor cares about liquidation
+// proximity, not capital usage — emergency actions trigger when the
+// account is at risk of forced liquidation, not just because positions
+// are sized large.
+//
+// When the exchange does not report a maintenance-style ratio, fall
+// back to capital usage as a coarse proxy so the health monitor still
+// has a non-zero signal (legacy behavior, retained for non-unified
+// adapters that don't surface MarginRatio).
 func (h *HealthMonitor) normalizeMarginRatio(bal *exchange.Balance) float64 {
 	if bal == nil {
 		return 0
@@ -261,11 +309,13 @@ func (h *HealthMonitor) normalizeMarginRatio(bal *exchange.Balance) float64 {
 	if bal.MarginRatioUnavailable {
 		return 0
 	}
-	marginRatio := bal.MarginRatio
-	if marginRatio <= 0 && bal.Total > 0 && bal.Available > 0 {
-		return 1.0 - (bal.Available / bal.Total)
+	if r := LiquidationRiskRatio(bal); r > 0 {
+		return r
 	}
-	return marginRatio
+	if bal.Total > 0 && bal.Available > 0 {
+		return CapitalUsageRatio(bal)
+	}
+	return 0
 }
 
 func (h *HealthMonitor) computeLevel(marginRatio float64, pnl float64, posCount int) HealthLevel {
