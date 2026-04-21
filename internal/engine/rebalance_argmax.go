@@ -62,7 +62,7 @@ func (e *Engine) rebalanceFundsArgmax(passedOpps ...[]models.Opportunity) {
 		return
 	}
 
-	candidates, builderRejects := e.buildArgmaxCandidates(opps, active, balances)
+	candidates, cache, builderRejects := e.buildArgmaxCandidates(opps, active, balances)
 	if len(candidates) == 0 {
 		e.logArgmaxRejects(builderRejects)
 		e.log.Info("[argmax] no candidates built from %d opps", len(opps))
@@ -171,6 +171,58 @@ func (e *Engine) rebalanceFundsArgmax(passedOpps ...[]models.Opportunity) {
 		symbolsOf(best.choices), best.netPnL, best.baseValue, best.dryRun.TotalFee,
 		formatArgmaxSteps(best.dryRun.Steps), best.dryRun.PostRatios)
 
+	// Reserved-aware sequential re-validation of the chosen combo. Argmax's
+	// per-candidate approvals all used reserved=nil, so combos where multiple
+	// picks share a constrained exchange can have individually-passing
+	// approvals that fail at entry time once `executeArbitrage`'s sequential
+	// reservation chain applies. Mirrors the legacy allocator's guard at
+	// allocator.go:393-426. Drops picks that fail under accumulated reserved
+	// margin, updates Size/Price/RequiredMargin from replay approvals, and
+	// re-runs dryRunTransferPlan on the validated subset. Without this step
+	// argmax could fund donor transfers for symbols the entry scan will
+	// reject, stranding capital on recipient exchanges.
+	fees := e.getEffectiveAllocatorFees()
+	validated := e.reservedValidateArgmaxCombo(best.choices, opps, cache, fees)
+	if len(validated) == 0 {
+		e.log.Warn("[argmax] reserved re-validation dropped all %d picks, skipping", len(best.choices))
+		return
+	}
+	if len(validated) < len(best.choices) {
+		e.log.Info("[argmax] reserved re-validation: %d → %d picks (dropped %v, kept %v)",
+			len(best.choices), len(validated),
+			symbolsDropped(best.choices, validated),
+			symbolsOf(validated))
+		// Re-run feasibility + scoring on the reduced combo. The original
+		// dryRun plan covered more choices; replaying ensures transfer
+		// amounts, donor floors, and net-PnL all reflect the surviving set.
+		result := e.dryRunTransferPlan(validated, balances, feeCache)
+		if !result.Feasible {
+			e.log.Warn("[argmax] reserved re-validation subset infeasible after drop, skipping")
+			return
+		}
+		if e.violatesDonorFloorFromSteps(result.Steps, balances, validated, e.cfg.RebalanceDonorFloorPct) {
+			e.log.Warn("[argmax] reserved re-validation subset violates donor floor, skipping")
+			return
+		}
+		base := 0.0
+		for _, c := range validated {
+			base += c.baseValue
+		}
+		net := base - result.TotalFee
+		if net < e.cfg.RebalanceMinNetPnLUSDT {
+			e.log.Info("[argmax] reserved re-validation subset netPnL=%.4f < minNet=%.2f, skipping",
+				net, e.cfg.RebalanceMinNetPnLUSDT)
+			return
+		}
+		best.choices = validated
+		best.dryRun = result
+		best.baseValue = base
+		best.netPnL = net
+		e.log.Info("[argmax] pick (revalidated) symbols=%v netPnL=%.4f base=%.4f fee=%.4f steps=%s",
+			symbolsOf(best.choices), best.netPnL, best.baseValue, best.dryRun.TotalFee,
+			formatArgmaxSteps(best.dryRun.Steps))
+	}
+
 	// Final capacity recheck under capacityMu. Kept to a short critical
 	// section — we deliberately do NOT hold capacityMu across the execute RPCs
 	// or post-execution replay (those can take seconds to minutes and would
@@ -247,6 +299,101 @@ func (e *Engine) rebalanceFundsArgmax(passedOpps ...[]models.Opportunity) {
 	e.capacityMu.Unlock()
 }
 
+// reservedValidateArgmaxCombo replays SimulateApprovalForPair for each pick
+// in the combo with an accumulating reserved-margin map so picks whose
+// individually-approved Size no longer fits once earlier picks reserve
+// balance on shared exchanges are dropped. Picks that still approve have
+// their Size/Price/RequiredMargin updated from the replay approval (which
+// may resize downward under pressure). The combo order controls priority:
+// earlier entries (already sorted by argmax baseValue desc) keep their
+// reservation, later entries must fit in what remains.
+func (e *Engine) reservedValidateArgmaxCombo(
+	combo []allocatorChoice,
+	opps []models.Opportunity,
+	cache *risk.PrefetchCache,
+	fees map[string]allocatorFeeSchedule,
+) []allocatorChoice {
+	reserved := map[string]float64{}
+	validated := make([]allocatorChoice, 0, len(combo))
+
+	for _, c := range combo {
+		opp := findOppBySymbol(opps, c.symbol)
+		if opp == nil {
+			// Missing origin opp (e.g., symbol was filtered after build).
+			// Drop rather than operate on stale data.
+			e.log.Info("[argmax] reserved-replay %s %s>%s dropped: source opp not found",
+				c.symbol, c.longExchange, c.shortExchange)
+			continue
+		}
+
+		approval, err := e.risk.SimulateApprovalForPair(*opp, c.longExchange, c.shortExchange, reserved, c.altPair, cache)
+		if err != nil {
+			e.log.Info("[argmax] reserved-replay %s %s>%s dropped: approval error: %v",
+				c.symbol, c.longExchange, c.shortExchange, err)
+			continue
+		}
+		if approval == nil {
+			e.log.Info("[argmax] reserved-replay %s %s>%s dropped: nil approval", c.symbol, c.longExchange, c.shortExchange)
+			continue
+		}
+		if !approval.Approved {
+			e.log.Info("[argmax] reserved-replay %s %s>%s dropped: %s (kind=%s)",
+				c.symbol, c.longExchange, c.shortExchange, approval.Reason, approval.Kind.String())
+			continue
+		}
+		if approval.Size <= 0 || approval.Price <= 0 {
+			e.log.Info("[argmax] reserved-replay %s %s>%s dropped: unpriced approval",
+				c.symbol, c.longExchange, c.shortExchange)
+			continue
+		}
+
+		// Accept — update the choice with the replay's sizing and accumulate
+		// reserved margin for subsequent picks. Use LongMarginNeeded /
+		// ShortMarginNeeded (buffered) so downstream approvals see the full
+		// buffer-adjusted reservation, matching executeArbitrage's behavior.
+		updated := c
+		entryNotional := approval.Size * approval.Price
+		required := approval.RequiredMargin
+		if required <= 0 {
+			required = e.cfg.CapitalPerLeg * e.cfg.MarginSafetyMultiplier
+		}
+		updated.requiredMargin = required
+		updated.entryNotional = entryNotional
+		updated.baseValue = computeAllocatorBaseValue(updated.spreadBpsH, entryNotional, updated.longExchange, updated.shortExchange, e.cfg.MinHoldTime.Hours(), fees)
+		validated = append(validated, updated)
+
+		longMargin := approval.LongMarginNeeded
+		if longMargin <= 0 {
+			longMargin = approval.RequiredMargin
+		}
+		shortMargin := approval.ShortMarginNeeded
+		if shortMargin <= 0 {
+			shortMargin = approval.RequiredMargin
+		}
+		reserved[c.longExchange] += longMargin
+		reserved[c.shortExchange] += shortMargin
+	}
+
+	return validated
+}
+
+// symbolsDropped returns the symbols present in `before` but not in `after`.
+// Used for the reserved-replay log line so operators can see which picks
+// the sequential re-validation eliminated.
+func symbolsDropped(before, after []allocatorChoice) []string {
+	kept := make(map[string]bool, len(after))
+	for _, c := range after {
+		kept[c.symbol] = true
+	}
+	out := make([]string, 0)
+	for _, c := range before {
+		if !kept[c.symbol] {
+			out = append(out, c.symbol)
+		}
+	}
+	return out
+}
+
 // ClearAllocOverrides wipes any cached allocator overrides. Registered with
 // the API server so the config POST handler can drop stale argmax overrides
 // immediately when the operator toggles EnableArgmaxRebalance off — otherwise
@@ -316,11 +463,11 @@ func (e *Engine) snapshotArgmaxBalances(active []*models.ArbitragePosition) (map
 // Kind=RejectionKindCapital) are admitted only when Size, Price, and
 // RequiredMargin are all non-zero — otherwise dryRun and PnL scoring cannot be
 // computed and the candidate is dropped as capital_unpriced.
-func (e *Engine) buildArgmaxCandidates(opps []models.Opportunity, active []*models.ArbitragePosition, balances map[string]rebalanceBalanceInfo) ([]allocatorChoice, map[string]int) {
+func (e *Engine) buildArgmaxCandidates(opps []models.Opportunity, active []*models.ArbitragePosition, balances map[string]rebalanceBalanceInfo) ([]allocatorChoice, *risk.PrefetchCache, map[string]int) {
 	rejectStats := map[string]int{}
 	opps = e.filterArgmaxOpps(opps, active, rejectStats)
 	if len(opps) == 0 {
-		return nil, rejectStats
+		return nil, nil, rejectStats
 	}
 
 	cache := e.buildTransferableCache(balances)
@@ -518,7 +665,7 @@ func (e *Engine) buildArgmaxCandidates(opps []models.Opportunity, active []*mode
 		}
 		return out[i].shortExchange < out[j].shortExchange
 	})
-	return out, rejectStats
+	return out, cache, rejectStats
 }
 
 // filterArgmaxOpps drops opportunities whose symbol is already occupied by a

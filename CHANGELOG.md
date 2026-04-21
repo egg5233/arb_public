@@ -16,7 +16,8 @@ All notable changes to this project will be documented in this file.
 - **Force Open button removed (`Opportunities.tsx`)** — backend now always rejects force on rejected approvals; button was dead.
 
 ### Safety (argmax guardrails)
-- **Feature-flag emergency brake** — re-read `EnableArgmaxRebalance` under `capacityMu` twice (pre-execute, pre-publish). `POST /api/config` invokes `Engine.ClearAllocOverrides()` on flag true→false transition.
+- **Reserved-aware combo re-validation** — `reservedValidateArgmaxCombo` replays `SimulateApprovalForPair` sequentially over the chosen combo with accumulating reserved-margin map; picks that fail when earlier picks reserve capital on the same exchange are dropped, and the subset re-runs `dryRunTransferPlan` + netPnL scoring. Mirrors the legacy allocator guard at `allocator.go:393-426`. Fixes the race where two individually-approved picks share a constrained exchange and the second one fails at `executeArbitrage` time after donor capital was already moved.
+- **Feature-flag emergency brake** — re-read `EnableArgmaxRebalance` under `capacityMu` twice (pre-execute, pre-publish) with the final check inside `allocOverrideMu`. `POST /api/config` invokes `Engine.ClearAllocOverrides()` on flag true→false transition.
 - **Loss-limiter gate** — argmax calls `lossLimiter.CheckLimits()` at top mirroring `runPoolAllocator`, including dashboard broadcast + Telegram.
 - **Post-execute capacity recheck** — if `ManualOpen` consumed slot during transfer window, drop the overrides (no publish).
 - **Spot-futures occupancy gate** — `filterArgmaxOpps` excludes `exchange:symbol` occupied by the spot-futures engine, mirroring `ppCrossEngineBlocked`. Per-attempt re-check inside `buildArgmaxCandidates` covers alternative pairs too.

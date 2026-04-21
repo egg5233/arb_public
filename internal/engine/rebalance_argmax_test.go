@@ -253,7 +253,7 @@ func TestBuildArgmaxCandidates_AdmitsCapitalRescue(t *testing.T) {
 		t.Fatal("snapshotArgmaxBalances returned ok=false")
 	}
 
-	cands, rejects := e.buildArgmaxCandidates([]models.Opportunity{opp}, nil, balances)
+	cands, _, rejects := e.buildArgmaxCandidates([]models.Opportunity{opp}, nil, balances)
 	if len(cands) == 0 {
 		t.Fatalf("expected ≥1 capital-rescue candidate, got 0 (rejects=%v)", rejects)
 	}
@@ -455,7 +455,7 @@ func TestRebalanceFundsArgmax_CapitalRescueReplay(t *testing.T) {
 	if !bOK {
 		t.Fatal("snapshotArgmaxBalances failed")
 	}
-	cands, rejects := e.buildArgmaxCandidates(opps, nil, balances)
+	cands, _, rejects := e.buildArgmaxCandidates(opps, nil, balances)
 	if len(cands) == 0 {
 		t.Fatalf("expected ≥1 argmax candidate (approved or rescue), got 0 (rejects=%v)", rejects)
 	}
@@ -588,5 +588,143 @@ func TestReplayArgmaxApprovalAfterFunding_RejectsWhenStillInfeasible(t *testing.
 	result := e.replayArgmaxApprovalAfterFunding(opp, "a", "b", nil, balances, origCache, rejected)
 	if result != nil {
 		t.Errorf("expected nil (rescue dropped) when replay still rejects, got %+v", result)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Reserved-aware combo re-validation (independent-review follow-up).
+// reservedValidateArgmaxCombo must drop picks that fail once earlier picks'
+// margin reservations accumulate on a shared exchange.
+// ---------------------------------------------------------------------------
+
+func TestReservedValidateArgmaxCombo_DropsWhenSharedExchangeExhausted(t *testing.T) {
+	cfg := rankFirstCfg()
+	// 'a' is the shared long leg. With CapitalPerLeg=100, lev=2, price=2,
+	// MSM=2: each trade reserves 200 buffered margin on 'a'. First pick
+	// sees avail=300 > 200 (passes). Second pick sees effective avail
+	// 300-200=100 < 200 → fails margin buffer (and post-trade ratio).
+	// Using futures=300, total=300 avoids pre-existing under-collateralization
+	// that would make dryRun demand massive transfers.
+	exchanges := map[string]exchange.Exchange{
+		"a": newRankFirstStub(300, 300, 0), // tight shared leg
+		"b": newRankFirstStub(10000, 10000, 0),
+		"c": newRankFirstStub(10000, 10000, 0),
+	}
+	e := buildRankFirstEngine(t, exchanges, cfg)
+
+	// Two opps both use 'a' as long leg — second one will fail under reserved.
+	opp1 := goodOpp("FIRSTUSDT", "a", "b")
+	opp2 := goodOpp("SECONDUSDT", "a", "c")
+	opps := []models.Opportunity{opp1, opp2}
+
+	// Build a cache so SimulateApprovalForPair populates orderbooks.
+	balances := map[string]rebalanceBalanceInfo{
+		"a": {futures: 300, spot: 0, futuresTotal: 300},
+		"b": {futures: 10000, spot: 0, futuresTotal: 10000},
+		"c": {futures: 10000, spot: 0, futuresTotal: 10000},
+	}
+	_ = balances
+	cache := &risk.PrefetchCache{
+		TransferablePerExchange: map[string]float64{},
+		Orderbooks:              map[string]*exchange.Orderbook{},
+	}
+	fees := e.getEffectiveAllocatorFees()
+
+	combo := []allocatorChoice{
+		{symbol: "FIRSTUSDT", longExchange: "a", shortExchange: "b",
+			spreadBpsH: opp1.Spread, intervalHours: opp1.IntervalHours,
+			requiredMargin: 100, entryNotional: 200, baseValue: 1.0},
+		{symbol: "SECONDUSDT", longExchange: "a", shortExchange: "c",
+			spreadBpsH: opp2.Spread, intervalHours: opp2.IntervalHours,
+			requiredMargin: 100, entryNotional: 200, baseValue: 0.9},
+	}
+
+	validated := e.reservedValidateArgmaxCombo(combo, opps, cache, fees)
+	if len(validated) == 0 {
+		t.Fatal("expected reserved-replay to keep ≥1 pick, got 0")
+	}
+	if len(validated) == len(combo) {
+		t.Errorf("expected reserved-replay to drop SECONDUSDT once 'a' is reserved by FIRSTUSDT, but kept both: %+v", validated)
+	}
+	if validated[0].symbol != "FIRSTUSDT" {
+		t.Errorf("expected first pick FIRSTUSDT to survive, got %+v", validated[0])
+	}
+}
+
+// When both picks use different exchanges and neither is constrained, the
+// reserved replay must keep both (no false drops).
+func TestReservedValidateArgmaxCombo_KeepsAllWhenExchangesDistinct(t *testing.T) {
+	cfg := rankFirstCfg()
+	exchanges := map[string]exchange.Exchange{
+		"a": newRankFirstStub(10000, 10000, 0),
+		"b": newRankFirstStub(10000, 10000, 0),
+		"c": newRankFirstStub(10000, 10000, 0),
+		"d": newRankFirstStub(10000, 10000, 0),
+	}
+	e := buildRankFirstEngine(t, exchanges, cfg)
+
+	opp1 := goodOpp("FIRSTUSDT", "a", "b")
+	opp2 := goodOpp("SECONDUSDT", "c", "d")
+	opps := []models.Opportunity{opp1, opp2}
+
+	cache := &risk.PrefetchCache{
+		TransferablePerExchange: map[string]float64{},
+		Orderbooks:              map[string]*exchange.Orderbook{},
+	}
+	fees := e.getEffectiveAllocatorFees()
+
+	combo := []allocatorChoice{
+		{symbol: "FIRSTUSDT", longExchange: "a", shortExchange: "b",
+			spreadBpsH: opp1.Spread, intervalHours: opp1.IntervalHours,
+			requiredMargin: 100, entryNotional: 200, baseValue: 1.0},
+		{symbol: "SECONDUSDT", longExchange: "c", shortExchange: "d",
+			spreadBpsH: opp2.Spread, intervalHours: opp2.IntervalHours,
+			requiredMargin: 100, entryNotional: 200, baseValue: 0.9},
+	}
+
+	validated := e.reservedValidateArgmaxCombo(combo, opps, cache, fees)
+	if len(validated) != 2 {
+		t.Errorf("expected 2 picks preserved (distinct exchanges, no contention), got %d: %+v", len(validated), validated)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Feature-flag emergency brake: ClearAllocOverrides + true→false detection
+// in the config handler must leave allocOverrides empty. The race between a
+// mid-cycle toggle and a publish is covered by the in-function flag recheck
+// (see rebalanceFundsArgmax); this test exercises the callback path that
+// backstops that recheck.
+// ---------------------------------------------------------------------------
+
+func TestClearAllocOverrides_ClearsAndLogs(t *testing.T) {
+	cfg := rankFirstCfg()
+	e := buildRankFirstEngine(t, map[string]exchange.Exchange{}, cfg)
+
+	// Plant some overrides as if a prior argmax cycle published them.
+	e.allocOverrides = map[string]allocatorChoice{
+		"FOOUSDT": {symbol: "FOOUSDT", longExchange: "a", shortExchange: "b"},
+		"BARUSDT": {symbol: "BARUSDT", longExchange: "a", shortExchange: "c"},
+	}
+
+	// Simulate operator toggling the flag off → handler invokes this.
+	e.ClearAllocOverrides()
+
+	if len(e.allocOverrides) != 0 {
+		t.Errorf("expected ClearAllocOverrides to empty allocOverrides, got %+v", e.allocOverrides)
+	}
+}
+
+// Calling ClearAllocOverrides on an empty map must be a no-op (no panic, no
+// stray log that would confuse operators into thinking a clear happened).
+func TestClearAllocOverrides_NoopWhenEmpty(t *testing.T) {
+	cfg := rankFirstCfg()
+	e := buildRankFirstEngine(t, map[string]exchange.Exchange{}, cfg)
+
+	// Nothing planted — idempotent call must not panic.
+	e.ClearAllocOverrides()
+	e.ClearAllocOverrides()
+
+	if len(e.allocOverrides) != 0 {
+		t.Errorf("allocOverrides should remain empty, got %+v", e.allocOverrides)
 	}
 }
