@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Multi-Strategy Expansion
 status: executing
-stopped_at: Completed 08-06-PLAN.md
-last_updated: "2026-04-21T09:48:49.706Z"
+stopped_at: Completed 08-07-PLAN.md
+last_updated: "2026-04-21T09:58:19.444Z"
 last_activity: 2026-04-21
 progress:
   total_phases: 2
   completed_phases: 0
   total_plans: 8
-  completed_plans: 6
-  percent: 75
+  completed_plans: 7
+  percent: 88
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-21 after v1.0 shipped)
 ## Current Position
 
 Phase: 08 (price-gap-tracker-core) — EXECUTING
-Plan: 7 of 8
+Plan: 8 of 8
 Status: Ready to execute
 Last activity: 2026-04-21
 
@@ -77,6 +77,7 @@ Progress (v2.0): [          ] 0%
 | Phase 08 P04 | 8 | 3 tasks | 3 files |
 | Phase 08-price-gap-tracker-core P05 | 12min | 3 tasks | 2 files |
 | Phase 08 P06 | 18min | 4 tasks | 11 files |
+| Phase 08 P07 | 45m | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -141,6 +142,9 @@ v1.0 decisions below (retained for reference):
 - [Phase 08]: Optional vwapReader interface for exit PnL — production adapters skip, tests opt-in via stubExchange.GetOrderVwap
 - [Phase 08]: Strict > 2x exec-quality rule (not >=) + divide-by-zero guard on mean(modeled)
 - [Phase 08]: Conservative orphan policy: any err OR zero-total leg -> ExitReasonOrphan (prefer safety over re-enrolling ghost positions)
+- [Phase 08]: Tracker startup goes AFTER SpotEngine (D-03); shutdown goes BEFORE SpotEngine (reverse order) so db+exchanges are live while monitors wind down
+- [Phase 08]: PriceGapEnabled=false guarantees zero pg:* writes (PG-OPS-06); enforced by if-guard in cmd/main.go + TestPriceGapEnabled_DefaultOff_NoTrackerInstantiated
+- [Phase 08]: First tick offset 7s to avoid Bybit :04-:05:30 blackout on fresh boot; subsequent ticks run on steady PriceGapPollIntervalSec cadence
 
 ### Pending Todos
 
@@ -164,7 +168,7 @@ None yet. Next action: `/gsd-plan-phase 8` to decompose Phase 8 into executable 
 
 ## Session Continuity
 
-Last session: 2026-04-21T09:48:40.096Z
-Stopped at: Completed 08-06-PLAN.md
+Last session: 2026-04-21T09:58:08.041Z
+Stopped at: Completed 08-07-PLAN.md
 Resume file: None
 Next command: `/gsd-plan-phase 8`
