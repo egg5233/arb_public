@@ -19,6 +19,13 @@ func (c PriceGapCandidate) ID() string {
 	return c.Symbol + "_" + c.LongExch + "_" + c.ShortExch
 }
 
+// DelistChecker — DI for pricegaptrader (D-02 boundary; no *discovery.Scanner import).
+// The concrete *discovery.Scanner (IsDelisted method) satisfies this interface.
+// Injected into the tracker to veto entries on symbols flagged for delisting.
+type DelistChecker interface {
+	IsDelisted(symbol string) bool
+}
+
 // PriceGapStore — DI for pricegaptrader (D-02 boundary; no *database.Client import).
 // The concrete *database.Client satisfies this interface in Plan 02.
 type PriceGapStore interface {
