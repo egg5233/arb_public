@@ -2,8 +2,13 @@
 
 **Author:** zxcnny930 + Claude
 **Date:** 2026-04-21
-**Status:** v4 — addresses codex 62d8e2fb consistency fix
+**Status:** v5 — addresses independent codex 2c8bf062 (3 MEDIUM findings)
 **Review log:**
+- independent codex 2c8bf062 NEEDS-REVISION → v5 fixes 3:
+  1. §5 Test harness nil-deref: `buildRankFirstEngine` in `engine_rank_first_test.go` builds Engine via struct literal, NOT `NewEngine()`. After adding `activePosSource`, any mirrored test builder leaves the field nil → `getActivePositionsWithRetry` nil-derefs. Plan now explicitly states: test harness MUST set `e.activePosSource` (either to the miniredis-backed `e.db`, or to the failing stub). Added explicit builder guidance in §5.
+  2. §5 Missing retry-success test: T1-T7 either pure-success or pure-failure. Added **T2b** = "first GetActivePositions attempt fails, second succeeds" → proves the retry helper works, not just the salvage fallback. T2 renamed T2a.
+  3. §5 Missing mixed-validity test: no scenario covers "same cycle, some overrides valid + some stale". Added **T8** = override `{A, B}`, `applyAllocatorOverrides` returns `[A_patched]` with B stale-skipped. Stage 2 execs `[A]`, `stage2Attempted={A}`, salvage rescans `{B}`. Proves the `stage2Attempted + openedByUs` logic handles mixed-validity input.
+  Other probed edges confirmed OK by 2c8bf062: snapshot-before-drain race, StatusClosed filter, RescanSymbols constraints, single-goroutine sleep is acceptable.
 - codex 62d8e2fb NEEDS-REVISION → v4 fixes 1:
   1. §3.4 `getActivePositionsWithRetry` helper snippet now uses `e.activePosSource.GetActivePositions()` (matches §5 design). Previous v3 had `e.db.GetActivePositions()` directly, which bypassed the new injection hook and contradicted §5. W2a/W2b/W2c/W3/W4/W5 all PASS per codex 62d8e2fb.
 
@@ -261,7 +266,7 @@ func (e *Engine) getActivePositionsWithRetry(maxAttempts int, backoff time.Durat
 | `internal/engine/engine.go` | New interface `activePositionsGetter` + `activePosSource` field + constructor wire-up. | +10 |
 | `internal/engine/engine.go` | New helper `getActivePositionsWithRetry` (uses `e.activePosSource`). | +15 |
 | `internal/engine/engine.go` | Rewrite of Stage 2 + salvage block (`:888-988`). | ~100 replaced |
-| `internal/engine/engine_stage2_salvage_test.go` (new) | 7 scenarios T1–T7, `failingActivePosGetter` for T2/T4. | +~350 |
+| `internal/engine/engine_stage2_salvage_test.go` (new) | 9 scenarios T1, T2a, T2b, T3, T4, T5, T6, T7, T8. `failingActivePosGetter` used by T2a, T2b, T4. | +~420 |
 
 No changes outside `internal/engine/`. No config, no API, no frontend, no Redis schema.
 
@@ -271,6 +276,47 @@ No changes outside `internal/engine/`. No config, no API, no frontend, no Redis 
 
 Goal: cover the three paths that currently lack tests (codex Finding #2, MEDIUM).
 
+### Test harness builder
+
+**IMPORTANT** (2c8bf062 Finding 1): the existing `buildRankFirstEngine` in
+`engine_rank_first_test.go` constructs `Engine` via a **struct literal**, not
+`NewEngine()`. After Step 0 adds `activePosSource`, a mirrored builder will
+leave `activePosSource` nil — `getActivePositionsWithRetry` would nil-deref
+before exercising the retry path.
+
+The new test builder in `engine_stage2_salvage_test.go` MUST explicitly
+initialize `activePosSource`:
+
+```go
+func buildStage2SalvageEngine(t *testing.T, overrides ...option) (*Engine, *miniredis.Miniredis) {
+    mr, db := newMiniredisClient(t)  // mirrors existing helper
+    e := &Engine{
+        db: db,
+        // ...other existing fields mirrored from buildRankFirstEngine...
+    }
+    e.activePosSource = e.db  // REQUIRED: mirror NewEngine's constructor line.
+    for _, opt := range overrides {
+        opt(e)  // tests that need failure injection override activePosSource here.
+    }
+    return e, mr
+}
+
+type option func(*Engine)
+
+func withFailingActivePosGetter(failN int) option {
+    return func(e *Engine) {
+        e.activePosSource = &failingActivePosGetter{real: e.db, failN: failN}
+    }
+}
+```
+
+Tests that don't need failure injection use the default builder (get `e.db`
+behavior). Tests T2a/T2b/T4 pass `withFailingActivePosGetter(N)` to swap the
+seam. This must be a single-threaded swap BEFORE the handler is invoked — no
+concurrent re-assignment after the run loop starts.
+
+### Assertions each test makes
+
 Each test drives the same code path as production: sets `e.allocOverrides`,
 populates miniredis with known active positions (or none), invokes the Stage 2 +
 salvage block via the same entry scan entry point used in
@@ -278,6 +324,8 @@ salvage block via the same entry scan entry point used in
 - The set of symbols passed to `executeArbitrage` (captured via a stub
   `executeArbitrage` or an `onArbRun` hook — choose whichever the existing test
   harness already uses; mirror `engine_rank_first_test.go`).
+- For T2a/T2b/T4: the `failingActivePosGetter.calls` counter (proves retry was
+  actually exercised, not just bypassed).
 - `e.allocOverrides` is drained regardless.
 - Log assertions are NOT required — behavior assertions only.
 
@@ -286,12 +334,14 @@ salvage block via the same entry scan entry point used in
 | # | Scenario | Stage 1 opps | Override set | S1 opens | S2 DB | Salvage DB | Expected |
 |---|---|---|---|---|---|---|---|
 | T1 | Happy path: Stage 2 executes normally | `[A, B]` | `{B}` | `{A}` | OK | OK | Stage 2 execs `[B]`; salvage noop |
-| T2 | **Regression for Finding #1**: Stage 2 DB fails, in-scan override recovered by salvage | `[A, B]` | `{B}` | `{A}` | FAIL (both attempts) | OK | Stage 2 execs nothing; salvage rescans `{B}` and execs it |
+| T2a | **Regression for Finding #1**: Stage 2 DB fails both attempts, in-scan override recovered by salvage | `[A, B]` | `{B}` | `{A}` | FAIL (failN=2) | OK | Stage 2 execs nothing; salvage rescans `{B}` and execs it. `failingActivePosGetter.calls == 2` asserted. |
+| T2b | **Retry success**: Stage 2 DB fails first attempt, succeeds second attempt (proves retry helper works, not just salvage fallback) | `[A, B]` | `{B}` | `{A}` | FAIL then OK (failN=1) | OK | Stage 2 executes `[B]` via retry success; salvage is a noop because `stage2Attempted={B}` covers it. `failingActivePosGetter.calls == 2` asserted (1 fail + 1 success), `time.Sleep(300ms)` path exercised once. |
 | T3 | Out-of-scan override recovered by salvage (Bug-7 existing behavior preserved) | `[A]` | `{B}` | `{A}` | OK | OK | Stage 2 execs nothing (`B` filtered out by `applyAllocatorOverrides`); salvage rescans `{B}` |
 | T4 | Both DB reads fail → clean skip, no crash, no duplicate | `[A, B]` | `{B}` | `{A}` | FAIL | FAIL | No Stage 2 exec, no salvage exec, warn logged, `e.allocOverrides` drained |
 | T5 | Stage 1 already opened override symbol → Stage 2 + salvage both skip | `[A, B]` | `{B}` | `{A, B}` | OK | OK | Stage 2 drops B as duplicate; salvage drops B via `openedByUs` (no duplicate open) |
 | T6 | **All-stale** case: `applyAllocatorOverrides` returns `(nil, true)` | `[A]` | `{B}` with stale alt | `{A}` | n/a (no patched) | OK | Stage 2 logs "all stale after filter", `stage2Attempted` empty. Salvage **must call** `RescanSymbols({B})` (assertion: rescan was invoked with exactly the `{B}` pair). Test controls the stubbed rescan outcome. We pick the **empty-result** branch for T6's concrete assertion: rescan returns `[]`, so no `executeArbitrage` call is made; the "all … failed re-scan" warn path is exercised. A second test variant T6b using the **non-empty** branch is out of scope for this PR but noted as a natural extension. |
 | T7 | **Multi-symbol partial**: Stage 1 opens A, Stage 2 opens B, salvage true noop | `[A, B]` | `{A, B}` | `{A}` | OK | OK | `applyAllocatorOverrides` returns `[A_patched, B_patched]`. Stage 2: `openedS1={A}` → drops A as duplicate, execs `[B]`. `stage2Attempted={A, B}`. Salvage: both excluded (A via `stage2Attempted`, B via `stage2Attempted` AND `openedByUs`). No salvage call. |
+| T8 | **Mixed validity**: override set has BOTH valid and stale entries in same cycle | `[A, B]` | `{A, B}` — B's alt is stale, A's alt is valid | `{}` (S1 opens nothing) | OK | OK | `applyAllocatorOverrides` returns `[A_patched]` (B stale-skipped internally). Stage 2: `openedS1={}` → execs `[A]`, `stage2Attempted={A}`. Salvage: iterates `overrideSnapshot={A,B}`. A is in `stage2Attempted` → skip. B is NOT in `stage2Attempted` and NOT in `openedByUs` → add to `missingPairs`. Salvage calls `RescanSymbols({B})` — test stubs it to return empty (or a fresh opp; either is acceptable per §6 R4). Proves the new logic handles mixed-validity correctly: no duplicate open on A, B gets its rescan chance. |
 
 ### DB failure injection
 
@@ -362,12 +412,16 @@ func (f *failingActivePosGetter) GetActivePositions() ([]*models.ArbitragePositi
 
 ### Coverage target
 
-- `getActivePositionsWithRetry`: retry path hit in T2/T4, success path hit in T1/T3/T5/T6/T7.
-- Stage 2 + salvage branches: all 7 matrix cells hit at least one unique code path.
+- `getActivePositionsWithRetry`:
+  - all-fail path hit in T2a/T4 (failN=2, both attempts fail).
+  - **retry-recovery path hit in T2b** (failN=1, first fails, second succeeds) — THIS is the test that proves the retry helper itself works, vs just the salvage fallback.
+  - success-on-first-try path hit in T1/T3/T5/T6/T7/T8.
+- Stage 2 + salvage branches: all 9 matrix cells hit at least one unique code path.
 - `stage2Attempted` decision branches:
-  - `stage2Attempted=empty` + in-scan symbol → salvage rescans (T2).
-  - `stage2Attempted={sym}` + salvage loop sees sym → skip (T1, T7 for B).
+  - `stage2Attempted=empty` + in-scan symbol → salvage rescans (T2a).
+  - `stage2Attempted={sym}` + salvage loop sees sym → skip (T1, T7 for B, T2b).
   - `stage2Attempted` populated even when `openedS1` dropped the symbol (T5, T7 for A).
+  - **Mixed-validity**: `stage2Attempted` is a PARTIAL subset of `overrideSnapshot`; salvage correctly handles the remainder (T8).
 
 ---
 
@@ -407,8 +461,8 @@ in this block).
 3. **Step 2** — Rewrite Stage 2 + salvage block (`internal/engine/engine.go:888-988`)
    per pseudocode in §3.3. Single commit, diff stays local to this 100-line region.
 4. **Step 3** — `go build ./...` + existing `go test ./internal/engine/...` → must stay green.
-5. **Step 4** — Create `internal/engine/engine_stage2_salvage_test.go` with tests T1–T7.
-6. **Step 5** — `go test ./internal/engine/ -run 'Stage2Salvage' -v` → 7/7 green.
+5. **Step 4** — Create `internal/engine/engine_stage2_salvage_test.go` with tests T1, T2a, T2b, T3, T4, T5, T6, T7, T8 (9 tests). Include `buildStage2SalvageEngine` builder that explicitly sets `e.activePosSource = e.db` (see §5).
+6. **Step 5** — `go test ./internal/engine/ -run 'Stage2Salvage' -v` → 9/9 green.
 7. **Step 6** — Full `go test ./...` + full `go vet ./...` green.
 8. **Step 7** — `rg -n "inScan" internal/engine/engine.go` → 0 matches.
 9. **Step 8** — Post-implementation review: `/codex:review` (follow
