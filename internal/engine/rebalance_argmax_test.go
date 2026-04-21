@@ -651,6 +651,107 @@ func TestReservedValidateArgmaxCombo_DropsWhenSharedExchangeExhausted(t *testing
 	}
 }
 
+// Same-cardinality resize: both picks survive but the second one's Size
+// shrinks under accumulated reserved margin from the first. This is the
+// path Codex flagged in task 66cdf09a — without re-running dryRun/scoring
+// on the post-replay sizing, argmax would over-fund the second transfer
+// and score the combo with stale net PnL.
+func TestReservedValidateArgmaxCombo_ResizesWhenSharedExchangeSqueezed(t *testing.T) {
+	cfg := rankFirstCfg()
+	// 'a' shared long leg with enough for one full trade plus headroom
+	// large enough that the second trade can still open at a SMALLER size
+	// rather than being rejected outright. CapitalPerLeg=100, lev=2, MSM=2:
+	// full-size buffered margin = 200.
+	// With 'a' = 350 / 350: first reserves 200, second sees 150 effective,
+	// second size clamps to 150/MSM/price*lev = 75, margin = 75, buffered
+	// margin = 150 = remaining avail → passes buffer check. Post-trade ratio
+	// (350-(100+75))/350 → passes L4=0.80. Both survive, second resized.
+	exchanges := map[string]exchange.Exchange{
+		"a": newRankFirstStub(350, 350, 0),
+		"b": newRankFirstStub(10000, 10000, 0),
+		"c": newRankFirstStub(10000, 10000, 0),
+	}
+	e := buildRankFirstEngine(t, exchanges, cfg)
+
+	opp1 := goodOpp("FIRSTUSDT", "a", "b")
+	opp2 := goodOpp("SECONDUSDT", "a", "c")
+	opps := []models.Opportunity{opp1, opp2}
+
+	cache := &risk.PrefetchCache{
+		TransferablePerExchange: map[string]float64{},
+		Orderbooks:              map[string]*exchange.Orderbook{},
+	}
+	fees := e.getEffectiveAllocatorFees()
+
+	combo := []allocatorChoice{
+		{symbol: "FIRSTUSDT", longExchange: "a", shortExchange: "b",
+			spreadBpsH: opp1.Spread, intervalHours: opp1.IntervalHours,
+			requiredMargin: 200, entryNotional: 200, baseValue: 1.0},
+		{symbol: "SECONDUSDT", longExchange: "a", shortExchange: "c",
+			spreadBpsH: opp2.Spread, intervalHours: opp2.IntervalHours,
+			requiredMargin: 200, entryNotional: 200, baseValue: 0.9},
+	}
+
+	validated := e.reservedValidateArgmaxCombo(combo, opps, cache, fees)
+	if len(validated) != 2 {
+		t.Fatalf("expected both picks to survive (second resizes), got %d: %+v", len(validated), validated)
+	}
+	// Verify the second pick actually resized smaller than the first.
+	first := validated[0]
+	second := validated[1]
+	if first.symbol != "FIRSTUSDT" || second.symbol != "SECONDUSDT" {
+		t.Fatalf("order mismatch: %+v", validated)
+	}
+	if second.requiredMargin >= first.requiredMargin {
+		t.Errorf("expected SECONDUSDT to resize smaller under reserved (requiredMargin %.2f) than FIRSTUSDT (requiredMargin %.2f)",
+			second.requiredMargin, first.requiredMargin)
+	}
+	if second.entryNotional >= first.entryNotional {
+		t.Errorf("expected SECONDUSDT entryNotional (%.2f) to shrink below FIRSTUSDT (%.2f)",
+			second.entryNotional, first.entryNotional)
+	}
+	t.Logf("FIRSTUSDT: required=%.2f notional=%.2f", first.requiredMargin, first.entryNotional)
+	t.Logf("SECONDUSDT: required=%.2f notional=%.2f (resized)", second.requiredMargin, second.entryNotional)
+}
+
+// comboResizedUnderReserved must detect requiredMargin / entryNotional
+// changes even when symbol list is identical.
+func TestComboResizedUnderReserved(t *testing.T) {
+	before := []allocatorChoice{
+		{symbol: "A", requiredMargin: 100, entryNotional: 200},
+		{symbol: "B", requiredMargin: 100, entryNotional: 200},
+	}
+	// Identical → not resized.
+	sameAfter := []allocatorChoice{
+		{symbol: "A", requiredMargin: 100, entryNotional: 200},
+		{symbol: "B", requiredMargin: 100, entryNotional: 200},
+	}
+	if comboResizedUnderReserved(before, sameAfter) {
+		t.Error("identical combos should not report resized")
+	}
+	// B's margin shrunk → resized.
+	shrunk := []allocatorChoice{
+		{symbol: "A", requiredMargin: 100, entryNotional: 200},
+		{symbol: "B", requiredMargin: 60, entryNotional: 120},
+	}
+	if !comboResizedUnderReserved(before, shrunk) {
+		t.Error("shrunk combo should report resized")
+	}
+	// Different cardinality → resized (defensive).
+	shorter := []allocatorChoice{{symbol: "A", requiredMargin: 100, entryNotional: 200}}
+	if !comboResizedUnderReserved(before, shorter) {
+		t.Error("different cardinality should report resized")
+	}
+	// New symbol (refactor safety) → resized.
+	swapped := []allocatorChoice{
+		{symbol: "A", requiredMargin: 100, entryNotional: 200},
+		{symbol: "C", requiredMargin: 100, entryNotional: 200},
+	}
+	if !comboResizedUnderReserved(before, swapped) {
+		t.Error("swapped symbol should report resized")
+	}
+}
+
 // When both picks use different exchanges and neither is constrained, the
 // reserved replay must keep both (no false drops).
 func TestReservedValidateArgmaxCombo_KeepsAllWhenExchangesDistinct(t *testing.T) {

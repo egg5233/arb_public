@@ -187,41 +187,46 @@ func (e *Engine) rebalanceFundsArgmax(passedOpps ...[]models.Opportunity) {
 		e.log.Warn("[argmax] reserved re-validation dropped all %d picks, skipping", len(best.choices))
 		return
 	}
+	// Always re-run the dryRun plan + scoring from the validated set. Even
+	// when every pick survives, reservedValidateArgmaxCombo may have
+	// resized a later pick downward under accumulated reservations — in
+	// that case the original best.choices (with pre-replay sizes) would
+	// overfund the transfer and score the combo with stale net PnL.
 	if len(validated) < len(best.choices) {
 		e.log.Info("[argmax] reserved re-validation: %d → %d picks (dropped %v, kept %v)",
 			len(best.choices), len(validated),
 			symbolsDropped(best.choices, validated),
 			symbolsOf(validated))
-		// Re-run feasibility + scoring on the reduced combo. The original
-		// dryRun plan covered more choices; replaying ensures transfer
-		// amounts, donor floors, and net-PnL all reflect the surviving set.
-		result := e.dryRunTransferPlan(validated, balances, feeCache)
-		if !result.Feasible {
-			e.log.Warn("[argmax] reserved re-validation subset infeasible after drop, skipping")
-			return
-		}
-		if e.violatesDonorFloorFromSteps(result.Steps, balances, validated, e.cfg.RebalanceDonorFloorPct) {
-			e.log.Warn("[argmax] reserved re-validation subset violates donor floor, skipping")
-			return
-		}
-		base := 0.0
-		for _, c := range validated {
-			base += c.baseValue
-		}
-		net := base - result.TotalFee
-		if net < e.cfg.RebalanceMinNetPnLUSDT {
-			e.log.Info("[argmax] reserved re-validation subset netPnL=%.4f < minNet=%.2f, skipping",
-				net, e.cfg.RebalanceMinNetPnLUSDT)
-			return
-		}
-		best.choices = validated
-		best.dryRun = result
-		best.baseValue = base
-		best.netPnL = net
-		e.log.Info("[argmax] pick (revalidated) symbols=%v netPnL=%.4f base=%.4f fee=%.4f steps=%s",
-			symbolsOf(best.choices), best.netPnL, best.baseValue, best.dryRun.TotalFee,
-			formatArgmaxSteps(best.dryRun.Steps))
+	} else if comboResizedUnderReserved(best.choices, validated) {
+		e.log.Info("[argmax] reserved re-validation: all %d picks kept, but one or more resized under reserved",
+			len(validated))
 	}
+	revalPlan := e.dryRunTransferPlan(validated, balances, feeCache)
+	if !revalPlan.Feasible {
+		e.log.Warn("[argmax] reserved re-validation subset infeasible, skipping")
+		return
+	}
+	if e.violatesDonorFloorFromSteps(revalPlan.Steps, balances, validated, e.cfg.RebalanceDonorFloorPct) {
+		e.log.Warn("[argmax] reserved re-validation subset violates donor floor, skipping")
+		return
+	}
+	revalBase := 0.0
+	for _, c := range validated {
+		revalBase += c.baseValue
+	}
+	revalNet := revalBase - revalPlan.TotalFee
+	if revalNet < e.cfg.RebalanceMinNetPnLUSDT {
+		e.log.Info("[argmax] reserved re-validation subset netPnL=%.4f < minNet=%.2f, skipping",
+			revalNet, e.cfg.RebalanceMinNetPnLUSDT)
+		return
+	}
+	best.choices = validated
+	best.dryRun = revalPlan
+	best.baseValue = revalBase
+	best.netPnL = revalNet
+	e.log.Info("[argmax] pick (revalidated) symbols=%v netPnL=%.4f base=%.4f fee=%.4f steps=%s",
+		symbolsOf(best.choices), best.netPnL, best.baseValue, best.dryRun.TotalFee,
+		formatArgmaxSteps(best.dryRun.Steps))
 
 	// Final capacity recheck under capacityMu. Kept to a short critical
 	// section — we deliberately do NOT hold capacityMu across the execute RPCs
@@ -375,6 +380,34 @@ func (e *Engine) reservedValidateArgmaxCombo(
 	}
 
 	return validated
+}
+
+// comboResizedUnderReserved reports whether any surviving pick's sizing
+// changed between the pre-replay and post-replay combos. Same-cardinality
+// combos still need to rerun dryRunTransferPlan + scoring when this is
+// true, otherwise argmax would overfund based on stale requiredMargin.
+// Assumes before/after have equal length and matching symbol order —
+// the caller guarantees this by only invoking when lengths match.
+func comboResizedUnderReserved(before, after []allocatorChoice) bool {
+	if len(before) != len(after) {
+		return true
+	}
+	// Map before by symbol since reservedValidateArgmaxCombo preserves order
+	// but a future refactor might not.
+	byBefore := make(map[string]allocatorChoice, len(before))
+	for _, c := range before {
+		byBefore[c.symbol] = c
+	}
+	for _, a := range after {
+		b, ok := byBefore[a.symbol]
+		if !ok {
+			return true
+		}
+		if a.requiredMargin != b.requiredMargin || a.entryNotional != b.entryNotional {
+			return true
+		}
+	}
+	return false
 }
 
 // symbolsDropped returns the symbols present in `before` but not in `after`.
