@@ -117,8 +117,3 @@ func (t *Tracker) tickLoop() {
 	<-t.stopCh
 }
 
-// candidateBars placeholder — the real definition (with barRing + lastSampleAt)
-// lives in detector.go (Task 2). Kept here as a forward declaration so the
-// tracker skeleton in Task 1 compiles standalone; Task 2 replaces this with
-// the detector.go definition.
-type candidateBars struct{}
