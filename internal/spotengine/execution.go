@@ -1912,8 +1912,14 @@ func (e *SpotEngine) emergencyClose(
 			ch <- result{leg: "spot", avg: pos.SpotExitPrice}
 			return
 		}
-		// Dust short-circuit: skip untradeable residue without placing a doomed order.
+		// Fetch rules once — used for both dust short-circuit and step-aware
+		// rounding of the sell qty (codex review, v0.32.38). Without rounding
+		// here, a delist-triggered EMERGENCY first-attempt close of a position
+		// with LOT_SIZE-unaligned SpotSize (e.g. DEGOUSDT 1258.1406, step=0.01)
+		// is rejected with -1013 and only heals later via non-emergency retry.
+		var spotRules *exchange.SpotOrderRules
 		if rules, rulesErr := smExch.SpotOrderRules(pos.Symbol); rulesErr == nil && rules != nil {
+			spotRules = rules
 			if isDust, eff := isSpotResidualDust(rules, remaining, pos.SpotEntryPrice); isDust {
 				if pos.Direction == "borrow_sell_long" {
 					bal, balErr := smExch.GetMarginBalance(pos.BaseCoin)
@@ -1938,7 +1944,20 @@ func (e *SpotEngine) emergencyClose(
 				}
 			}
 		}
-		remainingStr := utils.FormatSize(remaining, 6)
+		sellQty := remaining
+		// Only round SELL (Dir-B exit). Dir-A buyback left untouched to preserve
+		// existing residual-borrow semantics handled downstream.
+		if spotSide == exchange.SideSell && spotRules != nil && spotRules.QtyStep > 0 {
+			sellQty = utils.RoundToStep(remaining, spotRules.QtyStep)
+			if sellQty <= 0 {
+				e.log.Warn("EMERGENCY: remaining %.8f floors to 0 at step=%g — marking closed", remaining, spotRules.QtyStep)
+				pos.SpotExitFilledQty = pos.SpotSize
+				pos.SpotExitFilled = true
+				ch <- result{leg: "spot", avg: pos.SpotExitPrice}
+				return
+			}
+		}
+		remainingStr := utils.FormatSize(sellQty, 6)
 		var quoteEst string
 		if spotSide == exchange.SideBuy {
 			quoteEst = utils.FormatSize(remaining*pos.SpotEntryPrice*1.02, 2)
@@ -1973,6 +1992,16 @@ func (e *SpotEngine) emergencyClose(
 			return
 		}
 		applySpotExitFill(pos, filled, avg)
+		// If we intentionally rounded sellQty down to step (Dir-B), the known
+		// residue between sellQty and original remaining is dust that can't be
+		// sold — mark the leg complete instead of reporting partial-fill error.
+		if spotSide == exchange.SideSell && sellQty < remaining && filled+spotQtyTolerance >= sellQty {
+			dustResidue := remaining - sellQty
+			e.log.Warn("EMERGENCY: spot fill=%.6f matches rounded sellQty=%.6f (dust residue %.8f ignored)",
+				filled, sellQty, dustResidue)
+			pos.SpotExitFilledQty = pos.SpotSize
+			pos.SpotExitFilled = true
+		}
 		if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
 			e.log.Error("EMERGENCY: failed to checkpoint spot exit fill for %s: %v", orderID, cpErr)
 		}

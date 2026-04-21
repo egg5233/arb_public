@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.38] - 2026-04-21
+
+### Fixed
+- **Emergency close path also needs LOT_SIZE step rounding** (`internal/spotengine/execution.go`, `emergencyClose`). Codex review of v0.32.36 caught a gap: delist-triggered exits enter `monitor.go:102-110` with `emergency=true` → `ClosePosition(..., true)` → `emergencyClose()` (parallel leg-close path). That path also formatted raw `remaining` before `PlaceSpotMarginOrder`, so the FIRST close attempt of an unaligned-`SpotSize` position still failed with Binance `-1013 LOT_SIZE` — only later non-emergency monitor retries healed it. Now `emergencyClose()` applies the same `utils.RoundToStep(remaining, rules.QtyStep)` logic (SELL side only; Dir-A buyback unchanged to preserve residual-borrow semantics). Additionally, after the rounded fill confirms, the known dust residue between `sellQty` and original `remaining` is marked as complete instead of being reported as a partial-fill error, so the emergency path now closes cleanly on its first attempt rather than leaving the position stuck until the next 3-minute monitor tick. Regression test: `TestEmergencyClose_SpotSellRoundsToLotStep` in `dust_close_test.go`.
+
 ## [0.32.37] - 2026-04-21
 
 ### Fixed
