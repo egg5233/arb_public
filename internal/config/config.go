@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"arb/internal/models"
 )
 
 // normalizeChain maps chain name variants to a canonical form.
@@ -259,6 +261,20 @@ type Config struct {
 	// ---------------------------------------------------------------------------
 	EnableAnalytics bool   // Master on/off for analytics (SQLite store, API endpoints). Default OFF.
 	AnalyticsDBPath string // Path to SQLite analytics database file. Default "data/analytics.db".
+
+	// ---------------------------------------------------------------------------
+	// Price-Gap Tracker (Phase 8, v2.0) — default OFF per D-22, PG-OPS-06
+	// ---------------------------------------------------------------------------
+	PriceGapEnabled              bool                       // master switch, D-22
+	PriceGapBudget               float64                    // USDT, D-22 default 5000
+	PriceGapMaxConcurrent        int                        // D-22 default 3 (PG-RISK-04)
+	PriceGapGateConcentrationPct float64                    // D-22 default 0.50 (PG-RISK-01)
+	PriceGapMaxHoldMin           int                        // D-22 default 240 (PG-03)
+	PriceGapExitReversionFactor  float64                    // D-22 default 0.5 (PG-03, exit at T/2)
+	PriceGapBarPersistence       int                        // D-22 default 4 (PG-01)
+	PriceGapKlineStalenessSec    int                        // D-22 default 90 (PG-RISK-02)
+	PriceGapPollIntervalSec      int                        // D-22 default 30 (D-05)
+	PriceGapCandidates           []models.PriceGapCandidate // D-22, PG-05
 }
 
 // ---------- Nested JSON config structs ----------
@@ -279,6 +295,23 @@ type jsonConfig struct {
 	Safety       *jsonSafety             `json:"safety"`
 	Analytics    *jsonAnalytics          `json:"analytics"`
 	Allocation   *jsonAllocation         `json:"allocation"`
+	PriceGap     *jsonPriceGap           `json:"price_gap,omitempty"`
+}
+
+// jsonPriceGap mirrors the "price_gap" block of config.json. All fields are
+// pointer-optional so a missing or partial block leaves zero-value defaults
+// intact (safe-off per D-22, PG-OPS-06, T-08-03).
+type jsonPriceGap struct {
+	Enabled              *bool                      `json:"enabled,omitempty"`
+	Budget               *float64                   `json:"budget,omitempty"`
+	MaxConcurrent        *int                       `json:"max_concurrent,omitempty"`
+	GateConcentrationPct *float64                   `json:"gate_concentration_pct,omitempty"`
+	MaxHoldMin           *int                       `json:"max_hold_min,omitempty"`
+	ExitReversionFactor  *float64                   `json:"exit_reversion_factor,omitempty"`
+	BarPersistence       *int                       `json:"bar_persistence,omitempty"`
+	KlineStalenessSec    *int                       `json:"kline_staleness_sec,omitempty"`
+	PollIntervalSec      *int                       `json:"poll_interval_sec,omitempty"`
+	Candidates           []models.PriceGapCandidate `json:"candidates,omitempty"`
 }
 
 type jsonAnalytics struct {
@@ -1260,6 +1293,41 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		}
 		if sf.BacktestCoinGlassFallback != nil {
 			c.SpotFuturesBacktestCoinGlassFallback = *sf.BacktestCoinGlassFallback
+		}
+	}
+
+	// Price-Gap Tracker (Phase 8, v2.0) — pointer-optional per T-08-03.
+	// Defaults stay safe-off when the "price_gap" block is absent (PG-OPS-06).
+	if pg := jc.PriceGap; pg != nil {
+		if pg.Enabled != nil {
+			c.PriceGapEnabled = *pg.Enabled
+		}
+		if pg.Budget != nil {
+			c.PriceGapBudget = *pg.Budget
+		}
+		if pg.MaxConcurrent != nil {
+			c.PriceGapMaxConcurrent = *pg.MaxConcurrent
+		}
+		if pg.GateConcentrationPct != nil {
+			c.PriceGapGateConcentrationPct = *pg.GateConcentrationPct
+		}
+		if pg.MaxHoldMin != nil {
+			c.PriceGapMaxHoldMin = *pg.MaxHoldMin
+		}
+		if pg.ExitReversionFactor != nil {
+			c.PriceGapExitReversionFactor = *pg.ExitReversionFactor
+		}
+		if pg.BarPersistence != nil {
+			c.PriceGapBarPersistence = *pg.BarPersistence
+		}
+		if pg.KlineStalenessSec != nil {
+			c.PriceGapKlineStalenessSec = *pg.KlineStalenessSec
+		}
+		if pg.PollIntervalSec != nil {
+			c.PriceGapPollIntervalSec = *pg.PollIntervalSec
+		}
+		if len(pg.Candidates) > 0 {
+			c.PriceGapCandidates = pg.Candidates
 		}
 	}
 
