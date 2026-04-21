@@ -59,7 +59,7 @@ Seed input: `/tmp/phase0-pricegap/STRATEGY_DESIGN.md` (§3.5 candidate shortlist
   - [x] 08-05-PLAN.md — Simultaneous IOC entry + unwind-to-match + circuit breaker (PG-02)
   - [x] 08-06-PLAN.md — Per-position monitor + exit + exec-quality auto-disable + rehydrate (PG-03, PG-04, PG-RISK-03)
   - [x] 08-07-PLAN.md — tickLoop wiring + cmd/main.go conditional startup/shutdown (PG-02, PG-03, PG-OPS-06)
-  - [ ] 08-08-PLAN.md — cmd/pg-admin CLI + CHANGELOG + VERSION bump (PG-RISK-03)
+  - [x] 08-08-PLAN.md — cmd/pg-admin CLI + CHANGELOG + VERSION bump (PG-RISK-03)
 
 ### Phase 9: Price-Gap Dashboard & Paper→Live Operations
 **Goal**: Operators can observe, control, and validate the price-gap tracker from the dashboard — including a paper-mode dry run, live position/PnL views, Telegram alerts, and per-candidate rolling performance metrics
