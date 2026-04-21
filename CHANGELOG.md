@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.41] - 2026-04-21
+
+### Added
+- **Price-gap tracker — exit monitor, exec-quality override, and startup rehydration (Phase 08 Plan 06)** (`internal/pricegaptrader/{monitor,slippage,rehydrate}.go`). Completes PG-03 + PG-04 + PG-RISK-03:
+  - **Per-position exit monitor** — `startMonitor` spawns a goroutine per open position; `monitorPosition` polls at `PriceGapPollIntervalSec`. `closePair` fires on reversion (`|spread| ≤ ThresholdBps × PriceGapExitReversionFactor`, D-11) or max-hold (`now − OpenedAt ≥ PriceGapMaxHoldMin`). Exit places simultaneous IOC ReduceOnly orders on both legs; any shortfall retries as MARKET ReduceOnly (D-12 §Pitfall 4 — positions must close fully). Persists `ExitReason`, `RealizedPnL`, `RealizedSlipBps` (D-21 round-trip bps) and moves to `pg:positions:history`.
+  - **Exec-quality auto-disable (PG-RISK-03)** — `recordSlippageAndMaybeDisable` appends one sample per closed trade to a rolling 10-trade window; if `mean(realized) > 2 × mean(modeled)` (strict `>`, D-19), sets `pg:candidate:disabled:<symbol>` so subsequent preEntry Gate 1 blocks with `ErrPriceGapCandidateDisabled`. Divide-by-zero guard: `meanMod ≤ 0` short-circuits, preventing the pathological "zero modeled → auto-disable everything" trap.
+  - **Startup rehydration (PG-04)** — `rehydrate` iterates `pg:positions:active`; for each, queries `GetPosition(symbol)` on both legs and orphans any zero-size position with `ExitReasonOrphan` (RESEARCH §Pitfall 3 ghost-position replay). Survivors re-enroll in monitor goroutines. Idempotent: `startMonitor` cancels+replaces prior handles via an atomic seq token, so calling `rehydrate` twice leaves exactly one live monitor per position (race-safe under `-race`).
+  - **Test coverage** — 14 new tests across `monitor_test.go` (6), `slippage_test.go` (5), `rehydrate_test.go` (3). All 44 pricegaptrader tests green under `-race -count=5`.
+  - Still off by default (`PriceGapEnabled=false`). Phase 9 (dashboard) will expose `/api/pricegap/positions` and the enable toggle; Plan 07 wires `rehydrate()` into `Start()`.
+
 ## [0.32.40] - 2026-04-21
 
 ### Added
