@@ -89,20 +89,22 @@ Which phases cover which requirements. Populated by roadmapper.
 | PG-RISK-03 | Phase 8 | Pending |
 | PG-RISK-04 | Phase 8 | Pending |
 | PG-RISK-05 | Phase 8 | Pending |
-| PG-OPS-01 | Phase 8 | Pending |
-| PG-OPS-02 | Phase 8 | Pending |
-| PG-OPS-03 | Phase 8 | Pending |
-| PG-OPS-04 | Phase 8 | Pending |
-| PG-OPS-05 | Phase 8 | Pending |
+| PG-OPS-01 | Phase 9 | Pending |
+| PG-OPS-02 | Phase 9 | Pending |
+| PG-OPS-03 | Phase 9 | Pending |
+| PG-OPS-04 | Phase 9 | Pending |
+| PG-OPS-05 | Phase 9 | Pending |
 | PG-OPS-06 | Phase 8 | Pending |
-| PG-VAL-01 | Phase 8 | Pending |
-| PG-VAL-02 | Phase 8 | Pending |
+| PG-VAL-01 | Phase 9 | Pending |
+| PG-VAL-02 | Phase 9 | Pending |
 
 **Coverage:**
 - v2.0 requirements: 18 total
-- Mapped to phases: pending roadmap
-- Unmapped: 18 ⚠️ (will be resolved by roadmapper)
+- Mapped to phases: 18 / 18 ✓
+- Phase 8: 11 requirements (PG-01..05, PG-RISK-01..05, PG-OPS-06)
+- Phase 9: 7 requirements (PG-OPS-01..05, PG-VAL-01..02)
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-04-21*
-*Last updated: 2026-04-21 after initial v2.0 definition*
+*Last updated: 2026-04-21 — traceability populated by roadmapper (2 phases, 100% coverage)*

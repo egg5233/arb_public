@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Multi-Strategy Expansion
 status: planning
-stopped_at: v1.0 shipped 2026-04-21; v2.0 planning not yet started
-last_updated: "2026-04-21T06:20:00.000Z"
+stopped_at: v2.0 roadmap created 2026-04-21; ready for /gsd-plan-phase 8
+last_updated: "2026-04-21T07:00:00.000Z"
 last_activity: 2026-04-21
 previous_milestone: v1.0
 progress:
-  total_phases: 0
+  total_phases: 2
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -22,26 +22,30 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-21 after v1.0 shipped)
 
 **Core value:** "I deposit USDT, select my risk preference, and the system automatically finds opportunities across multiple strategies, opens positions, collects yield, exits when profitable, and I can see exactly how much each position earned — with capital shifting between strategies as opportunities shift."
-**Current focus:** v2.0 planning — Strategy 4 (cross-exchange price-gap arb) MVP via `/gsd-new-milestone`
+**Current focus:** v2.0 Phase 8 planning — Price-Gap Tracker Core (`internal/pricegaptrader/`)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 8 — Price-Gap Tracker Core (not started)
 Plan: —
-Status: Defining requirements
-Last activity: 2026-04-21 — Milestone v2.0 started (v1.0 shipped, tagged, archived)
+Status: Roadmap complete, awaiting `/gsd-plan-phase 8`
+Last activity: 2026-04-21 — v2.0 roadmap created (2 phases, 18/18 requirements mapped)
 
-v1.0 shipped: 7 phases, 21 plans, 381 commits over 30 days (2026-03-23 → 2026-04-21). Audit: tech_debt — documentation/verification gaps carried forward as v2.0 backlog.
+v1.0 shipped: 7 phases, 21 plans, 381 commits over 30 days (2026-03-23 → 2026-04-21). Audit: tech_debt — documentation/verification gaps carried forward as v2.0 backlog (DEBT-01..03, deferred).
+
+**v2.0 phase structure:**
+- Phase 8: Price-Gap Tracker Core (backend) — PG-01..05, PG-RISK-01..05, PG-OPS-06 (11 reqs)
+- Phase 9: Price-Gap Dashboard & Paper→Live Operations (frontend + validation) — PG-OPS-01..05, PG-VAL-01..02 (7 reqs)
 
 Progress (v2.0): [          ] 0%
 
 ## Performance Metrics
 
-**Velocity:**
+**Velocity (v1.0 baseline):**
 
-- Total plans completed: 20
+- Total plans completed: 21
 - Average duration: 14 min
-- Total execution time: 0.7 hours
+- Total execution time: ~5 hours
 
 **By Phase:**
 
@@ -74,6 +78,16 @@ Progress (v2.0): [          ] 0%
 
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
+
+- [v2.0 Roadmap]: Two phases — backend tracker core (Phase 8) then dashboard + paper→live operations (Phase 9); split at Go/React boundary is the natural seam and lets Phase 8 be verified headlessly via logs + Redis before UI work
+- [v2.0 Roadmap]: `PG-OPS-06` (config switch) stays in Phase 8 — the switch must exist before the tracker can run; dashboard UI round-trip for the toggle lives in Phase 9 via the general `PG-OPS-01` tab wiring
+- [v2.0 Roadmap]: Paper mode (`PG-OPS-04`) lives in Phase 9 — it is a dashboard toggle that gates real order placement inside the tracker; the tracker in Phase 8 honors the flag but the UX is Phase 9
+- [v2.0 Roadmap]: All 5 risk gates (PG-RISK-01..05) bundled into Phase 8 because they are pre-entry invariants; no trade should ever execute without them, so they ship with the entry path
+- [v2.0 Roadmap]: v1.0 tech debt (DEBT-01..03) explicitly deferred from v2.0 roadmap per PROJECT.md priority — not worth blocking Strategy 4 on retrospective docs
+- [v2.0 Scoping]: Phase 0/1/round-2 complete in `/tmp/phase0-pricegap/`; 5 known-good candidates shortlist at T=200; real round-trip cost 55–90 bps (2× Phase 0 model) — this informs PG-RISK-03's 2× slippage trigger
+- [v2.0 Scoping]: Initial live budget $5k, $1-3k per-leg caps — PG-RISK-05 enforces per-candidate notional from config
+
+v1.0 decisions below (retained for reference):
 
 - [Roadmap]: Spot-futures expansion before operational safety -- user Priority 1
 - [Roadmap]: PP-04 grouped with analytics (Phase 4) not safety (Phase 3) -- it is a dashboard/data feature
@@ -112,12 +126,16 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-None yet.
+None yet. Next action: `/gsd-plan-phase 8` to decompose Phase 8 into executable plans.
 
 ### Blockers/Concerns
 
-- Each remaining exchange (Binance, Gate.io, Bitget, OKX) will have unique margin API quirks -- budget for 3-5 adapter bugs per exchange (v0.22.44-49 precedent)
-- npm lockfile update process needed before Phase 4 frontend work (charting libraries)
+- `internal/pricegaptrader/` is a NEW module — strict boundary, must not import `internal/engine/` or `internal/spotengine/`. Plan-phase must enforce this at design time.
+- Redis namespace `pg:*` must not collide with existing perp-perp or spot-futures keys.
+- Startup wiring: tracker goroutine must respect `PriceGapEnabled` flag and shut down cleanly on SIGTERM like existing engines.
+- Exchange adapter reuse only — no new adapter methods; if a method is missing, raise before adding.
+- npm lockdown still in force — Phase 9 dashboard work uses existing Recharts/React stack only (`npm ci` only, no new deps).
+- Live trading risk: every Phase 8 change lands behind `PriceGapEnabled=false`. No code path affecting perp-perp or spot-futures may be touched.
 
 ### Quick Tasks Completed
 
@@ -128,6 +146,7 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-06T01:36:14.966Z
-Stopped at: Completed 07-01-PLAN.md
+Last session: 2026-04-21T07:00:00.000Z
+Stopped at: v2.0 roadmap created — 2 phases, 18/18 requirements mapped
 Resume file: None
+Next command: `/gsd-plan-phase 8`
