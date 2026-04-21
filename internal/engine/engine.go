@@ -23,6 +23,14 @@ import (
 
 var errPartialEntry = errors.New("partial entry: consolidator will reconcile")
 
+// activePositionsGetter is a minimal interface over the DB read used by the
+// staged entry-scan path. The indirection allows tests to inject a failing stub
+// to exercise the retry + salvage branches without needing a real Redis server.
+// Production code wires e.activePosSource = e.db in NewEngine.
+type activePositionsGetter interface {
+	GetActivePositions() ([]*models.ArbitragePosition, error)
+}
+
 // isAlreadySetError detects harmless "already set" responses from exchanges
 // when setting leverage or margin mode to the current value.
 func isAlreadySetError(err error) bool {
@@ -118,6 +126,21 @@ type Engine struct {
 	allocOverrideMu sync.Mutex
 	allocOverrides  map[string]allocatorChoice // symbol → chosen pair
 
+	// activePosSource is the seam used by getActivePositionsWithRetry.
+	// Production: wired to e.db in NewEngine. Tests: swapped for a
+	// failingActivePosGetter to exercise retry + salvage branches.
+	activePosSource activePositionsGetter
+
+	// testExecuteArbitrageHook is called at the start of executeArbitrage when
+	// non-nil. Used only in tests to capture which opportunities are passed to
+	// executeArbitrage without running the real trade-execution path.
+	testExecuteArbitrageHook func([]models.Opportunity)
+
+	// testRescanHook is called instead of e.discovery.RescanSymbols when
+	// non-nil. Used only in tests to stub the rescan result and capture which
+	// pairs were requested.
+	testRescanHook func([]models.SymbolPair) []models.Opportunity
+
 	// spotCloseCallback dispatches spot-futures health actions to SpotEngine.
 	// Set via SetSpotCloseCallback after both engines are initialized.
 	spotCloseCallback func(pos *models.SpotFuturesPosition, reason string, isEmergency bool) error
@@ -175,6 +198,7 @@ func NewEngine(
 		consolidateRetries: make(map[string]int),
 		depthRefs:          make(map[string]*depthRef),
 	}
+	e.activePosSource = e.db
 	return e
 }
 
@@ -757,6 +781,153 @@ func (e *Engine) applyAllocatorOverrides(opps []models.Opportunity) ([]models.Op
 	return filtered, true
 }
 
+// getActivePositionsWithRetry wraps the injected activePositionsGetter with a
+// simple retry to survive transient Redis hiccups during the critical
+// stage-1 → stage-2 transition. Used only by the entry-scan path where a
+// dropped read leads to fund stranding (see PLAN-stage2-db-failure-salvage.md).
+//
+// The call goes through e.activePosSource (NOT e.db directly) so that tests
+// can inject a failingActivePosGetter to exercise the retry + salvage branches.
+// e.activePosSource is wired to e.db in NewEngine; see §5.
+func (e *Engine) getActivePositionsWithRetry(maxAttempts int, backoff time.Duration) ([]*models.ArbitragePosition, error) {
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	var lastErr error
+	for i := 0; i < maxAttempts; i++ {
+		positions, err := e.activePosSource.GetActivePositions()
+		if err == nil {
+			return positions, nil
+		}
+		lastErr = err
+		if i < maxAttempts-1 {
+			time.Sleep(backoff)
+		}
+	}
+	return nil, lastErr
+}
+
+// runStage2AndSalvage implements the Stage 2 override execution + Bug-7 salvage
+// block for the entry scan path. It is called immediately after Stage 1
+// executeArbitrage completes.
+//
+// Stage 2 consumes any allocator overrides published by the most recent
+// rebalance Pass 1/Pass 2, filters out symbols Stage 1 already opened, and
+// executes the remainder with the pre-approved (long, short) exchange pair.
+//
+// The salvage block handles two failure classes:
+//  1. Stage 2 DB read failed — stage2Attempted is empty, so salvage considers
+//     ALL override symbols (including those present in the scan) rather than
+//     only out-of-scan symbols as the previous guard did.
+//  2. Bug-7: rebalance funded a symbol absent from the current scan —
+//     salvage rescans it via RescanSymbols to prevent fund stranding.
+//
+// See PLAN-stage2-db-failure-salvage.md for the full design rationale.
+func (e *Engine) runStage2AndSalvage(opps []models.Opportunity, perpCap float64) {
+	// Snapshot BEFORE drain (Bug 7 invariant preserved).
+	e.allocOverrideMu.Lock()
+	overrideSnapshot := make(map[string]allocatorChoice, len(e.allocOverrides))
+	for k, v := range e.allocOverrides {
+		overrideSnapshot[k] = v
+	}
+	e.allocOverrideMu.Unlock()
+
+	patched, hadOverrides := e.applyAllocatorOverrides(opps)
+
+	// Track which override symbols Stage 2 actually got to try.
+	// Default: empty. Populated only when Stage 2 DB read succeeds AND executeArbitrage runs.
+	stage2Attempted := map[string]bool{}
+
+	if len(patched) > 0 {
+		// Finding #1 Fix A: retry DB read once on transient failure.
+		activeAfterS1, err := e.getActivePositionsWithRetry(2, 300*time.Millisecond)
+		if err != nil {
+			e.log.Warn("entry stage-2: GetActivePositions failed after retry: %v — deferring to salvage", err)
+			// Intentionally do NOT early-return: fall through to salvage with
+			// stage2Attempted empty, so salvage covers in-scan symbols too.
+		} else {
+			openedS1 := make(map[string]bool, len(activeAfterS1))
+			for _, p := range activeAfterS1 {
+				if p.Status != models.StatusClosed {
+					openedS1[p.Symbol] = true
+				}
+			}
+			var stage2Opps []models.Opportunity
+			dropped := 0
+			for _, o := range patched {
+				// Mark attempted regardless of duplicate-filter outcome.
+				// openedS1 symbols are already active — salvage would be a noop anyway.
+				stage2Attempted[o.Symbol] = true
+				if openedS1[o.Symbol] {
+					dropped++
+					continue
+				}
+				stage2Opps = append(stage2Opps, o)
+			}
+			if dropped > 0 {
+				e.log.Info("entry stage-2: %d override(s) skipped (already opened by stage-1)", dropped)
+			}
+			if len(stage2Opps) > 0 {
+				e.log.Info("entry stage-2: executing %d override opportunities (tier-2-rebalance-overrides)", len(stage2Opps))
+				e.executeArbitrage(stage2Opps, perpCap)
+			} else {
+				e.log.Info("entry stage-2: no override opportunities remain after stage-1 filter")
+			}
+		}
+	} else if hadOverrides {
+		e.log.Warn("entry stage-2: allocator overrides present but all stale after filter")
+		// NOTE: stage2Attempted stays empty. Salvage will consider these symbols.
+		// applyAllocatorOverrides already logged per-symbol reasons. Symbols that
+		// were legitimately stale-rejected will fail RescanSymbols too, so salvage
+		// is a noop for them — no extra cost.
+	}
+
+	// --- Salvage block ---
+	if len(overrideSnapshot) > 0 {
+		activeForSalvage, err := e.getActivePositionsWithRetry(2, 300*time.Millisecond)
+		if err != nil {
+			e.log.Warn("entry stage-2 salvage: GetActivePositions failed after retry: %v — transfers may be stranded until next cycle", err)
+		} else {
+			openedByUs := make(map[string]bool, len(activeForSalvage))
+			for _, p := range activeForSalvage {
+				if p.Status != models.StatusClosed {
+					openedByUs[p.Symbol] = true
+				}
+			}
+			var missingPairs []models.SymbolPair
+			for sym, choice := range overrideSnapshot {
+				// Finding #1 Fix B: the exclusion is now stage2Attempted (what we
+				// actually tried) + openedByUs (what's actually active).
+				// The previous per-scan exclusion was an over-approximation that
+				// excluded symbols Stage 2 never got to attempt.
+				if stage2Attempted[sym] || openedByUs[sym] {
+					continue
+				}
+				missingPairs = append(missingPairs, models.SymbolPair{
+					Symbol:        sym,
+					LongExchange:  choice.longExchange,
+					ShortExchange: choice.shortExchange,
+				})
+			}
+			if len(missingPairs) > 0 {
+				e.log.Info("entry stage-2 salvage: %d funded override(s) need rescan (stage2-skipped or out-of-scan), re-scanning", len(missingPairs))
+				var salvageOpps []models.Opportunity
+				if e.testRescanHook != nil {
+					salvageOpps = e.testRescanHook(missingPairs)
+				} else {
+					salvageOpps = e.discovery.RescanSymbols(missingPairs)
+				}
+				if len(salvageOpps) > 0 {
+					e.log.Info("entry stage-2 salvage: %d/%d passed re-scan, executing", len(salvageOpps), len(missingPairs))
+					e.executeArbitrage(salvageOpps, perpCap)
+				} else {
+					e.log.Warn("entry stage-2 salvage: all %d symbols failed re-scan — transfers may be stranded until next cycle", len(missingPairs))
+				}
+			}
+		}
+	}
+	e.log.Info("run loop: entryScan handler done (stage-1 + stage-2 + salvage)")
+}
 
 // recordTransfer saves a transfer record to the database for dashboard display.
 func (e *Engine) recordTransfer(from, to, coin, chain, amount, fee, txID, status, reason string) {
@@ -887,105 +1058,7 @@ func (e *Engine) run() {
 					// Stage 2 via the active-positions check below.
 					e.log.Info("entry stage-1: rank-based executeArbitrage with %d opps", len(result.Opps))
 					e.executeArbitrage(result.Opps, perpCap)
-
-					// Stage 2: consume allocator overrides from rebalance Pass 1 / Pass 2.
-					// Snapshot overrides BEFORE applyAllocatorOverrides drains them — we
-					// need to detect symbols funded by rebalance that are missing from
-					// the current scan (Bug 7 fix: fund-stranding when a rebalance-funded
-					// symbol is absent from the new discovery pass).
-					e.allocOverrideMu.Lock()
-					overrideSnapshot := make(map[string]allocatorChoice, len(e.allocOverrides))
-					for k, v := range e.allocOverrides {
-						overrideSnapshot[k] = v
-					}
-					e.allocOverrideMu.Unlock()
-
-					patched, hadOverrides := e.applyAllocatorOverrides(result.Opps)
-					if len(patched) > 0 {
-						// Filter out symbols Stage 1 already opened — overrides must
-						// not duplicate an active position.
-						activeAfterS1, err := e.db.GetActivePositions()
-						if err != nil {
-							e.log.Warn("entry stage-2: failed to load active positions after stage-1: %v — skipping stage-2 to avoid duplicate entries", err)
-						} else {
-							openedS1 := make(map[string]bool, len(activeAfterS1))
-							for _, p := range activeAfterS1 {
-								if p.Status != models.StatusClosed {
-									openedS1[p.Symbol] = true
-								}
-							}
-							var stage2Opps []models.Opportunity
-							dropped := 0
-							for _, o := range patched {
-								if openedS1[o.Symbol] {
-									dropped++
-									continue
-								}
-								stage2Opps = append(stage2Opps, o)
-							}
-							if dropped > 0 {
-								e.log.Info("entry stage-2: %d override(s) skipped (already opened by stage-1)", dropped)
-							}
-							if len(stage2Opps) > 0 {
-								e.log.Info("entry stage-2: executing %d override opportunities (tier-2-rebalance-overrides)", len(stage2Opps))
-								e.executeArbitrage(stage2Opps, perpCap)
-							} else {
-								e.log.Info("entry stage-2: no override opportunities remain after stage-1 filter")
-							}
-						}
-					} else if hadOverrides {
-						// Allocator ran but every override was stale-skipped inside
-						// applyAllocatorOverrides. Keep visibility of this condition —
-						// Stage 1 has already run, so no further action is needed.
-						e.log.Warn("entry stage-2: allocator overrides present but all stale after filter")
-					}
-
-					// Bug 7 fix (independent-review c5f61902): rebalance may have funded
-					// an override for a symbol that is absent from the current entry
-					// scan (discovery order can shift between :30 rebalance and :40
-					// entry). applyAllocatorOverrides only iterates result.Opps and
-					// silently drops such symbols, stranding the transfer. Detect
-					// those missing symbols and rescan them with fresh data — same
-					// RescanSymbols path the len(result.Opps)==0 branch uses.
-					if len(overrideSnapshot) > 0 {
-						inScan := make(map[string]bool, len(result.Opps))
-						for _, o := range result.Opps {
-							inScan[o.Symbol] = true
-						}
-						activeAfterS2, err := e.db.GetActivePositions()
-						openedByUs := map[string]bool{}
-						if err != nil {
-							e.log.Warn("entry stage-2 salvage: failed to load active positions: %v — skipping salvage to avoid duplicates", err)
-						} else {
-							for _, p := range activeAfterS2 {
-								if p.Status != models.StatusClosed {
-									openedByUs[p.Symbol] = true
-								}
-							}
-							var missingPairs []models.SymbolPair
-							for sym, choice := range overrideSnapshot {
-								if inScan[sym] || openedByUs[sym] {
-									continue
-								}
-								missingPairs = append(missingPairs, models.SymbolPair{
-									Symbol:        sym,
-									LongExchange:  choice.longExchange,
-									ShortExchange: choice.shortExchange,
-								})
-							}
-							if len(missingPairs) > 0 {
-								e.log.Info("entry stage-2 salvage: %d funded override(s) missing from scan, re-scanning to prevent transfer stranding", len(missingPairs))
-								salvageOpps := e.discovery.RescanSymbols(missingPairs)
-								if len(salvageOpps) > 0 {
-									e.log.Info("entry stage-2 salvage: %d/%d passed re-scan, executing", len(salvageOpps), len(missingPairs))
-									e.executeArbitrage(salvageOpps, perpCap)
-								} else {
-									e.log.Warn("entry stage-2 salvage: all %d symbols failed re-scan — transfers may be stranded until next cycle", len(missingPairs))
-								}
-							}
-						}
-					}
-					e.log.Info("run loop: entryScan handler done (stage-1 + stage-2 + salvage)")
+					e.runStage2AndSalvage(result.Opps, perpCap)
 				} else {
 					// Fallback: discovery returned 0 opps but allocator overrides
 					// from :45 may exist. Re-scan those specific symbols with
@@ -1837,6 +1910,11 @@ func (e *Engine) SimExecuteTradeV2(opp models.Opportunity, size, price, gapBPS f
 // Phase 2 executes approved trades in parallel goroutines.
 // dynamicCap, when > 0, overrides the strategy cap for capital reservations (CA-04).
 func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64) {
+	// Test seam: when set, capture the opps and skip real execution.
+	if e.testExecuteArbitrageHook != nil {
+		e.testExecuteArbitrageHook(opps)
+		return
+	}
 	e.log.Info("executeArbitrage: acquiring capacity lock...")
 	e.capacityMu.Lock()
 	e.log.Info("executeArbitrage: capacity lock acquired")
