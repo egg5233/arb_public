@@ -51,7 +51,15 @@ Seed input: `/tmp/phase0-pricegap/STRATEGY_DESIGN.md` (§3.5 candidate shortlist
   3. Open positions auto-close when |spread| reverts to ≤ T/2 OR a 4h max-hold timer elapses; closed positions persist with realized PnL and exit reason; all positions survive a process restart via Redis rehydration
   4. Pre-entry risk gates deterministically block entries that would violate: Gate concentration >50% of `PriceGapBudget`, max concurrent positions (3), per-candidate notional cap, any delist/halt flag on either leg, or stale kline data (>90s)
   5. After 10 closed trades on a candidate, if mean realized slippage exceeds 2× modeled slippage, the tracker auto-disables that candidate and refuses further entries until a human re-enables it
-**Plans**: TBD
+**Plans**: 8 plans
+  - [ ] 08-01-PLAN.md — Config surface + models + PriceGapStore interface (PG-05, PG-OPS-06)
+  - [ ] 08-02-PLAN.md — Redis persistence under pg:* namespace (PG-04, PG-RISK-03)
+  - [ ] 08-03-PLAN.md — Tracker skeleton + detector (BBO-sampled 1m bars, 4-bar persistence) (PG-01)
+  - [ ] 08-04-PLAN.md — 5-check pre-entry risk gate + typed errors (PG-RISK-01, -02, -04, -05)
+  - [ ] 08-05-PLAN.md — Simultaneous IOC entry + unwind-to-match + circuit breaker (PG-02)
+  - [ ] 08-06-PLAN.md — Per-position monitor + exit + exec-quality auto-disable + rehydrate (PG-03, PG-04, PG-RISK-03)
+  - [ ] 08-07-PLAN.md — tickLoop wiring + cmd/main.go conditional startup/shutdown (PG-02, PG-03, PG-OPS-06)
+  - [ ] 08-08-PLAN.md — cmd/pg-admin CLI + CHANGELOG + VERSION bump (PG-RISK-03)
 
 ### Phase 9: Price-Gap Dashboard & Paper→Live Operations
 **Goal**: Operators can observe, control, and validate the price-gap tracker from the dashboard — including a paper-mode dry run, live position/PnL views, Telegram alerts, and per-candidate rolling performance metrics

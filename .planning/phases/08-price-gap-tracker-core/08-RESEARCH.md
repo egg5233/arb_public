@@ -81,7 +81,7 @@ Everything else — constructor, Start/Stop, Redis persistence, config struct ex
 | PG-04 | Positions persist to `pg:pos:{id}`, survive restart | `internal/database/spot_state.go:14-54` pattern; new `pricegap_state.go` |
 | PG-05 | Candidate list config-driven | `internal/config/config.go:183+ SpotFutures*` field pattern; new `PriceGapCandidates []PriceGapCandidate` slice |
 | PG-RISK-01 | Gate concentration ≤50% of `PriceGapBudget` | Pre-entry deterministic sum over active positions with `gate` leg |
-| PG-RISK-02 | Delist / halt / kline-staleness <90s gate | `internal/discovery/delist.go:72 IsDelisted(symbol)` API; adapter `LoadAllContracts().DeliveryDate`; staleness = `time.Since(lastBBOUpdate)` |
+| PG-RISK-02 | Delist / halt / kline-staleness <90s gate | `internal/discovery/delist.go:72 (s *Scanner) IsDelisted(symbol)` API; adapter `LoadAllContracts().DeliveryDate`; staleness = `time.Since(lastBBOUpdate)` |
 | PG-RISK-03 | Exec-quality 2× overshoot auto-disable after 10 trades | `pg:slippage:{candidate_id}` LIST; realized vs modeled comparison on every close |
 | PG-RISK-04 | Max concurrent positions cap | Count from `pg:positions:active` SET cardinality |
 | PG-RISK-05 | Per-position notional cap per candidate | `PriceGapCandidate.MaxPositionUSDT` |
@@ -222,15 +222,22 @@ type PriceGapStore interface {
     AcquireLock(resource string, ttl time.Duration) (bool, error)
     ReleaseLock(resource string) error
 }
+
+// DelistChecker is a narrow interface wrapping discovery.Scanner.IsDelisted
+// (a method, NOT a free function — verified in internal/discovery/delist.go:72).
+// Injecting this keeps the module-boundary seam explicit per CONTEXT §D-02.
+type DelistChecker interface {
+    IsDelisted(symbol string) bool
+}
 ```
-Concrete `*database.Client` satisfies it via methods added to `internal/database/pricegap_state.go` (new file).
+Concrete `*database.Client` satisfies `PriceGapStore` via methods added to `internal/database/pricegap_state.go` (new file). Concrete `*discovery.Scanner` already satisfies `DelistChecker` (no adapter needed — method signature matches).
 
 ### Pattern 6: `cmd/pg-admin/main.go` scaffold
 **Source:** `cmd/balance/main.go:1-60`
 - Top of file: `package main`, imports `arb/internal/config`, `arb/internal/database`.
 - `cfg := config.Load()` → `db, _ := database.NewClient(cfg)` → read/write `pg:candidate:disabled:*`.
-- Sub-commands via `os.Args[1]` switch: `enable <symbol>`, `disable <symbol>`, `status`, `positions`.
-- Output via `fmt.Printf` tabular layout (see `balance/main.go:19-22`).
+- Sub-commands via `os.Args[1]` switch: `enable <symbol>`, `disable <symbol>`, `status`, `positions list`.
+- Output via `fmt.Printf` + `text/tabwriter` tabular layout (see `balance/main.go:19-22`).
 
 ### Pattern 7: Graceful shutdown in `cmd/main.go`
 **Source:** `cmd/main.go:439-492`
@@ -239,7 +246,7 @@ Concrete `*database.Client` satisfies it via methods added to `internal/database
 ```go
 var tracker *pricegaptrader.Tracker
 if cfg.PriceGapEnabled {
-    tracker = pricegaptrader.NewTracker(exchanges, db, cfg)
+    tracker = pricegaptrader.NewTracker(exchanges, db, scanner, cfg) // scanner satisfies DelistChecker
     tracker.Start()
     log.Info("Price-gap tracker started")
 }
@@ -285,7 +292,7 @@ The planner MUST surface this decision as Plan-0 before execution starts.
 | Structured logger | log/slog | `utils.NewLogger("pg-tracker")` (`pkg/utils/logging.go`) | Matches stdout format other engines use |
 | JSON serialization | Custom codec | `encoding/json` + struct tags (see `models/spot_position.go`) | stdlib |
 | Symbol → exchange-format mapping | Inline string munging | Adapters already convert `BTCUSDT` → `BTC_USDT` / `BTC-USDT-SWAP` internally | CLAUDE.local.md "adapter rules" |
-| Delist check | New REST poller | `scanner.IsDelisted(symbol)` (`internal/discovery/delist.go:72`) | Global 6h poll already running; reuse read-only |
+| Delist check | New REST poller | `scanner.IsDelisted(symbol)` method (`internal/discovery/delist.go:72`) — inject via `DelistChecker` interface | Global 6h poll already running; reuse read-only |
 | Contract status / DeliveryDate | Per-tracker poller | `exchange.LoadAllContracts()[symbol].DeliveryDate` (`pkg/exchange/types.go:107+` + CLAUDE.md note on `deliveryDate`) | Already populated at startup + refresh |
 
 ---
@@ -419,8 +426,8 @@ func (t *Tracker) preEntry(cand PriceGapCandidate, notional float64) GateResult 
     if !t.gateConcentrationOK(cand, notional) { // 50% cap
         return GateResult{Approved: false, Reason: "gate_concentration"}
     }
-    if err := t.freshnessAndDelistCheck(cand); err != nil {
-        return GateResult{Approved: false, Reason: err.Error()}
+    if t.delist.IsDelisted(cand.Symbol) { // DelistChecker injected (see Pattern 5)
+        return GateResult{Approved: false, Reason: "delisted"}
     }
     return GateResult{Approved: true}
 }
@@ -465,7 +472,7 @@ func (t *Tracker) openPair(cand PriceGapCandidate, size float64, longPx, shortPx
 
 | Old Approach | Current Approach | When Changed | Impact |
 |--------------|------------------|--------------|--------|
-| Engine imports concrete `*discovery.Scanner` | Engine depends on `models.Discoverer` interface | v1.0 milestone | Tracker MUST follow: depend on `PriceGapStore` interface |
+| Engine imports concrete `*discovery.Scanner` | Engine depends on `models.Discoverer` interface | v1.0 milestone | Tracker MUST follow: depend on `PriceGapStore` interface AND `DelistChecker` interface (for the delist read-only seam) |
 | Redis HSET for config | `config.json` sole source of truth | 2026-04-05 | Tracker config fields persist via `applyJSON` only; NO Redis HSET |
 | Kline fetch via adapter | *(never existed)* | — | Must be built in-memory from WS BBO |
 
@@ -485,13 +492,20 @@ func (t *Tracker) openPair(cand PriceGapCandidate, size float64, longPx, shortPx
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+All five open questions below were raised during research and have been resolved by the user/planner. Resolutions are locked into CONTEXT.md and/or the plans referenced below. Downstream executors treat the `RESOLVED:` line as authoritative.
 
 1. **Kline source (BLOCKING)** — Option A (WS BBO sampler) vs Option B (add `GetKlines` to interface). Recommendation: Option A. **Must be Plan-0.**
+   - **RESOLVED: Option A adopted — in-memory 1m bars from BBO at 30s tick.** No changes to the 35-method `Exchange` interface. Rationale: signal-to-measurement ratio is sufficient for T=200 bps events; avoids 4-adapter REST work; matches CONTEXT §D-02 "no new adapter methods unless raised". Implemented in Plan 03 Task 2 (`internal/pricegaptrader/detector.go`). Bar history resets on restart per §D-07.
 2. **`pg-admin` scope** — minimum: `enable`/`disable`/`status`. Include `positions list` and `close <id>` for live-ops? Recommendation: ship all four (trivial extension of the CLI scaffold).
+   - **RESOLVED: 3 canonical subcommands (`enable` / `disable` / `status`) plus the optional `positions list` helper.** `close <id>` is deferred to Phase 9 because safely force-closing a live delta-neutral pair requires the tracker's monitor-loop coordination (cannot be done from a side-car binary without risk of half-close). Locked into Plan 08 Task 1.
 3. **Stub `/api/pricegap/health` endpoint** — CONTEXT §code_context marks as "planner decides". Recommendation: ship a 10-line handler returning `{enabled, budget, open_count}` — it's tiny, unblocks live-rollout smoke testing, and does NOT pre-empt Phase 9's full tab wiring.
+   - **RESOLVED: Defer to Phase 9. No stub in Phase 8.** Smoke-test path is `pg-admin status` + live log inspection + `redis-cli -n 2 KEYS 'pg:*'`. Any Phase-8 HTTP route would partially couple against Phase 9's dashboard wiring; cleaner to ship the full tab at once.
 4. **Symbol-specific `SizeDecimals`** — the tracker needs per-exchange size formatting (`utils.FormatSize(size, decimals)`) for each candidate's leg. Does `LoadAllContracts` already populate this on startup for all needed symbols? Need planner to verify `ContractInfo.SizeDecimals` is reliable for low-cap perps on Gate.io (quanto conversion per CLAUDE.local.md adapter rules).
+   - **RESOLVED: Use existing `ContractInfo.SizeDecimals` from adapters — same reliability profile the perp-perp engine uses today.** Gate.io quanto conversion is already internalized inside the adapter (callers work in base-asset units per CLAUDE.local.md §"Exchange adapter rules"). Plan 05 entry formats size via `utils.FormatSize(size, contract.SizeDecimals)` from the map returned by `LoadAllContracts()` at tracker startup. If a specific low-cap symbol returns zero/missing `SizeDecimals`, treat as unsupported and skip that candidate with a startup warning — do NOT hand-roll a fallback.
 5. **Modeled slippage seed table** — `edge_v2.json` has `SOONUSDT bin-gate @ $5k: cost 47.9 bps`, etc. Planner should seed each candidate's `ModeledSlippageBps` in config defaults using the `$5000` row (matches CONTEXT PG-RISK-05 "initial $5k budget"). SOON=47.9, SKYAI bin-gate=72.3, SKYAI bin-bitget=66.5, SKYAI bitget-gate=87.8, DRIFT=unknown (use 60.0 conservatively).
+   - **RESOLVED: Seeded from `/tmp/phase0-pricegap/edge_v2.json` per CONTEXT §D-21, $5000 notional row.** Canonical seed values baked into `PriceGapCandidates` default list: SOON=47.9, SKYAI(bin-gate)=72.3, SKYAI(bin-bitget)=66.5, SKYAI(bitget-gate)=87.8, DRIFT=60.0 (conservative — edge_v2.json did not measure DRIFT at $5k). Operators override via `PriceGapCandidates[].ModeledSlippageBps` in `config.json`. These are the baseline for the PG-RISK-03 2× rolling-mean exec-quality comparison.
 
 ---
 
@@ -563,7 +577,7 @@ func (t *Tracker) openPair(cand PriceGapCandidate, size float64, longPx, shortPx
 
 ### Primary (HIGH confidence — direct repo inspection)
 
-- `pkg/exchange/exchange.go:9-134` — unified 35-method `Exchange` interface, NO kline method
+- `pkg/exchange/exchange.go:9-105` — unified 35-method `Exchange` interface, NO kline method (re-verified during revision; method set: Name, SetMetricsCallback, PlaceOrder, CancelOrder, GetPendingOrders, GetOrderFilledQty, GetPosition, GetAllPositions, SetLeverage, SetMarginMode, LoadAllContracts, GetFundingRate, GetFundingInterval, GetFuturesBalance, GetSpotBalance, Withdraw, WithdrawFeeInclusive, GetWithdrawFee, TransferToSpot, TransferToFutures, GetOrderbook, StartPriceStream, SubscribeSymbol, GetBBO, GetPriceStore, SubscribeDepth, UnsubscribeDepth, GetDepth, StartPrivateStream, GetOrderUpdate, SetOrderCallback, PlaceStopLoss, CancelStopLoss, PlaceTakeProfit, CancelTakeProfit, GetUserTrades, GetFundingFees, GetClosePnL, EnsureOneWayMode, CancelAllOrders, Close)
 - `pkg/exchange/types.go:67-77` — `PlaceOrderParams` (`Force: "ioc"`)
 - `pkg/exchange/types.go:107+` — `ContractInfo` with `DeliveryDate`
 - `internal/spotengine/engine.go:82-112, 130-148` — Tracker mirror pattern
@@ -572,7 +586,7 @@ func (t *Tracker) openPair(cand PriceGapCandidate, size float64, longPx, shortPx
 - `internal/database/locks.go:1-60` — per-symbol Redis lock pattern
 - `internal/models/interfaces.go:58-85` — `StateStore` DI pattern for new `PriceGapStore`
 - `internal/config/config.go:183-223, 1134-1166` — `SpotFutures*` struct + `applyJSON` pattern
-- `internal/discovery/delist.go:52, 72` — `StartDelistMonitor()` + `IsDelisted(symbol)` API
+- `internal/discovery/delist.go:52, 72` — `StartDelistMonitor()` (method on `*Scanner`) + `IsDelisted(symbol)` (method on `*Scanner`, NOT a free function). Re-verified during revision: signature is `func (s *Scanner) IsDelisted(symbol string) bool` — Tracker must inject a `DelistChecker` interface (see Pattern 5) rather than call a free function.
 - `internal/engine/engine.go:3024 retrySecondLeg, 3167+ executeTrade` — reference-only IOC logic
 - `cmd/balance/main.go:1-60` — sample `cmd/*` CLI scaffold
 - `cmd/main.go:437-492` — startup/shutdown order
@@ -602,6 +616,7 @@ func (t *Tracker) openPair(cand PriceGapCandidate, size float64, longPx, shortPx
 - Data-source audit: HIGH — confirmed empirically that no adapter has kline
 
 **Research date:** 2026-04-21
+**Revised:** 2026-04-21 (Open Questions resolved; Exchange interface method set enumerated inline; DelistChecker interface seam confirmed against `discovery.Scanner.IsDelisted`)
 **Valid until:** 2026-05-21 (30 days — adapter interface is stable; live trading is active so no refactors expected)
 
 ---
