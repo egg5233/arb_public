@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.44] - 2026-04-21
+
+### Added
+- **Price-gap tracker — cmd/main.go conditional wiring (Phase 08 Plan 07, Task 3)** (`cmd/main.go`). Completes the tracker's main-binary integration:
+  - **Startup (D-03):** AFTER `spotEng.Start()`. Guarded by `if cfg.PriceGapEnabled`; when true, constructs `pricegaptrader.NewTracker(exchanges, db, scanner, cfg)` and calls `Start()`. `*discovery.Scanner` satisfies `models.DelistChecker` via its existing `IsDelisted` method — no new interface surface needed.
+  - **Shutdown (D-03 reverse):** BEFORE `spotEng.Stop()`. Since the tracker started AFTER SpotEngine, it stops FIRST under the reverse-order rule so its monitor goroutines wind down while dependencies (db, exchanges) are still fully live.
+  - **Safety property (PG-OPS-06, T-08-27):** `PriceGapEnabled=false` (default) path logs `"Price-gap tracker disabled (cfg.PriceGapEnabled=false)"` and does NOT call `NewTracker` — zero goroutines spawn, zero `pg:*` Redis reads occur. Byte-for-byte isolation from perp-perp and spot-futures engines is preserved; the existing `spotEng`/`eng`/`apiSrv` wiring is unchanged.
+  - Phase 08 Plan 07 complete — tracker is now end-to-end integrated. Phase 09 will add the dashboard enable toggle; today the switch lives in `config.json` only and is read once at startup.
+
 ## [0.32.43] - 2026-04-21
 
 ### Added

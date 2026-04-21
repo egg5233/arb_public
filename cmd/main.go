@@ -16,6 +16,7 @@ import (
 	"arb/internal/engine"
 	"arb/internal/models"
 	"arb/internal/notify"
+	"arb/internal/pricegaptrader"
 	"arb/internal/risk"
 	"arb/internal/scraper"
 	"arb/internal/spotengine"
@@ -453,6 +454,26 @@ func main() {
 		log.Info("Spot-futures engine started")
 	}
 
+	// --- Price-Gap Tracker (Phase 8, v2.0) — conditional on cfg.PriceGapEnabled ---
+	// Module boundary (D-02): pricegaptrader does NOT import internal/engine or
+	// internal/spotengine. It only touches exchanges, database, models, config.
+	// Startup order (D-03): AFTER SpotEngine so dependencies (exchanges, db,
+	// scanner) are fully live. Shutdown order (below) reverses: tracker stops
+	// BEFORE SpotEngine so its monitors finish cleanly while the rest of the
+	// system is still up.
+	// Safety (PG-OPS-06, T-08-27): if PriceGapEnabled=false (default), NewTracker
+	// is never called, no goroutines spawn, no pg:* Redis reads occur — byte-for-
+	// byte isolation from perp-perp and spot-futures engines.
+	var pgTracker *pricegaptrader.Tracker
+	if cfg.PriceGapEnabled {
+		pgTracker = pricegaptrader.NewTracker(exchanges, db, scanner, cfg)
+		pgTracker.Start()
+		log.Info("Price-gap tracker started (candidates=%d, budget=$%.0f)",
+			len(cfg.PriceGapCandidates), cfg.PriceGapBudget)
+	} else {
+		log.Info("Price-gap tracker disabled (cfg.PriceGapEnabled=false)")
+	}
+
 	log.Info("Bot fully initialized. Waiting for shutdown signal...")
 
 	// Graceful shutdown
@@ -463,6 +484,12 @@ func main() {
 	log.Info("Received signal %v, shutting down...", sig)
 
 	// Stop in reverse order
+	if pgTracker != nil {
+		log.Info("Stopping price-gap tracker...")
+		pgTracker.Stop()
+		log.Info("Price-gap tracker stopped")
+	}
+
 	if spotEng != nil {
 		spotEng.Stop()
 		log.Info("Spot-futures engine stopped")
