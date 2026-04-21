@@ -12,14 +12,14 @@ Requirements for this milestone. Each maps to roadmap phases 8+.
 - [ ] **PG-01**: Price-gap tracker detects spread dislocations on configured candidate pairs using 1m kline data with ≥4-bar minimum-duration filter
 - [ ] **PG-02**: Entry opens delta-neutral 2-leg positions via existing exchange adapters (IOC market orders on both legs simultaneously)
 - [ ] **PG-03**: Exit closes positions when |spread| reverts to ≤ T/2 OR 4h max-hold timeout elapses
-- [ ] **PG-04**: Positions persist to Redis under own namespace (e.g., `pg:pos:{id}`) and survive process restart
+- [x] **PG-04**: Positions persist to Redis under own namespace (e.g., `pg:pos:{id}`) and survive process restart
 - [x] **PG-05**: Candidate list (symbol, exchange pair, threshold, max position size) is configurable via config.json, not hardcoded
 
 ### Risk Controls
 
 - [ ] **PG-RISK-01**: Gate exchange concentration cap enforces ≤50% of PriceGapBudget in live positions involving a Gate leg
 - [ ] **PG-RISK-02**: Hard denylist pre-entry check blocks entry if either leg has a delist flag, halt status, or kline data older than 90s
-- [ ] **PG-RISK-03**: Execution-quality override forces a candidate back to disabled if realized slippage exceeds 2× modeled across the last 10 trades
+- [x] **PG-RISK-03**: Execution-quality override forces a candidate back to disabled if realized slippage exceeds 2× modeled across the last 10 trades
 - [ ] **PG-RISK-04**: Max concurrent positions cap (3 in v1) prevents over-exposure
 - [ ] **PG-RISK-05**: Per-position notional cap per candidate (from config) enforced at entry
 
@@ -82,11 +82,11 @@ Which phases cover which requirements. Populated by roadmapper.
 | PG-01 | Phase 8 | Pending |
 | PG-02 | Phase 8 | Pending |
 | PG-03 | Phase 8 | Pending |
-| PG-04 | Phase 8 | Pending |
+| PG-04 | Phase 8 | Complete |
 | PG-05 | Phase 8 | Complete |
 | PG-RISK-01 | Phase 8 | Pending |
 | PG-RISK-02 | Phase 8 | Pending |
-| PG-RISK-03 | Phase 8 | Pending |
+| PG-RISK-03 | Phase 8 | Complete |
 | PG-RISK-04 | Phase 8 | Pending |
 | PG-RISK-05 | Phase 8 | Pending |
 | PG-OPS-01 | Phase 9 | Pending |

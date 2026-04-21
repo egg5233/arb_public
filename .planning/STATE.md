@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Multi-Strategy Expansion
 status: executing
-stopped_at: Completed 08-01-PLAN.md
-last_updated: "2026-04-21T09:09:29.718Z"
+stopped_at: Completed 08-02-PLAN.md
+last_updated: "2026-04-21T09:15:01.635Z"
 last_activity: 2026-04-21
 progress:
   total_phases: 2
   completed_phases: 0
   total_plans: 8
-  completed_plans: 1
-  percent: 13
+  completed_plans: 2
+  percent: 25
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-21 after v1.0 shipped)
 ## Current Position
 
 Phase: 08 (price-gap-tracker-core) — EXECUTING
-Plan: 2 of 8
+Plan: 3 of 8
 Status: Ready to execute
 Last activity: 2026-04-21
 
@@ -72,6 +72,7 @@ Progress (v2.0): [          ] 0%
 | Phase 06 P04 | 7min | 2 tasks | 8 files |
 | Phase 07 P01 | 4min | 3 tasks | 8 files |
 | Phase 08 P01 | 3 | 2 tasks | 4 files |
+| Phase 08 P02 | 8min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -125,6 +126,8 @@ v1.0 decisions below (retained for reference):
 - [Phase 07]: Maintenance gate toggle placed in sf-general tab (top-level engine feature, not exit-specific)
 - [Phase 07]: Server-side validation matches config.go applyJSON: MaintenanceDefault 0 < val < 1.0, CacheTTL >= 1
 - [Phase 08]: Plan 08-01: ExitReason is string enum (not int) for readable Redis JSON; colocated domain types split across two files (position data vs behavioural contract)
+- [Phase 08]: Token-based pg lock API (AcquirePriceGapLock returns token) with compare-and-delete release via reused releaseLockScript
+- [Phase 08]: priceGapLockPrefix=arb:locks:pg: — sub-prefix under existing arb:locks: root, distinct from perp-perp arb:locks:<sym> (T-08-08)
 
 ### Pending Todos
 
@@ -148,7 +151,7 @@ None yet. Next action: `/gsd-plan-phase 8` to decompose Phase 8 into executable 
 
 ## Session Continuity
 
-Last session: 2026-04-21T09:09:24.106Z
-Stopped at: Completed 08-01-PLAN.md
+Last session: 2026-04-21T09:15:01.631Z
+Stopped at: Completed 08-02-PLAN.md
 Resume file: None
 Next command: `/gsd-plan-phase 8`
