@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.37] - 2026-04-21
+
+### Fixed
+- **ManualOpen bypassed the delist filter** (`internal/spotengine/execution.go`). Root cause of the DEGO incident: the user manually opened `DEGOUSDT` via `POST /api/spot/manual_open` while the discovery poller had already written `arb:delist:DEGOUSDT` to Redis. Three entry paths exist for spot-futures — `autoentry` (covered by `risk_gate.go:125`), `monitor` active-position check (`monitor.go:102`), and `ManualOpen` (previously unchecked). `ManualOpen` only consulted `opp.FilterStatus` which the scanner never populates from delist signals; the delist check lives one layer deeper in `risk_gate.go` which `ManualOpen` skips entirely. Now `ManualOpen` calls `e.db.IsDelisted(symbol)` directly, gated on the same shared `DelistFilterEnabled` flag (default true) used by autoentry + monitor. Closes the accidental-open window that triggered the v0.32.36 LOT_SIZE stuck-exit incident. Override = toggle the existing flag off; no new config key added. Regression test: `TestManualOpen_RejectsDelistedSymbol`.
+
 ## [0.32.36] - 2026-04-21
 
 ### Fixed

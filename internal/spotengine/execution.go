@@ -110,6 +110,16 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		return fmt.Errorf("opportunity %s on %s (%s) is filtered: %s", symbol, exchName, direction, opp.FilterStatus)
 	}
 
+	// 1b2. Delist filter — same flag + same Redis key (arb:delist:{SYMBOL})
+	// used by the autoentry risk-gate and the monitor's active-position exit.
+	// Without this, ManualOpen would let users open positions on symbols that
+	// the monitor is about to force-exit. Incident: sf-degousdt-1776738361635
+	// on 2026-04-21 opened manually on a delist-flagged coin and then got
+	// emergency-exited minutes later by the monitor.
+	if e.cfg.DelistFilterEnabled && e.db.IsDelisted(symbol) {
+		return fmt.Errorf("%s is flagged for delist — refusing manual open (toggle DelistFilterEnabled off to override)", symbol)
+	}
+
 	// 1c. Check exchange supports SpotMarginExchange.
 	smExch, ok := e.spotMargin[exchName]
 	if !ok {

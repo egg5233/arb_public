@@ -373,6 +373,35 @@ func TestClosePosition_RetriesOnlyRemainingSpotQtyAfterPartialExit(t *testing.T)
 	}
 }
 
+func TestManualOpen_RejectsDelistedSymbol(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	engine.cfg = &config.Config{
+		SpotFuturesMaxPositions:   5,
+		SpotFuturesLeverage:       3,
+		SpotFuturesCapitalUnified: 100,
+		DelistFilterEnabled:       true,
+	}
+	engine.api = api.NewServer(engine.db, engine.cfg, nil)
+	engine.exchanges = map[string]exchange.Exchange{"stub": &closeTestExchange{}}
+	engine.spotMargin = map[string]exchange.SpotMarginExchange{"stub": &closeTestSpotMargin{}}
+	engine.latestOpps = []SpotArbOpportunity{
+		{Symbol: "DEGOUSDT", BaseCoin: "DEGO", Exchange: "stub", Direction: "buy_spot_short"},
+	}
+
+	// Simulate the discovery poller having written the delist blacklist entry.
+	mr.Set("arb:delist:DEGOUSDT", "1")
+
+	err := engine.ManualOpen("DEGOUSDT", "stub", "buy_spot_short")
+	if err == nil {
+		t.Fatal("expected ManualOpen to block delist-flagged symbol")
+	}
+	if !strings.Contains(err.Error(), "delist") {
+		t.Fatalf("error = %v, want delist-related message", err)
+	}
+}
+
 func TestManualOpen_RejectsConcurrentEntry(t *testing.T) {
 	engine, mr := newExecutionTestEngine(t)
 	defer mr.Close()
