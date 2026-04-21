@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.33.0] - 2026-04-21
+
+### Added (Phase 8 — Price-Gap Tracker Core, v2.0 milestone)
+- New isolated subsystem `internal/pricegaptrader/` — cross-exchange price-gap event detection and delta-neutral IOC execution (Strategy 4 MVP). Default OFF (`PriceGapEnabled=false`).
+- Config surface: 11 new `PriceGap*` fields (PG-05, PG-OPS-06), read once at startup from `config.json`.
+- Redis namespace `pg:*` for position persistence (PG-04), exec-quality flags (PG-RISK-03), and slippage rolling windows. No collision with `arb:*` or `arb:spot_*`.
+- Pre-entry risk gates: Gate concentration 50%, max concurrent, per-position notional cap, budget, delist/halt/staleness checks, exec-quality disable (PG-RISK-01..05).
+- `cmd/pg-admin` — operator CLI for `enable|disable|status|positions list` (D-20). Reversal path for PG-RISK-03 auto-disable until Phase 9 dashboard ships. Operates entirely on Redis; config.json untouched.
+- Circuit breaker on 5 consecutive PlaceOrder failures skips full ticks (D-10).
+- Startup rehydration with orphan detection (§Pitfall 3): active positions re-enroll in monitors; zero-size ghost positions are closed with `ExitReasonOrphan`.
+- 49 new tests in `internal/pricegaptrader/` (44 unit + 5 E2E) and 4 in `cmd/pg-admin/`. Full suite green under `-race -count=1`.
+
+### Notes
+- Perp-perp and spot-futures engines are byte-for-byte unaffected when `PriceGapEnabled=false`; safety-property test asserts zero `pg:*` Redis writes on the default-off path.
+- Phase 9 will add a Dashboard tab, paper-mode toggle, runtime enable switch, and Telegram alerts; until then, operator workflow is: edit `config.json` + restart + `pg-admin` for disable reversals.
+
 ## [0.32.44] - 2026-04-21
 
 ### Added
