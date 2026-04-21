@@ -1,36 +1,37 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
-status: verifying
-stopped_at: Completed 07-01-PLAN.md
-last_updated: "2026-04-08T14:00:00.000Z"
-last_activity: 2026-04-08
+milestone: v2.0
+milestone_name: Multi-Strategy Expansion
+status: planning
+stopped_at: v1.0 shipped 2026-04-21; v2.0 planning not yet started
+last_updated: "2026-04-21T06:20:00.000Z"
+last_activity: 2026-04-21
+previous_milestone: v1.0
 progress:
-  total_phases: 7
-  completed_phases: 7
-  total_plans: 21
-  completed_plans: 21
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-04-01)
+See: .planning/PROJECT.md (updated 2026-04-21 after v1.0 shipped)
 
-**Core value:** "I deposit USDT, select my risk preference, and the system automatically finds opportunities across both strategies, opens positions, collects funding, exits when profitable, and I can see exactly how much each position earned."
-**Current focus:** Phase 07 — milestone-polish
+**Core value:** "I deposit USDT, select my risk preference, and the system automatically finds opportunities across multiple strategies, opens positions, collects yield, exits when profitable, and I can see exactly how much each position earned — with capital shifting between strategies as opportunities shift."
+**Current focus:** v2.0 planning — Strategy 4 (cross-exchange price-gap arb) MVP via `/gsd-new-milestone`
 
 ## Current Position
 
-Phase: 07 (milestone-polish) — EXECUTING
-Plan: 1 of 1
-Status: Phase complete — ready for verification
-Last activity: 2026-04-08 - Completed quick task 260408-ugr: deliveryDate-based delist detection
+Milestone: v2.0 (Multi-Strategy Expansion) — PLANNING
+Last activity: 2026-04-21 (v1.0 shipped, tagged, archived)
 
-Progress: [██████████] 100%
+v1.0 shipped: 7 phases, 21 plans, 381 commits over 30 days (2026-03-23 → 2026-04-21). Audit: tech_debt — documentation/verification gaps carried forward as v2.0 backlog.
+
+Progress (v2.0): [          ] 0%
 
 ## Performance Metrics
 
