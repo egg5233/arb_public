@@ -17,11 +17,11 @@ Requirements for this milestone. Each maps to roadmap phases 8+.
 
 ### Risk Controls
 
-- [ ] **PG-RISK-01**: Gate exchange concentration cap enforces ≤50% of PriceGapBudget in live positions involving a Gate leg
-- [ ] **PG-RISK-02**: Hard denylist pre-entry check blocks entry if either leg has a delist flag, halt status, or kline data older than 90s
+- [x] **PG-RISK-01**: Gate exchange concentration cap enforces ≤50% of PriceGapBudget in live positions involving a Gate leg
+- [x] **PG-RISK-02**: Hard denylist pre-entry check blocks entry if either leg has a delist flag, halt status, or kline data older than 90s
 - [x] **PG-RISK-03**: Execution-quality override forces a candidate back to disabled if realized slippage exceeds 2× modeled across the last 10 trades
-- [ ] **PG-RISK-04**: Max concurrent positions cap (3 in v1) prevents over-exposure
-- [ ] **PG-RISK-05**: Per-position notional cap per candidate (from config) enforced at entry
+- [x] **PG-RISK-04**: Max concurrent positions cap (3 in v1) prevents over-exposure
+- [x] **PG-RISK-05**: Per-position notional cap per candidate (from config) enforced at entry
 
 ### Dashboard & Operations
 
@@ -84,11 +84,11 @@ Which phases cover which requirements. Populated by roadmapper.
 | PG-03 | Phase 8 | Pending |
 | PG-04 | Phase 8 | Complete |
 | PG-05 | Phase 8 | Complete |
-| PG-RISK-01 | Phase 8 | Pending |
-| PG-RISK-02 | Phase 8 | Pending |
+| PG-RISK-01 | Phase 8 | Complete |
+| PG-RISK-02 | Phase 8 | Complete |
 | PG-RISK-03 | Phase 8 | Complete |
-| PG-RISK-04 | Phase 8 | Pending |
-| PG-RISK-05 | Phase 8 | Pending |
+| PG-RISK-04 | Phase 8 | Complete |
+| PG-RISK-05 | Phase 8 | Complete |
 | PG-OPS-01 | Phase 9 | Pending |
 | PG-OPS-02 | Phase 9 | Pending |
 | PG-OPS-03 | Phase 9 | Pending |

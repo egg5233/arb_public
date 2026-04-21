@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Multi-Strategy Expansion
 status: executing
-stopped_at: Completed 08-03-PLAN.md
-last_updated: "2026-04-21T09:23:05.156Z"
+stopped_at: Completed 08-04-PLAN.md
+last_updated: "2026-04-21T09:28:11.961Z"
 last_activity: 2026-04-21
 progress:
   total_phases: 2
   completed_phases: 0
   total_plans: 8
-  completed_plans: 3
-  percent: 38
+  completed_plans: 4
+  percent: 50
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-21 after v1.0 shipped)
 ## Current Position
 
 Phase: 08 (price-gap-tracker-core) — EXECUTING
-Plan: 4 of 8
+Plan: 5 of 8
 Status: Ready to execute
 Last activity: 2026-04-21
 
@@ -74,6 +74,7 @@ Progress (v2.0): [          ] 0%
 | Phase 08 P01 | 3 | 2 tasks | 4 files |
 | Phase 08 P02 | 8min | 2 tasks | 2 files |
 | Phase 08 P03 | 15min | 4 tasks | 5 files |
+| Phase 08 P04 | 8 | 3 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -131,6 +132,9 @@ v1.0 decisions below (retained for reference):
 - [Phase 08]: priceGapLockPrefix=arb:locks:pg: — sub-prefix under existing arb:locks: root, distinct from perp-perp arb:locks:<sym> (T-08-08)
 - [Phase 08]: Plan 08-03: DelistChecker interface added to internal/models (IsDelisted bool) to preserve D-02 boundary — *discovery.Scanner satisfies it
 - [Phase 08]: Plan 08-03: pkg/exchange.BBO has no UpdatedAt — wall-clock gap between successive samples used as staleness gate instead of BBO timestamp
+- [Phase 08]: Plan 04: preEntry composes 6 gates in fixed D-17 order; TestRiskGate_OrderingInvariant locks blame-attribution
+- [Phase 08]: Plan 04: Gate-concentration cap (PG-RISK-01) only evaluates when the current candidate has a Gate leg; pre-existing gate positions can't retroactively block non-gate requests
+- [Phase 08]: Plan 04: Fail-open on Redis disable-flag read error (Phase 03-02 precedent); WARN log + proceed to other 5 gates
 
 ### Pending Todos
 
@@ -154,7 +158,7 @@ None yet. Next action: `/gsd-plan-phase 8` to decompose Phase 8 into executable 
 
 ## Session Continuity
 
-Last session: 2026-04-21T09:22:56.969Z
-Stopped at: Completed 08-03-PLAN.md
+Last session: 2026-04-21T09:28:02.362Z
+Stopped at: Completed 08-04-PLAN.md
 Resume file: None
 Next command: `/gsd-plan-phase 8`
