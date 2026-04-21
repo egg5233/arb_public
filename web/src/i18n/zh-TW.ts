@@ -261,6 +261,7 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.system': '系統',
   'cfg.systemDesc': '運行模式',
   'cfg.section.poolAllocator': '池分配器',
+  'cfg.section.argmaxRebalance': 'Argmax 再平衡',
   'cfg.section.scanMinutes': '掃描分鐘',
 
   // Config fields
@@ -697,6 +698,14 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.desc.enablePoolAllocator': '啟用再平衡資金池配置器。它會為每個幣保留多組交易所配對候選，並挑選可實際轉帳落地的組合。預設關閉，方便分階段上線。',
   'cfg.desc.topPairsPerSymbol': '每個幣最多保留幾組排序後的交易所配對候選供再平衡配置器選擇。設為 1 時，行為最接近舊版單一配對邏輯。',
   'cfg.desc.allocatorTimeoutMs': '資金池配置器 branch-and-bound 搜尋的軟性時間預算，單位為毫秒。實際總耗時仍可能主要由即時風控模擬 API 呼叫決定。',
+  'cfg.field.enableArgmaxRebalance': '啟用 Argmax 再平衡',
+  'cfg.field.rebalanceMinNetPnLUSDT': '再平衡最低淨 PnL',
+  'cfg.field.rebalanceDonorFloorPct': '再平衡捐助者下限',
+  'cfg.field.rebalanceSubsetSizeCap': '再平衡子集大小上限',
+  'cfg.desc.enableArgmaxRebalance': '以列舉 + argmax 選擇取代舊版 tail-prune 再平衡；同時考慮已核准與資金拯救候選，並以淨 PnL 選出最佳子集。預設關閉。',
+  'cfg.desc.rebalanceMinNetPnLUSDT': 'Argmax 選擇器開倉所需的最低淨 PnL（預估資金費率收益 − 轉帳手續費，USDT）。低於此值的子集會被判為不夠划算而拒絕。',
+  'cfg.desc.rebalanceDonorFloorPct': '若任一捐助者轉出後，剩餘毛額低於其初始毛額的此比例，就拒絕該子集。避免把單一捐助者抽光。設為 0 則停用。',
+  'cfg.desc.rebalanceSubsetSizeCap': 'Argmax 列舉的子集大小硬上限。0 表示使用剩餘槽位數。數值越小，最壞情況下的列舉成本越低。',
 
   // Navigation - Analytics
   'nav.analytics': '分析',

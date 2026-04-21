@@ -396,6 +396,12 @@ type configStrategyResponse struct {
 	EnablePoolAllocator bool                    `json:"enable_pool_allocator"`
 	TopPairsPerSymbol   int                     `json:"top_pairs_per_symbol"`
 	AllocatorTimeoutMs  int                     `json:"allocator_timeout_ms"`
+
+	EnableArgmaxRebalance  bool    `json:"enable_argmax_rebalance"`
+	RebalanceMinNetPnLUSDT float64 `json:"rebalance_min_net_pnl_usdt"`
+	RebalanceDonorFloorPct float64 `json:"rebalance_donor_floor_pct"`
+	RebalanceSubsetSizeCap int     `json:"rebalance_subset_size_cap"`
+
 	Discovery           configDiscoveryResponse `json:"discovery"`
 	Entry               configEntryResponse     `json:"entry"`
 	Exit                configExitResponse      `json:"exit"`
@@ -534,6 +540,12 @@ func (s *Server) buildConfigResponse() configResponse {
 			EnablePoolAllocator: s.cfg.EnablePoolAllocator,
 			TopPairsPerSymbol:   s.cfg.TopPairsPerSymbol,
 			AllocatorTimeoutMs:  s.cfg.AllocatorTimeoutMs,
+
+			EnableArgmaxRebalance:  s.cfg.EnableArgmaxRebalance,
+			RebalanceMinNetPnLUSDT: s.cfg.RebalanceMinNetPnLUSDT,
+			RebalanceDonorFloorPct: s.cfg.RebalanceDonorFloorPct,
+			RebalanceSubsetSizeCap: s.cfg.RebalanceSubsetSizeCap,
+
 			Discovery: configDiscoveryResponse{
 				MinHoldTimeHours:        int(s.cfg.MinHoldTime.Hours()),
 				MaxCostRatio:            s.cfg.MaxCostRatio,
@@ -850,6 +862,12 @@ type strategyUpdate struct {
 	EnablePoolAllocator *bool            `json:"enable_pool_allocator"`
 	TopPairsPerSymbol   *int             `json:"top_pairs_per_symbol"`
 	AllocatorTimeoutMs  *int             `json:"allocator_timeout_ms"`
+
+	EnableArgmaxRebalance  *bool    `json:"enable_argmax_rebalance"`
+	RebalanceMinNetPnLUSDT *float64 `json:"rebalance_min_net_pnl_usdt"`
+	RebalanceDonorFloorPct *float64 `json:"rebalance_donor_floor_pct"`
+	RebalanceSubsetSizeCap *int     `json:"rebalance_subset_size_cap"`
+
 	Discovery           *discoveryUpdate `json:"discovery"`
 	Entry               *entryUpdate     `json:"entry"`
 	Exit                *exitUpdate      `json:"exit"`
@@ -985,6 +1003,25 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if st.AllocatorTimeoutMs != nil && *st.AllocatorTimeoutMs > 0 {
 			s.cfg.AllocatorTimeoutMs = *st.AllocatorTimeoutMs
+		}
+		if st.EnableArgmaxRebalance != nil {
+			// On true→false transition, clear any argmax-sourced allocator
+			// overrides so the next entry scan does not consume a stale plan
+			// after the operator has pulled the emergency brake.
+			prevArgmax := s.cfg.EnableArgmaxRebalance
+			s.cfg.EnableArgmaxRebalance = *st.EnableArgmaxRebalance
+			if prevArgmax && !s.cfg.EnableArgmaxRebalance && s.clearAllocOverrides != nil {
+				s.clearAllocOverrides()
+			}
+		}
+		if st.RebalanceMinNetPnLUSDT != nil && *st.RebalanceMinNetPnLUSDT >= 0 {
+			s.cfg.RebalanceMinNetPnLUSDT = *st.RebalanceMinNetPnLUSDT
+		}
+		if st.RebalanceDonorFloorPct != nil && *st.RebalanceDonorFloorPct >= 0 {
+			s.cfg.RebalanceDonorFloorPct = *st.RebalanceDonorFloorPct
+		}
+		if st.RebalanceSubsetSizeCap != nil && *st.RebalanceSubsetSizeCap >= 0 {
+			s.cfg.RebalanceSubsetSizeCap = *st.RebalanceSubsetSizeCap
 		}
 		if st.TopOpportunities != nil && *st.TopOpportunities > 0 {
 			s.cfg.TopOpportunities = *st.TopOpportunities
@@ -1558,6 +1595,10 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"enable_pool_allocator":               strconv.FormatBool(snapshot.Strategy.EnablePoolAllocator),
 		"top_pairs_per_symbol":                strconv.Itoa(snapshot.Strategy.TopPairsPerSymbol),
 		"allocator_timeout_ms":                strconv.Itoa(snapshot.Strategy.AllocatorTimeoutMs),
+		"enable_argmax_rebalance":             strconv.FormatBool(snapshot.Strategy.EnableArgmaxRebalance),
+		"rebalance_min_net_pnl_usdt":          strconv.FormatFloat(snapshot.Strategy.RebalanceMinNetPnLUSDT, 'f', -1, 64),
+		"rebalance_donor_floor_pct":           strconv.FormatFloat(snapshot.Strategy.RebalanceDonorFloorPct, 'f', -1, 64),
+		"rebalance_subset_size_cap":           strconv.Itoa(snapshot.Strategy.RebalanceSubsetSizeCap),
 		"top_opportunities":                   strconv.Itoa(snapshot.Strategy.TopOpportunities),
 		"entry_scan_minute":                   strconv.Itoa(snapshot.Strategy.EntryScanMinute),
 		"exit_scan_minute":                    strconv.Itoa(snapshot.Strategy.ExitScanMinute),

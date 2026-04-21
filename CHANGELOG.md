@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.40] - 2026-04-21
+
+### Added
+- **Enumerate-and-argmax rebalance (feature-flagged `EnableArgmaxRebalance`, default OFF)** — plan `plans/PLAN-enumerate-argmax-rebalance.md` v8 ALL PASS on normal + independent Codex review. `rebalanceFunds()` dispatches to `rebalanceFundsArgmax` that enumerates feasible subsets of approved AND capital-rescue candidates, scores by net PnL = sum(baseValue) − dryRun.TotalFee, picks the globally best. Fixes the 2026-04-20 15:45 bug where 288 USDT donor pool sat idle because tail-prune dropped the BingX-constrained opp before enumeration.
+- **Post-transfer replay helper (`replayArgmaxApprovalAfterFunding`)** — re-runs approval with projected post-transfer balances; admits rescue only when replay approves, uses post-transfer Size/Price for scoring. Closes both "size resize upward" and "non-capital gates bypass" risks.
+- **`pricedCapitalRejection` helper (`internal/risk/manager.go`)** — all 4 `RejectionKindCapital` sites populate Size/Price/RequiredMargin/Long/ShortMarginNeeded. `ManualOpen(force=true)` rejects rejected approvals explicitly.
+- **Argmax dashboard controls** — 4 new fields (`enable_argmax_rebalance`, `rebalance_min_net_pnl_usdt`=0.50, `rebalance_donor_floor_pct`=0.05, `rebalance_subset_size_cap`=0) wired through config/API/Redis/frontend/i18n + env vars.
+
+### Changed
+- **Rebalance wrapper** — dispatches to `rebalanceFundsArgmax` or `rebalanceFundsLegacy`; clears stale `allocOverrides` before argmax to prevent early-return leakage.
+- **Rotate-scan gate (`engine.go:1471`)** — fires when either `EnablePoolAllocator` or `EnableArgmaxRebalance` is on.
+- **Force Open button removed (`Opportunities.tsx`)** — backend now always rejects force on rejected approvals; button was dead.
+
+### Safety (argmax guardrails)
+- **Feature-flag emergency brake** — re-read `EnableArgmaxRebalance` under `capacityMu` twice (pre-execute, pre-publish). `POST /api/config` invokes `Engine.ClearAllocOverrides()` on flag true→false transition.
+- **Loss-limiter gate** — argmax calls `lossLimiter.CheckLimits()` at top mirroring `runPoolAllocator`, including dashboard broadcast + Telegram.
+- **Post-execute capacity recheck** — if `ManualOpen` consumed slot during transfer window, drop the overrides (no publish).
+- **Spot-futures occupancy gate** — `filterArgmaxOpps` excludes `exchange:symbol` occupied by the spot-futures engine, mirroring `ppCrossEngineBlocked`.
+- **Deterministic tie-break** — netPnL desc → step-count asc → `comboSymbolsKey` lex asc; candidate sort uses `sort.SliceStable` + 3-level symbol/long/short lex tie-break.
+- **Streaming best combo** — `*scoredCombo` tracker instead of `[]scoredCombo` slice; O(1) memory regardless of feasible subset count.
+
+### Tests
+- `rebalance_argmax_test.go` — pure helpers, `buildArgmaxCandidates` rescue admission, end-to-end smoke (override publish, no-opps clear, capacity-at-max early-return, capital-rescue replay with bitget→bingx step), targeted replay tests (`PromotesRescue` + `RejectsWhenStillInfeasible`).
+- `manager_capital_rejection_test.go` — pins priced rejection fields non-zero at all 4 sites.
+
 ## [0.32.35] - 2026-04-20
 
 ### Added

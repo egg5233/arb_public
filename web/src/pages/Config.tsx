@@ -629,6 +629,7 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
   // =========================================================================
   const renderScheduleTab = () => {
     const poolAllocatorEnabled = getByPath(config, ['strategy', 'enable_pool_allocator']) === true;
+    const argmaxRebalanceEnabled = getByPath(config, ['strategy', 'enable_argmax_rebalance']) === true;
 
     return (
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -670,6 +671,45 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
           value={getByPath(config, ['strategy', 'allocator_timeout_ms'])}
           unit="ms"
           onChange={(v) => handleChange(['strategy', 'allocator_timeout_ms'], v)}
+        />
+
+        {/* Argmax Rebalance */}
+        <div className="sm:col-span-2 border-t border-gray-800 pt-4 mt-2">
+          <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">{t('cfg.section.argmaxRebalance')}</h4>
+        </div>
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.field.enableArgmaxRebalance')}</label>
+            <Tooltip text={t('cfg.desc.enableArgmaxRebalance')} />
+          </div>
+          <div className="flex items-center gap-3">
+            <ToggleSwitch
+              on={argmaxRebalanceEnabled}
+              onChange={(v) => handleBoolChange(['strategy', 'enable_argmax_rebalance'], v)}
+            />
+            <span className={`text-sm font-semibold ${argmaxRebalanceEnabled ? 'text-green-400' : 'text-red-400'}`}>
+              {argmaxRebalanceEnabled ? 'ON' : 'OFF'}
+            </span>
+          </div>
+        </div>
+        <NumberField
+          label={t('cfg.field.rebalanceMinNetPnLUSDT')}
+          desc={t('cfg.desc.rebalanceMinNetPnLUSDT')}
+          value={getByPath(config, ['strategy', 'rebalance_min_net_pnl_usdt'])}
+          unit="USDT"
+          onChange={(v) => handleChange(['strategy', 'rebalance_min_net_pnl_usdt'], v)}
+        />
+        <NumberField
+          label={t('cfg.field.rebalanceDonorFloorPct')}
+          desc={t('cfg.desc.rebalanceDonorFloorPct')}
+          value={getByPath(config, ['strategy', 'rebalance_donor_floor_pct'])}
+          onChange={(v) => handleChange(['strategy', 'rebalance_donor_floor_pct'], v)}
+        />
+        <NumberField
+          label={t('cfg.field.rebalanceSubsetSizeCap')}
+          desc={t('cfg.desc.rebalanceSubsetSizeCap')}
+          value={getByPath(config, ['strategy', 'rebalance_subset_size_cap'])}
+          onChange={(v) => handleChange(['strategy', 'rebalance_subset_size_cap'], v)}
         />
 
         {/* Scan Minutes */}

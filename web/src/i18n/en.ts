@@ -259,6 +259,7 @@ const en = {
   'cfg.system': 'System',
   'cfg.systemDesc': 'Operational mode',
   'cfg.section.poolAllocator': 'Pool Allocator',
+  'cfg.section.argmaxRebalance': 'Argmax Rebalance',
   'cfg.section.scanMinutes': 'Scan Minutes',
 
   // Config fields
@@ -307,6 +308,10 @@ const en = {
   'cfg.field.reservationTTLSec': 'Reservation TTL',
   'cfg.field.topPairsPerSymbol': 'Top Pairs Per Symbol',
   'cfg.field.allocatorTimeoutMs': 'Allocator Timeout',
+  'cfg.field.enableArgmaxRebalance': 'Enable Argmax Rebalance',
+  'cfg.field.rebalanceMinNetPnLUSDT': 'Rebalance Min Net PnL',
+  'cfg.field.rebalanceDonorFloorPct': 'Rebalance Donor Floor',
+  'cfg.field.rebalanceSubsetSizeCap': 'Rebalance Subset Size Cap',
   'cfg.field.enableSpreadStabilityGate': 'Enable Spread Stability Gate',
   'cfg.field.spreadVolatilityMaxCV': 'Spread Volatility Max CV',
   'cfg.field.spreadVolatilityMinSamples': 'Volatility Min Samples',
@@ -416,6 +421,10 @@ const en = {
   'cfg.desc.reservationTTLSec': 'How long a pending capital reservation stays live before auto-expiring if the trade never commits.',
   'cfg.desc.topPairsPerSymbol': 'How many ranked exchange-pair candidates to keep per symbol for the rebalance allocator. 1 preserves the legacy single-pair behavior.',
   'cfg.desc.allocatorTimeoutMs': 'Soft search budget for the pool allocator branch-and-bound solver in milliseconds. The live approval calls still dominate total runtime.',
+  'cfg.desc.enableArgmaxRebalance': 'Replace the legacy tail-prune rebalance with enumerate-and-argmax selection. Considers approved AND capital-rescue candidates, picks the globally best subset by net PnL. Default OFF.',
+  'cfg.desc.rebalanceMinNetPnLUSDT': 'Minimum net PnL (expected funding minus transfer fees, USDT) for the argmax selector to open a subset. Subsets below this are rejected as unprofitable.',
+  'cfg.desc.rebalanceDonorFloorPct': 'Reject any subset that would leave a donor with less than this fraction of its initial gross capacity. Prevents draining a single donor dry. 0 disables the floor.',
+  'cfg.desc.rebalanceSubsetSizeCap': 'Hard cap on subset size for argmax enumeration. 0 means use remainingSlots. Lower values bound worst-case enumeration cost.',
   'cfg.desc.dryRun': 'When enabled, the bot logs all actions but does not execute any real trades',
 
   // Config - Safety

@@ -130,6 +130,12 @@ type Config struct {
 	TopPairsPerSymbol   int
 	AllocatorTimeoutMs  int
 
+	// Argmax rebalance (enumerate-and-pick-best capital movement)
+	EnableArgmaxRebalance  bool
+	RebalanceMinNetPnLUSDT float64
+	RebalanceDonorFloorPct float64
+	RebalanceSubsetSizeCap int // 0 means use remainingSlots
+
 	// Leg rotation parameters
 	RotationThresholdBPS float64 // min spread improvement to trigger rotation (default: 20)
 	RotationCooldownMin  int     // cooldown after rotation before next allowed (default: 30)
@@ -402,6 +408,11 @@ type jsonStrategy struct {
 	EnablePoolAllocator *bool          `json:"enable_pool_allocator"`
 	TopPairsPerSymbol   *int           `json:"top_pairs_per_symbol"`
 	AllocatorTimeoutMs  *int           `json:"allocator_timeout_ms"`
+
+	EnableArgmaxRebalance  *bool    `json:"enable_argmax_rebalance"`
+	RebalanceMinNetPnLUSDT *float64 `json:"rebalance_min_net_pnl_usdt"`
+	RebalanceDonorFloorPct *float64 `json:"rebalance_donor_floor_pct"`
+	RebalanceSubsetSizeCap *int     `json:"rebalance_subset_size_cap"`
 	Discovery           *jsonDiscovery `json:"discovery"`
 	Entry               *jsonEntry     `json:"entry"`
 	Exit                *jsonExit      `json:"exit"`
@@ -532,6 +543,10 @@ func Load() *Config {
 		EnablePoolAllocator:              false,
 		TopPairsPerSymbol:                10,
 		AllocatorTimeoutMs:               30000,
+		EnableArgmaxRebalance:            false,
+		RebalanceMinNetPnLUSDT:           0.50,
+		RebalanceDonorFloorPct:           0.05,
+		RebalanceSubsetSizeCap:           0,
 		TopOpportunities:                 25,
 		PriceGapFreeBPS:                  40,
 		MaxPriceGapBPS:                   200,
@@ -784,6 +799,18 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		}
 		if s.AllocatorTimeoutMs != nil && *s.AllocatorTimeoutMs > 0 {
 			c.AllocatorTimeoutMs = *s.AllocatorTimeoutMs
+		}
+		if s.EnableArgmaxRebalance != nil {
+			c.EnableArgmaxRebalance = *s.EnableArgmaxRebalance
+		}
+		if s.RebalanceMinNetPnLUSDT != nil && *s.RebalanceMinNetPnLUSDT >= 0 {
+			c.RebalanceMinNetPnLUSDT = *s.RebalanceMinNetPnLUSDT
+		}
+		if s.RebalanceDonorFloorPct != nil && *s.RebalanceDonorFloorPct >= 0 {
+			c.RebalanceDonorFloorPct = *s.RebalanceDonorFloorPct
+		}
+		if s.RebalanceSubsetSizeCap != nil && *s.RebalanceSubsetSizeCap >= 0 {
+			c.RebalanceSubsetSizeCap = *s.RebalanceSubsetSizeCap
 		}
 
 		// Discovery
@@ -1455,6 +1482,10 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	strategy["enable_pool_allocator"] = c.EnablePoolAllocator
 	strategy["top_pairs_per_symbol"] = c.TopPairsPerSymbol
 	strategy["allocator_timeout_ms"] = c.AllocatorTimeoutMs
+	strategy["enable_argmax_rebalance"] = c.EnableArgmaxRebalance
+	strategy["rebalance_min_net_pnl_usdt"] = c.RebalanceMinNetPnLUSDT
+	strategy["rebalance_donor_floor_pct"] = c.RebalanceDonorFloorPct
+	strategy["rebalance_subset_size_cap"] = c.RebalanceSubsetSizeCap
 
 	disc := getMap(strategy, "discovery")
 	disc["min_hold_time_hours"] = int(c.MinHoldTime.Hours())
@@ -1711,6 +1742,26 @@ func (c *Config) loadEnvOverrides() {
 	if v := os.Getenv("SLIPPAGE_LIMIT_BPS"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			c.SlippageBPS = f
+		}
+	}
+	if v := os.Getenv("ENABLE_ARGMAX_REBALANCE"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			c.EnableArgmaxRebalance = b
+		}
+	}
+	if v := os.Getenv("REBALANCE_MIN_NET_PNL_USDT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+			c.RebalanceMinNetPnLUSDT = f
+		}
+	}
+	if v := os.Getenv("REBALANCE_DONOR_FLOOR_PCT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+			c.RebalanceDonorFloorPct = f
+		}
+	}
+	if v := os.Getenv("REBALANCE_SUBSET_SIZE_CAP"); v != "" {
+		if i, err := strconv.Atoi(v); err == nil && i >= 0 {
+			c.RebalanceSubsetSizeCap = i
 		}
 	}
 	if v := os.Getenv("REBALANCE_SCAN_MINUTE"); v != "" {

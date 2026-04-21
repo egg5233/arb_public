@@ -27,6 +27,7 @@ type Server struct {
 	exchanges              map[string]exchange.Exchange
 	closePosition          func(posID string) error                                           // registered by engine
 	openPosition           func(symbol, longExchange, shortExchange string, force bool) error // registered by engine
+	clearAllocOverrides    func()                                                             // registered by engine
 	logSub                 chan utils.LogEntry
 	rejStore               *models.RejectionStore
 	permissions            map[string]exchange.PermissionResult
@@ -271,6 +272,14 @@ func (s *Server) SetCloseHandler(fn func(posID string) error) {
 // SetOpenHandler registers the engine's manual open callback.
 func (s *Server) SetOpenHandler(fn func(symbol, longExchange, shortExchange string, force bool) error) {
 	s.openPosition = fn
+}
+
+// SetClearAllocOverridesHandler registers the engine's callback to clear any
+// cached allocator overrides. The config POST handler invokes this when the
+// operator toggles EnableArgmaxRebalance off so stale argmax-sourced
+// overrides cannot leak into the next entry scan.
+func (s *Server) SetClearAllocOverridesHandler(fn func()) {
+	s.clearAllocOverrides = fn
 }
 
 // SetOpportunities updates the cached opportunities slice for the GET endpoint.

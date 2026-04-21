@@ -393,13 +393,15 @@ func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bo
 		return fmt.Errorf("risk check failed: %v", err)
 	}
 	if !approval.Approved {
+		// Rejected approvals now carry populated Size/Price/RequiredMargin for
+		// RejectionKindCapital (used by allocator rescue). ManualOpen must not
+		// execute on those fields — risk rejection is final here.
+		e.capacityMu.Unlock()
+		lock.Release()
 		if force {
-			e.log.Info("ManualOpen %s: force=true, overriding risk rejection: %s", symbol, approval.Reason)
-		} else {
-			e.capacityMu.Unlock()
-			lock.Release()
-			return fmt.Errorf("risk rejected: %s", approval.Reason)
+			return fmt.Errorf("force open cannot execute from rejected risk approval: %s", approval.Reason)
 		}
+		return fmt.Errorf("risk rejected: %s", approval.Reason)
 	}
 
 	// 6. Dry run check
@@ -527,7 +529,31 @@ func (e *Engine) Start() {
 // rebalanceFunds analyzes upcoming opportunities and ensures each exchange
 // has enough margin. Performs same-exchange spot→futures transfers first,
 // then cross-exchange withdrawals for remaining deficits.
+// rebalanceFunds is the entry point; it dispatches to the argmax path when
+// EnableArgmaxRebalance is on, otherwise runs the legacy Tier-1 + pool
+// allocator flow preserved verbatim in rebalanceFundsLegacy.
 func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
+	if e.cfg.EnableArgmaxRebalance {
+		// Clear any stale allocator overrides from the previous cycle before
+		// dispatching to argmax. Matches the legacy path's entry behavior
+		// (rebalanceFundsLegacy clears its own at the top) so early returns
+		// inside rebalanceFundsArgmax (no candidates / no feasible combos /
+		// capacity changed) do not leak prior-cycle overrides into the next
+		// entry scan.
+		e.allocOverrideMu.Lock()
+		if e.allocOverrides != nil {
+			e.log.Info("rebalance: clearing %d stale allocator overrides from previous cycle", len(e.allocOverrides))
+			e.allocOverrides = nil
+		}
+		e.allocOverrideMu.Unlock()
+
+		e.rebalanceFundsArgmax(passedOpps...)
+		return
+	}
+	e.rebalanceFundsLegacy(passedOpps...)
+}
+
+func (e *Engine) rebalanceFundsLegacy(passedOpps ...[]models.Opportunity) {
 	// Clear any stale allocator overrides from the previous cycle.
 	// If the prior entry scan had 0 opportunities, applyAllocatorOverrides
 	// was never called and the old overrides would leak into the next cycle.
@@ -1453,7 +1479,9 @@ func (e *Engine) run() {
 				// NOTE: When EnablePoolAllocator=false, rotate-scan intentionally skips
 				// rebalance; only the dedicated rebalance-scan minute triggers it.
 				// Tier-1 rank-first is invoked inside rebalanceFunds regardless.
-				if e.cfg.EnablePoolAllocator {
+				// EnableArgmaxRebalance also triggers — its dispatch lives in the
+				// same rebalanceFunds wrapper.
+				if e.cfg.EnablePoolAllocator || e.cfg.EnableArgmaxRebalance {
 					e.log.Info("rotateScan: starting rebalanceFunds")
 					e.rebalanceFunds()
 					e.log.Info("rotateScan: rebalanceFunds done")

@@ -211,6 +211,26 @@ func notionalRejectionKind(effectiveCap float64, leverage int) models.RejectionK
 	return models.RejectionKindCapital
 }
 
+// pricedCapitalRejection builds a RejectionKindCapital approval carrying full
+// sizing/pricing data so downstream callers (allocator argmax) can score and
+// fund a rescue transfer. Long-side rejections that fire before shortMargin is
+// computed should pass shortMargin=0; the helper fills the missing leg from
+// the other side so RequiredMargin is always non-zero when size>0.
+func pricedCapitalRejection(reason string, size, price, longMargin, shortMargin float64) *models.RiskApproval {
+	if shortMargin <= 0 {
+		shortMargin = longMargin
+	}
+	if longMargin <= 0 {
+		longMargin = shortMargin
+	}
+	required := math.Max(longMargin, shortMargin)
+	return &models.RiskApproval{
+		Approved: false, Kind: models.RejectionKindCapital, Reason: reason,
+		Size: size, Price: price, RequiredMargin: required,
+		LongMarginNeeded: longMargin, ShortMarginNeeded: shortMargin,
+	}
+}
+
 // approveInternal is the shared implementation for Approve and ApproveWithReserved.
 // When cache is non-nil, pre-fetched balances and orderbooks are used instead of
 // live API calls. Cache misses fall back to live calls transparently.
@@ -463,7 +483,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	if effectiveLongAvail < longMarginWithBuffer {
 		reason := fmt.Sprintf("insufficient margin buffer on %s: need %.2f (including %.0f%% safety buffer), have %.2f", opp.LongExchange, longMarginWithBuffer, safetyPct, effectiveLongAvail)
 		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-		return &models.RiskApproval{Approved: false, Kind: models.RejectionKindCapital, Reason: reason}, nil
+		return pricedCapitalRejection(reason, size, longMid, longMarginWithBuffer, 0), nil
 	}
 
 	// Short-leg margin check is deferred until after shortOB is fetched (see below).
@@ -478,7 +498,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		if projectedRatio >= m.cfg.MarginL4Threshold {
 			reason := fmt.Sprintf("post-trade margin ratio would reach %.2f on %s (L4 threshold: %.2f)", projectedRatio, opp.LongExchange, m.cfg.MarginL4Threshold)
 			m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-			return &models.RiskApproval{Approved: false, Kind: models.RejectionKindCapital, Reason: reason}, nil
+			return pricedCapitalRejection(reason, size, longMid, longMarginWithBuffer, 0), nil
 		}
 	}
 
@@ -525,7 +545,10 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	if effectiveShortAvail < shortMarginWithBuffer {
 		reason := fmt.Sprintf("insufficient margin buffer on %s: need %.2f (including %.0f%% safety buffer), have %.2f", opp.ShortExchange, shortMarginWithBuffer, safetyPct, effectiveShortAvail)
 		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-		return &models.RiskApproval{Approved: false, Kind: models.RejectionKindCapital, Reason: reason}, nil
+		// Use midPrice (= longMid, the sizing reference) so argmax's
+		// entryNotional = Size * Price matches calculateSizeWithPrice's basis.
+		// Using shortMid would skew scoring when long/short prices diverge.
+		return pricedCapitalRejection(reason, size, midPrice, longMarginWithBuffer, shortMarginWithBuffer), nil
 	}
 
 	// Post-trade margin ratio projection (short leg)
@@ -538,7 +561,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		if projectedRatio >= m.cfg.MarginL4Threshold {
 			reason := fmt.Sprintf("post-trade margin ratio would reach %.2f on %s (L4 threshold: %.2f)", projectedRatio, opp.ShortExchange, m.cfg.MarginL4Threshold)
 			m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-			return &models.RiskApproval{Approved: false, Kind: models.RejectionKindCapital, Reason: reason}, nil
+			return pricedCapitalRejection(reason, size, midPrice, longMarginWithBuffer, shortMarginWithBuffer), nil
 		}
 	}
 

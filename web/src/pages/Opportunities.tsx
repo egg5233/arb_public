@@ -1207,15 +1207,6 @@ const Opportunities: FC<OpportunitiesProps> = ({
             {openError && (
               <div className="mb-4">
                 <p className="text-red-400 text-sm">{openError}</p>
-                {openError.includes('risk rejected') && (
-                  <button
-                    onClick={() => handleConfirmOpen(true)}
-                    disabled={opening}
-                    className="mt-2 px-3 py-1.5 text-sm bg-yellow-600/20 text-yellow-400 rounded hover:bg-yellow-600/40 disabled:opacity-50"
-                  >
-                    {opening ? '...' : t('opp.forceOpen')}
-                  </button>
-                )}
               </div>
             )}
             <div className="flex gap-3 justify-end">
