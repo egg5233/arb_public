@@ -2,7 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.32.42] - 2026-04-21
+## [0.32.43] - 2026-04-21
+
+### Added
+- **Price-gap tracker — end-to-end test suite (Phase 08 Plan 07, Task 2)** (`internal/pricegaptrader/tracker_test.go`). 5 tests driving the full tickLoop pipeline against a miniredis-backed real `*database.Client`:
+  - `TestTrackerE2E_HappyCycle` — 4 bars of +253 bps spread feeds the ring → `runTick` opens the position via `openPair`, enrolls monitor, persists to `pg:positions`+`pg:positions:active`; then spread reversion + `checkAndMaybeExit` drives a clean close with `ExitReasonReverted`.
+  - `TestTrackerE2E_GateBlocksOnBudget` — budget=500 < per-position=1000 → fired detection is blocked at the budget gate, zero orders placed on either leg, zero positions persisted.
+  - `TestTrackerE2E_DisabledFlagBlocks` — pre-seeded `pg:candidate:disabled:SOON` blocks at Gate 1 (exec-quality), zero orders placed.
+  - `TestTrackerE2E_RehydrationOnRestart` — pre-seeded active position + nonzero exchange positions → `Start()`→`rehydrate()` re-enrolls the monitor; wide BBO + long poll interval prevent false reversion-close during the test window.
+  - `TestPriceGapEnabled_DefaultOff_NoTrackerInstantiated` — safety property (PG-OPS-06 / T-08-27): with `PriceGapEnabled=false`, the main.go-equivalent guard block does NOT call `NewTracker`; miniredis key scan asserts zero `pg:*` writes.
+
+
 
 ### Added
 - **Price-gap tracker — real tickLoop dispatch + Start() rehydrate (Phase 08 Plan 07, Task 1)** (`internal/pricegaptrader/tracker.go`). Replaced the stub `tickLoop` with a real detect → gate → enter → monitor dispatch:
