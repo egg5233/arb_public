@@ -2,8 +2,15 @@
 
 **Author:** zxcnny930 + Claude
 **Date:** 2026-04-21
-**Status:** v5 — addresses independent codex 2c8bf062 (3 MEDIUM findings)
+**Status:** v6 — addresses independent codex 97aa03fe (1 MEDIUM finding)
 **Review log:**
+- independent codex 97aa03fe NEEDS-REVISION → v6 fixes 1:
+  1. §5 Test matrix (T2a/T2b/T4): both Stage 2 and salvage call `getActivePositionsWithRetry`, which routes through the SAME `e.activePosSource` seam. Plan previously modeled them as independent, producing wrong `failN`/`calls` assertions. Corrected to total-call accounting:
+     - T2a: `failN=2, calls=3` (Stage 2 attempts 1+2 fail, salvage attempt 1 succeeds)
+     - T2b: `failN=1, calls=3` (Stage 2 attempt 1 fails, attempt 2 succeeds, salvage attempt 1 succeeds)
+     - T4:  `failN=4, calls=4` (Stage 2 attempts 1+2 fail, salvage attempts 1+2 fail)
+     §5 "Assertions each test makes" updated to state the stub is total-call budget, not per-phase.
+     2c8bf062 Findings 1 and 3 confirmed resolved; Y2 other probes (T8 core expectation, T2b retry exercise) acknowledged correct in 97aa03fe.
 - independent codex 2c8bf062 NEEDS-REVISION → v5 fixes 3:
   1. §5 Test harness nil-deref: `buildRankFirstEngine` in `engine_rank_first_test.go` builds Engine via struct literal, NOT `NewEngine()`. After adding `activePosSource`, any mirrored test builder leaves the field nil → `getActivePositionsWithRetry` nil-derefs. Plan now explicitly states: test harness MUST set `e.activePosSource` (either to the miniredis-backed `e.db`, or to the failing stub). Added explicit builder guidance in §5.
   2. §5 Missing retry-success test: T1-T7 either pure-success or pure-failure. Added **T2b** = "first GetActivePositions attempt fails, second succeeds" → proves the retry helper works, not just the salvage fallback. T2 renamed T2a.
@@ -324,8 +331,13 @@ salvage block via the same entry scan entry point used in
 - The set of symbols passed to `executeArbitrage` (captured via a stub
   `executeArbitrage` or an `onArbRun` hook — choose whichever the existing test
   harness already uses; mirror `engine_rank_first_test.go`).
-- For T2a/T2b/T4: the `failingActivePosGetter.calls` counter (proves retry was
-  actually exercised, not just bypassed).
+- For T2a/T2b/T4: the `failingActivePosGetter.calls` counter. **IMPORTANT**:
+  `calls` counts TOTAL invocations across BOTH Stage 2 and salvage (they share
+  the same `e.activePosSource` seam). `failN` is a total-call budget, not a
+  per-phase budget. Per-test counts:
+  - T2a: `failN=2`, expected `calls == 3` (2 Stage 2 fails + 1 salvage success).
+  - T2b: `failN=1`, expected `calls == 3` (1 Stage 2 fail + 1 Stage 2 success + 1 salvage success).
+  - T4:  `failN=4`, expected `calls == 4` (2 Stage 2 fails + 2 salvage fails).
 - `e.allocOverrides` is drained regardless.
 - Log assertions are NOT required — behavior assertions only.
 
@@ -334,10 +346,10 @@ salvage block via the same entry scan entry point used in
 | # | Scenario | Stage 1 opps | Override set | S1 opens | S2 DB | Salvage DB | Expected |
 |---|---|---|---|---|---|---|---|
 | T1 | Happy path: Stage 2 executes normally | `[A, B]` | `{B}` | `{A}` | OK | OK | Stage 2 execs `[B]`; salvage noop |
-| T2a | **Regression for Finding #1**: Stage 2 DB fails both attempts, in-scan override recovered by salvage | `[A, B]` | `{B}` | `{A}` | FAIL (failN=2) | OK | Stage 2 execs nothing; salvage rescans `{B}` and execs it. `failingActivePosGetter.calls == 2` asserted. |
-| T2b | **Retry success**: Stage 2 DB fails first attempt, succeeds second attempt (proves retry helper works, not just salvage fallback) | `[A, B]` | `{B}` | `{A}` | FAIL then OK (failN=1) | OK | Stage 2 executes `[B]` via retry success; salvage is a noop because `stage2Attempted={B}` covers it. `failingActivePosGetter.calls == 2` asserted (1 fail + 1 success), `time.Sleep(300ms)` path exercised once. |
+| T2a | **Regression for Finding #1**: Stage 2 DB fails both attempts, in-scan override recovered by salvage | `[A, B]` | `{B}` | `{A}` | FAIL (Stage 2 uses 2 of the budget) | OK (salvage call 3 succeeds) | `failN=2`. Stage 2 calls 1-2 fail → Stage 2 bails (no executeArbitrage for patched). Salvage: call 3 succeeds → salvage rescans `{B}` and execs it. **Total `calls == 3`** asserted. `time.Sleep(300ms)` path exercised once between Stage 2 calls 1 and 2. |
+| T2b | **Retry success**: Stage 2 DB fails first attempt, succeeds second attempt (proves retry helper works, not just salvage fallback) | `[A, B]` | `{B}` | `{A}` | FAIL then OK (Stage 2 uses 1 of the budget) | OK (salvage call 3 succeeds) | `failN=1`. Stage 2 call 1 fails, call 2 succeeds → Stage 2 executes `[B]`. Salvage: call 3 succeeds → salvage is a noop because `stage2Attempted={B}` covers it. **Total `calls == 3`** asserted. `time.Sleep(300ms)` path exercised once between Stage 2 calls 1 and 2. |
 | T3 | Out-of-scan override recovered by salvage (Bug-7 existing behavior preserved) | `[A]` | `{B}` | `{A}` | OK | OK | Stage 2 execs nothing (`B` filtered out by `applyAllocatorOverrides`); salvage rescans `{B}` |
-| T4 | Both DB reads fail → clean skip, no crash, no duplicate | `[A, B]` | `{B}` | `{A}` | FAIL | FAIL | No Stage 2 exec, no salvage exec, warn logged, `e.allocOverrides` drained |
+| T4 | Both DB reads fail → clean skip, no crash, no duplicate | `[A, B]` | `{B}` | `{A}` | FAIL (Stage 2 uses 2 of the budget) | FAIL (salvage uses 2 of the budget) | `failN=4`. Stage 2 calls 1-2 fail, salvage calls 3-4 fail. No Stage 2 exec, no salvage exec, warn logged twice, `e.allocOverrides` drained. **Total `calls == 4`** asserted. `time.Sleep` path exercised twice (once per call site). |
 | T5 | Stage 1 already opened override symbol → Stage 2 + salvage both skip | `[A, B]` | `{B}` | `{A, B}` | OK | OK | Stage 2 drops B as duplicate; salvage drops B via `openedByUs` (no duplicate open) |
 | T6 | **All-stale** case: `applyAllocatorOverrides` returns `(nil, true)` | `[A]` | `{B}` with stale alt | `{A}` | n/a (no patched) | OK | Stage 2 logs "all stale after filter", `stage2Attempted` empty. Salvage **must call** `RescanSymbols({B})` (assertion: rescan was invoked with exactly the `{B}` pair). Test controls the stubbed rescan outcome. We pick the **empty-result** branch for T6's concrete assertion: rescan returns `[]`, so no `executeArbitrage` call is made; the "all … failed re-scan" warn path is exercised. A second test variant T6b using the **non-empty** branch is out of scope for this PR but noted as a natural extension. |
 | T7 | **Multi-symbol partial**: Stage 1 opens A, Stage 2 opens B, salvage true noop | `[A, B]` | `{A, B}` | `{A}` | OK | OK | `applyAllocatorOverrides` returns `[A_patched, B_patched]`. Stage 2: `openedS1={A}` → drops A as duplicate, execs `[B]`. `stage2Attempted={A, B}`. Salvage: both excluded (A via `stage2Attempted`, B via `stage2Attempted` AND `openedByUs`). No salvage call. |
