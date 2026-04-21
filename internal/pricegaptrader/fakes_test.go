@@ -1,11 +1,22 @@
 package pricegaptrader
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
 	"arb/pkg/exchange"
 )
+
+// fillScript — scripted response tuple pushed by tests to drive PlaceOrder +
+// GetOrderFilledQty. On a queued script: err != nil makes PlaceOrder return
+// the error (no orderID); err == nil makes PlaceOrder mint a sequential
+// orderID and GetOrderFilledQty later returns the scripted (filled, vwap).
+type fillScript struct {
+	filled float64
+	vwap   float64
+	err    error
+}
 
 // stubExchange is a drop-in fake for the full pkg/exchange.Exchange interface.
 // Most methods return zero values; the "live" methods GetBBO, PlaceOrder,
@@ -21,7 +32,14 @@ type stubExchange struct {
 	placeOrderErr error
 	placeOrderFn  func(p exchange.PlaceOrderParams) (string, error)
 
-	filledQty  map[string]float64 // orderID -> filled qty
+	// Plan 05: scripted fills — tests enqueue via queueFill; PlaceOrder pops
+	// the next script. Per-order fill recorded under orderIdFill for
+	// GetOrderFilledQty lookup (keyed by minted orderID).
+	scripts        []fillScript
+	orderIDCounter int
+	orderIDFill    map[string]fillScript
+
+	filledQty  map[string]float64 // orderID -> filled qty (legacy direct-set path)
 	positions  map[string][]exchange.Position
 	contracts  map[string]exchange.ContractInfo
 	priceStore sync.Map
@@ -33,12 +51,32 @@ var _ exchange.Exchange = (*stubExchange)(nil)
 
 func newStubExchange(name string) *stubExchange {
 	return &stubExchange{
-		name:      name,
-		bbos:      make(map[string]*exchange.BBO),
-		filledQty: make(map[string]float64),
-		positions: make(map[string][]exchange.Position),
-		contracts: make(map[string]exchange.ContractInfo),
+		name:        name,
+		bbos:        make(map[string]*exchange.BBO),
+		filledQty:   make(map[string]float64),
+		orderIDFill: make(map[string]fillScript),
+		positions:   make(map[string][]exchange.Position),
+		contracts:   make(map[string]exchange.ContractInfo),
 	}
+}
+
+// queueFill enqueues a scripted PlaceOrder+GetOrderFilledQty response.
+// Scripts are consumed FIFO. If err is non-nil, PlaceOrder returns it (no
+// orderID minted); otherwise PlaceOrder mints a sequential orderID and
+// GetOrderFilledQty returns (filled, nil) for that orderID.
+func (s *stubExchange) queueFill(filled, vwap float64, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.scripts = append(s.scripts, fillScript{filled: filled, vwap: vwap, err: err})
+}
+
+// placedOrders returns a copy of the orders recorded by PlaceOrder.
+func (s *stubExchange) placedOrders() []exchange.PlaceOrderParams {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]exchange.PlaceOrderParams, len(s.placed))
+	copy(out, s.placed)
+	return out
 }
 
 // setBBO mutates what GetBBO returns for the given symbol. The ts arg is retained
@@ -66,25 +104,43 @@ func (s *stubExchange) GetBBO(symbol string) (exchange.BBO, bool) {
 
 func (s *stubExchange) PlaceOrder(p exchange.PlaceOrderParams) (string, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.placed = append(s.placed, p)
 	if s.placeOrderFn != nil {
 		// Release the lock before calling user fn to avoid deadlocks if the fn
 		// re-enters stubExchange.
 		s.mu.Unlock()
 		id, err := s.placeOrderFn(p)
-		s.mu.Lock()
 		return id, err
 	}
+	// Plan 05 scripted path — consume the next fillScript if queued.
+	if len(s.scripts) > 0 {
+		sc := s.scripts[0]
+		s.scripts = s.scripts[1:]
+		if sc.err != nil {
+			s.mu.Unlock()
+			return "", sc.err
+		}
+		s.orderIDCounter++
+		oid := fmt.Sprintf("%s-ord-%d", s.name, s.orderIDCounter)
+		s.orderIDFill[oid] = sc
+		s.mu.Unlock()
+		return oid, nil
+	}
 	if s.placeOrderErr != nil {
+		s.mu.Unlock()
 		return "", s.placeOrderErr
 	}
+	s.mu.Unlock()
 	return "stub-order-id", nil
 }
 
 func (s *stubExchange) GetOrderFilledQty(orderID, _ string) (float64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Scripted path takes priority when the orderID was minted by queueFill.
+	if sc, ok := s.orderIDFill[orderID]; ok {
+		return sc.filled, nil
+	}
 	return s.filledQty[orderID], nil
 }
 
