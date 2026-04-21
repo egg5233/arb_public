@@ -19,13 +19,37 @@ All notable changes to this project will be documented in this file.
 - **Feature-flag emergency brake** — re-read `EnableArgmaxRebalance` under `capacityMu` twice (pre-execute, pre-publish). `POST /api/config` invokes `Engine.ClearAllocOverrides()` on flag true→false transition.
 - **Loss-limiter gate** — argmax calls `lossLimiter.CheckLimits()` at top mirroring `runPoolAllocator`, including dashboard broadcast + Telegram.
 - **Post-execute capacity recheck** — if `ManualOpen` consumed slot during transfer window, drop the overrides (no publish).
-- **Spot-futures occupancy gate** — `filterArgmaxOpps` excludes `exchange:symbol` occupied by the spot-futures engine, mirroring `ppCrossEngineBlocked`.
+- **Spot-futures occupancy gate** — `filterArgmaxOpps` excludes `exchange:symbol` occupied by the spot-futures engine, mirroring `ppCrossEngineBlocked`. Per-attempt re-check inside `buildArgmaxCandidates` covers alternative pairs too.
 - **Deterministic tie-break** — netPnL desc → step-count asc → `comboSymbolsKey` lex asc; candidate sort uses `sort.SliceStable` + 3-level symbol/long/short lex tie-break.
 - **Streaming best combo** — `*scoredCombo` tracker instead of `[]scoredCombo` slice; O(1) memory regardless of feasible subset count.
 
 ### Tests
 - `rebalance_argmax_test.go` — pure helpers, `buildArgmaxCandidates` rescue admission, end-to-end smoke (override publish, no-opps clear, capacity-at-max early-return, capital-rescue replay with bitget→bingx step), targeted replay tests (`PromotesRescue` + `RejectsWhenStillInfeasible`).
 - `manager_capital_rejection_test.go` — pins priced rejection fields non-zero at all 4 sites.
+
+## [0.32.39] - 2026-04-21
+
+### Fixed
+- **`isAlreadyFlatError` missed Binance `-2022 ReduceOnly Order is rejected`** (`internal/spotengine/execution.go`). After deploying v0.32.38, the DEGO monitor retry attempted a futures BUY-to-close against an already-flat futures position and got `-2022`. The existing pattern `"reduce only order"` (with space) didn't match the Binance message `"ReduceOnly Order is rejected"` (no space). Consequence: the idempotent-flat branch was skipped, `futErr` was returned, and `emergencyClose` returned that error even though the spot leg succeeded with the v0.32.38 rounding fix. The monitor then looped forever. Added two patterns to `isAlreadyFlatError`: `"reduceonly order"` and `"code=-2022"`. Test cases added to `TestIsAlreadyFlatError`.
+
+## [0.32.38] - 2026-04-21
+
+### Fixed
+- **Emergency close path also needs LOT_SIZE step rounding** (`internal/spotengine/execution.go`, `emergencyClose`). Codex review of v0.32.36 caught a gap: delist-triggered exits enter `monitor.go:102-110` with `emergency=true` → `ClosePosition(..., true)` → `emergencyClose()` (parallel leg-close path). That path also formatted raw `remaining` before `PlaceSpotMarginOrder`, so the FIRST close attempt of an unaligned-`SpotSize` position still failed with Binance `-1013 LOT_SIZE` — only later non-emergency monitor retries healed it. Now `emergencyClose()` applies the same `utils.RoundToStep(remaining, rules.QtyStep)` logic (SELL side only; Dir-A buyback unchanged to preserve residual-borrow semantics). Additionally, after the rounded fill confirms, the known dust residue between `sellQty` and original `remaining` is marked as complete instead of being reported as a partial-fill error, so the emergency path now closes cleanly on its first attempt rather than leaving the position stuck until the next 3-minute monitor tick. Regression test: `TestEmergencyClose_SpotSellRoundsToLotStep` in `dust_close_test.go`.
+
+## [0.32.37] - 2026-04-21
+
+### Fixed
+- **ManualOpen bypassed the delist filter** (`internal/spotengine/execution.go`). Root cause of the DEGO incident: the user manually opened `DEGOUSDT` via `POST /api/spot/manual_open` while the discovery poller had already written `arb:delist:DEGOUSDT` to Redis. Three entry paths exist for spot-futures — `autoentry` (covered by `risk_gate.go:125`), `monitor` active-position check (`monitor.go:102`), and `ManualOpen` (previously unchecked). `ManualOpen` only consulted `opp.FilterStatus` which the scanner never populates from delist signals; the delist check lives one layer deeper in `risk_gate.go` which `ManualOpen` skips entirely. Now `ManualOpen` calls `e.db.IsDelisted(symbol)` directly, gated on the same shared `DelistFilterEnabled` flag (default true) used by autoentry + monitor. Closes the accidental-open window that triggered the v0.32.36 LOT_SIZE stuck-exit incident. Override = toggle the existing flag off; no new config key added. Regression test: `TestManualOpen_RejectsDelistedSymbol`.
+
+## [0.32.36] - 2026-04-21
+
+### Fixed
+- **Spot-futures Dir B exit stuck in 'exiting' when SpotSize is not aligned to Binance LOT_SIZE stepSize** (`internal/spotengine/execution.go`). Incident: `sf-degousdt-1776738361635` opened with `SpotSize=1258.1406`, futures leg closed successfully on delist-trigger exit, but every spot SELL retry was rejected by Binance with `-1013 Filter failure: LOT_SIZE` because `1258.1406` is not a multiple of DEGOUSDT's `stepSize=0.01`. Two root-cause fixes:
+  1. **Entry path** — `openDirBBuySpotShort` previously hardcoded `math.Floor(spotNetReceived*1e5) / 1e5` (fixed 5dp) when flooring net-received size after fee deduction. For coins whose LOT_SIZE stepSize is coarser than 5dp (DEGO=0.01), this left `SpotSize` stepSize-unaligned. Now floors to `rules.QtyStep` fetched from `SpotOrderRules(symbol)`, with 1e-5 as fallback if the rules lookup fails.
+  2. **Exit path (Dir B)** — `dirB-spot-sell` retryLeg closure now applies `utils.RoundToStep(remaining, rules.QtyStep)` before submitting the SELL order. If flooring produces zero (residue < step), short-circuits and marks the spot leg closed (dust residue ignored) instead of submitting a doomed order. Protects existing stuck positions — after deploy, the next 3-minute monitor retry for DEGO will successfully sell 1258.14 and dust-close the 0.0006 residue.
+  
+  Regression test added: `TestCloseDirectionB_SpotSellRoundsToLotStep` in `dust_close_test.go` reproduces the exact DEGO scenario (SpotSize=1258.1406, stepSize=0.01) and asserts the first `PlaceSpotMarginOrder` Size is `"1258.140000"` (step-aligned) and the position closes cleanly via the residue dust path.
 
 ## [0.32.35] - 2026-04-20
 
