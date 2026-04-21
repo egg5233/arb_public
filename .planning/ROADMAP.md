@@ -54,7 +54,7 @@ Seed input: `/tmp/phase0-pricegap/STRATEGY_DESIGN.md` (§3.5 candidate shortlist
 **Plans**: 8 plans
   - [x] 08-01-PLAN.md — Config surface + models + PriceGapStore interface (PG-05, PG-OPS-06)
   - [x] 08-02-PLAN.md — Redis persistence under pg:* namespace (PG-04, PG-RISK-03)
-  - [ ] 08-03-PLAN.md — Tracker skeleton + detector (BBO-sampled 1m bars, 4-bar persistence) (PG-01)
+  - [x] 08-03-PLAN.md — Tracker skeleton + detector (BBO-sampled 1m bars, 4-bar persistence) (PG-01)
   - [ ] 08-04-PLAN.md — 5-check pre-entry risk gate + typed errors (PG-RISK-01, -02, -04, -05)
   - [ ] 08-05-PLAN.md — Simultaneous IOC entry + unwind-to-match + circuit breaker (PG-02)
   - [ ] 08-06-PLAN.md — Per-position monitor + exit + exec-quality auto-disable + rehydrate (PG-03, PG-04, PG-RISK-03)

@@ -9,7 +9,7 @@ Requirements for this milestone. Each maps to roadmap phases 8+.
 
 ### Core Functionality (Strategy 4 tracker)
 
-- [ ] **PG-01**: Price-gap tracker detects spread dislocations on configured candidate pairs using 1m kline data with ≥4-bar minimum-duration filter
+- [x] **PG-01**: Price-gap tracker detects spread dislocations on configured candidate pairs using 1m kline data with ≥4-bar minimum-duration filter
 - [ ] **PG-02**: Entry opens delta-neutral 2-leg positions via existing exchange adapters (IOC market orders on both legs simultaneously)
 - [ ] **PG-03**: Exit closes positions when |spread| reverts to ≤ T/2 OR 4h max-hold timeout elapses
 - [x] **PG-04**: Positions persist to Redis under own namespace (e.g., `pg:pos:{id}`) and survive process restart
@@ -79,7 +79,7 @@ Which phases cover which requirements. Populated by roadmapper.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| PG-01 | Phase 8 | Pending |
+| PG-01 | Phase 8 | Complete |
 | PG-02 | Phase 8 | Pending |
 | PG-03 | Phase 8 | Pending |
 | PG-04 | Phase 8 | Complete |
