@@ -13,7 +13,7 @@ Requirements for this milestone. Each maps to roadmap phases 8+.
 - [ ] **PG-02**: Entry opens delta-neutral 2-leg positions via existing exchange adapters (IOC market orders on both legs simultaneously)
 - [ ] **PG-03**: Exit closes positions when |spread| reverts to ≤ T/2 OR 4h max-hold timeout elapses
 - [ ] **PG-04**: Positions persist to Redis under own namespace (e.g., `pg:pos:{id}`) and survive process restart
-- [ ] **PG-05**: Candidate list (symbol, exchange pair, threshold, max position size) is configurable via config.json, not hardcoded
+- [x] **PG-05**: Candidate list (symbol, exchange pair, threshold, max position size) is configurable via config.json, not hardcoded
 
 ### Risk Controls
 
@@ -30,7 +30,7 @@ Requirements for this milestone. Each maps to roadmap phases 8+.
 - [ ] **PG-OPS-03**: Dashboard shows closed positions log with realized-vs-modeled edge comparison
 - [ ] **PG-OPS-04**: Paper mode toggle runs full event/entry logic without placing real orders (used for first ~3 live days)
 - [ ] **PG-OPS-05**: Telegram notifications fire on entry, exit, and risk-gate blocks (reusing existing notifier infrastructure)
-- [ ] **PG-OPS-06**: Config switch `PriceGapEnabled` (default OFF) gates the entire subsystem, with round-trip dashboard API persistence
+- [x] **PG-OPS-06**: Config switch `PriceGapEnabled` (default OFF) gates the entire subsystem, with round-trip dashboard API persistence
 
 ### Live Validation Infrastructure
 
@@ -83,7 +83,7 @@ Which phases cover which requirements. Populated by roadmapper.
 | PG-02 | Phase 8 | Pending |
 | PG-03 | Phase 8 | Pending |
 | PG-04 | Phase 8 | Pending |
-| PG-05 | Phase 8 | Pending |
+| PG-05 | Phase 8 | Complete |
 | PG-RISK-01 | Phase 8 | Pending |
 | PG-RISK-02 | Phase 8 | Pending |
 | PG-RISK-03 | Phase 8 | Pending |
@@ -94,7 +94,7 @@ Which phases cover which requirements. Populated by roadmapper.
 | PG-OPS-03 | Phase 9 | Pending |
 | PG-OPS-04 | Phase 9 | Pending |
 | PG-OPS-05 | Phase 9 | Pending |
-| PG-OPS-06 | Phase 8 | Pending |
+| PG-OPS-06 | Phase 8 | Complete |
 | PG-VAL-01 | Phase 9 | Pending |
 | PG-VAL-02 | Phase 9 | Pending |
 
