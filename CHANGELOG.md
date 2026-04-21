@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.39] - 2026-04-21
+
+### Fixed
+- **`isAlreadyFlatError` missed Binance `-2022 ReduceOnly Order is rejected`** (`internal/spotengine/execution.go`). After deploying v0.32.38, the DEGO monitor retry attempted a futures BUY-to-close against an already-flat futures position and got `-2022`. The existing pattern `"reduce only order"` (with space) didn't match the Binance message `"ReduceOnly Order is rejected"` (no space). Consequence: the idempotent-flat branch was skipped, `futErr` was returned, and `emergencyClose` returned that error even though the spot leg succeeded with the v0.32.38 rounding fix. The monitor then looped forever. Added two patterns to `isAlreadyFlatError`: `"reduceonly order"` and `"code=-2022"`. Test cases added to `TestIsAlreadyFlatError`.
+
 ## [0.32.38] - 2026-04-21
 
 ### Fixed

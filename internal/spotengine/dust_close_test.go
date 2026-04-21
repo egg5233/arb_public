@@ -71,6 +71,9 @@ func TestIsAlreadyFlatError(t *testing.T) {
 		{"okx no position", "no position", true},
 		{"binance position is zero", "Position is zero for this symbol", true},
 		{"reduce-only trailing", "reduce only order: not allowed", true},
+		// Binance futures -2022 from the DEGO incident — "ReduceOnly" has no space.
+		{"binance -2022 reduceonly", "binance API error code=-2022 msg=ReduceOnly Order is rejected.", true},
+		{"binance -2022 code only", "binance API error code=-2022 msg=something else", true},
 		// negative cases — real errors that should NOT be treated as flat
 		{"margin insufficient", "margin insufficient", false},
 		{"rate limit", "too many requests", false},

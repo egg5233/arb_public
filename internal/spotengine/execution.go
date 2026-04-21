@@ -1304,7 +1304,14 @@ func isAlreadyFlatError(err error) bool {
 		strings.Contains(msg, "position not exist") ||
 		strings.Contains(msg, "no position") ||
 		strings.Contains(msg, "position is zero") ||
-		strings.Contains(msg, "reduce only order")
+		strings.Contains(msg, "reduce only order") ||
+		// Binance futures: "-2022 ReduceOnly Order is rejected" — no space in
+		// "ReduceOnly", so the above pattern doesn't match. Seen in the DEGO
+		// incident on 2026-04-21 when the monitor retry hit a position whose
+		// futures leg had been closed in an earlier attempt but the record
+		// still read as active.
+		strings.Contains(msg, "reduceonly order") ||
+		strings.Contains(msg, "code=-2022")
 }
 
 // verifyFuturesFlat double-checks with GetPosition whether the futures leg is
