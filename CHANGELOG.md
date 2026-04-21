@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.41] - 2026-04-21
+
+### Fixed
+- **Stage 2 DB-failure fund stranding (codex independent review `d1ac2563` Finding #1 HIGH)** — when `db.GetActivePositions()` failed transiently between Stage 1 and Stage 2, `applyAllocatorOverrides` had already drained `e.allocOverrides` but Stage 2 bailed without executing, and the existing salvage block excluded in-scan symbols via `inScan[sym]`, stranding rebalance-funded capital until the next cycle. Plan `plans/PLAN-stage2-db-failure-salvage.md` v6 ALL PASS on normal + independent Codex review. Two complementary fixes:
+  - **Retry helper** (`getActivePositionsWithRetry`, 2 attempts / 300ms backoff) — survives transient Redis blips at the two critical Stage 2 + salvage call sites.
+  - **Replaced `inScan[sym]` salvage exclusion with `stage2Attempted[sym]` tracking** — salvage now correctly rescans symbols Stage 2 never got to attempt (in-scan AND out-of-scan), instead of assuming Stage 2 always had a chance.
+
+### Added
+- **`activePositionsGetter` interface + `Engine.activePosSource` field** (`internal/engine/engine.go`) — minimal injection seam routing the two Stage 2 + salvage `GetActivePositions` reads through the retry helper. Wired to `e.db` in `NewEngine`; other 14+ `e.db.GetActivePositions` call sites unchanged (zero-blast-radius scope).
+- **`runStage2AndSalvage` method** (`internal/engine/engine.go`) — extracted the Stage 2 + salvage block from the inline run loop into a testable method; caller-site unchanged in behavior.
+- **9 regression tests** (`internal/engine/engine_stage2_salvage_test.go`) — T1 happy path, T2a/T2b retry/fallback variants (proves `calls==3` with shared-seam accounting), T3 out-of-scan salvage, T4 both-DB-fail clean skip, T5 duplicate-skip, T6 all-stale, T7 multi-symbol partial, T8 mixed validity. `failingActivePosGetter` total-call budget stub; retry timing verified (T2b 0.31s, T4 0.61s).
+
+### Safety (salvage guardrails)
+- **Stage 2 DB failure falls through to salvage** instead of early-returning — if the retry still fails, salvage can still recover in-scan override symbols via `RescanSymbols`.
+- **`stage2Attempted` populated BEFORE the `openedS1` duplicate check** — symbols filtered as already-open still count as attempted, so salvage does not re-open them.
+- **Salvage's own `GetActivePositions` read also goes through retry helper** — symmetric protection.
+
 ## [0.32.40] - 2026-04-21
 
 ### Added
