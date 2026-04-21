@@ -25,6 +25,7 @@ package pricegaptrader
 import (
 	"context"
 	"sync"
+	"time"
 
 	"arb/internal/config"
 	"arb/internal/models"
@@ -93,12 +94,16 @@ func NewTracker(
 
 // Start spawns the tick goroutine + rehydrates active positions.
 // Wired from cmd/main.go conditional on cfg.PriceGapEnabled (Plan 07).
+//
+// Order (Plan 07): rehydrate() runs BEFORE the tick goroutine spawns so any
+// restored positions are already enrolled in monitors; otherwise the first
+// tick could race rehydration and see an empty active set for budget gating.
 func (t *Tracker) Start() {
 	t.log.Info("Price-gap tracker starting (candidates=%d, budget=$%.0f, enabled=%v)",
 		len(t.cfg.PriceGapCandidates), t.cfg.PriceGapBudget, t.cfg.PriceGapEnabled)
+	t.rehydrate()
 	t.wg.Add(1)
 	go t.tickLoop()
-	// rehydration + per-position monitor spawn: implemented in Plan 06/07
 }
 
 // Stop signals goroutines to exit and waits; graceful shutdown per D-03.
@@ -115,10 +120,111 @@ func (t *Tracker) Stop() {
 	t.exitWG.Wait()
 }
 
-// tickLoop is a stub in this plan — Plan 05 wires the detector→risk→entry dispatch.
-// The stub drains stopCh so Start/Stop shutdown is testable.
+// tickLoop runs the detect → gate → enter → monitor dispatch at a fixed
+// PriceGapPollIntervalSec cadence (D-05). Started by Start() after rehydrate.
+//
+// Startup offset (RESEARCH §Pitfall 2 — Bybit blackout): the first tick fires
+// after ~7s of startup then settles onto the interval. A pure time.NewTicker
+// would land the first tick exactly `interval` after boot, which — when
+// launched at certain minute boundaries — can push the first BBO-read into
+// the Bybit :04–:05:30 blackout window. The 7s offset pushes us safely off
+// that boundary on fresh starts (the subsequent ticker cadence is
+// unaffected; subsequent ticks are whatever the system clock gives us).
 func (t *Tracker) tickLoop() {
 	defer t.wg.Done()
-	<-t.stopCh
+
+	interval := time.Duration(t.cfg.PriceGapPollIntervalSec) * time.Second
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	firstTick := time.After(7 * time.Second)
+	var ticker *time.Ticker
+
+	for {
+		select {
+		case <-t.stopCh:
+			if ticker != nil {
+				ticker.Stop()
+			}
+			return
+		case <-firstTick:
+			ticker = time.NewTicker(interval)
+			t.runTick(time.Now())
+		case now := <-chanTick(ticker):
+			t.runTick(now)
+		}
+	}
+}
+
+// chanTick is a nil-safe helper so the select in tickLoop can read from a
+// ticker that hasn't been created yet (before the first startup tick fires).
+// A nil channel blocks forever in select, which is exactly what we want.
+func chanTick(tk *time.Ticker) <-chan time.Time {
+	if tk == nil {
+		return nil
+	}
+	return tk.C
+}
+
+// runTick evaluates every configured candidate for one poll cycle:
+//   detectOnce → if fired, preEntry gates → if approved, openPair + startMonitor.
+//
+// Circuit-breaker respect: when the execution circuit is open (5+ consecutive
+// PlaceOrder failures per D-10), we skip the entire tick so no new orders
+// fire until the operator clears the breaker. Monitors on existing positions
+// still run on their own goroutines.
+//
+// Per-candidate sizing: notional = cand.MaxPositionUSDT at fire time (D-08
+// direction-only; future enhancement could size proportional to spread
+// magnitude — out of scope for Phase 8 MVP).
+//
+// Local active-view update: after openPair succeeds, we append the new
+// position to the local `active` slice so the NEXT candidate in the same
+// tick sees the up-to-date concurrency count for budget / max-concurrent /
+// gate-concentration gating. Without this, back-to-back opens in one tick
+// could each see the pre-tick active set and both pass gates that only
+// allow one of them.
+func (t *Tracker) runTick(now time.Time) {
+	if t.isCircuitOpen() {
+		return
+	}
+	active, err := t.db.GetActivePriceGapPositions()
+	if err != nil {
+		t.log.Warn("pricegap: runTick GetActivePriceGapPositions failed: %v", err)
+		return
+	}
+	for _, cand := range t.cfg.PriceGapCandidates {
+		det := t.detectOnce(cand, now)
+		if !det.Fired {
+			continue
+		}
+
+		notional := cand.MaxPositionUSDT
+
+		gate := t.preEntry(cand, notional, det, active)
+		if gate.Err != nil {
+			t.log.Info("pricegap: %s gate-blocked: %s", cand.Symbol, gate.Reason)
+			continue
+		}
+
+		// Convert notional USDT → per-leg base-asset size using mid at decision.
+		mid := (det.MidLong + det.MidShort) / 2.0
+		if mid <= 0 {
+			continue
+		}
+		sizeBase := notional / mid
+
+		pos, err := t.openPair(cand, sizeBase, det)
+		if err != nil {
+			t.log.Warn("pricegap: openPair %s failed: %v", cand.Symbol, err)
+			continue
+		}
+		if pos != nil {
+			t.startMonitor(pos)
+			active = append(active, pos)
+			t.log.Info("pricegap: opened %s spread=%.1fbps notional=%.0f",
+				pos.ID, det.SpreadBps, pos.NotionalUSDT)
+		}
+	}
 }
 

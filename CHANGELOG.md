@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.42] - 2026-04-21
+
+### Added
+- **Price-gap tracker — real tickLoop dispatch + Start() rehydrate (Phase 08 Plan 07, Task 1)** (`internal/pricegaptrader/tracker.go`). Replaced the stub `tickLoop` with a real detect → gate → enter → monitor dispatch:
+  - `tickLoop` fires the first tick ~7s after startup (RESEARCH §Pitfall 2 — offsets off the Bybit :04–:05:30 blackout window on fresh boot) then runs at `PriceGapPollIntervalSec` cadence via `time.Ticker`.
+  - `runTick` iterates every configured `PriceGapCandidate`: `detectOnce` → on fired, `preEntry` gates → on approved, converts notional USDT to per-leg base-asset size via `mid = (MidLong+MidShort)/2`, calls `openPair` + `startMonitor`. Circuit-breaker-aware: skips the whole tick when `isCircuitOpen()` is true.
+  - `Start()` now calls `rehydrate()` BEFORE spawning the tick goroutine so any restored positions are already enrolled in monitors before the first tick reads the active set for budget gating.
+  - Local `active` view is appended after each successful `openPair` so back-to-back candidates in the same tick see up-to-date concurrency state.
+
 ## [0.32.41] - 2026-04-21
 
 ### Added
