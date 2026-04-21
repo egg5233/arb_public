@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.40] - 2026-04-21
+
+### Added
+- **Price-gap tracker — simultaneous IOC entry path with unwind-to-match (Phase 08 Plan 05 Task 1)** (`internal/pricegaptrader/execution.go`). Implements the live-trading-critical `openPair` function for Strategy 4: concurrent IOC market orders on both legs, D-10 unwind-to-match partial-fill reconciliation via MARKET (not IOC) orders, zero-fill-on-one-leg → immediate market-close of the other leg, 5-consecutive-failures circuit breaker, per-symbol Redis lock via `AcquirePriceGapLock`, and D-15 position-ID format (`pg_{symbol}_{longExch}_{shortExch}_{unixNano}`). Fill price stamping uses the mid-at-decision from `DetectionResult` because the adapter's `GetOrderFilledQty(orderID, symbol) (float64, error)` returns only qty — realized slippage is computed at exit in Plan 06. Off by default (depends on `PriceGapEnabled=false` in Plan 01 + Plan 04 preEntry gate + this plan's circuit breaker). Tests in follow-up tasks.
+
 ## [0.32.39] - 2026-04-21
 
 ### Fixed
