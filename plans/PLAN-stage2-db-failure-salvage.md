@@ -2,8 +2,11 @@
 
 **Author:** zxcnny930 + Claude
 **Date:** 2026-04-21
-**Status:** v2 — addresses codex 07728398 must-fix #1–#4
+**Status:** v3 — addresses codex 9582ebaa NEEDS-REVISION must-fix #1–#2
 **Review log:**
+- codex 9582ebaa NEEDS-REVISION → v3 fixes 2:
+  1. §5 DB failure injection: remove the speculative "preferred if a StateStore/wrapper already exists" branch. `Engine` currently holds a concrete `*database.Client`, so `activePositionsGetter` interface injection is the single explicit plan.
+  2. §5 T6 expected outcome: drop the hard-coded "B fails re-scan" assertion. Rewrite as "salvage calls `RescanSymbols({B})`; test controls rescan stub outcome deterministically." Pick one path for the actual test case. §6 R4 no longer tied to T6's specific outcome.
 - codex 07728398 NEEDS-REVISION → v2 fixes 4:
   1. §3.2/§3.4: `db.GetActivePositions()` returns `[]*models.ArbitragePosition`, not `[]*models.Position` (verified at `internal/database/state.go:164`, `internal/models/position.go:6`)
   2. §5 test matrix: add T6 (all-stale `patched=nil, hadOverrides=true`) and T7 (multi-symbol partial, override={A,B}, Stage 1 opens A, Stage 2 opens B, salvage noop)
@@ -248,9 +251,10 @@ func (e *Engine) getActivePositionsWithRetry(maxAttempts int, backoff time.Durat
 
 | File | Change | Lines |
 |---|---|---|
-| `internal/engine/engine.go` | New helper `getActivePositionsWithRetry`. | +15 |
+| `internal/engine/engine.go` | New interface `activePositionsGetter` + `activePosSource` field + constructor wire-up. | +10 |
+| `internal/engine/engine.go` | New helper `getActivePositionsWithRetry` (uses `e.activePosSource`). | +15 |
 | `internal/engine/engine.go` | Rewrite of Stage 2 + salvage block (`:888-988`). | ~100 replaced |
-| `internal/engine/engine_stage2_salvage_test.go` (new) | 7 scenarios T1–T7, failing-DB stub for T2/T4. | +~350 |
+| `internal/engine/engine_stage2_salvage_test.go` (new) | 7 scenarios T1–T7, `failingActivePosGetter` for T2/T4. | +~350 |
 
 No changes outside `internal/engine/`. No config, no API, no frontend, no Redis schema.
 
@@ -279,28 +283,75 @@ salvage block via the same entry scan entry point used in
 | T3 | Out-of-scan override recovered by salvage (Bug-7 existing behavior preserved) | `[A]` | `{B}` | `{A}` | OK | OK | Stage 2 execs nothing (`B` filtered out by `applyAllocatorOverrides`); salvage rescans `{B}` |
 | T4 | Both DB reads fail → clean skip, no crash, no duplicate | `[A, B]` | `{B}` | `{A}` | FAIL | FAIL | No Stage 2 exec, no salvage exec, warn logged, `e.allocOverrides` drained |
 | T5 | Stage 1 already opened override symbol → Stage 2 + salvage both skip | `[A, B]` | `{B}` | `{A, B}` | OK | OK | Stage 2 drops B as duplicate; salvage drops B via `openedByUs` (no duplicate open) |
-| T6 | **All-stale** case: `applyAllocatorOverrides` returns `(nil, true)` | `[A]` | `{B}` with stale alt | `{A}` | n/a (no patched) | OK | Stage 2 logs "all stale after filter", `stage2Attempted` empty. Salvage rescans `{B}` (not in `openedByUs`). `B` fails re-scan too → logged as "all … failed re-scan". No trade opened, no crash. |
+| T6 | **All-stale** case: `applyAllocatorOverrides` returns `(nil, true)` | `[A]` | `{B}` with stale alt | `{A}` | n/a (no patched) | OK | Stage 2 logs "all stale after filter", `stage2Attempted` empty. Salvage **must call** `RescanSymbols({B})` (assertion: rescan was invoked with exactly the `{B}` pair). Test controls the stubbed rescan outcome. We pick the **empty-result** branch for T6's concrete assertion: rescan returns `[]`, so no `executeArbitrage` call is made; the "all … failed re-scan" warn path is exercised. A second test variant T6b using the **non-empty** branch is out of scope for this PR but noted as a natural extension. |
 | T7 | **Multi-symbol partial**: Stage 1 opens A, Stage 2 opens B, salvage true noop | `[A, B]` | `{A, B}` | `{A}` | OK | OK | `applyAllocatorOverrides` returns `[A_patched, B_patched]`. Stage 2: `openedS1={A}` → drops A as duplicate, execs `[B]`. `stage2Attempted={A, B}`. Salvage: both excluded (A via `stage2Attempted`, B via `stage2Attempted` AND `openedByUs`). No salvage call. |
 
 ### DB failure injection
 
-No `miniredis.SetError(...)` helper is used in the current engine tests (verified via
-`rg -n "SetError" internal/`). The recommended approach:
+Current engine wiring holds a **concrete** `*database.Client` — no `StateStore` /
+wrapper interface exists (verified: `grep -n "e.db " internal/engine/engine.go`
+shows direct field access; no interface indirection). No `miniredis.SetError(...)`
+helper is used in the current engine tests (verified via `rg -n "SetError" internal/`).
 
-1. **Preferred** — if a `StateStore` interface / wrapper already exists in the test
-   harness (check `engine_rank_first_test.go` and friends for existing test doubles),
-   introduce a thin `failingStateStore` variant that wraps the real store and returns
-   `errors.New("forced db error")` from `GetActivePositions()` for N consecutive calls,
-   then delegates to the real store. This isolates the failure to the one method under
-   test without affecting other Redis operations.
-2. **Fallback** — if the engine currently reads directly from `*database.Client` with
-   no interface in place, add a minimal `activePositionsGetter` interface
-   (`interface { GetActivePositions() ([]*models.ArbitragePosition, error) }`) plus a
-   `*Engine` field `activePosSource` defaulting to `e.db`. Tests override this field
-   with a failing stub. Production behavior unchanged. Single-line default assignment
-   in the engine constructor; zero risk to live trading.
-3. **Non-goal** — do NOT add package-level globals, do NOT introduce monkey-patching
-   or interface hacks beyond what is minimally required for these 5 new tests.
+**The approach** (single explicit path, no branches):
+
+Add a minimal `activePositionsGetter` interface on `*Engine` plus a new field:
+
+```go
+// internal/engine/engine.go
+type activePositionsGetter interface {
+    GetActivePositions() ([]*models.ArbitragePosition, error)
+}
+
+type Engine struct {
+    ...existing fields...
+    // activePosSource is used ONLY by the staged entry-scan path's retry wrapper.
+    // Production: set to e.db in the constructor. Tests: override to a failing
+    // stub to exercise the retry + salvage branches.
+    activePosSource activePositionsGetter
+}
+```
+
+Constructor change — a single line:
+```go
+e.activePosSource = e.db  // in NewEngine after e.db is assigned
+```
+
+Call-site change in `getActivePositionsWithRetry`:
+```go
+positions, err := e.activePosSource.GetActivePositions()
+```
+
+The existing 14 call sites of `e.db.GetActivePositions()` outside the staged entry
+scan remain unchanged (zero-blast-radius scope). Only the two call sites inside the
+Stage 2 + salvage block are routed through `e.activePosSource` via the retry helper.
+
+Test stub:
+```go
+type failingActivePosGetter struct {
+    real     activePositionsGetter // delegates to miniredis-backed *database.Client
+    failN    int                    // fail the first N calls, then delegate
+    calls    int
+}
+
+func (f *failingActivePosGetter) GetActivePositions() ([]*models.ArbitragePosition, error) {
+    f.calls++
+    if f.calls <= f.failN {
+        return nil, errors.New("forced: db unavailable")
+    }
+    return f.real.GetActivePositions()
+}
+```
+
+**Explicit non-goals:**
+- No package-level globals.
+- No monkey-patching.
+- No interface on other unrelated `*database.Client` methods — we are not
+  refactoring the engine-db seam, only adding the minimum hook for this failure
+  path.
+- Tests that do NOT need failure injection (T1, T3, T5, T6, T7) use the default
+  `e.activePosSource = e.db` path; they must not see any behavior difference vs.
+  the current code.
 
 ### Coverage target
 
@@ -320,7 +371,7 @@ No `miniredis.SetError(...)` helper is used in the current engine tests (verifie
 | **R1**: Duplicate open — salvage rescans `B`, but Stage 2 also executed `B` if DB partially succeeded | Medium | `stage2Attempted[B]` is set unconditionally once DB read succeeds, BEFORE executeArbitrage. Salvage checks `stage2Attempted` → skips. Verified by T1. |
 | **R2**: Retry amplifies Redis load | Low | `maxAttempts=2`, `backoff=300ms`. Entry scan runs once per minute at :40. Worst-case 600ms added latency. No thundering herd because single-goroutine. |
 | **R3**: Salvage's own DB read also fails (T4) | Low | Same as current behavior — log warn, defer to next cycle. No regression. |
-| **R4**: `applyAllocatorOverrides` filters out a symbol as stale → salvage retries it → stale again → wastes a scan | Low | `RescanSymbols` applies the same freshness checks. Stale symbol fails rescan and is logged as "failed re-scan". No trade is opened. No state corruption. Wasted work: a few HTTP calls to exchange REST in the worst case. |
+| **R4**: `applyAllocatorOverrides` filters out a symbol as stale → salvage retries it | Low | `RescanSymbols` applies fresh freshness checks independently. Two outcomes: (a) symbol is still stale → rescan returns empty → "failed re-scan" warn path, no trade opened; or (b) pair data changed between applyAllocatorOverrides and salvage → rescan passes → a trade may open with fresh data. Both outcomes are acceptable and desired — this is the whole point of salvage. Wasted work in case (a): a few HTTP calls to exchange REST. No state corruption in either case. |
 | **R5**: A symbol Stage 1 *attempted* but rejected (risk/slippage) — salvage rescans it | Medium | Salvage only iterates `overrideSnapshot`, not all of `result.Opps`. So only allocator-selected symbols are rescanned. `RescanSymbols` re-checks risk/slippage; a symbol rejected by Stage 1 on deterministic grounds will be rejected again. Non-deterministic rejections (e.g., orderbook slippage) may succeed the second time — this is actually desirable for fund-stranded symbols. Accept as current behavior. |
 | **R6**: `time.Sleep(300ms)` inside the engine main loop blocks other handlers | Low | The main loop already performs serial handler work inside the `select` case. Adding 300ms × at most 2 reads = ≤600ms is negligible relative to `executeArbitrage` itself, which routinely exceeds 1s. Verified by log grep: `entry stage-\d:.*executing` timings in production. |
 
@@ -341,19 +392,22 @@ in this block).
 
 ## 8. Implementation Steps
 
-1. **Step 1** — Add `getActivePositionsWithRetry` helper near `applyAllocatorOverrides`
-   (`internal/engine/engine.go:~760`).
-2. **Step 2** — Rewrite Stage 2 + salvage block (`internal/engine/engine.go:888-988`)
+1. **Step 0** — Add `activePositionsGetter` interface + `activePosSource` field +
+   constructor wire-up (`e.activePosSource = e.db`). Verify `go build ./...` still
+   green — no behavior change yet.
+2. **Step 1** — Add `getActivePositionsWithRetry` helper near `applyAllocatorOverrides`
+   (`internal/engine/engine.go:~760`). Uses `e.activePosSource`.
+3. **Step 2** — Rewrite Stage 2 + salvage block (`internal/engine/engine.go:888-988`)
    per pseudocode in §3.3. Single commit, diff stays local to this 100-line region.
-3. **Step 3** — `go build ./...` + existing `go test ./internal/engine/...` → must stay green.
-4. **Step 4** — Create `internal/engine/engine_stage2_salvage_test.go` with tests T1–T7.
-5. **Step 5** — `go test ./internal/engine/ -run 'Stage2Salvage' -v` → 7/7 green.
-6. **Step 6** — Full `go test ./...` + full `go vet ./...` green.
-7. **Step 7** — `rg -n "inScan" internal/engine/engine.go` → 0 matches.
-8. **Step 8** — Post-implementation review: `/codex:review` (follow
+4. **Step 3** — `go build ./...` + existing `go test ./internal/engine/...` → must stay green.
+5. **Step 4** — Create `internal/engine/engine_stage2_salvage_test.go` with tests T1–T7.
+6. **Step 5** — `go test ./internal/engine/ -run 'Stage2Salvage' -v` → 7/7 green.
+7. **Step 6** — Full `go test ./...` + full `go vet ./...` green.
+8. **Step 7** — `rg -n "inScan" internal/engine/engine.go` → 0 matches.
+9. **Step 8** — Post-implementation review: `/codex:review` (follow
    feedback_review_flow: normal → PASS → independent).
-9. **Step 9** — Commit with message pattern matching repo convention:
-   `fix(allocator): salvage Stage 2 DB-failure in-scan overrides (codex d1ac2563 #1)`.
+10. **Step 9** — Commit with message pattern matching repo convention:
+    `fix(allocator): salvage Stage 2 DB-failure in-scan overrides (codex d1ac2563 #1)`.
 
 Not in scope (out-of-plan):
 - Finding #2 MEDIUM test coverage for `applyAllocatorOverrides` itself —
