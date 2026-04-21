@@ -1,0 +1,346 @@
+# PLAN — Stage 2 DB-Failure Salvage (Finding #1 from codex d1ac2563)
+
+**Author:** zxcnny930 + Claude
+**Date:** 2026-04-21
+**Status:** v1 — initial draft, awaiting review
+**Branch:** `fix/allocator-unified` (continues existing branch; follow-up commits on top of 32bdb810)
+**Origin:** codex independent review `d1ac2563` verdict NEEDS-REVISION Finding #1 (HIGH).
+
+---
+
+## 1. Goal
+
+Close the single-point-of-failure in `internal/engine/engine.go:888-1018` where a transient
+`db.GetActivePositions()` failure between Stage 1 and Stage 2 causes `applyAllocatorOverrides`
+to drain `e.allocOverrides` **without executing any Stage 2 opps**, and the existing salvage
+block (`:950-987`) silently excludes those funded-but-un-opened symbols because they are
+`inScan[sym]`.
+
+After this plan:
+1. A Stage 2 `GetActivePositions()` failure is retried once with backoff before falling through.
+2. If Stage 2 still fails to execute, the salvage block picks up **all** unopened override
+   symbols (in-scan AND out-of-scan), not just the out-of-scan subset.
+3. The failure class is covered by targeted tests.
+
+---
+
+## 2. Problem Analysis (from codex d1ac2563)
+
+> "A single `GetActivePositions()` failure after `applyAllocatorOverrides()` can still drop
+> funded overrides for symbols that ARE in the current scan, causing under-trade / possible
+> fund stranding. … The later salvage block only rescans override symbols NOT in the current
+> scan (`engine.go:950-978` uses `inScan[sym]` as an exclusion), so any funded override
+> symbol that was present in `result.Opps` but never reached `executeArbitrage(stage2Opps, ...)`
+> is now lost for the cycle."
+
+### 2.1 Concrete sequence leading to the bug
+
+1. `:20` rebalance funds override for symbol `SYM_A` with pair `BinanceLong/BybitShort` →
+   `e.allocOverrides["SYM_A"] = {Binance, Bybit}`.
+2. `:40` entry scan. `result.Opps` contains `SYM_A` (possibly with a different pair).
+3. Stage 1 rank-based `executeArbitrage(result.Opps, ...)` runs — `SYM_A` is not opened
+   (lower rank than other opps filling MaxPositions budget, or risk rejection).
+4. `overrideSnapshot := {"SYM_A": ...}` captured. ✓
+5. `applyAllocatorOverrides(result.Opps)` drains `e.allocOverrides = nil`, returns
+   `patched = [SYM_A_patched]`, `hadOverrides = true`.
+6. `activeAfterS1, err := e.db.GetActivePositions()` — **Redis transient error**.
+7. Line 909: `e.log.Warn(... "skipping stage-2 ...")`. No further Stage 2 work.
+8. Salvage block at `:950`:
+   - `inScan["SYM_A"] = true` (it was in `result.Opps`).
+   - Loop body at `:966-975`: `if inScan[sym] || openedByUs[sym] { continue }` → **skip**.
+   - `SYM_A` is NOT rescanned. Funds stranded until next rebalance cycle.
+
+### 2.2 Why `inScan[sym]` was used
+
+Historical reason: the Bug-7 salvage block was written to handle the case
+**"rebalance funded a symbol that DROPPED OUT of the current scan"**. The `inScan`
+exclusion assumed Stage 2 always had a successful chance on in-scan symbols. When the
+Stage 2 DB read fails, that assumption breaks.
+
+---
+
+## 3. Fix Design
+
+### 3.1 Two complementary fixes
+
+**Fix A — Retry Stage 2 `GetActivePositions()` once with a short backoff.**
+Reduces the probability of the failure class. Does not eliminate it.
+
+**Fix B — Replace `inScan[sym]` exclusion with `stage2Attempted[sym]` tracking.**
+Eliminates the blind-spot even when both retries fail.
+
+Both are in-scope for this plan. Fix B is load-bearing; Fix A is insurance.
+
+### 3.2 Real API signatures (no invented APIs)
+
+```go
+// Existing in internal/database/state.go:
+func (db *Client) GetActivePositions() ([]*models.Position, error)
+
+// Existing in pkg/utils/logging.go:
+type Logger struct { ... }
+func (l *Logger) Warn(format string, args ...interface{})
+func (l *Logger) Info(format string, args ...interface{})
+
+// Existing in internal/engine/engine.go:
+func (e *Engine) executeArbitrage(opps []models.Opportunity, perpCap int)
+func (e *Engine) applyAllocatorOverrides(opps []models.Opportunity) ([]models.Opportunity, bool)
+
+// Existing in internal/discovery/scanner.go:
+func (s *Scanner) RescanSymbols(pairs []models.SymbolPair) []models.Opportunity
+```
+
+No new package imports. `time.Sleep` already imported in engine.go.
+
+### 3.3 Pseudocode (replaces engine.go:888-988)
+
+```go
+e.log.Info("entry stage-1: rank-based executeArbitrage with %d opps", len(result.Opps))
+e.executeArbitrage(result.Opps, perpCap)
+
+// Snapshot BEFORE drain (Bug 7 invariant preserved).
+e.allocOverrideMu.Lock()
+overrideSnapshot := make(map[string]allocatorChoice, len(e.allocOverrides))
+for k, v := range e.allocOverrides {
+    overrideSnapshot[k] = v
+}
+e.allocOverrideMu.Unlock()
+
+patched, hadOverrides := e.applyAllocatorOverrides(result.Opps)
+
+// Track which override symbols Stage 2 actually got to try.
+// Default: empty. Populated only when Stage 2 DB read succeeds AND executeArbitrage runs.
+stage2Attempted := map[string]bool{}
+
+if len(patched) > 0 {
+    // Finding #1 Fix A: retry DB read once on transient failure.
+    activeAfterS1, err := e.getActivePositionsWithRetry(2, 300*time.Millisecond)
+    if err != nil {
+        e.log.Warn("entry stage-2: GetActivePositions failed after retry: %v — deferring to salvage", err)
+        // Intentionally do NOT early-return: fall through to salvage with
+        // stage2Attempted empty, so salvage covers in-scan symbols too.
+    } else {
+        openedS1 := make(map[string]bool, len(activeAfterS1))
+        for _, p := range activeAfterS1 {
+            if p.Status != models.StatusClosed {
+                openedS1[p.Symbol] = true
+            }
+        }
+        var stage2Opps []models.Opportunity
+        dropped := 0
+        for _, o := range patched {
+            // Mark attempted regardless of duplicate-filter outcome.
+            // openedS1 symbols are already active — salvage would be a noop anyway.
+            stage2Attempted[o.Symbol] = true
+            if openedS1[o.Symbol] {
+                dropped++
+                continue
+            }
+            stage2Opps = append(stage2Opps, o)
+        }
+        if dropped > 0 {
+            e.log.Info("entry stage-2: %d override(s) skipped (already opened by stage-1)", dropped)
+        }
+        if len(stage2Opps) > 0 {
+            e.log.Info("entry stage-2: executing %d override opportunities (tier-2-rebalance-overrides)", len(stage2Opps))
+            e.executeArbitrage(stage2Opps, perpCap)
+        } else {
+            e.log.Info("entry stage-2: no override opportunities remain after stage-1 filter")
+        }
+    }
+} else if hadOverrides {
+    e.log.Warn("entry stage-2: allocator overrides present but all stale after filter")
+    // NOTE: stage2Attempted stays empty. Salvage will consider these symbols.
+    // applyAllocatorOverrides already logged per-symbol reasons. Symbols that
+    // were legitimately stale-rejected will fail RescanSymbols too, so salvage
+    // is a noop for them — no extra cost.
+}
+
+// --- Salvage block ---
+if len(overrideSnapshot) > 0 {
+    activeForSalvage, err := e.getActivePositionsWithRetry(2, 300*time.Millisecond)
+    if err != nil {
+        e.log.Warn("entry stage-2 salvage: GetActivePositions failed after retry: %v — transfers may be stranded until next cycle", err)
+    } else {
+        openedByUs := make(map[string]bool, len(activeForSalvage))
+        for _, p := range activeForSalvage {
+            if p.Status != models.StatusClosed {
+                openedByUs[p.Symbol] = true
+            }
+        }
+        var missingPairs []models.SymbolPair
+        for sym, choice := range overrideSnapshot {
+            // Finding #1 Fix B: the exclusion is now `stage2Attempted` (what we
+            // actually tried) + `openedByUs` (what's actually active).
+            // Dropping `inScan[sym]` — that was an over-approximation that
+            // excluded symbols Stage 2 never got to attempt.
+            if stage2Attempted[sym] || openedByUs[sym] {
+                continue
+            }
+            missingPairs = append(missingPairs, models.SymbolPair{
+                Symbol:        sym,
+                LongExchange:  choice.longExchange,
+                ShortExchange: choice.shortExchange,
+            })
+        }
+        if len(missingPairs) > 0 {
+            e.log.Info("entry stage-2 salvage: %d funded override(s) need rescan (stage2-skipped or out-of-scan), re-scanning", len(missingPairs))
+            salvageOpps := e.discovery.RescanSymbols(missingPairs)
+            if len(salvageOpps) > 0 {
+                e.log.Info("entry stage-2 salvage: %d/%d passed re-scan, executing", len(salvageOpps), len(missingPairs))
+                e.executeArbitrage(salvageOpps, perpCap)
+            } else {
+                e.log.Warn("entry stage-2 salvage: all %d symbols failed re-scan — transfers may be stranded until next cycle", len(missingPairs))
+            }
+        }
+    }
+}
+e.log.Info("run loop: entryScan handler done (stage-1 + stage-2 + salvage)")
+```
+
+### 3.4 New helper — `getActivePositionsWithRetry`
+
+Lives in `internal/engine/engine.go` near existing helpers (private method on `*Engine`).
+
+```go
+// getActivePositionsWithRetry wraps db.GetActivePositions with a simple retry
+// to survive transient Redis hiccups during the critical stage-1 → stage-2
+// transition. Used only by the entry-scan path where a dropped read leads
+// to fund stranding (see PLAN-stage2-db-failure-salvage.md).
+func (e *Engine) getActivePositionsWithRetry(maxAttempts int, backoff time.Duration) ([]*models.Position, error) {
+    if maxAttempts < 1 {
+        maxAttempts = 1
+    }
+    var lastErr error
+    for i := 0; i < maxAttempts; i++ {
+        positions, err := e.db.GetActivePositions()
+        if err == nil {
+            return positions, nil
+        }
+        lastErr = err
+        if i < maxAttempts-1 {
+            time.Sleep(backoff)
+        }
+    }
+    return nil, lastErr
+}
+```
+
+- `maxAttempts=2` at call sites → 1 retry (total 2 attempts), matches Fix A.
+- `backoff=300ms` → bounded latency impact on the entry-scan loop.
+- Short, intentionally dumb; we do NOT want exponential escalation here because
+  the entry scan window is short and the salvage path is the real safety net.
+
+---
+
+## 4. Affected Files
+
+| File | Change | Lines |
+|---|---|---|
+| `internal/engine/engine.go` | New helper `getActivePositionsWithRetry`. | +15 |
+| `internal/engine/engine.go` | Rewrite of Stage 2 + salvage block (`:888-988`). | ~100 replaced |
+| `internal/engine/engine_stage2_salvage_test.go` (new) | 4 scenarios, miniredis-backed. | +~250 |
+
+No changes outside `internal/engine/`. No config, no API, no frontend, no Redis schema.
+
+---
+
+## 5. Tests (new file: `engine_stage2_salvage_test.go`)
+
+Goal: cover the three paths that currently lack tests (codex Finding #2, MEDIUM).
+
+Each test drives the same code path as production: sets `e.allocOverrides`,
+populates miniredis with known active positions (or none), invokes the Stage 2 +
+salvage block via the same entry scan entry point used in
+`engine_rank_first_test.go`, and asserts on:
+- The set of symbols passed to `executeArbitrage` (captured via a stub
+  `executeArbitrage` or an `onArbRun` hook — choose whichever the existing test
+  harness already uses; mirror `engine_rank_first_test.go`).
+- `e.allocOverrides` is drained regardless.
+- Log assertions are NOT required — behavior assertions only.
+
+### Test matrix
+
+| # | Scenario | Stage 1 opps | Override set | S1 opens | S2 DB | Salvage DB | Expected |
+|---|---|---|---|---|---|---|---|
+| T1 | Happy path: Stage 2 executes normally | `[A, B]` | `{B}` | `{A}` | OK | OK | Stage 2 execs `[B]`; salvage noop |
+| T2 | **Regression for Finding #1**: Stage 2 DB fails, in-scan override recovered by salvage | `[A, B]` | `{B}` | `{A}` | FAIL (both attempts) | OK | Stage 2 execs nothing; salvage rescans `{B}` and execs it |
+| T3 | Out-of-scan override recovered by salvage (Bug-7 existing behavior preserved) | `[A]` | `{B}` | `{A}` | OK | OK | Stage 2 execs nothing (`B` filtered out by `applyAllocatorOverrides`); salvage rescans `{B}` |
+| T4 | Both DB reads fail → clean skip, no crash, no duplicate | `[A, B]` | `{B}` | `{A}` | FAIL | FAIL | No Stage 2 exec, no salvage exec, warn logged, `e.allocOverrides` drained |
+| T5 | Stage 1 already opened override symbol → Stage 2 + salvage both skip | `[A, B]` | `{B}` | `{A, B}` | OK | OK | Stage 2 drops B as duplicate; salvage drops B via `openedByUs` (no duplicate open) |
+
+### Miniredis failure injection
+
+Use `miniredis.Mini.SetError("forced")` / `.SetError("")` to toggle DB errors
+mid-test — already used elsewhere in the codebase (verify with `grep -rn SetError
+internal/`; if absent, use a thin DB wrapper that the engine can use in tests).
+
+### Coverage target
+
+- `getActivePositionsWithRetry`: retry path hit in T2, success path hit in T1.
+- Stage 2 + salvage branches: all five matrix cells hit at least one unique code path.
+
+---
+
+## 6. Risks & Mitigations
+
+| Risk | Severity | Mitigation |
+|---|---|---|
+| **R1**: Duplicate open — salvage rescans `B`, but Stage 2 also executed `B` if DB partially succeeded | Medium | `stage2Attempted[B]` is set unconditionally once DB read succeeds, BEFORE executeArbitrage. Salvage checks `stage2Attempted` → skips. Verified by T1. |
+| **R2**: Retry amplifies Redis load | Low | `maxAttempts=2`, `backoff=300ms`. Entry scan runs once per minute at :40. Worst-case 600ms added latency. No thundering herd because single-goroutine. |
+| **R3**: Salvage's own DB read also fails (T4) | Low | Same as current behavior — log warn, defer to next cycle. No regression. |
+| **R4**: `applyAllocatorOverrides` filters out a symbol as stale → salvage retries it → stale again → wastes a scan | Low | `RescanSymbols` applies the same freshness checks. Stale symbol fails rescan and is logged as "failed re-scan". No trade is opened. No state corruption. Wasted work: a few HTTP calls to exchange REST in the worst case. |
+| **R5**: A symbol Stage 1 *attempted* but rejected (risk/slippage) — salvage rescans it | Medium | Salvage only iterates `overrideSnapshot`, not all of `result.Opps`. So only allocator-selected symbols are rescanned. `RescanSymbols` re-checks risk/slippage; a symbol rejected by Stage 1 on deterministic grounds will be rejected again. Non-deterministic rejections (e.g., orderbook slippage) may succeed the second time — this is actually desirable for fund-stranded symbols. Accept as current behavior. |
+| **R6**: `time.Sleep(300ms)` inside the engine main loop blocks other handlers | Low | The main loop already performs serial handler work inside the `select` case. Adding 300ms × at most 2 reads = ≤600ms is negligible relative to `executeArbitrage` itself, which routinely exceeds 1s. Verified by log grep: `entry stage-\d:.*executing` timings in production. |
+
+---
+
+## 7. Deletion / cleanup
+
+No deletions. This is an additive fix within an existing block. The `inScan`
+**variable name** is kept in scope but repurposed would be confusing, so the
+rewrite simply drops it and uses `stage2Attempted` from the start. No cross-file
+refs to `inScan` exist (it's a local).
+
+Verify with: `rg -n "inScan" internal/engine/ | rg -v _test.go` → after edit,
+should return 0 matches inside `engine.go` (safe because `inScan` only appears
+in this block).
+
+---
+
+## 8. Implementation Steps
+
+1. **Step 1** — Add `getActivePositionsWithRetry` helper near `applyAllocatorOverrides`
+   (`internal/engine/engine.go:~760`).
+2. **Step 2** — Rewrite Stage 2 + salvage block (`internal/engine/engine.go:888-988`)
+   per pseudocode in §3.3. Single commit, diff stays local to this 100-line region.
+3. **Step 3** — `go build ./...` + existing `go test ./internal/engine/...` → must stay green.
+4. **Step 4** — Create `internal/engine/engine_stage2_salvage_test.go` with tests T1–T5.
+5. **Step 5** — `go test ./internal/engine/ -run 'Stage2Salvage' -v` → 5/5 green.
+6. **Step 6** — Full `go test ./...` + full `go vet ./...` green.
+7. **Step 7** — `rg -n "inScan" internal/engine/engine.go` → 0 matches.
+8. **Step 8** — Post-implementation review: `/codex:review` (follow
+   feedback_review_flow: normal → PASS → independent).
+9. **Step 9** — Commit with message pattern matching repo convention:
+   `fix(allocator): salvage Stage 2 DB-failure in-scan overrides (codex d1ac2563 #1)`.
+
+Not in scope (out-of-plan):
+- Finding #2 MEDIUM test coverage for `applyAllocatorOverrides` itself —
+  the new test file covers the end-to-end seam, which subsumes most of the
+  applyAllocatorOverrides paths via T1/T3/T5. If codex still asks for a direct
+  unit test on applyAllocatorOverrides, follow up with an additive patch.
+
+---
+
+## 9. Verification checklist (before "ALL PASS")
+
+- [ ] Plan written
+- [ ] Plan reviewed by codex (normal review) — PASS
+- [ ] Plan reviewed by codex (independent review) — PASS
+- [ ] Only then: implementation
+- [ ] Post-implementation review — PASS
+- [ ] `go build ./...` green
+- [ ] `go test ./...` green
+- [ ] `go vet ./...` green
+- [ ] `rg -i argmax internal cmd web/src` = 0 (sanity check — this plan touches
+      allocator-adjacent code but should NOT re-introduce argmax)
