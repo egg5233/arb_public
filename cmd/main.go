@@ -241,7 +241,6 @@ func main() {
 	// Register manual close/open handlers with the API server.
 	apiSrv.SetCloseHandler(eng.ManualClose)
 	apiSrv.SetOpenHandler(eng.ManualOpen)
-	apiSrv.SetClearAllocOverridesHandler(eng.ClearAllocOverrides)
 
 	// ---------------------------------------------------------------------------
 	// Analytics: SQLite store, snapshot writer, backfill (guarded by config)

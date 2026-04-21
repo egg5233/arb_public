@@ -212,7 +212,7 @@ func notionalRejectionKind(effectiveCap float64, leverage int) models.RejectionK
 }
 
 // pricedCapitalRejection builds a RejectionKindCapital approval carrying full
-// sizing/pricing data so downstream callers (allocator argmax) can score and
+// sizing/pricing data so downstream callers (Pass 1 rescue) can score and
 // fund a rescue transfer. Long-side rejections that fire before shortMargin is
 // computed should pass shortMargin=0; the helper fills the missing leg from
 // the other side so RequiredMargin is always non-zero when size>0.
@@ -545,7 +545,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	if effectiveShortAvail < shortMarginWithBuffer {
 		reason := fmt.Sprintf("insufficient margin buffer on %s: need %.2f (including %.0f%% safety buffer), have %.2f", opp.ShortExchange, shortMarginWithBuffer, safetyPct, effectiveShortAvail)
 		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
-		// Use midPrice (= longMid, the sizing reference) so argmax's
+		// Use midPrice (= longMid, the sizing reference) so Pass 1 rescue's
 		// entryNotional = Size * Price matches calculateSizeWithPrice's basis.
 		// Using shortMid would skew scoring when long/short prices diverge.
 		return pricedCapitalRejection(reason, size, midPrice, longMarginWithBuffer, shortMarginWithBuffer), nil

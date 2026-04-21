@@ -186,14 +186,17 @@ func (e *Engine) canReserveAllocatorChoice(work map[string]rebalanceBalanceInfo,
 	}
 	long = e.replayUsableAllocatorBalance(c.longExchange, long)
 	short = e.replayUsableAllocatorBalance(c.shortExchange, short)
-	if long.futures < c.requiredMargin || short.futures < c.requiredMargin {
+	longNeed, shortNeed := c.marginNeeds()
+	if long.futures < longNeed || short.futures < shortNeed {
 		return false
 	}
-	margin := c.requiredMargin
+	longMargin := longNeed
+	shortMargin := shortNeed
 	if e.cfg.MarginSafetyMultiplier > 0 {
-		margin = c.requiredMargin / e.cfg.MarginSafetyMultiplier
+		longMargin = longNeed / e.cfg.MarginSafetyMultiplier
+		shortMargin = shortNeed / e.cfg.MarginSafetyMultiplier
 	}
-	return e.replayProjectedRatioOK(long, margin) && e.replayProjectedRatioOK(short, margin)
+	return e.replayProjectedRatioOK(long, longMargin) && e.replayProjectedRatioOK(short, shortMargin)
 }
 
 func (e *Engine) replayUsableAllocatorBalance(name string, bal rebalanceBalanceInfo) rebalanceBalanceInfo {
@@ -214,8 +217,9 @@ func (e *Engine) replayUsableAllocatorBalance(name string, bal rebalanceBalanceI
 func (e *Engine) reserveAllocatorChoice(work map[string]rebalanceBalanceInfo, c allocatorChoice) {
 	long := work[c.longExchange]
 	short := work[c.shortExchange]
-	long.futures -= c.requiredMargin
-	short.futures -= c.requiredMargin
+	longNeed, shortNeed := c.marginNeeds()
+	long.futures -= longNeed
+	short.futures -= shortNeed
 	work[c.longExchange] = long
 	work[c.shortExchange] = short
 }
@@ -304,15 +308,37 @@ func (e *Engine) keepFundedChoices(choices []allocatorChoice, post map[string]re
 }
 
 type allocatorChoice struct {
-	symbol         string
-	longExchange   string
-	shortExchange  string
-	spreadBpsH     float64
-	intervalHours  float64
-	requiredMargin float64
-	entryNotional  float64
-	baseValue      float64
-	altPair        *models.AlternativePair // nil for primary pair, set for alternatives
+	symbol              string
+	longExchange        string
+	shortExchange       string
+	spreadBpsH          float64
+	intervalHours       float64
+	requiredMargin      float64 // max(long,short) margin with safety buffer — kept for compat at legacy call sites
+	longRequiredMargin  float64 // per-leg margin needed on long exchange (with buffer)
+	shortRequiredMargin float64 // per-leg margin needed on short exchange (with buffer)
+	entryNotional       float64
+	baseValue           float64
+	altPair             *models.AlternativePair // nil for primary pair, set for alternatives
+}
+
+// marginNeeds returns per-leg margin needs. Falls back to the symmetric
+// requiredMargin when per-leg fields are zero (not yet populated by caller).
+func (c allocatorChoice) marginNeeds() (long, short float64) {
+	if c.longRequiredMargin > 0 && c.shortRequiredMargin > 0 {
+		return c.longRequiredMargin, c.shortRequiredMargin
+	}
+	return c.requiredMargin, c.requiredMargin // symmetric fallback
+}
+
+// maxRequiredMargin returns the larger of the two per-leg needs.
+// Used at legacy call sites that still expect a single margin value
+// (e.g., sort tie-break at line 606).
+func (c allocatorChoice) maxRequiredMargin() float64 {
+	l, s := c.marginNeeds()
+	if l > s {
+		return l
+	}
+	return s
 }
 
 type allocatorCandidate struct {
@@ -413,14 +439,19 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 					}())
 				continue
 			}
+			choice.longRequiredMargin = approval.LongMarginNeeded
+			choice.shortRequiredMargin = approval.ShortMarginNeeded
 			choice.requiredMargin = approval.RequiredMargin
 			if choice.requiredMargin <= 0 {
 				choice.requiredMargin = e.cfg.CapitalPerLeg * e.cfg.MarginSafetyMultiplier
 				e.log.Debug("allocator: re-validate %s fallback margin=%.2f", choice.symbol, choice.requiredMargin)
 			}
+			// If per-leg fields are not populated by the risk simulator, fall back
+			// to symmetric requiredMargin via the helper's fallback path.
+			longNeed, shortNeed := choice.marginNeeds()
 			validated = append(validated, choice)
-			reserved[choice.longExchange] += approval.RequiredMargin
-			reserved[choice.shortExchange] += approval.RequiredMargin
+			reserved[choice.longExchange] += longNeed
+			reserved[choice.shortExchange] += shortNeed
 		}
 		selected = validated
 	}
@@ -431,8 +462,9 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 	needs := make(map[string]float64)
 	totalValue := 0.0
 	for _, choice := range selected {
-		needs[choice.longExchange] += choice.requiredMargin
-		needs[choice.shortExchange] += choice.requiredMargin
+		longNeed, shortNeed := choice.marginNeeds()
+		needs[choice.longExchange] += longNeed
+		needs[choice.shortExchange] += shortNeed
 		totalValue += choice.baseValue
 	}
 
@@ -460,8 +492,9 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 		needs = make(map[string]float64, len(selected)*2)
 		totalValue = 0
 		for _, choice := range selected {
-			needs[choice.longExchange] += choice.requiredMargin
-			needs[choice.shortExchange] += choice.requiredMargin
+			longNeed, shortNeed := choice.marginNeeds()
+			needs[choice.longExchange] += longNeed
+			needs[choice.shortExchange] += shortNeed
 			totalValue += choice.baseValue
 		}
 		recheck := e.dryRunTransferPlan(selected, balances, feeCache)
@@ -497,8 +530,9 @@ func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string
 		needs = make(map[string]float64, len(selected)*2)
 		totalValue = 0
 		for _, choice := range selected {
-			needs[choice.longExchange] += choice.requiredMargin
-			needs[choice.shortExchange] += choice.requiredMargin
+			longNeed, shortNeed := choice.marginNeeds()
+			needs[choice.longExchange] += longNeed
+			needs[choice.shortExchange] += shortNeed
 			totalValue += choice.baseValue
 		}
 		feasible = len(selected) > 0
@@ -561,22 +595,34 @@ func (e *Engine) buildAllocatorCandidates(opps []models.Opportunity, cache *risk
 			}
 
 			entryNotional := approval.Size * approval.Price
+			longMargin := approval.LongMarginNeeded
+			shortMargin := approval.ShortMarginNeeded
 			requiredMargin := approval.RequiredMargin
 			if requiredMargin <= 0 {
 				requiredMargin = e.cfg.CapitalPerLeg * e.cfg.MarginSafetyMultiplier
 			}
-			choices = append(choices, allocatorChoice{
-				symbol:         opp.Symbol,
-				longExchange:   longExch,
-				shortExchange:  shortExch,
-				spreadBpsH:     spread,
-				intervalHours:  intervalHours,
-				requiredMargin: requiredMargin,
-				entryNotional:  entryNotional,
-				baseValue:      computeAllocatorBaseValue(spread, entryNotional, longExch, shortExch, e.cfg.MinHoldTime.Hours(), fees),
-				altPair:        alt,
-			})
-			e.log.Debug("allocator: choice added %s %s/%s: margin=%.2f baseValue=%.4f notional=%.2f", opp.Symbol, longExch, shortExch, requiredMargin, choices[len(choices)-1].baseValue, entryNotional)
+			choice := allocatorChoice{
+				symbol:              opp.Symbol,
+				longExchange:        longExch,
+				shortExchange:       shortExch,
+				spreadBpsH:          spread,
+				intervalHours:       intervalHours,
+				longRequiredMargin:  longMargin,
+				shortRequiredMargin: shortMargin,
+				requiredMargin:      requiredMargin,
+				entryNotional:       entryNotional,
+				baseValue:           computeAllocatorBaseValue(spread, entryNotional, longExch, shortExch, e.cfg.MinHoldTime.Hours(), fees),
+				altPair:             alt,
+			}
+			// Keep legacy requiredMargin in sync with per-leg max so the sort
+			// tie-break at choices sorting stays well-defined even when the
+			// risk simulator begins populating per-leg fields with different
+			// values.
+			if m := choice.maxRequiredMargin(); m > 0 {
+				choice.requiredMargin = m
+			}
+			choices = append(choices, choice)
+			e.log.Debug("allocator: choice added %s %s/%s: margin=%.2f (long=%.2f short=%.2f) baseValue=%.4f notional=%.2f", opp.Symbol, longExch, shortExch, choice.requiredMargin, longMargin, shortMargin, choice.baseValue, entryNotional)
 		}
 
 		appendChoice(opp.LongExchange, opp.ShortExchange, opp.Spread, opp.IntervalHours, nil)
@@ -670,8 +716,9 @@ func (e *Engine) solveAllocator(candidates []allocatorCandidate, capacity map[st
 
 		for _, choice := range candidates[idx].choices {
 			nextCap := cloneFloatMap(cap)
-			nextCap[choice.longExchange] = math.Max(0, nextCap[choice.longExchange]-choice.requiredMargin)
-			nextCap[choice.shortExchange] = math.Max(0, nextCap[choice.shortExchange]-choice.requiredMargin)
+			longNeed, shortNeed := choice.marginNeeds()
+			nextCap[choice.longExchange] = math.Max(0, nextCap[choice.longExchange]-longNeed)
+			nextCap[choice.shortExchange] = math.Max(0, nextCap[choice.shortExchange]-shortNeed)
 			e.log.Debug("allocator: B&B try %s %s/%s", choice.symbol, choice.longExchange, choice.shortExchange)
 			next := append(current, choice)
 			branch(idx+1, nextCap, slots-1, next, currentValue+choice.baseValue)
@@ -699,10 +746,11 @@ func (e *Engine) greedyAllocatorSeed(candidates []allocatorCandidate, capacity m
 				e.log.Debug("allocator: greedy skip %s %s/%s: dryRun infeasible", choice.symbol, choice.longExchange, choice.shortExchange)
 				continue
 			}
-			capacity[choice.longExchange] = math.Max(0, capacity[choice.longExchange]-choice.requiredMargin)
-			capacity[choice.shortExchange] = math.Max(0, capacity[choice.shortExchange]-choice.requiredMargin)
-			e.log.Debug("allocator: greedy selected %s %s/%s margin=%.2f",
-				choice.symbol, choice.longExchange, choice.shortExchange, choice.requiredMargin)
+			longNeed, shortNeed := choice.marginNeeds()
+			capacity[choice.longExchange] = math.Max(0, capacity[choice.longExchange]-longNeed)
+			capacity[choice.shortExchange] = math.Max(0, capacity[choice.shortExchange]-shortNeed)
+			e.log.Debug("allocator: greedy selected %s %s/%s margin=%.2f (long=%.2f short=%.2f)",
+				choice.symbol, choice.longExchange, choice.shortExchange, choice.requiredMargin, longNeed, shortNeed)
 			selected = append(selected, choice)
 			remainingSlots--
 			break
@@ -936,10 +984,12 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 	}
 
 	// 2. Aggregate margin needs per exchange from all choices.
+	// Per-leg: long's margin accumulates on long's exchange, short's on short's.
 	needs := make(map[string]float64)
 	for _, c := range choices {
-		needs[c.longExchange] += c.requiredMargin
-		needs[c.shortExchange] += c.requiredMargin
+		longNeed, shortNeed := c.marginNeeds()
+		needs[c.longExchange] += longNeed
+		needs[c.shortExchange] += shortNeed
 	}
 
 	e.log.Debug("dryRun: start — choices=%d recipients=%d needs=%v", len(choices), len(needs), needs)
@@ -1345,16 +1395,26 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 	}
 
 	// 4. Simulate position opening: deduct actual margin per choice.
+	// Per-leg: long's actual margin comes off long's futures, short's off short's.
 	for _, c := range choices {
-		margin := c.requiredMargin / e.cfg.MarginSafetyMultiplier
-		if margin <= 0 {
-			margin = c.requiredMargin
+		longNeed, shortNeed := c.marginNeeds()
+		longMargin := longNeed
+		shortMargin := shortNeed
+		if e.cfg.MarginSafetyMultiplier > 0 {
+			longMargin = longNeed / e.cfg.MarginSafetyMultiplier
+			shortMargin = shortNeed / e.cfg.MarginSafetyMultiplier
+		}
+		if longMargin <= 0 {
+			longMargin = longNeed
+		}
+		if shortMargin <= 0 {
+			shortMargin = shortNeed
 		}
 		lb := sim[c.longExchange]
-		lb.futures -= margin
+		lb.futures -= longMargin
 		sim[c.longExchange] = lb
 		sb := sim[c.shortExchange]
-		sb.futures -= margin
+		sb.futures -= shortMargin
 		sim[c.shortExchange] = sb
 	}
 

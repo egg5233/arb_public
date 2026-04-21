@@ -9,13 +9,12 @@ import (
 )
 
 // TestManagerCapitalRejection_FieldPopulation pins the prerequisite contract
-// for the argmax rebalance path: every RejectionKindCapital approval produced
+// for the Pass 1 rescue path: every RejectionKindCapital approval produced
 // by the insufficient-margin-buffer and post-trade-ratio sites must carry
 // non-zero Size, Price, RequiredMargin, LongMarginNeeded, and ShortMarginNeeded
-// so rebalance_argmax.buildArgmaxCandidates can size transfers and score the
-// rescue candidate. If a future refactor strips these fields, argmax drops the
-// candidate as capital_unpriced and the 2026-04-20 15:45 donor-idle bug
-// reappears.
+// so rebalance.Pass1 can size transfers and score the rescue candidate.
+// If a future refactor strips these fields, Pass 1 drops the candidate as
+// capital_unpriced and the 2026-04-20 15:45 donor-idle bug reappears.
 func TestManagerCapitalRejection_FieldPopulation(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -137,10 +136,10 @@ func TestManagerCapitalRejection_FieldPopulation(t *testing.T) {
 			}
 
 			if approval.Size <= 0 {
-				t.Errorf("Size must be > 0 for argmax rescue pricing, got %v (reason=%s)", approval.Size, approval.Reason)
+				t.Errorf("Size must be > 0 for Pass 1 rescue pricing, got %v (reason=%s)", approval.Size, approval.Reason)
 			}
 			if approval.Price <= 0 {
-				t.Errorf("Price must be > 0 for argmax rescue pricing, got %v (reason=%s)", approval.Price, approval.Reason)
+				t.Errorf("Price must be > 0 for Pass 1 rescue pricing, got %v (reason=%s)", approval.Price, approval.Reason)
 			}
 			if approval.RequiredMargin <= 0 {
 				t.Errorf("RequiredMargin must be > 0, got %v (reason=%s)", approval.RequiredMargin, approval.Reason)
