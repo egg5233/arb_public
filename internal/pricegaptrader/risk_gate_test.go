@@ -17,10 +17,19 @@ import (
 type fakeStore struct {
 	disabled map[string]string // symbol -> reason ("" means not disabled; presence => disabled)
 	active   []*models.PriceGapPosition
+
+	// Plan 05: record saved positions + simulate per-resource lock ownership.
+	saved        []*models.PriceGapPosition
+	heldLocks    map[string]string // resource -> token (presence means held)
+	lockCounter  int
+	forceLockBusy bool // tests set true to simulate contention
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{disabled: map[string]string{}}
+	return &fakeStore{
+		disabled:  map[string]string{},
+		heldLocks: map[string]string{},
+	}
 }
 
 func (f *fakeStore) IsCandidateDisabled(symbol string) (bool, string, error) {
@@ -32,7 +41,10 @@ func (f *fakeStore) GetActivePriceGapPositions() ([]*models.PriceGapPosition, er
 }
 
 // ---- zero-value PriceGapStore method stubs ---------------------------------
-func (f *fakeStore) SavePriceGapPosition(p *models.PriceGapPosition) error      { return nil }
+func (f *fakeStore) SavePriceGapPosition(p *models.PriceGapPosition) error {
+	f.saved = append(f.saved, p)
+	return nil
+}
 func (f *fakeStore) GetPriceGapPosition(id string) (*models.PriceGapPosition, error) {
 	return nil, nil
 }
@@ -46,10 +58,28 @@ func (f *fakeStore) AppendSlippageSample(candidateID string, sample models.Slipp
 func (f *fakeStore) GetSlippageWindow(candidateID string, n int) ([]models.SlippageSample, error) {
 	return nil, nil
 }
+
+// AcquirePriceGapLock simulates a mutex: returns (token, true, nil) on free,
+// (_, false, nil) on already-held or when forceLockBusy is set.
 func (f *fakeStore) AcquirePriceGapLock(resource string, ttl time.Duration) (string, bool, error) {
-	return "", false, nil
+	if f.forceLockBusy {
+		return "", false, nil
+	}
+	if _, held := f.heldLocks[resource]; held {
+		return "", false, nil
+	}
+	f.lockCounter++
+	tok := "tok-" + resource
+	f.heldLocks[resource] = tok
+	return tok, true, nil
 }
-func (f *fakeStore) ReleasePriceGapLock(resource, token string) error { return nil }
+
+func (f *fakeStore) ReleasePriceGapLock(resource, token string) error {
+	if cur, ok := f.heldLocks[resource]; ok && cur == token {
+		delete(f.heldLocks, resource)
+	}
+	return nil
+}
 
 // fakeDelistChecker satisfies models.DelistChecker.
 type fakeDelistChecker struct {
