@@ -26,8 +26,10 @@ See: .planning/PROJECT.md (updated 2026-04-21 after v1.0 shipped)
 
 ## Current Position
 
-Milestone: v2.0 (Multi-Strategy Expansion) — PLANNING
-Last activity: 2026-04-21 (v1.0 shipped, tagged, archived)
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-04-21 — Milestone v2.0 started (v1.0 shipped, tagged, archived)
 
 v1.0 shipped: 7 phases, 21 plans, 381 commits over 30 days (2026-03-23 → 2026-04-21). Audit: tech_debt — documentation/verification gaps carried forward as v2.0 backlog.
 

@@ -8,6 +8,21 @@ A multi-strategy arbitrage platform that monitors funding rate differentials and
 
 "I deposit USDT, select my risk preference, and the system automatically finds opportunities across multiple strategies, opens positions, collects yield, exits when profitable, and I can see exactly how much each position earned — with capital shifting between strategies as opportunities shift."
 
+## Current Milestone: v2.0 Multi-Strategy Expansion
+
+**Goal:** Ship Strategy 4 (cross-exchange price-gap arbitrage) as a minimal live tracker, validate edge over 4–8 weeks, and address v1.0's accumulated documentation tech-debt.
+
+**Target features:**
+- Minimal price-gap tracker (`internal/pricegaptrader/`): static candidate config, delta-neutral IOC entry/exit, Gate concentration cap, hard denylist layer, exec-quality override, paper mode → $5k live budget
+- Live validation gate (4–8 weeks) to decide upgrade to full Gated Discovery (D) architecture
+- v1.0 tech-debt cleanup: Phase 07 retrospective VERIFICATION.md + Nyquist Wave-0 validations for phases 01/03/04/06
+
+**Key context:**
+- Phase 0/1/round-2 scoping complete (`/tmp/phase0-pricegap/`)
+- Codex design review complete (dispatch task `4ecfbf85`) — (D) adopted as target, MVP-first as v2.0 scope
+- Edge universe narrow (~5 pairs, SOON-dominated, Gate-centric) → live validation before scale-up is non-negotiable
+- Phase numbering continues from v1.0 → v2.0 starts at **Phase 8**
+
 ## Requirements
 
 ### Validated (shipped in v1.0)
