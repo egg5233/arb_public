@@ -51,8 +51,12 @@ type Tracker struct {
 	bars   map[string]*candidateBars
 
 	// Active position monitor registry — posID -> cancel func for exit goroutine.
-	monMu    sync.Mutex
-	monitors map[string]context.CancelFunc
+	// `monitors` is the legacy Stop()-path keyed by posID. `monitorHandles` adds
+	// a seq token so the exit-cleanup defer in monitorPosition can detect
+	// "my entry was replaced by a newer startMonitor" and skip delete.
+	monMu           sync.Mutex
+	monitors        map[string]context.CancelFunc
+	monitorHandles  map[string]monitorHandle
 
 	// Circuit breaker — consecutive PlaceOrder failures across any leg (D-10).
 	failMu   sync.Mutex
@@ -80,9 +84,10 @@ func NewTracker(
 		cfg:           cfg,
 		log:           utils.NewLogger("pg-tracker"),
 		stopCh:        make(chan struct{}),
-		bars:          make(map[string]*candidateBars),
-		monitors:      make(map[string]context.CancelFunc),
-		entryInFlight: make(map[string]bool),
+		bars:           make(map[string]*candidateBars),
+		monitors:       make(map[string]context.CancelFunc),
+		monitorHandles: make(map[string]monitorHandle),
+		entryInFlight:  make(map[string]bool),
 	}
 }
 

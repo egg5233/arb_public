@@ -5,28 +5,48 @@ import (
 	"math"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"arb/internal/models"
 	"arb/pkg/exchange"
 )
 
+// monitorSeq — global atomic counter; every startMonitor invocation mints a
+// unique token. The goroutine holds its own token; the cleanup defer compares
+// against the currently-registered token to skip delete-on-exit when a newer
+// startMonitor has already replaced it (rehydrate-twice idempotency path).
+var monitorSeq int64
+
+// monitorHandle — stored in Tracker.monitors. Combines the cancel func with
+// the unique seq token so cleanup can detect replacement without relying on
+// closure-pointer identity (which is unreliable for context.CancelFunc).
+type monitorHandle struct {
+	cancel context.CancelFunc
+	seq    int64
+}
+
 // startMonitor spawns a per-position goroutine that watches for exit triggers.
 // Called from openPair (on new position) and rehydrate (on startup).
 //
 // Idempotent: if a monitor already exists for the same posID it is cancelled
-// and replaced. This matches Plan 06 <rehydrate_test>TestRehydrate_Idempotent.
+// and replaced. The replacement gets a new seq token; the old goroutine's
+// cleanup defer compares seqs and will NOT delete the replacement's entry —
+// prevents rehydrate-twice race (RESEARCH §Pitfall 3).
 func (t *Tracker) startMonitor(pos *models.PriceGapPosition) {
 	ctx, cancel := context.WithCancel(context.Background())
+	mySeq := atomic.AddInt64(&monitorSeq, 1)
+
 	t.monMu.Lock()
-	if prev, exists := t.monitors[pos.ID]; exists {
-		prev()
+	if prev, exists := t.monitorHandles[pos.ID]; exists {
+		prev.cancel()
 	}
-	t.monitors[pos.ID] = cancel
+	t.monitorHandles[pos.ID] = monitorHandle{cancel: cancel, seq: mySeq}
+	t.monitors[pos.ID] = cancel // keep legacy Stop()-path key in sync
 	t.monMu.Unlock()
 
 	t.exitWG.Add(1)
-	go t.monitorPosition(ctx, pos)
+	go t.monitorPosition(ctx, pos, mySeq)
 }
 
 // monitorPosition polls at PriceGapPollIntervalSec cadence; fires exit on:
@@ -36,11 +56,18 @@ func (t *Tracker) startMonitor(pos *models.PriceGapPosition) {
 //
 // The per-tick work is factored into checkAndMaybeExit so tests can drive it
 // synchronously without relying on ticker timing.
-func (t *Tracker) monitorPosition(ctx context.Context, pos *models.PriceGapPosition) {
+//
+// mySeq is compared against the currently-registered handle seq in the cleanup
+// defer: only the owning generation deletes the map entry, preventing a stale
+// goroutine from clobbering a newer replacement (rehydrate-twice idempotency).
+func (t *Tracker) monitorPosition(ctx context.Context, pos *models.PriceGapPosition, mySeq int64) {
 	defer t.exitWG.Done()
 	defer func() {
 		t.monMu.Lock()
-		delete(t.monitors, pos.ID)
+		if cur, ok := t.monitorHandles[pos.ID]; ok && cur.seq == mySeq {
+			delete(t.monitorHandles, pos.ID)
+			delete(t.monitors, pos.ID)
+		}
 		t.monMu.Unlock()
 	}()
 
