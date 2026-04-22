@@ -1,6 +1,6 @@
 # PLAN: Bitget Error Handling + Full Non-ASCII Symbol Support
 
-Version: v19
+Version: v20
 Date: 2026-04-22
 Status: REVIEWING
 
@@ -1252,65 +1252,101 @@ CRITICAL: at these points, `PendingEntryOrderID` (= spot pending order ID) was S
 
 Fix: before returning pendingFuturesEntryError, persist spot-side confirmed state and clear `PendingEntryOrderID`:
 
+Each direction has its own complete AFTER block (different return signatures: Dir A returns 6 values `(spotAvg, futAvg, spotFilled, futFilled, borrowAmt, err)` per executeBorrowSellLong line 521; Dir B returns 5 values `(spotAvg, futAvg, spotFilled, futFilled, err)` per executeBuySpotShort line 534).
+
+**Dir A — executeBorrowSellLong pending-futures error** (replace HEAD `internal/spotengine/execution.go:506-510`):
+
+BEFORE (HEAD 506-510):
 ```go
-// BEFORE
-futFilled, futAvg := e.confirmFuturesFill(futExch, orderID, pos.Symbol)
+futFilled, futAvg = e.confirmFuturesFill(futExch, futOrderID, symbol)
 if futFilled <= 0 {
-	return fmt.Errorf("futures entry got 0 fill (order %s)", orderID)
+	e.log.Error("ManualOpen [borrow_sell_long] step 2: futures order got 0 fill — rolling back spot sell")
+	e.rollbackSpotOrder(smExch, symbol, exchange.SideBuy, spotFilledStr, buybackQuote, true)
+	return 0, 0, 0, 0, 0, fmt.Errorf("futures long got 0 fill (order %s)", futOrderID)
 }
+```
 
-// AFTER (entry paths 506 Dir A / 619 Dir B)
-futFilled, futAvg, cfErr := e.confirmFuturesFill(futExch, orderID, pos.Symbol)
+AFTER:
+```go
+futFilled, futAvg, cfErr := e.confirmFuturesFill(futExch, futOrderID, symbol)
 if cfErr != nil {
-	// Spot leg already confirmed above; persist its confirmed fields and
-	// clear spot pending-order so existing reconcilePendingEntry does NOT
-	// re-process the spot leg. Only PendingFuturesEntryOrderID remains,
-	// routing to reconcilePendingFuturesEntry on next monitor cycle.
-
-	// Field names confirmed at models/spot_position.go: SpotSize (NOT
-	// SpotFilledQty), SpotEntryPrice, NotionalUSDT, FuturesSide, BorrowAmount.
-
-	// Dir A (line 506):
+	// Spot leg already confirmed above; persist confirmed fields directly
+	// since pending-error path bypasses the outer ManualOpen overwrite.
+	// For Dir A, spotNetReceived = spotFilled (no fee net-off), so gross ==
+	// net here — either works, using spotFilled for clarity.
 	pos.PendingEntryOrderID = ""
-	pos.SpotSize = spotFilled              // gross spot qty (Dir A borrows + sells)
+	pos.SpotSize = spotFilled
 	pos.SpotEntryPrice = spotAvg
 	pos.NotionalUSDT = spotFilled * spotAvg
 	pos.FuturesSide = "long"
-	// BorrowAmount already set earlier after spot confirmation, no-op here
+	pos.BorrowAmount = borrowAmt
 	// FuturesSize/FuturesEntry intentionally NOT set — futures leg state is unknown
-
-	// Dir B (line 619) — mirror HEAD successful Dir B FINAL state after outer
-	// ManualOpen overwrite at execution.go:402 (NOT the transient inner values
-	// at 627/632 which get overwritten by the outer flow):
-	// - Inner executeBuySpotShort writes pos.SpotSize=spotNetReceived (line 627),
-	//   pos.NotionalUSDT=spotFilled*spotAvg (line 632), then returns spotNetReceived
-	//   as the 3rd value at line 634.
-	// - Outer ManualOpen receives spotFilledQty=spotNetReceived, computes
-	//   actualNotional := spotFilledQty * spotEntryPrice = spotNetReceived * spotAvg
-	//   (line 382), then overwrites pos.NotionalUSDT = actualNotional (line 402)
-	//   and commits capital using actualNotional (line 413).
-	// - Net effect: final persisted NotionalUSDT for successful Dir B = net.
-	// Pending-error path bypasses the outer overwrite (returns early with error),
-	// so we must write the FINAL state directly here to give reconciliation the
-	// same state a successful path would produce.
-	// pos.SpotSize = spotNetReceived                   // net after fee
-	// pos.SpotEntryPrice = spotAvg
-	// pos.NotionalUSDT = spotNetReceived * spotAvg     // NET — matches HEAD line 402 final state
-	// pos.FuturesSide = "short"
-	// (PendingEntryOrderID clear — same as Dir A)
-
-	return &pendingFuturesEntryError{
+	return 0, 0, 0, 0, 0, &pendingFuturesEntryError{
 		posID:         pos.ID,
-		orderID:       orderID,
+		orderID:       futOrderID,
 		pendingPos:    pos,
-		capitalAmount: spotNetReceived * spotAvg, // net — matches commitSpotCapital(actualNotional) at line 413
+		capitalAmount: spotFilled * spotAvg,
 		err:           cfErr,
 	}
 }
 if futFilled <= 0 {
-	return fmt.Errorf("futures entry got 0 fill (order %s)", orderID)
+	e.log.Error("ManualOpen [borrow_sell_long] step 2: futures order got 0 fill — rolling back spot sell")
+	e.rollbackSpotOrder(smExch, symbol, exchange.SideBuy, spotFilledStr, buybackQuote, true)
+	return 0, 0, 0, 0, 0, fmt.Errorf("futures long got 0 fill (order %s)", futOrderID)
 }
 ```
+
+**Dir B — executeBuySpotShort pending-futures error** (replace HEAD `internal/spotengine/execution.go:619-623`):
+
+BEFORE (HEAD 619-623):
+```go
+futFilled, futAvg = e.confirmFuturesFill(futExch, futOrderID, symbol)
+if futFilled <= 0 {
+	e.log.Error("ManualOpen [buy_spot_short] step 2: futures order got 0 fill — rolling back spot buy")
+	e.rollbackSpotOrder(smExch, symbol, exchange.SideSell, spotFilledStr, "", false)
+	return 0, 0, 0, 0, fmt.Errorf("futures short got 0 fill (order %s)", futOrderID)
+}
+```
+
+AFTER:
+```go
+futFilled, futAvg, cfErr := e.confirmFuturesFill(futExch, futOrderID, symbol)
+if cfErr != nil {
+	// Mirror HEAD successful Dir B FINAL state after outer ManualOpen overwrite
+	// at execution.go:402 (NOT the transient inner values at 627/632 which get
+	// overwritten by the outer flow):
+	// - Inner executeBuySpotShort writes pos.SpotSize=spotNetReceived (line 627),
+	//   pos.NotionalUSDT=spotFilled*spotAvg (line 632 — transient gross), then
+	//   returns spotNetReceived as the 3rd value at line 634.
+	// - Outer ManualOpen receives spotFilledQty=spotNetReceived, computes
+	//   actualNotional := spotFilledQty * spotEntryPrice = spotNetReceived * spotAvg
+	//   at line 382, then overwrites pos.NotionalUSDT = actualNotional at line 402
+	//   and commits capital using actualNotional at line 413.
+	// - Net effect: final persisted NotionalUSDT for successful Dir B = NET.
+	// Pending-error path bypasses the outer overwrite (returns early with error),
+	// so we write the FINAL state directly here.
+	pos.PendingEntryOrderID = ""
+	pos.SpotSize = spotNetReceived
+	pos.SpotEntryPrice = spotAvg
+	pos.NotionalUSDT = spotNetReceived * spotAvg
+	pos.FuturesSide = "short"
+	// FuturesSize/FuturesEntry intentionally NOT set — futures leg state is unknown
+	return 0, 0, 0, 0, &pendingFuturesEntryError{
+		posID:         pos.ID,
+		orderID:       futOrderID,
+		pendingPos:    pos,
+		capitalAmount: spotNetReceived * spotAvg, // matches commitSpotCapital(actualNotional) at HEAD line 413
+		err:           cfErr,
+	}
+}
+if futFilled <= 0 {
+	e.log.Error("ManualOpen [buy_spot_short] step 2: futures order got 0 fill — rolling back spot buy")
+	e.rollbackSpotOrder(smExch, symbol, exchange.SideSell, spotFilledStr, "", false)
+	return 0, 0, 0, 0, fmt.Errorf("futures short got 0 fill (order %s)", futOrderID)
+}
+```
+
+**Field names confirmed at `models/spot_position.go`**: SpotSize (NOT SpotFilledQty), SpotEntryPrice, NotionalUSDT, FuturesSide, BorrowAmount.
 
 **Defensive gate in existing `reconcilePendingEntry`**: also add an early-return when pos has `PendingFuturesEntryOrderID` set. Prevents spot-reconciler stepping on futures-reconciler territory even if the clear above is missed. **Do NOT add `if pos.PendingEntryOrderID == "" { return }` gate** — existing recovery checkpoints may legitimately have empty `PendingEntryOrderID` (spot leg already confirmed, futures hedge still needs recovery), and skipping those would break established recovery paths.
 
@@ -1778,10 +1814,14 @@ Risk mitigation is handled via staged deploy: deploy to VPS off-peak, monitor lo
   * #1: pass-through map comments cited wrong line numbers (43011/43025 at adapter.go:400; actually at 175, 1376; 40872 actually at 401).
   * #5b: AFTER block returned `(0, error)` but HEAD signature is `(*exchange.FundingRate, error)` — completely wrong signature, would not compile.
   * **#15 REVERSED**: traced outer flow. HEAD's final persisted Dir B NotionalUSDT is NET because inner executeBuySpotShort line 632 writes gross transiently, but outer ManualOpen at execution.go:402 overwrites `pos.NotionalUSDT = actualNotional` where `actualNotional := spotFilledQty * spotEntryPrice` and `spotFilledQty = spotNetReceived` (from inner return at line 634). `commitSpotCapital` at line 413 also uses net. Pending-error path bypasses the outer overwrite, so must write net directly to produce equivalent final state.
-- v19: (this version) — addresses v18 fresh-audit findings:
+- v19: addresses v18 fresh-audit findings:
   * #1: corrected pass-through map comments and the preceding comment block to cite verified line numbers (40872 → adapter.go:401; 43011, 43025 → adapter.go:175 AND 1376).
   * **#5b**: replaced AFTER block with full `GetFundingRate` implementation returning `*exchange.FundingRate` — unified ASCII + non-ASCII via `noFilter := containsNonASCII(symbol)` bool, preserving all existing response fields (Rate, NextRate, Interval, NextFunding, MaxRate, MinRate, Symbol). Added behavior-change notes: strict float parse on Rate, skip `GetFundingInterval` for non-ASCII (same HMAC issue), `fr.Symbol` fallback to input.
   * **#15**: reverted to NET after tracing outer ManualOpen flow. `pos.NotionalUSDT = spotNetReceived * spotAvg`, `capitalAmount = spotNetReceived * spotAvg`, test assertions `== 6.15` restored. Plan comment documents the inner-transient → outer-overwrite pattern explicitly so future reviewers don't repeat the confusion.
+- v19 Codex fresh-thread full independent audit (xhigh): NEEDS-REVISION — 1 finding:
+  * #15c spotengine entry paths: combined AFTER block had only Dir B fully written out; Dir A was a leading block + Dir B a comment. Codex requested each direction have its own complete, compileable AFTER block with exact HEAD BEFORE context (different return signatures: Dir A returns 6 values, Dir B returns 5).
+- v20: (this version) — addresses v19 fresh-audit:
+  * #15c: separated Dir A and Dir B into two complete AFTER blocks with exact HEAD BEFORE context (lines 506-510 for Dir A, 619-623 for Dir B). Each block is self-contained and compileable with correct return-value arity. Dir A uses `spotFilled * spotAvg` (gross == net since no fee net-off), Dir B uses `spotNetReceived * spotAvg` (net — matches HEAD final state after outer overwrite). Preserved rollback paths for `futFilled <= 0` sanity check that follows the error branch.
 - v13 original: (kept for history)
   * Field name corrected: `SpotSize` (NOT `SpotFilledQty`) per HEAD models/spot_position.go
   * Dir A vs Dir B specific fields documented: Dir A uses `SpotSize = spotFilled` (gross, borrowed+sold); Dir B uses `SpotSize = spotNetReceived` (net after fee deduction). Each sets correct `FuturesSide`.
