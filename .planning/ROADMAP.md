@@ -71,7 +71,15 @@ Seed input: `/tmp/phase0-pricegap/STRATEGY_DESIGN.md` (§3.5 candidate shortlist
   3. Live price-gap positions panel shows entry spread, current spread, hold time, and current PnL in real time via WebSocket; closed positions log shows realized-vs-modeled edge comparison for each trade
   4. Telegram notifications fire via the existing notifier on: price-gap entry, price-gap exit, and risk-gate blocks — cooldowns and toggles respect existing notifier config; no change to perp-perp or spot-futures notification paths
   5. Dashboard shows per-candidate rolling 7d and 30d net bps/day computed from logged realized-slippage data, giving the operator the evidence needed to promote/demote candidates manually
-**Plans**: TBD
+**Plans**: 8 plans
+  - [ ] 09-01-PLAN.md — Phase 8 bridge: Position.Mode, PriceGapPaperMode, GetPriceGapHistory, Broadcaster DI, i18n sync gate (PG-OPS-02, -04, -05, PG-VAL-02)
+  - [ ] 09-02-PLAN.md — REST handlers for /api/pricegap/* + Broadcaster impl on *Server + paper_mode /api/config round-trip (PG-OPS-01, -02, -03, -04, PG-VAL-02)
+  - [ ] 09-03-PLAN.md — Paper-mode branch in openPair + placeLeg/placeCloseLegIOC with mid±(modeled/2) synth (PG-OPS-04, PG-VAL-01)
+  - [ ] 09-04-PLAN.md — Telegram NotifyPriceGapEntry/Exit/RiskBlock + regression fixtures for existing notify paths (PG-OPS-05)
+  - [ ] 09-05-PLAN.md — On-demand ComputeCandidateMetrics aggregator + /api/pricegap/metrics wiring (PG-OPS-05, PG-VAL-01, PG-VAL-02)
+  - [ ] 09-06-PLAN.md — Tracker hook invocations at 5 call sites + cmd/main.go DI wiring (PG-OPS-02, -03, -05)
+  - [ ] 09-07-PLAN.md — PriceGap.tsx page + App.tsx nav + i18n lockstep per 09-UI-SPEC.md (PG-OPS-01, -02, -03, PG-VAL-02)
+  - [ ] 09-08-PLAN.md — Paper→live cutover integration test + UAT checklist + VERSION/CHANGELOG bump (all PG-OPS-0X, PG-VAL-0X)
 **UI hint**: yes
 
 ## Progress
@@ -85,5 +93,5 @@ Seed input: `/tmp/phase0-pricegap/STRATEGY_DESIGN.md` (§3.5 candidate shortlist
 | 5. Capital Allocation | v1.0 | 3/3 | Complete | 2026-04-05 |
 | 6. Spot-Futures Risk Hardening | v1.0 | 4/4 | Complete | 2026-04-05 |
 | 7. Milestone Polish | v1.0 | 1/1 | Complete | 2026-04-06 |
-| 8. Price-Gap Tracker Core | v2.0 | 0/TBD | Not started | — |
-| 9. Price-Gap Dashboard & Paper→Live Operations | v2.0 | 0/TBD | Not started | — |
+| 8. Price-Gap Tracker Core | v2.0 | 8/8 | Complete | 2026-04-22 |
+| 9. Price-Gap Dashboard & Paper→Live Operations | v2.0 | 0/8 | Planned | — |
