@@ -2570,7 +2570,7 @@ func (e *Engine) queryAvgFillPrice(exch exchange.Exchange, orderID string) float
 // Attempts 0-1 use normal slippage, 2-3 use double slippage. If IOC attempts
 // fail, switches to market orders and retries until filled or margin error.
 // The goal: once leg 1 is filled, leg 2 MUST be filled to match.
-func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol string, side exchange.Side, remainingSize float64, refPrice float64) (filled float64, avgPrice float64) {
+func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol string, side exchange.Side, remainingSize float64, refPrice float64) (filled float64, avgPrice float64, err error) {
 	baseSlippage := e.cfg.SlippageBPS / 10000.0
 	var totalFilled, totalNotional float64
 
@@ -2629,8 +2629,13 @@ func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol 
 		time.Sleep(500 * time.Millisecond)
 		filledQty, qErr := exch.GetOrderFilledQty(orderID, symbol)
 		if qErr != nil {
-			e.log.Warn("retrySecondLeg[IOC-%d] %s %s: GetOrderFilledQty failed: %v", attempt, exchName, symbol, qErr)
-			continue
+			// Fill state unknown — do NOT continue placing more orders. Compute
+			// running avgPrice from any partial fills accumulated so far and
+			// return so callers can persist a partial entry instead of retrying.
+			if totalFilled > 0 {
+				avgPrice = totalNotional / totalFilled
+			}
+			return totalFilled, avgPrice, fmt.Errorf("second leg fill state unknown for %s on %s: %w", orderID, exchName, qErr)
 		}
 		if filledQty > 0 {
 			// H1A: use the adapter's WS-reported AvgPrice; fall back to
@@ -2681,8 +2686,13 @@ func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol 
 		time.Sleep(500 * time.Millisecond)
 		filledQty, qErr := exch.GetOrderFilledQty(orderID, symbol)
 		if qErr != nil {
-			e.log.Warn("retrySecondLeg[MKT-%d] %s %s: GetOrderFilledQty failed: %v", mktAttempt, exchName, symbol, qErr)
-			continue
+			// Fill state unknown — do NOT continue placing more market orders.
+			// Compute running avgPrice and return so callers persist a partial
+			// entry rather than duplicating exposure.
+			if totalFilled > 0 {
+				avgPrice = totalNotional / totalFilled
+			}
+			return totalFilled, avgPrice, fmt.Errorf("second leg fill state unknown for %s on %s: %w", orderID, exchName, qErr)
 		}
 		if filledQty > 0 {
 			// H1A: use real AvgPrice; fall back to refPrice (last known good
@@ -2708,7 +2718,7 @@ done:
 	if totalFilled > 0 {
 		avgPrice = totalNotional / totalFilled
 	}
-	return totalFilled, avgPrice
+	return totalFilled, avgPrice, nil
 }
 
 // executeTrade opens a delta-neutral position across two exchanges using
@@ -3685,12 +3695,31 @@ fillLoop:
 					lastBalCheck = time.Time{}
 				}
 				e.log.Warn("depth tick: long IOC failed after short filled %.6f, retrying second leg: %v", shortFilled, err)
-				retryFilled, retryAvg := e.retrySecondLeg(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, matchSize, askPrice)
+				retryFilled, retryAvg, retryErr := e.retrySecondLeg(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, matchSize, askPrice)
 				if retryFilled > 0 {
 					longFilled = retryFilled
 					longAvg = retryAvg
 					longConsecFails = 0
-				} else {
+				}
+				if retryErr != nil {
+					// State unknown — do NOT retry the leg or place another order. Persist
+					// known partial so consolidator/operator can reconcile on next cycle.
+					e.log.Error("ORPHAN WARNING: %s long retry fill unknown after short filled %.6f: %v", posID, shortFilled, retryErr)
+					pos.LongSize = confirmedLong + longFilled
+					pos.ShortSize = confirmedShort + shortFilled
+					pos.LongEntry = longVWAP
+					if longFilled > 0 && longAvg > 0 {
+						pos.LongEntry = longAvg
+					}
+					pos.ShortEntry = shortVWAP
+					pos.EntryNotional = math.Max(pos.LongEntry*pos.LongSize, pos.ShortEntry*pos.ShortSize)
+					pos.Status = models.StatusPartial
+					pos.FailureReason = "second_leg_fill_unknown"
+					pos.UpdatedAt = time.Now().UTC()
+					_ = e.db.SavePosition(pos)
+					return errPartialEntry
+				}
+				if retryFilled <= 0 {
 					rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
 					if rem > 0 {
 						e.log.Error("ORPHAN EXPOSURE: %s rollback incomplete, %.6f still open on %s", opp.Symbol, rem, opp.ShortExchange)
@@ -3724,12 +3753,29 @@ fillLoop:
 				}
 				if longFilled == 0 {
 					e.log.Warn("depth tick: long confirmFill got 0 after short filled %.6f, retrying second leg", shortFilled)
-					retryFilled, retryAvg := e.retrySecondLeg(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, matchSize, askPrice)
+					retryFilled, retryAvg, retryErr := e.retrySecondLeg(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, matchSize, askPrice)
 					if retryFilled > 0 {
 						longFilled = retryFilled
 						longAvg = retryAvg
 						longConsecFails = 0
-					} else {
+					}
+					if retryErr != nil {
+						e.log.Error("ORPHAN WARNING: %s long retry fill unknown after short filled %.6f: %v", posID, shortFilled, retryErr)
+						pos.LongSize = confirmedLong + longFilled
+						pos.ShortSize = confirmedShort + shortFilled
+						pos.LongEntry = longVWAP
+						if longFilled > 0 && longAvg > 0 {
+							pos.LongEntry = longAvg
+						}
+						pos.ShortEntry = shortVWAP
+						pos.EntryNotional = math.Max(pos.LongEntry*pos.LongSize, pos.ShortEntry*pos.ShortSize)
+						pos.Status = models.StatusPartial
+						pos.FailureReason = "second_leg_fill_unknown"
+						pos.UpdatedAt = time.Now().UTC()
+						_ = e.db.SavePosition(pos)
+						return errPartialEntry
+					}
+					if retryFilled <= 0 {
 						rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
 						if rem > 0 {
 							e.log.Error("ORPHAN EXPOSURE: %s rollback incomplete, %.6f still open on %s", opp.Symbol, rem, opp.ShortExchange)
@@ -3929,12 +3975,30 @@ fillLoop:
 					lastBalCheck = time.Time{}
 				}
 				e.log.Warn("depth tick: short IOC failed after long filled %.6f, retrying second leg: %v", longFilled, err)
-				retryFilled, retryAvg := e.retrySecondLeg(shortExch, opp.ShortExchange, opp.Symbol, exchange.SideSell, matchSize, bidPrice)
+				retryFilled, retryAvg, retryErr := e.retrySecondLeg(shortExch, opp.ShortExchange, opp.Symbol, exchange.SideSell, matchSize, bidPrice)
 				if retryFilled > 0 {
 					shortFilled = retryFilled
 					shortAvg = retryAvg
 					shortConsecFails = 0
-				} else {
+				}
+				if retryErr != nil {
+					// State unknown — persist partial and hand off to consolidator.
+					e.log.Error("ORPHAN WARNING: %s short retry fill unknown after long filled %.6f: %v", posID, longFilled, retryErr)
+					pos.LongSize = confirmedLong + longFilled
+					pos.ShortSize = confirmedShort + shortFilled
+					pos.LongEntry = longVWAP
+					pos.ShortEntry = shortVWAP
+					if shortFilled > 0 && shortAvg > 0 {
+						pos.ShortEntry = shortAvg
+					}
+					pos.EntryNotional = math.Max(pos.LongEntry*pos.LongSize, pos.ShortEntry*pos.ShortSize)
+					pos.Status = models.StatusPartial
+					pos.FailureReason = "second_leg_fill_unknown"
+					pos.UpdatedAt = time.Now().UTC()
+					_ = e.db.SavePosition(pos)
+					return errPartialEntry
+				}
+				if retryFilled <= 0 {
 					rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
 					if rem > 0 {
 						e.log.Error("ORPHAN EXPOSURE: %s rollback incomplete, %.6f still open on %s", opp.Symbol, rem, opp.LongExchange)
@@ -3968,12 +4032,29 @@ fillLoop:
 				}
 				if shortFilled == 0 {
 					e.log.Warn("depth tick: short confirmFill got 0 after long filled %.6f, retrying second leg", longFilled)
-					retryFilled, retryAvg := e.retrySecondLeg(shortExch, opp.ShortExchange, opp.Symbol, exchange.SideSell, matchSize, bidPrice)
+					retryFilled, retryAvg, retryErr := e.retrySecondLeg(shortExch, opp.ShortExchange, opp.Symbol, exchange.SideSell, matchSize, bidPrice)
 					if retryFilled > 0 {
 						shortFilled = retryFilled
 						shortAvg = retryAvg
 						shortConsecFails = 0
-					} else {
+					}
+					if retryErr != nil {
+						e.log.Error("ORPHAN WARNING: %s short retry fill unknown after long filled %.6f: %v", posID, longFilled, retryErr)
+						pos.LongSize = confirmedLong + longFilled
+						pos.ShortSize = confirmedShort + shortFilled
+						pos.LongEntry = longVWAP
+						pos.ShortEntry = shortVWAP
+						if shortFilled > 0 && shortAvg > 0 {
+							pos.ShortEntry = shortAvg
+						}
+						pos.EntryNotional = math.Max(pos.LongEntry*pos.LongSize, pos.ShortEntry*pos.ShortSize)
+						pos.Status = models.StatusPartial
+						pos.FailureReason = "second_leg_fill_unknown"
+						pos.UpdatedAt = time.Now().UTC()
+						_ = e.db.SavePosition(pos)
+						return errPartialEntry
+					}
+					if retryFilled <= 0 {
 						rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
 						if rem > 0 {
 							e.log.Error("ORPHAN EXPOSURE: %s rollback incomplete, %.6f still open on %s", opp.Symbol, rem, opp.LongExchange)
@@ -4241,7 +4322,7 @@ fillLoop:
 // confirmFill checks WS then REST to get fill quantity and average price for
 // an IOC order. IOC orders complete within the API round-trip, so this is
 // just confirmation with a short timeout.
-func (e *Engine) confirmFill(exch exchange.Exchange, orderID, symbol string) (filledQty, avgPrice float64) {
+func (e *Engine) confirmFill(exch exchange.Exchange, orderID, symbol string) (filledQty, avgPrice float64, err error) {
 	deadline := time.Now().Add(5 * time.Second)
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
@@ -4251,7 +4332,7 @@ func (e *Engine) confirmFill(exch exchange.Exchange, orderID, symbol string) (fi
 		// get the final fill quantity, not a partial mid-fill snapshot.
 		if upd, ok := exch.GetOrderUpdate(orderID); ok {
 			if upd.Status == "filled" || upd.Status == "cancelled" {
-				return upd.FilledVolume, upd.AvgPrice
+				return upd.FilledVolume, upd.AvgPrice, nil
 			}
 		}
 		if time.Now().After(deadline) {
@@ -4260,7 +4341,7 @@ func (e *Engine) confirmFill(exch exchange.Exchange, orderID, symbol string) (fi
 				if upd.Status == "filled" || upd.Status == "cancelled" {
 					e.log.Info("confirmFill: WS terminal %s on %s: status=%s filled=%.6f avg=%.8f",
 						orderID, exch.Name(), upd.Status, upd.FilledVolume, upd.AvgPrice)
-					return upd.FilledVolume, upd.AvgPrice
+					return upd.FilledVolume, upd.AvgPrice, nil
 				}
 				e.log.Warn("confirmFill: timeout %s on %s: WS status=%s filled=%.6f (non-terminal)",
 					orderID, exch.Name(), upd.Status, upd.FilledVolume)
@@ -4270,32 +4351,32 @@ func (e *Engine) confirmFill(exch exchange.Exchange, orderID, symbol string) (fi
 			// BingX 109400 is normalized to nil by its adapter, so "already gone"
 			// falls through to the REST query below instead of spamming WARNs.
 			// Cancel any resting/partial order to prevent untracked fills.
-			if err := exch.CancelOrder(symbol, orderID); err != nil {
-				e.log.Warn("confirmFill: cancel %s on %s: %v", orderID, exch.Name(), err)
+			if cancelErr := exch.CancelOrder(symbol, orderID); cancelErr != nil {
+				e.log.Warn("confirmFill: cancel %s on %s: %v", orderID, exch.Name(), cancelErr)
 			}
 			// Re-query after cancel to get the true terminal fill state.
 			time.Sleep(200 * time.Millisecond)
 			restFilled, restErr := exch.GetOrderFilledQty(orderID, symbol)
 			if restErr != nil {
 				e.log.Warn("confirmFill: REST query %s on %s failed: %v", orderID, exch.Name(), restErr)
-				return 0, 0
+				return 0, 0, fmt.Errorf("fill state unknown for %s on %s: %w", orderID, exch.Name(), restErr)
 			}
 			e.log.Info("confirmFill: REST query %s on %s: filled=%.6f", orderID, exch.Name(), restFilled)
 			if restFilled > 0 {
 				if upd, ok := exch.GetOrderUpdate(orderID); ok && upd.AvgPrice > 0 {
 					e.log.Info("confirmFill: REST+WS %s on %s: filled=%.6f avg=%.8f",
 						orderID, exch.Name(), restFilled, upd.AvgPrice)
-					return restFilled, upd.AvgPrice
+					return restFilled, upd.AvgPrice, nil
 				}
 				e.log.Warn("confirmFill: REST filled but no avg price for %s on %s", orderID, exch.Name())
-				return restFilled, 0
+				return restFilled, 0, nil
 			}
-			return 0, 0
+			return 0, 0, nil
 		}
 		select {
 		case <-ticker.C:
 		case <-e.stopCh:
-			return 0, 0
+			return 0, 0, nil
 		}
 	}
 }
@@ -4304,7 +4385,10 @@ func (e *Engine) confirmFill(exch exchange.Exchange, orderID, symbol string) (fi
 // Returns an error when fill state is unknown (REST query failed), so callers
 // can distinguish "confirmed zero" from "unknown".
 func (e *Engine) confirmFillSafe(exch exchange.Exchange, orderID, symbol string) (float64, float64, error) {
-	filled, avg := e.confirmFill(exch, orderID, symbol)
+	filled, avg, err := e.confirmFill(exch, orderID, symbol)
+	if err != nil {
+		return 0, 0, err
+	}
 	if filled == 0 && avg == 0 {
 		restFilled, restErr := exch.GetOrderFilledQty(orderID, symbol)
 		if restErr != nil {
@@ -4585,7 +4669,16 @@ func (e *Engine) waitForFill(exch exchange.Exchange, orderID, symbol string, dea
 			}
 			// Fallback to REST.
 			filled, err := exch.GetOrderFilledQty(orderID, symbol)
-			if err == nil && filled > 0 {
+			if err != nil {
+				// Surface fill-state-unknown explicitly instead of looping
+				// until the caller's deadline. Caller can retry on next cycle.
+				e.log.Warn("waitForFill: REST query %s on %s failed: %v", orderID, exch.Name(), err)
+				if time.Now().After(deadline) {
+					return 0, fmt.Errorf("fill state unknown for %s on %s: %w", orderID, exch.Name(), err)
+				}
+				continue
+			}
+			if filled > 0 {
 				return filled, nil
 			}
 			if time.Now().After(deadline) {
