@@ -613,13 +613,17 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 	var longPnLs, shortPnLs []exchange.ClosePnL
 	if longExch, ok := e.exchanges[pos.LongExchange]; ok {
 		pnls, err := longExch.GetClosePnL(pos.Symbol, pos.CreatedAt)
-		if err == nil {
+		if err != nil {
+			e.log.Warn("consolidate GetClosePnL long=%s %s failed: %v", pos.LongExchange, pos.Symbol, err)
+		} else {
 			longPnLs = pnls
 		}
 	}
 	if shortExch, ok := e.exchanges[pos.ShortExchange]; ok {
 		pnls, err := shortExch.GetClosePnL(pos.Symbol, pos.CreatedAt)
-		if err == nil {
+		if err != nil {
+			e.log.Warn("consolidate GetClosePnL short=%s %s failed: %v", pos.ShortExchange, pos.Symbol, err)
+		} else {
 			shortPnLs = pnls
 		}
 	}
@@ -841,7 +845,11 @@ func (e *Engine) enforceBalance(pos *models.ArbitragePosition, longSize, shortSi
 	e.log.Info("consolidate: trim order %s placed on %s for %s", orderID, trimExchName, pos.ID)
 
 	// Confirm fill (reuse engine's confirmFill with timeout).
-	filled, _ := e.confirmFill(trimExch, orderID, pos.Symbol)
+	filled, _, cfErr := e.confirmFill(trimExch, orderID, pos.Symbol)
+	if cfErr != nil {
+		e.log.Warn("consolidate: trim confirmFill %s on %s fill state unknown: %v — skipping record update", orderID, trimExchName, cfErr)
+		return
+	}
 	if filled <= 0 {
 		e.log.Error("consolidate: trim order %s on %s did not fill, skipping record update", orderID, trimExchName)
 		return
