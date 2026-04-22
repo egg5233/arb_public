@@ -198,7 +198,11 @@ func (e *Engine) rebalancePass1(
 			continue
 		}
 
-		approval, err := e.risk.SimulateApprovalForPair(opp, opp.LongExchange, opp.ShortExchange, reserved, nil, cache)
+		simulateFn := e.risk.SimulateApprovalForPair
+		if e.testSimulatorFn != nil {
+			simulateFn = e.testSimulatorFn
+		}
+		approval, err := simulateFn(opp, opp.LongExchange, opp.ShortExchange, reserved, nil, cache)
 		if err != nil {
 			e.log.Debug("rebalance: pass1 simulate error %s %s/%s: %v", opp.Symbol, opp.LongExchange, opp.ShortExchange, err)
 			continue
@@ -208,7 +212,7 @@ func (e *Engine) rebalancePass1(
 		}
 
 		switch {
-		case approval.Approved:
+		case approval.Approved && len(approval.TopUpApplied) == 0:
 			// Case (a): capital sufficient — SKIP. Entry scan will open by
 			// rank. Reserve per-leg margin so later Pass 1 iterations cannot
 			// over-commit.
@@ -235,11 +239,15 @@ func (e *Engine) rebalancePass1(
 			e.log.Debug("rebalance: pass1 case(a) approved %s %s/%s reserved long=%.2f short=%.2f",
 				opp.Symbol, opp.LongExchange, opp.ShortExchange, longNeed, shortNeed)
 
-		case approval.Kind == models.RejectionKindCapital && hasPricedApprovalFields(approval):
-			// Case (b): capital-short rescue candidate. Enqueue for
-			// dryRunTransferPlan + post-transfer replay. Stays in `remaining`
-			// until rescue definitively succeeds (kept) — failed rescues
-			// stay so Pass 2 alt-pair can retry.
+		case (approval.Approved && len(approval.TopUpApplied) > 0) ||
+			(approval.Kind == models.RejectionKindCapital && hasPricedApprovalFields(approval)):
+			// Case (b): capital-short rescue candidate. Merged branch — either
+			//   (i) simulator returned RejectionKindCapital with priced fields, OR
+			//   (ii) simulator approved ONLY because cross-exchange top-up inflated
+			//        pair.bal.Available; TopUpApplied records per-exchange borrow amounts.
+			// Both cases need a real transfer scheduled before entry can open.
+			// rescueChoiceFromApproval handles priced-approved input (Size/Price
+			// populated); it reads margin from approval.Long/ShortMarginNeeded.
 			choice := rescueChoiceFromApproval(opp, approval, e.cfg.CapitalPerLeg*e.cfg.MarginSafetyMultiplier)
 			candidates = append(candidates, choice)
 			rescueSymbols[opp.Symbol] = true
@@ -247,8 +255,13 @@ func (e *Engine) rebalancePass1(
 			reserved[opp.LongExchange] += longNeed
 			reserved[opp.ShortExchange] += shortNeed
 			pass1UsedSlots++ // rescue-candidate consumes a slot (transfer→entry opens)
-			e.log.Debug("rebalance: pass1 case(b) rescue-candidate %s %s/%s margin long=%.2f short=%.2f",
-				opp.Symbol, opp.LongExchange, opp.ShortExchange, longNeed, shortNeed)
+			if len(approval.TopUpApplied) > 0 {
+				e.log.Debug("rebalance: pass1 case(b) top-up rescue-candidate %s %s/%s topUp=%v margin long=%.2f short=%.2f",
+					opp.Symbol, opp.LongExchange, opp.ShortExchange, approval.TopUpApplied, longNeed, shortNeed)
+			} else {
+				e.log.Debug("rebalance: pass1 case(b) rescue-candidate %s %s/%s margin long=%.2f short=%.2f",
+					opp.Symbol, opp.LongExchange, opp.ShortExchange, longNeed, shortNeed)
+			}
 
 		default:
 			// Case (c): non-capital reject (or capital without priced fields).
@@ -429,7 +442,11 @@ func (e *Engine) postTransferReplayFilter(
 			Spread:        c.spreadBpsH,
 			IntervalHours: c.intervalHours,
 		}
-		approval, err := e.risk.SimulateApprovalForPair(opp, c.longExchange, c.shortExchange, replayReserved, c.altPair, replayCache)
+		replayFn := e.risk.SimulateApprovalForPair
+		if e.testReplaySimulatorFn != nil {
+			replayFn = e.testReplaySimulatorFn
+		}
+		approval, err := replayFn(opp, c.longExchange, c.shortExchange, replayReserved, c.altPair, replayCache)
 		if err != nil {
 			e.log.Info("rebalance: pass1 replay dropped %s %s/%s: approval error: %v",
 				c.symbol, c.longExchange, c.shortExchange, err)

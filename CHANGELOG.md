@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.33.1] - 2026-04-22
+
+### Fixed
+- **Rebalance top-up routing bug** — simulator's cross-exchange top-up inflated `pair.bal.Available` to pass margin/L4 checks, but the resulting `approval.Approved=true` was routed into Pass-1 case (a) which schedules NO transfer. Subsequent entry-scan executor rejected on real (unrestocked) balance. 2026-04-22 METUSDT gateio/bitget incident: 11:35 rebalance reserved 199.93/199.71, 11:45 entry rejected with post-trade margin ratio 0.87 on gateio (>L4 0.80). Fix:
+  - Added `RiskApproval.TopUpApplied map[string]float64` recording per-exchange simulator borrows (`internal/models/interfaces.go`).
+  - `approveInternal` populates the field only when `dryRun=true` (`internal/risk/manager.go`).
+  - Pass-1 switch at `internal/engine/rebalance.go:210` routes `Approved && len(TopUpApplied) > 0` into the case-(b) rescue-candidate path, unifying with existing `RejectionKindCapital` handling so a real transfer is planned and the post-transfer replay re-validates against `TransferablePerExchange=nil`.
+  - Regression tests in `internal/risk/manager_topup_test.go` and `internal/engine/rebalance_topup_test.go`.
+  - Independent review via dispatch-mcp (task `baa9d706`) confirmed the bug before fix.
+
 ## [0.33.0] - 2026-04-22
 
 ### Fixed

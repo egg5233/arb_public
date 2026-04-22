@@ -141,6 +141,16 @@ type Engine struct {
 	// pairs were requested.
 	testRescanHook func([]models.SymbolPair) []models.Opportunity
 
+	// testSimulatorFn overrides e.risk.SimulateApprovalForPair when non-nil.
+	// Used only in tests to inject a controlled *models.RiskApproval without
+	// needing a real risk.Manager wired to stub exchanges.
+	testSimulatorFn func(models.Opportunity, string, string, map[string]float64, *models.AlternativePair, *risk.PrefetchCache) (*models.RiskApproval, error)
+
+	// testReplaySimulatorFn overrides e.risk.SimulateApprovalForPair inside
+	// postTransferReplayFilter when non-nil. Allows tests to inject a
+	// different approval outcome for the replay call vs the initial Pass-1 call.
+	testReplaySimulatorFn func(models.Opportunity, string, string, map[string]float64, *models.AlternativePair, *risk.PrefetchCache) (*models.RiskApproval, error)
+
 	// spotCloseCallback dispatches spot-futures health actions to SpotEngine.
 	// Set via SetSpotCloseCallback after both engines are initialized.
 	spotCloseCallback func(pos *models.SpotFuturesPosition, reason string, isEmergency bool) error

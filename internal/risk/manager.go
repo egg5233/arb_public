@@ -331,11 +331,13 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	// In simulate mode, account for spot balance and cross-exchange transferable
 	// funds. We clone the balance structs first to avoid cumulative mutations
 	// when the same exchange appears in multiple candidate evaluations.
+	var approvalTopUp map[string]float64
 	if dryRun && needed > 0 {
 		longClone := *longBal
 		shortClone := *shortBal
 		longBal = &longClone
 		shortBal = &shortClone
+		approvalTopUp = map[string]float64{}
 		for _, pair := range []struct {
 			name string
 			exch exchange.Exchange
@@ -402,10 +404,14 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 						if actualTopUp > 0 {
 							pair.bal.Available += actualTopUp
 							pair.bal.Total += actualTopUp
+							approvalTopUp[pair.name] += actualTopUp
 						}
 					}
 				}
 			}
+		}
+		if len(approvalTopUp) == 0 {
+			approvalTopUp = nil
 		}
 	}
 
@@ -762,6 +768,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 		RequiredMargin:    requiredWithBuffer,
 		LongMarginNeeded:  longMarginWithBuffer,
 		ShortMarginNeeded: shortMarginWithBuffer,
+		TopUpApplied:      approvalTopUp,
 	}, nil
 }
 

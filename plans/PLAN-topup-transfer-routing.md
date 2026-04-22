@@ -710,51 +710,61 @@ git commit -m "engine(rebalance): route top-up approvals into case(b) rescue pat
 
 ## Task 4: Verify `rescueChoiceFromApproval` handles approved input
 
+**Status: DONE (audit-only, no code change needed)**
+
 **Files:**
 - Read: `internal/engine/rebalance.go` (find `rescueChoiceFromApproval`)
 - Modify (if needed): `internal/engine/rebalance.go`
 
-- [ ] **Step 1: Read the function**
+- [x] **Step 1: Read the function**
 
-Read `internal/engine/rebalance.go` and locate `func rescueChoiceFromApproval`. Confirm it reads:
-- `approval.Size`
-- `approval.Price`
-- `approval.LongMarginNeeded` / `approval.ShortMarginNeeded` (or `approval.RequiredMargin`)
+`rescueChoiceFromApproval` (lines 679–715) reads `a.Size`, `a.Price`, `a.LongMarginNeeded`,
+`a.ShortMarginNeeded`, `a.RequiredMargin`. It does NOT branch on `approval.Approved` anywhere.
+No `if a.Approved` check exists in the function body. Audit passed.
 
-Confirm it does NOT branch on `approval.Approved == false`. If it does, the approved-with-topup path will mis-handle because we now call it with `Approved == true`.
+- [x] **Step 2: No branch on Approved=false found**
 
-- [ ] **Step 2: If the function branches on Approved=false, remove that branch**
+The function is field-access only. It accepts any `*models.RiskApproval` regardless of the
+`Approved` boolean — no change required.
 
-If `rescueChoiceFromApproval` has any line like:
+- [x] **Step 3: Pass-1 tests confirm no regression**
 
-```go
-if approval.Approved {
-    return ...zero value or error...
-}
+```
+--- PASS: TestPass1_TopUpApprovedRoutesToCaseB (0.03s)
+--- PASS: TestPass1_PlainApprovedStaysCaseA (0.01s)
+PASS
+ok  arb/internal/engine  0.161s
 ```
 
-then change it to accept both approved-with-topup AND capital-rejected inputs. The fields used (`Size`, `Price`, margin needs) are the same regardless of `Approved`.
+- [x] **Step 4: Empty commit with M6 resolution documented**
 
-If the function does NOT branch on `Approved`, no change needed — document the audit result in the commit message.
+### M6 Resolution
 
-- [ ] **Step 3: Run Pass-1 tests again to confirm no regression from this audit**
+Reviewer concern: case(b) branch(i) guard `(approval.Approved && len(approval.TopUpApplied) > 0)`
+does not check `hasPricedApprovalFields`. Could an `Approved=true, TopUpApplied non-empty,
+Size=0/Price=0` input reach `rescueChoiceFromApproval`?
 
-Run: `go test ./internal/engine/ -run TestPass1 -v`
-Expected: PASS.
+**Finding: NOT reachable in practice.** Traced through `approveInternal` in `manager.go`:
 
-- [ ] **Step 4: Commit audit result**
+1. `approvalTopUp` is only initialised when `dryRun && needed > 0` (line 335).
+2. After balance inflation, `size` is recomputed via `calculateSizeWithPrice` (line 469).
+   If `size <= 0`, the function returns `Approved=false, Kind=RejectionKindCapital` immediately
+   (line 472) — never reaches the terminal `Approved=true` return.
+3. `midPrice` comes from `longOB.Bids[0]/Asks[0]`. An empty orderbook returns
+   `Approved=false, Kind=RejectionKindMarket` (line 463) before price is used.
+4. The terminal return (lines 762–772) sets `Size: size > 0`, `Price: midPrice > 0`,
+   `RequiredMargin/LongMarginNeeded/ShortMarginNeeded` all derived from
+   `size * midPrice / leverage * safetyMultiplier > 0`.
 
-If no change:
+Therefore: **`Approved=true` with `TopUpApplied non-empty` structurally implies all pricing
+fields are non-zero.** The M6 scenario (unpriced approved input) cannot occur at runtime.
+
+**Resolution A** confirmed: `rescueChoiceFromApproval` also has a defensive `fallbackMargin`
+path (lines 692–700) that handles zero-margin as a last resort, making it doubly safe.
+Adding `hasPricedApprovalFields` to the case(b)(i) guard would be redundant. No change needed.
 
 ```bash
 git commit --allow-empty -m "engine(rebalance): audit rescueChoiceFromApproval handles approved input (no change)"
-```
-
-If change was needed:
-
-```bash
-git add internal/engine/rebalance.go
-git commit -m "engine(rebalance): rescueChoiceFromApproval accepts approved-with-topup input"
 ```
 
 ---
@@ -951,6 +961,18 @@ git commit -m "chore: bump v0.33.1 for top-up routing fix"
 
 - v1 2026-04-22: DRAFT — initial plan
 - v2 2026-04-22: codex (dispatch `f6d78e6f`) — NEEDS-REVISION: Task 2 scope ambiguity + `-run` flag duplication; Task 7 missing frontend build (`go:embed` order); fixes applied verbatim per Codex's BEFORE/AFTER
+
+---
+
+## Caller Audit Results (Task 6)
+
+- `allocator.go:430` (pool allocator reval): **SAFE** — The re-validation loop (lines 421–457) uses `approval.Approved` only as a pass/fail gate to include the choice in `validated[]`. After validation, `dryRunTransferPlan(selected, balances, feeCache)` is called unconditionally on real `balances` (not the inflated simulator cache) to compute actual transfer deficits and feasibility. `TopUpApplied` is never consulted; if a top-up was needed, `dryRunTransferPlan` independently recomputes the deficit from real balance state and either plans a real transfer or returns `Feasible: false`. There is no code path where `approval.Approved == true` causes a transfer to be skipped.
+
+- `allocator.go:568` (sequential rank-first / `buildAllocatorCandidates`): **SAFE** — The call is inside `appendChoice`, a candidate-builder closure. `approval.Approved == true` is used only as a gate to include a pair as an `allocatorChoice` struct candidate for the solver. The `TopUpApplied` field is never read here. Transfer planning happens entirely downstream via `solveAllocator` → `dryRunTransferPlan` on real balance data. An approval that was only reachable via top-up inflation may produce a candidate that `dryRunTransferPlan` later rejects as infeasible if real donors cannot cover the deficit — this is the correct fail-safe behavior.
+
+**Both callers are SAFE.** Neither treats `approval.Approved == true` as "no transfer needed." Both route through `dryRunTransferPlan` which independently computes transfer plans from real balances, making `TopUpApplied` irrelevant to their correctness. The Codex v2 review finding (`2efe0b06`) is confirmed correct.
+
+Commit: see commit immediately following Task 5
 
 ---
 

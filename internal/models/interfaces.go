@@ -94,6 +94,16 @@ type RiskApproval struct {
 	RequiredMargin    float64       `json:"required_margin"`       // max(long,short) margin with safety buffer (for reservation)
 	LongMarginNeeded  float64       `json:"long_margin_needed"`    // per-leg margin needed on long exchange (with buffer)
 	ShortMarginNeeded float64       `json:"short_margin_needed"`   // per-leg margin needed on short exchange (with buffer)
+	// TopUpApplied is populated only by SimulateApproval / SimulateApprovalForPair.
+	// Key = exchange name, Value = USDT amount the simulator borrowed from
+	// cache.TransferablePerExchange to inflate pair.bal.Available so that margin
+	// checks passed. A non-empty map means the approval is feasible ONLY IF a
+	// real cross-exchange transfer of the same size lands before the executor
+	// runs. Rebalance Pass-1 MUST route such approvals into the rescue-candidate
+	// path (case b) instead of case (a), otherwise no transfer is scheduled and
+	// the executor will reject on real balance.
+	// Real Approve / ApproveWithReserved (dryRun=false) never populates this.
+	TopUpApplied      map[string]float64 `json:"top_up_applied,omitempty"`
 }
 
 // RiskAlert represents an alert emitted by the risk monitor for dashboard
