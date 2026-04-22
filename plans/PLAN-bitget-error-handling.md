@@ -1,8 +1,8 @@
 # PLAN: Bitget Error Handling + Full Non-ASCII Symbol Support
 
-Version: v15
+Version: v16
 Date: 2026-04-22
-Status: ALL PASS
+Status: REVIEWING
 
 ## Direction change from v1
 
@@ -142,7 +142,7 @@ if envelope.Code != "" && envelope.Code != "00000" {
 return string(data), nil
 ```
 
-**Named return `err`** — `doRequest` function signature uses `(raw string, err error)` named returns (verified at client.go:96). The existing defer at lines 99-103 reads `err` after function exit to call metricsCallback. All new error returns MUST assign to this named `err` before returning, so metrics record bitget errors.
+**Metrics note** — `doRequest` has **unnamed** return values `(string, error)` (verified at client.go:96), but declares a local `var err error` at line 98 that the defer at lines 99-103 captures. All new HTTP/API error paths MUST assign to this local `err` before `return "", err`, so metrics record bitget errors. The sample AFTER code above already does this (`err = &APIError{...}` before `return "", err`).
 
 Add package-level declaration:
 ```go
@@ -1245,7 +1245,54 @@ Apply same pattern to any other code-based branching (e.g. `EnsureOneWayMode` co
 
 #### 16b. `pkg/exchange/bitget/adapter.go:CancelAllOrders` — surface errors
 
-Currently swallows errors. After #1, errors propagate but callers may still swallow. Audit call sites of `CancelAllOrders` in `internal/engine` and ensure they log + handle errors (not silent continue).
+Current HEAD adapter discards BOTH Post errors (ignores return values entirely) and returns `nil`. After #1, the client returns `*APIError` but the adapter still throws it away. Must capture both errors, join them, and return.
+
+BEFORE:
+```go
+func (a *Adapter) CancelAllOrders(symbol string) error {
+	a.client.Post("/api/v2/mix/order/cancel-plan-order", map[string]string{
+		"symbol": symbol, "productType": "USDT-FUTURES",
+	})
+	a.client.Post("/api/v2/mix/order/batch-cancel-orders", map[string]string{
+		"symbol": symbol, "productType": "USDT-FUTURES",
+	})
+	return nil
+}
+```
+
+AFTER:
+```go
+func (a *Adapter) CancelAllOrders(symbol string) error {
+	var errs []error
+	if _, err := a.client.Post("/api/v2/mix/order/cancel-plan-order", map[string]string{
+		"symbol": symbol, "productType": "USDT-FUTURES",
+	}); err != nil {
+		errs = append(errs, fmt.Errorf("cancel plan orders: %w", err))
+	}
+	if _, err := a.client.Post("/api/v2/mix/order/batch-cancel-orders", map[string]string{
+		"symbol": symbol, "productType": "USDT-FUTURES",
+	}); err != nil {
+		errs = append(errs, fmt.Errorf("batch cancel orders: %w", err))
+	}
+	return errors.Join(errs...)
+}
+```
+
+Requires `errors` import in adapter.go (add if not present). `errors.Join` is stdlib since Go 1.20 — confirmed available per `go.mod` (Go 1.26).
+
+**Caller updates** — grep `CancelAllOrders(` in `internal/engine/consolidate.go` and `internal/engine/exit.go`. Each call site must capture the returned error and log it with position ID, exchange, and symbol context. For call sites inside goroutines or defer blocks, wrap in an anonymous function that logs the error instead of discarding:
+
+```go
+// BEFORE (generic pattern at caller)
+exch.CancelAllOrders(symbol)
+
+// AFTER
+if err := exch.CancelAllOrders(symbol); err != nil {
+	e.log.Warn("CancelAllOrders %s/%s (pos %s) failed: %v", exchName, symbol, posID, err)
+}
+```
+
+Errors should be logged and continue (do not abort surrounding operation), matching existing patterns for cleanup calls elsewhere in engine.
 
 #### 16c. `pkg/exchange/bitget/adapter.go:populateBitgetFeeDeducted` — log fill fetch errors
 
@@ -1376,7 +1423,13 @@ Risk mitigation is handled via staged deploy: deploy to VPS off-peak, monitor lo
 - v15: addresses v14:
   * #15 defensive gate: removed `if pos.PendingEntryOrderID == "" { return }` check. Existing recovery checkpoints may legitimately have empty `PendingEntryOrderID` (spot leg confirmed, futures hedge still pending recovery). Only gate on `PendingFuturesEntryOrderID != ""`. Added explanatory comment in AFTER block.
   * #16a CheckPermissions: added "endpoint reached" inference preservation. Under strict errors, differentiate `*APIError` classes: 40009 → `PermDenied`; `retryableCodes[code]` → `PermUnknown`; 5xx HTTP status (via `strconv.Atoi`) → `PermUnknown`; any other `*APIError` → `PermGranted` (endpoint reached, rejected for non-auth reason). Documented `retryableCodes` reference to `client.go` and `strconv` import requirement.
-- **v15 Codex independent re-review (resume thread): ALL PASS.** Plan approved for implementation.
+- v15 Codex independent re-review (resume thread): ALL PASS (delta-only).
+- v15 Codex FRESH-thread full independent audit (xhigh): NEEDS-REVISION — 2 findings not caught by resume-thread review:
+  * #1 metrics note: plan claimed `doRequest` uses named returns, actual HEAD uses unnamed returns + local `var err error`. Text was inaccurate.
+  * #16b CancelAllOrders: "audit call sites" too vague; bitget adapter still silently discards both Post errors (returns nil unconditionally). Needed concrete BEFORE/AFTER + caller update pattern.
+- v16: (this version) — addresses fresh-audit findings:
+  * #1 metrics note: rewritten to describe unnamed return + local `var err error` pattern; clarified new error paths must assign to local `err` before returning.
+  * #16b CancelAllOrders: added concrete BEFORE/AFTER adapter code using `errors.Join`; `errors` import note; caller update pattern with log+continue semantics.
 - v13 original: (kept for history)
   * Field name corrected: `SpotSize` (NOT `SpotFilledQty`) per HEAD models/spot_position.go
   * Dir A vs Dir B specific fields documented: Dir A uses `SpotSize = spotFilled` (gross, borrowed+sold); Dir B uses `SpotSize = spotNetReceived` (net after fee deduction). Each sets correct `FuturesSide`.
