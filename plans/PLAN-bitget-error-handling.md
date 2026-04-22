@@ -1,6 +1,6 @@
 # PLAN: Bitget Error Handling + Full Non-ASCII Symbol Support
 
-Version: v20
+Version: v21
 Date: 2026-04-22
 Status: REVIEWING
 
@@ -993,37 +993,136 @@ Same pattern for short leg at consolidate.go:621. Behavior unchanged (empty long
 
 **Concrete signature/caller changes per site (not left to implementation):**
 
-#### 15a. `internal/engine/engine.go:retrySecondLeg` (called from 2630 and 2682)
+#### 15a. `internal/engine/engine.go:retrySecondLeg` — signature change + caller updates
 
-Change signature to surface error:
+**Line number clarification** (verified against HEAD):
+- `2630, 2682` are **inside** `retrySecondLeg` (the IOC and MKT retry loops calling `GetOrderFilledQty`).
+- The actual **callers** of `retrySecondLeg` are at `3688, 3727, 3932, 3971`.
+
+Change signature from `(filled, avgPrice float64)` to `(filled, avgPrice float64, err error)` so callers can distinguish "confirmed zero fill" (`totalFilled == 0, err == nil`) from "state unknown" (`totalFilled >= 0, err != nil`). When error occurs mid-retry, `retrySecondLeg` must still return the running `totalFilled` so callers can persist the partial quantity — dropping it would lose track of the leg that partially filled before bitget error surfaced.
+
+**Signature change** at HEAD `internal/engine/engine.go:2573`:
+
+BEFORE:
 ```go
-// BEFORE (inside retrySecondLeg)
-filledQty, _ := exch.GetOrderFilledQty(orderID, symbol)
-if filledQty == 0 { continue /* retry */ }
-
-// AFTER
-filledQty, qErr := exch.GetOrderFilledQty(orderID, symbol)
-if qErr != nil {
-	return totalFilled, avgPrice, fmt.Errorf("second leg fill state unknown for %s on %s: %w", orderID, exchName, qErr)
-}
-if filledQty == 0 { continue }
+func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol string, side exchange.Side, remainingSize float64, refPrice float64) (filled float64, avgPrice float64) {
 ```
 
-Function signature if currently `(float64, float64)` must become `(float64, float64, error)`. All callers updated:
-
+AFTER:
 ```go
-// Caller pattern (engine.go around 2630, 2682)
-retryFilled, retryAvg, retryErr := e.retrySecondLeg(...)
+func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol string, side exchange.Side, remainingSize float64, refPrice float64) (filled float64, avgPrice float64, err error) {
+```
+
+**Internal IOC loop** at HEAD `engine.go:2630-2634`:
+
+BEFORE:
+```go
+filledQty, qErr := exch.GetOrderFilledQty(orderID, symbol)
+if qErr != nil {
+	e.log.Warn("retrySecondLeg[IOC-%d] %s %s: GetOrderFilledQty failed: %v", attempt, exchName, symbol, qErr)
+	continue
+}
+```
+
+AFTER:
+```go
+filledQty, qErr := exch.GetOrderFilledQty(orderID, symbol)
+if qErr != nil {
+	if totalFilled > 0 {
+		avgPrice = totalNotional / totalFilled
+	}
+	return totalFilled, avgPrice, fmt.Errorf("second leg fill state unknown for %s on %s: %w", orderID, exchName, qErr)
+}
+```
+
+**Internal MKT loop** at HEAD `engine.go:2682-2685`:
+
+BEFORE:
+```go
+filledQty, qErr := exch.GetOrderFilledQty(orderID, symbol)
+if qErr != nil {
+	e.log.Warn("retrySecondLeg[MKT-%d] %s %s: GetOrderFilledQty failed: %v", mktAttempt, exchName, symbol, qErr)
+	continue
+}
+```
+
+AFTER:
+```go
+filledQty, qErr := exch.GetOrderFilledQty(orderID, symbol)
+if qErr != nil {
+	if totalFilled > 0 {
+		avgPrice = totalNotional / totalFilled
+	}
+	return totalFilled, avgPrice, fmt.Errorf("second leg fill state unknown for %s on %s: %w", orderID, exchName, qErr)
+}
+```
+
+**Terminal return** at HEAD `engine.go:2707-2711`:
+
+BEFORE:
+```go
+done:
+	if totalFilled > 0 {
+		avgPrice = totalNotional / totalFilled
+	}
+	return totalFilled, avgPrice
+```
+
+AFTER:
+```go
+done:
+	if totalFilled > 0 {
+		avgPrice = totalNotional / totalFilled
+	}
+	return totalFilled, avgPrice, nil
+```
+
+**Caller updates** — each of the 4 call sites (`3688`, `3727`, `3932`, `3971`) gets the same error-handling pattern with long/short sides mirrored. Concrete for `engine.go:3688-3693` (long-side retry after short filled):
+
+BEFORE:
+```go
+retryFilled, retryAvg := e.retrySecondLeg(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, matchSize, askPrice)
+if retryFilled > 0 {
+	longFilled = retryFilled
+	longAvg = retryAvg
+	longConsecFails = 0
+} else {
+```
+
+AFTER:
+```go
+retryFilled, retryAvg, retryErr := e.retrySecondLeg(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, matchSize, askPrice)
+if retryFilled > 0 {
+	longFilled = retryFilled
+	longAvg = retryAvg
+	longConsecFails = 0
+}
 if retryErr != nil {
-	// Do NOT place another order — state unknown. Mark position partial,
-	// let consolidator reconcile on next cycle.
+	// State unknown — do NOT retry the leg or place another order. Persist
+	// known partial so consolidator/operator can reconcile on next cycle.
+	e.log.Error("ORPHAN WARNING: %s long retry fill unknown after short filled %.6f: %v", posID, shortFilled, retryErr)
+	pos.LongSize = confirmedLong + longFilled
+	pos.ShortSize = confirmedShort + shortFilled
+	pos.LongEntry = longVWAP
+	if longFilled > 0 && longAvg > 0 {
+		pos.LongEntry = longAvg
+	}
+	pos.ShortEntry = shortVWAP
+	pos.EntryNotional = math.Max(pos.LongEntry*pos.LongSize, pos.ShortEntry*pos.ShortSize)
 	pos.Status = models.StatusPartial
 	pos.FailureReason = "second_leg_fill_unknown"
 	pos.UpdatedAt = time.Now().UTC()
 	_ = e.db.SavePosition(pos)
-	return errPartialEntry // new sentinel or reuse existing
+	return errPartialEntry
 }
+if retryFilled > 0 {
 ```
+
+**Apply the same complete pattern** to the other 3 callers at `engine.go:3727`, `3932`, and `3971` — mirror long/short side per context (each site is either the long-leg retry or the short-leg retry path). Exact per-caller variable names match HEAD.
+
+**Sentinel `errPartialEntry`**: reuse if exists, or declare new `var errPartialEntry = errors.New("second leg fill state unknown, persisted as partial")` near the other engine sentinels.
+
+**`models.StatusPartial`**: verify string value at `internal/models/position.go`; if not present, add it with an appropriate status value (e.g. `"partial"`).
 
 #### 15b. `internal/engine/engine.go:confirmFill` — add error return + propagate
 
@@ -1820,8 +1919,12 @@ Risk mitigation is handled via staged deploy: deploy to VPS off-peak, monitor lo
   * **#15**: reverted to NET after tracing outer ManualOpen flow. `pos.NotionalUSDT = spotNetReceived * spotAvg`, `capitalAmount = spotNetReceived * spotAvg`, test assertions `== 6.15` restored. Plan comment documents the inner-transient → outer-overwrite pattern explicitly so future reviewers don't repeat the confusion.
 - v19 Codex fresh-thread full independent audit (xhigh): NEEDS-REVISION — 1 finding:
   * #15c spotengine entry paths: combined AFTER block had only Dir B fully written out; Dir A was a leading block + Dir B a comment. Codex requested each direction have its own complete, compileable AFTER block with exact HEAD BEFORE context (different return signatures: Dir A returns 6 values, Dir B returns 5).
-- v20: (this version) — addresses v19 fresh-audit:
+- v20: addresses v19 fresh-audit:
   * #15c: separated Dir A and Dir B into two complete AFTER blocks with exact HEAD BEFORE context (lines 506-510 for Dir A, 619-623 for Dir B). Each block is self-contained and compileable with correct return-value arity. Dir A uses `spotFilled * spotAvg` (gross == net since no fee net-off), Dir B uses `spotNetReceived * spotAvg` (net — matches HEAD final state after outer overwrite). Preserved rollback paths for `futFilled <= 0` sanity check that follows the error branch.
+- v20 Codex fresh-thread full independent audit (xhigh): NEEDS-REVISION — 1 finding:
+  * #15a: plan cited `engine.go:2630/2682` as caller lines but those are **inside** `retrySecondLeg` (the IOC/MKT retry loops). Actual callers are at `3688, 3727, 3932, 3971`. Additionally, plan lacked concrete signature change + caller update code showing how partial `totalFilled` is persisted when retry exits with unknown state.
+- v21: (this version) — addresses v20 fresh-audit:
+  * #15a retrySecondLeg: retitled header to "signature change + caller updates" with explicit clarification that 2630/2682 are internal loops, not callers. Added full BEFORE/AFTER for: function signature (2573: `(float64, float64)` → `(float64, float64, error)`), IOC loop (2630-2634), MKT loop (2682-2685), terminal return (2707-2711), and one complete caller at 3688-3693 showing partial persistence with `StatusPartial`, `second_leg_fill_unknown`, `errPartialEntry`. Noted the other 3 callers (3727/3932/3971) apply same pattern mirrored by long/short side. Flagged `errPartialEntry` sentinel + `models.StatusPartial` verification.
 - v13 original: (kept for history)
   * Field name corrected: `SpotSize` (NOT `SpotFilledQty`) per HEAD models/spot_position.go
   * Dir A vs Dir B specific fields documented: Dir A uses `SpotSize = spotFilled` (gross, borrowed+sold); Dir B uses `SpotSize = spotNetReceived` (net after fee deduction). Each sets correct `FuturesSide`.
