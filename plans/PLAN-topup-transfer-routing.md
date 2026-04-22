@@ -10,9 +10,9 @@
 
 ---
 
-**Version:** v1
+**Version:** v2
 **Date:** 2026-04-22
-**Status:** DRAFT
+**Status:** REVIEWING
 
 ## Context — Observed incident
 
@@ -255,118 +255,222 @@ Note: `newTestManagerWithBalances` and `newTestOrderbook` — reuse existing tes
 
 - [ ] **Step 2: Run tests, verify they fail**
 
-Run: `go test ./internal/risk/ -run TestSimulator_TopUpApplied -run TestExecutor_TopUpApplied -v`
+Run: `go test ./internal/risk/ -run 'Test(Simulator|Executor)_TopUpApplied' -v`
 Expected: FAIL with one of:
 - `approval.TopUpApplied empty` (before populating the field)
 - compilation error if helpers missing
 
 - [ ] **Step 3: Implement — track top-up inside dryRun block**
 
-Modify `internal/risk/manager.go:334-410`. Find the block that starts with `if dryRun && needed > 0 {` and apply these two local edits:
+Modify `internal/risk/manager.go:334-410`. Codex-supplied verbatim BEFORE/AFTER:
 
-At the top of that block, initialize the tracker (before the `for _, pair := range ...` loop):
+BEFORE:
 
 ```go
 if dryRun && needed > 0 {
-    longClone := *longBal
-    shortClone := *shortBal
-    longBal = &longClone
-    shortBal = &shortClone
-    topUpApplied := map[string]float64{}  // ADD THIS LINE
-    for _, pair := range []struct {
-```
+	longClone := *longBal
+	shortClone := *shortBal
+	longBal = &longClone
+	shortBal = &shortClone
+	for _, pair := range []struct {
+		name string
+		exch exchange.Exchange
+		bal  *exchange.Balance
+	}{
+		{opp.LongExchange, longExch, longBal},
+		{opp.ShortExchange, shortExch, shortBal},
+	} {
+		bufferedNeed := needed * m.cfg.MarginSafetyMultiplier
+		// For split-account exchanges, unconditionally add spot balance so
+		// dryRun sees the same avail as rebalanceAvailable (futures+spot).
+		// Same-exchange long+short is structurally impossible in perp-perp,
+		// so per-leg spot augmentation cannot double-count.
+		isUnified := false
+		if uc, ok := pair.exch.(interface{ IsUnified() bool }); ok && uc.IsUnified() {
+			isUnified = true
+		}
+		if !isUnified {
+			if spotBal, err := pair.exch.GetSpotBalance(); err == nil && spotBal.Available > 0 {
+				pair.bal.Available += spotBal.Available
+				pair.bal.Total += spotBal.Available
+				m.log.Debug("approval dryRun %s: added spot %.2f to %s (avail now=%.2f)", opp.Symbol, spotBal.Available, pair.name, pair.bal.Available)
+			}
+		}
+		// Add cross-exchange transferable surplus (allocator planning only).
+		// Trigger when EITHER margin buffer is insufficient OR post-trade
+		// ratio would exceed L4. Only inflate by the deficit needed.
+		if cache != nil && cache.TransferablePerExchange != nil {
+			// Check if post-trade ratio would exceed L4 even with sufficient margin buffer.
+			margin := needed
+			wouldExceedL4 := false
+			if pair.bal.Total > 0 {
+				postAvail := pair.bal.Available - margin
+				if postAvail < 0 {
+					postAvail = 0
+				}
+				postRatio := 1 - postAvail/pair.bal.Total
+				wouldExceedL4 = postRatio >= m.cfg.MarginL4Threshold
+			}
 
-Inside the cross-exchange top-up branch where `pair.bal.Available += actualTopUp` currently runs (around line 402), record the amount:
+			if pair.bal.Available < bufferedNeed || wouldExceedL4 {
+				if topUp, ok := cache.TransferablePerExchange[pair.name]; ok && topUp > 0 {
+					// Compute margin buffer deficit.
+					deficit := bufferedNeed - pair.bal.Available
+					if deficit < 0 {
+						deficit = 0
+					}
 
-```go
-if actualTopUp > 0 {
-    pair.bal.Available += actualTopUp
-    pair.bal.Total += actualTopUp
-    topUpApplied[pair.name] += actualTopUp  // ADD THIS LINE
+					// Also compute the post-trade ratio deficit: how much extra
+					// is needed so that post-trade ratio stays below L4.
+					targetRatio := m.cfg.MarginL4Threshold - 0.005 // marginEpsilon: avoid hitting L4 boundary
+					freeTarget := 1.0 - targetRatio
+					if freeTarget > 0 && pair.bal.Total > 0 {
+						ratioDeficit := (freeTarget*pair.bal.Total - pair.bal.Available + margin) / targetRatio
+						if ratioDeficit > deficit {
+							deficit = ratioDeficit
+						}
+					}
+
+					actualTopUp := deficit
+					if actualTopUp > topUp {
+						actualTopUp = topUp
+					}
+					if actualTopUp > 0 {
+						pair.bal.Available += actualTopUp
+						pair.bal.Total += actualTopUp
+					}
+				}
+			}
+		}
+	}
 }
 ```
 
-At the end of the block (right after the for loop closes, before `// Subtract already-reserved margin`), stash the tracker into a closure-level variable so the final return can attach it:
+AFTER:
 
 ```go
-            if actualTopUp > 0 {
-                pair.bal.Available += actualTopUp
-                pair.bal.Total += actualTopUp
-                topUpApplied[pair.name] += actualTopUp
-            }
-        }
-    }
-}
-// After the `if dryRun && needed > 0` block closes, wire topUpApplied into
-// the outer scope so the final approval construction at line 756 can read it.
 var approvalTopUp map[string]float64
-if dryRun && len(topUpApplied) > 0 {
-    approvalTopUp = topUpApplied
-}
-```
-
-Note: `topUpApplied` is only visible inside the `if dryRun && needed > 0 { ... }` block as written — we must either (i) declare it above the block or (ii) use a pointer escape. The correct shape is:
-
-```go
-var approvalTopUp map[string]float64  // declared BEFORE the if-dryRun block
 if dryRun && needed > 0 {
-    longClone := *longBal
-    shortClone := *shortBal
-    longBal = &longClone
-    shortBal = &shortClone
-    approvalTopUp = map[string]float64{}
-    for _, pair := range []struct {
-        // ...existing loop body...
-        if actualTopUp > 0 {
-            pair.bal.Available += actualTopUp
-            pair.bal.Total += actualTopUp
-            approvalTopUp[pair.name] += actualTopUp
-        }
-        // ...
-    }
-    if len(approvalTopUp) == 0 {
-        approvalTopUp = nil  // keep JSON omitempty clean
-    }
+	longClone := *longBal
+	shortClone := *shortBal
+	longBal = &longClone
+	shortBal = &shortClone
+	approvalTopUp = map[string]float64{}
+	for _, pair := range []struct {
+		name string
+		exch exchange.Exchange
+		bal  *exchange.Balance
+	}{
+		{opp.LongExchange, longExch, longBal},
+		{opp.ShortExchange, shortExch, shortBal},
+	} {
+		bufferedNeed := needed * m.cfg.MarginSafetyMultiplier
+		// For split-account exchanges, unconditionally add spot balance so
+		// dryRun sees the same avail as rebalanceAvailable (futures+spot).
+		// Same-exchange long+short is structurally impossible in perp-perp,
+		// so per-leg spot augmentation cannot double-count.
+		isUnified := false
+		if uc, ok := pair.exch.(interface{ IsUnified() bool }); ok && uc.IsUnified() {
+			isUnified = true
+		}
+		if !isUnified {
+			if spotBal, err := pair.exch.GetSpotBalance(); err == nil && spotBal.Available > 0 {
+				pair.bal.Available += spotBal.Available
+				pair.bal.Total += spotBal.Available
+				m.log.Debug("approval dryRun %s: added spot %.2f to %s (avail now=%.2f)", opp.Symbol, spotBal.Available, pair.name, pair.bal.Available)
+			}
+		}
+		// Add cross-exchange transferable surplus (allocator planning only).
+		// Trigger when EITHER margin buffer is insufficient OR post-trade
+		// ratio would exceed L4. Only inflate by the deficit needed.
+		if cache != nil && cache.TransferablePerExchange != nil {
+			margin := needed
+			wouldExceedL4 := false
+			if pair.bal.Total > 0 {
+				postAvail := pair.bal.Available - margin
+				if postAvail < 0 {
+					postAvail = 0
+				}
+				postRatio := 1 - postAvail/pair.bal.Total
+				wouldExceedL4 = postRatio >= m.cfg.MarginL4Threshold
+			}
+
+			if pair.bal.Available < bufferedNeed || wouldExceedL4 {
+				if topUp, ok := cache.TransferablePerExchange[pair.name]; ok && topUp > 0 {
+					deficit := bufferedNeed - pair.bal.Available
+					if deficit < 0 {
+						deficit = 0
+					}
+
+					targetRatio := m.cfg.MarginL4Threshold - 0.005
+					freeTarget := 1.0 - targetRatio
+					if freeTarget > 0 && pair.bal.Total > 0 {
+						ratioDeficit := (freeTarget*pair.bal.Total - pair.bal.Available + margin) / targetRatio
+						if ratioDeficit > deficit {
+							deficit = ratioDeficit
+						}
+					}
+
+					actualTopUp := deficit
+					if actualTopUp > topUp {
+						actualTopUp = topUp
+					}
+					if actualTopUp > 0 {
+						pair.bal.Available += actualTopUp
+						pair.bal.Total += actualTopUp
+						approvalTopUp[pair.name] += actualTopUp
+					}
+				}
+			}
+		}
+	}
+	if len(approvalTopUp) == 0 {
+		approvalTopUp = nil
+	}
 }
 ```
 
 - [ ] **Step 4: Implement — attach `approvalTopUp` to final approval return**
 
-Find the terminal approval return at `internal/risk/manager.go:756`. The current construction:
+Modify `internal/risk/manager.go:756-765`. Codex-supplied verbatim BEFORE/AFTER:
+
+BEFORE:
 
 ```go
 return &models.RiskApproval{
-    Approved:          true,
-    Size:              size,
-    Price:             midPrice,
-    GapBPS:            gapBPS,
-    RequiredMargin:    requiredMargin,
-    LongMarginNeeded:  longMarginBuffered,
-    ShortMarginNeeded: shortMarginBuffered,
+	Approved:          true,
+	Size:              size,
+	Reason:            "all pre-trade checks passed",
+	Price:             midPrice,
+	GapBPS:            gapBps,
+	RequiredMargin:    requiredWithBuffer,
+	LongMarginNeeded:  longMarginWithBuffer,
+	ShortMarginNeeded: shortMarginWithBuffer,
 }, nil
 ```
 
-Change to:
+AFTER:
 
 ```go
 return &models.RiskApproval{
-    Approved:          true,
-    Size:              size,
-    Price:             midPrice,
-    GapBPS:            gapBPS,
-    RequiredMargin:    requiredMargin,
-    LongMarginNeeded:  longMarginBuffered,
-    ShortMarginNeeded: shortMarginBuffered,
-    TopUpApplied:      approvalTopUp,
+	Approved:          true,
+	Size:              size,
+	Reason:            "all pre-trade checks passed",
+	Price:             midPrice,
+	GapBPS:            gapBps,
+	RequiredMargin:    requiredWithBuffer,
+	LongMarginNeeded:  longMarginWithBuffer,
+	ShortMarginNeeded: shortMarginWithBuffer,
+	TopUpApplied:      approvalTopUp,
 }, nil
 ```
-
-Note: field names `gapBPS`, `requiredMargin`, `longMarginBuffered`, `shortMarginBuffered` are illustrative — read the current file at line 750-760 and use the EXACT variable names present there. Do not rename anything.
 
 - [ ] **Step 5: Run tests, verify they pass**
 
-Run: `go test ./internal/risk/ -run TestSimulator_TopUpApplied -run TestExecutor_TopUpApplied -v`
+Run: `go test ./internal/risk/ -run 'Test(Simulator|Executor)_TopUpApplied' -v`
 Expected: PASS all three tests.
+
+Note: repeated `-run` flags only honor the last pattern — use a single regex as shown. Same correction applies to Step 2 above (`go test ./internal/risk/ -run 'Test(Simulator|Executor)_TopUpApplied' -v`).
 
 - [ ] **Step 6: Run full risk package tests to catch regressions**
 
@@ -761,22 +865,29 @@ git commit --allow-empty -m "engine(rebalance): audit allocator.go top-up handli
 
 **Files:** None modified. Verify the whole package builds and tests pass.
 
-- [ ] **Step 1: Full repo build**
+Note: This repo uses `go:embed` to embed `web/dist/` into the Go binary, so the frontend MUST build before `go build ./...` or the embed directive fails / serves stale JS.
+
+- [ ] **Step 1: Frontend build**
+
+Run: `cd web && npm run build && cd ..`
+Expected: success, `web/dist/` populated.
+
+- [ ] **Step 2: Full repo build**
 
 Run: `go build ./...`
 Expected: success, no errors.
 
-- [ ] **Step 2: Full repo test**
+- [ ] **Step 3: Full repo test**
 
 Run: `go test ./...`
-Expected: all tests PASS.
+Expected: all tests PASS. If pre-existing failures exist at `de724e1a` baseline (unrelated to this change), document them but do not block on them — only fail on NEW failures introduced by Tasks 1–6.
 
-- [ ] **Step 3: Lint (go vet)**
+- [ ] **Step 4: Lint (go vet)**
 
 Run: `go vet ./...`
-Expected: no warnings.
+Expected: no NEW warnings introduced by this change. Pre-existing vet warnings at `de724e1a` are acceptable if they also exist on the unchanged baseline.
 
-- [ ] **Step 4: Commit verification**
+- [ ] **Step 5: Commit verification**
 
 ```bash
 git commit --allow-empty -m "chore: verify full-repo build + test after top-up routing fix"
@@ -834,10 +945,12 @@ git commit -m "chore: bump v0.33.1 for top-up routing fix"
 - Changes to pool allocator transfer semantics (Tier-1/Tier-2 inversion, argmax selector) — unrelated
 - Changes to `PrefetchCache.TransferablePerExchange` computation — unrelated
 - Changes to `keepFundedChoices` / post-transfer replay filter mechanics — already correct per Codex audit, just extended with a regression test
+- **Rebalance snapshot drift** (the 10-minute gap between rebalance at :35 balance snapshot and executor at :45 live re-read). Codex v1 independent review (dispatch `baa9d706`) flagged this as a separate concern that widens divergence even without the top-up bug. This plan does NOT address drift; a follow-up plan should consider either re-snapshotting closer to entry or deadlining case-(a) reservations.
 
 ## Review History
 
 - v1 2026-04-22: DRAFT — initial plan
+- v2 2026-04-22: codex (dispatch `f6d78e6f`) — NEEDS-REVISION: Task 2 scope ambiguity + `-run` flag duplication; Task 7 missing frontend build (`go:embed` order); fixes applied verbatim per Codex's BEFORE/AFTER
 
 ---
 
