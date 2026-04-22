@@ -198,7 +198,16 @@ func (t *Tracker) closePair(pos *models.PriceGapPosition, reason string) {
 		(longExitPrice-pos.LongFillPrice)*pos.LongSize +
 			(pos.ShortFillPrice-shortExitPrice)*pos.ShortSize
 
-	// Realized slippage as round-trip bps (D-21): entry + exit asymmetry on both legs.
+	// Realized slippage as round-trip bps (D-21 / D-23): entry + exit asymmetry
+	// on both legs, stamped onto pos before AddPriceGapHistory so every history
+	// row carries both modeled (set at entry in execution.go openPair) and
+	// realized (set here) bps — Plan 05 reads realized-vs-modeled directly
+	// from pg:history (D-24 simplification).
+	//
+	// Plan 03 paper-mode coupling: when the close path is the synthesized paper
+	// close (fills at mid ± modeled/2), Plan 03 assigns
+	// pos.RealizedSlipBps := pos.ModeledSlipBps at the synth point; the live
+	// path below computes the measured value.
 	// Guarded: zero mids (bad data) produce zero contributions, not NaN.
 	var entryLongBps, entryShortBps, exitLongBps, exitShortBps float64
 	if pos.LongMidAtDecision > 0 {

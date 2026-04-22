@@ -35,7 +35,9 @@ type PriceGapPosition struct {
 	LongExchange   string `json:"long_exchange"`
 	ShortExchange  string `json:"short_exchange"`
 	Status         string `json:"status"` // "pending" | "open" | "exiting" | "closed"
-	Mode           string `json:"mode"`   // "paper" | "live" (Phase 9 D-12); defaults to "live" on unmarshal of pre-Phase-9 records via NormalizeMode.
+	// Mode string `json:"mode"` — Phase 9 D-12: "paper" | "live". Defaults to
+	// "live" on unmarshal of pre-Phase-9 records via NormalizeMode.
+	Mode string `json:"mode"`
 
 	EntrySpreadBps float64 `json:"entry_spread_bps"`
 	ThresholdBps   float64 `json:"threshold_bps"`
@@ -49,6 +51,13 @@ type PriceGapPosition struct {
 	LongMidAtDecision  float64 `json:"long_mid_at_decision"`
 	ShortMidAtDecision float64 `json:"short_mid_at_decision"`
 
+	// D-23 + D-24 (Phase 9): ModeledSlipBps is stamped at entry by openPair
+	// (internal/pricegaptrader/execution.go) from cand.ModeledSlippageBps;
+	// RealizedSlipBps is stamped at close by closePair
+	// (internal/pricegaptrader/monitor.go) as the round-trip realized bps.
+	// Both values persist onto every pg:history row, which unblocks Plan 05
+	// rolling metrics to read realized-vs-modeled directly from pg:history —
+	// no dependency on pg:slippage:* per D-24.
 	ModeledSlipBps  float64 `json:"modeled_slippage_bps"`
 	RealizedSlipBps float64 `json:"realized_slippage_bps"`
 	RealizedPnL     float64 `json:"realized_pnl"`

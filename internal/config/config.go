@@ -695,10 +695,10 @@ func Load() *Config {
 		EnableAnalytics: false,
 		AnalyticsDBPath: "data/analytics.db",
 
-		// Price-Gap Tracker defaults (Phase 9, D-12 exception):
-		// paper mode default TRUE until live validated — master switch stays OFF per PG-OPS-06.
-		PriceGapPaperMode: true,
 	}
+	// Price-Gap Tracker defaults (Phase 9, D-12 exception):
+	// paper mode default TRUE until live validated — master switch stays OFF per PG-OPS-06.
+	c.PriceGapPaperMode = true
 
 	// Load from JSON file
 	c.loadJSON()
