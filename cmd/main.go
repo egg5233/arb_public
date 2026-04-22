@@ -467,6 +467,15 @@ func main() {
 	var pgTracker *pricegaptrader.Tracker
 	if cfg.PriceGapEnabled {
 		pgTracker = pricegaptrader.NewTracker(exchanges, db, scanner, cfg)
+		// Phase 9 Plan 06 DI: wire the dashboard WS hub + Telegram notifier
+		// BEFORE Start() so the first tick/heartbeat sees live implementations
+		// (not Noop defaults). apiSrv implements pricegaptrader.Broadcaster
+		// (assertion in internal/api/pricegap_handlers.go); tg implements
+		// pricegaptrader.PriceGapNotifier (assertion in
+		// internal/notify/pricegap_assert.go). Both are nil-safe:
+		// SetBroadcaster(nil) and SetNotifier(nil) revert to Noops.
+		pgTracker.SetBroadcaster(apiSrv)
+		pgTracker.SetNotifier(tg)
 		pgTracker.Start()
 		log.Info("Price-gap tracker started (candidates=%d, budget=$%.0f)",
 			len(cfg.PriceGapCandidates), cfg.PriceGapBudget)
