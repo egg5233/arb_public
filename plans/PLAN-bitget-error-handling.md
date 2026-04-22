@@ -1,6 +1,6 @@
 # PLAN: Bitget Error Handling + Full Non-ASCII Symbol Support
 
-Version: v18
+Version: v19
 Date: 2026-04-22
 Status: REVIEWING
 
@@ -110,11 +110,13 @@ var envelope struct {
 }
 _ = json.Unmarshal(data, &envelope)
 
-// Idempotent codes that existing adapter methods treat as success:
-// - 40872 "margin mode already set" (SetMarginMode adapter.go:175)
-// - 43011 "order already cancelled/finalized" (CancelOrder adapter.go:400,
-//   CancelStopLoss adapter.go:1376)
-// - 43025 same semantic as 43011 in some contexts
+// Idempotent codes that existing adapter methods treat as success (line numbers
+// verified against HEAD adapter.go):
+// - 43011 "order already cancelled/finalized" — CancelOrder adapter.go:175,
+//   CancelStopLoss adapter.go:1376
+// - 40872 "margin mode already set" — SetMarginMode adapter.go:401
+// - 43025 same semantic family as 43011 — CancelOrder adapter.go:175,
+//   CancelStopLoss adapter.go:1376
 // Pass these through untouched so existing idempotent handling keeps working.
 if bitgetPassThroughCodes[envelope.Code] {
 	return string(data), nil
@@ -150,9 +152,9 @@ Add package-level declaration:
 // as success by existing adapter call sites (idempotent operations). Each must
 // have a documented call site that relies on the code being preserved.
 var bitgetPassThroughCodes = map[string]bool{
-	"40872": true, // SetMarginMode: margin mode already set (adapter.go:175)
-	"43011": true, // CancelOrder / CancelStopLoss: order already finalized (adapter.go:400, 1376)
-	"43025": true, // Same semantic family
+	"40872": true, // SetMarginMode: margin mode already set (adapter.go:401)
+	"43011": true, // CancelOrder / CancelStopLoss: order already finalized (adapter.go:175, 1376)
+	"43025": true, // CancelOrder / CancelStopLoss: same semantic family (adapter.go:175, 1376)
 }
 ```
 
@@ -459,62 +461,194 @@ Same pagination pattern applies to GetUserTrades (#7), GetClosePnL (#8), and Get
 
 HEAD `GetFundingRate` passes `symbol` in a signed GET to `/api/v2/mix/market/current-fund-rate`. Under bitget's non-ASCII HMAC rejection, this fails 40009 for symbols like `龙虾USDT`. Discovery scans and exit funding checks both call `GetFundingRate`, so without a fallback those paths silently break for non-ASCII symbols after #1's strict errors expose them.
 
+**Signature note**: HEAD returns `(*exchange.FundingRate, error)` — NOT a raw float64. Fallback must preserve this contract and populate all `FundingRate` fields (Rate, NextRate, Interval, NextFunding, MaxRate, MinRate, Symbol).
+
 **Key docs reference** (`doc/bitget/bitget-futures-api-docs.md`): `/api/v2/mix/market/current-fund-rate` accepts `productType` alone (optional `symbol`). When `symbol` is omitted, the response is an array of rows, each with a `symbol` field — filter locally.
 
-BEFORE (current pattern):
+BEFORE (HEAD `pkg/exchange/bitget/adapter.go:554-627`):
 ```go
-params := map[string]string{
-	"symbol":      symbol,
-	"productType": productTypeUSDTFutures,
-}
-raw, err := a.client.Get("/api/v2/mix/market/current-fund-rate", params)
-// parse single-row response, return
-```
+func (a *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
+	params := map[string]string{
+		"symbol":      symbol,
+		"productType": productTypeUSDTFutures,
+	}
 
-AFTER:
-```go
-if containsNonASCII(symbol) {
-	params := map[string]string{"productType": productTypeUSDTFutures}
 	raw, err := a.client.Get("/api/v2/mix/market/current-fund-rate", params)
 	if err != nil {
-		return 0, fmt.Errorf("GetFundingRate no-filter: %w", err)
+		return nil, fmt.Errorf("GetFundingRate error: %w", err)
 	}
+
 	var resp struct {
 		Code string `json:"code"`
 		Msg  string `json:"msg"`
 		Data []struct {
-			Symbol      string `json:"symbol"`
-			FundingRate string `json:"fundingRate"`
+			Symbol              string `json:"symbol"`
+			FundingRate         string `json:"fundingRate"`
+			NextFundRate        string `json:"nextFundRate"`
+			FundingTime         string `json:"fundingTime"`
+			NextUpdate          string `json:"nextUpdate"`
+			FundingRateInterval string `json:"fundingRateInterval"`
+			MaxFundingRate      string `json:"maxFundingRate"`
+			MinFundingRate      string `json:"minFundingRate"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
-		return 0, fmt.Errorf("GetFundingRate no-filter unmarshal: %w", err)
+		return nil, fmt.Errorf("unmarshal funding rate: %w", err)
 	}
-	if resp.Code != "" && resp.Code != "00000" {
-		return 0, &APIError{Code: resp.Code, Msg: resp.Msg}
+	if resp.Code != "00000" {
+		return nil, fmt.Errorf("GetFundingRate failed: code=%s msg=%s", resp.Code, resp.Msg)
 	}
-	for _, row := range resp.Data {
-		if strings.EqualFold(row.Symbol, symbol) {
-			rate, err := strconv.ParseFloat(row.FundingRate, 64)
-			if err != nil {
-				return 0, fmt.Errorf("GetFundingRate parse %q: %w", row.FundingRate, err)
-			}
-			return rate, nil
+	if len(resp.Data) == 0 {
+		return nil, fmt.Errorf("GetFundingRate: no data for %s", symbol)
+	}
+
+	d := resp.Data[0]
+	rate, _ := strconv.ParseFloat(d.FundingRate, 64)
+	nextRate, _ := strconv.ParseFloat(d.NextFundRate, 64)
+
+	var nextFunding time.Time
+	if ts, err := strconv.ParseInt(d.NextUpdate, 10, 64); err == nil && ts > 0 {
+		nextFunding = time.UnixMilli(ts)
+	} else if ts, err := strconv.ParseInt(d.FundingTime, 10, 64); err == nil && ts > 0 {
+		nextFunding = time.UnixMilli(ts)
+	}
+
+	var interval time.Duration
+	if h, err := strconv.Atoi(d.FundingRateInterval); err == nil && h > 0 {
+		interval = time.Duration(h) * time.Hour
+	} else {
+		interval, err = a.GetFundingInterval(symbol)
+		if err != nil || interval <= 0 {
+			interval = 8 * time.Hour
 		}
 	}
-	return 0, fmt.Errorf("GetFundingRate: symbol %s not found in no-filter response", symbol)
-}
 
-// ASCII fast path (unchanged): symbol in query
-params := map[string]string{
-	"symbol":      symbol,
-	"productType": productTypeUSDTFutures,
+	fr := &exchange.FundingRate{
+		Symbol:      d.Symbol,
+		Rate:        rate,
+		NextRate:    nextRate,
+		Interval:    interval,
+		NextFunding: nextFunding,
+	}
+	if v, err := strconv.ParseFloat(d.MaxFundingRate, 64); err == nil {
+		fr.MaxRate = &v
+	}
+	if v, err := strconv.ParseFloat(d.MinFundingRate, 64); err == nil {
+		fr.MinRate = &v
+	}
+	return fr, nil
 }
-raw, err := a.client.Get("/api/v2/mix/market/current-fund-rate", params)
-// ... existing single-row parse unchanged
 ```
 
-**Data volume note:** no-filter endpoint returns all USDT-FUTURES current funding rates (~400-800 rows). Safe per request (single snapshot), but may add ~10-20 KB payload. Not rate-limited beyond existing per-endpoint quotas. Consider caching for 30s if called hot during scan cycles — deferred to implementation based on load measurements.
+AFTER — unified ASCII + non-ASCII via `noFilter` bool flag:
+```go
+func (a *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
+	noFilter := containsNonASCII(symbol)
+	params := map[string]string{
+		"productType": productTypeUSDTFutures,
+	}
+	if !noFilter {
+		params["symbol"] = symbol
+	}
+
+	raw, err := a.client.Get("/api/v2/mix/market/current-fund-rate", params)
+	if err != nil {
+		return nil, fmt.Errorf("GetFundingRate error: %w", err)
+	}
+
+	var resp struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+		Data []struct {
+			Symbol              string `json:"symbol"`
+			FundingRate         string `json:"fundingRate"`
+			NextFundRate        string `json:"nextFundRate"`
+			FundingTime         string `json:"fundingTime"`
+			NextUpdate          string `json:"nextUpdate"`
+			FundingRateInterval string `json:"fundingRateInterval"`
+			MaxFundingRate      string `json:"maxFundingRate"`
+			MinFundingRate      string `json:"minFundingRate"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal funding rate: %w", err)
+	}
+	if resp.Code != "" && resp.Code != "00000" {
+		return nil, &APIError{Code: resp.Code, Msg: resp.Msg}
+	}
+	if len(resp.Data) == 0 {
+		return nil, fmt.Errorf("GetFundingRate: no data for %s", symbol)
+	}
+
+	idx := 0
+	if noFilter {
+		idx = -1
+		for i := range resp.Data {
+			if strings.EqualFold(resp.Data[i].Symbol, symbol) {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			return nil, fmt.Errorf("GetFundingRate: symbol %s not found in no-filter response", symbol)
+		}
+	}
+
+	d := resp.Data[idx]
+	rate, err := strconv.ParseFloat(d.FundingRate, 64)
+	if err != nil {
+		return nil, fmt.Errorf("GetFundingRate parse %q: %w", d.FundingRate, err)
+	}
+	nextRate, _ := strconv.ParseFloat(d.NextFundRate, 64)
+
+	var nextFunding time.Time
+	if ts, err := strconv.ParseInt(d.NextUpdate, 10, 64); err == nil && ts > 0 {
+		nextFunding = time.UnixMilli(ts)
+	} else if ts, err := strconv.ParseInt(d.FundingTime, 10, 64); err == nil && ts > 0 {
+		nextFunding = time.UnixMilli(ts)
+	}
+
+	var interval time.Duration
+	if h, err := strconv.Atoi(d.FundingRateInterval); err == nil && h > 0 {
+		interval = time.Duration(h) * time.Hour
+	} else if !noFilter {
+		interval, err = a.GetFundingInterval(symbol)
+		if err != nil || interval <= 0 {
+			interval = 8 * time.Hour
+		}
+	} else {
+		// Skip GetFundingInterval for non-ASCII symbols; that endpoint likely
+		// has same HMAC issue. Use default 8h interval instead.
+		interval = 8 * time.Hour
+	}
+
+	fr := &exchange.FundingRate{
+		Symbol:      d.Symbol,
+		Rate:        rate,
+		NextRate:    nextRate,
+		Interval:    interval,
+		NextFunding: nextFunding,
+	}
+	if fr.Symbol == "" {
+		fr.Symbol = symbol
+	}
+	if v, err := strconv.ParseFloat(d.MaxFundingRate, 64); err == nil {
+		fr.MaxRate = &v
+	}
+	if v, err := strconv.ParseFloat(d.MinFundingRate, 64); err == nil {
+		fr.MinRate = &v
+	}
+	return fr, nil
+}
+```
+
+**Behavior changes for the unified code:**
+1. Error envelope check uses `resp.Code != "" && resp.Code != "00000"` (matches #1 pattern) — returns `*APIError` so downstream `errors.As` works.
+2. Non-ASCII path skips `GetFundingInterval` call (same HMAC issue would affect it) and defaults to 8h.
+3. `fr.Symbol` fallback to input `symbol` if response symbol was empty.
+4. Strict float parse on `Rate` (HEAD discarded the error silently; v18 tightens to propagate).
+
+**Data volume note:** no-filter endpoint returns all USDT-FUTURES current funding rates (~400-800 rows). Safe per request (single snapshot), ~10-20 KB payload. Not rate-limited beyond existing per-endpoint quotas. Consider caching for 30s if called hot during scan cycles — deferred to implementation based on load measurements.
 
 ### 6. `pkg/exchange/bitget/adapter.go:GetPosition` — non-ASCII fallback
 
@@ -1145,12 +1279,23 @@ if cfErr != nil {
 	// BorrowAmount already set earlier after spot confirmation, no-op here
 	// FuturesSize/FuturesEntry intentionally NOT set — futures leg state is unknown
 
-	// Dir B (line 619) — mirror HEAD successful Dir B at execution.go:627-632:
-	// - SpotSize = spotNetReceived (net after fee — "what we can actually sell on exit")
-	// - NotionalUSDT = spotFilled * spotAvg (gross — HEAD comment: "Use gross for notional tracking")
-	// pos.SpotSize = spotNetReceived           // NET after fee deduction
+	// Dir B (line 619) — mirror HEAD successful Dir B FINAL state after outer
+	// ManualOpen overwrite at execution.go:402 (NOT the transient inner values
+	// at 627/632 which get overwritten by the outer flow):
+	// - Inner executeBuySpotShort writes pos.SpotSize=spotNetReceived (line 627),
+	//   pos.NotionalUSDT=spotFilled*spotAvg (line 632), then returns spotNetReceived
+	//   as the 3rd value at line 634.
+	// - Outer ManualOpen receives spotFilledQty=spotNetReceived, computes
+	//   actualNotional := spotFilledQty * spotEntryPrice = spotNetReceived * spotAvg
+	//   (line 382), then overwrites pos.NotionalUSDT = actualNotional (line 402)
+	//   and commits capital using actualNotional (line 413).
+	// - Net effect: final persisted NotionalUSDT for successful Dir B = net.
+	// Pending-error path bypasses the outer overwrite (returns early with error),
+	// so we must write the FINAL state directly here to give reconciliation the
+	// same state a successful path would produce.
+	// pos.SpotSize = spotNetReceived                   // net after fee
 	// pos.SpotEntryPrice = spotAvg
-	// pos.NotionalUSDT = spotFilled * spotAvg  // GROSS — matches HEAD line 632
+	// pos.NotionalUSDT = spotNetReceived * spotAvg     // NET — matches HEAD line 402 final state
 	// pos.FuturesSide = "short"
 	// (PendingEntryOrderID clear — same as Dir A)
 
@@ -1158,7 +1303,7 @@ if cfErr != nil {
 		posID:         pos.ID,
 		orderID:       orderID,
 		pendingPos:    pos,
-		capitalAmount: spotFilled * spotAvg, // gross filled notional — matches commitSpotCapital calls in HEAD
+		capitalAmount: spotNetReceived * spotAvg, // net — matches commitSpotCapital(actualNotional) at line 413
 		err:           cfErr,
 	}
 }
@@ -1291,11 +1436,11 @@ Unit tests per call site:
 - Exact assertions:
   - `pos.PendingEntryOrderID == ""`
   - `pos.PendingFuturesEntryOrderID == orderID`
-  - `pos.SpotSize == 1.23` (exactly spotNetReceived — matches HEAD successful Dir B line 627 `SpotSize = spotNetReceived // Net after fee — what we can actually sell on exit`)
+  - `pos.SpotSize == 1.23` (exactly spotNetReceived — matches HEAD successful Dir B line 627; same value persists through outer ManualOpen line 396 `pos.SpotSize = spotFilledQty` where spotFilledQty = spotNetReceived per inner return)
   - `pos.SpotEntryPrice == 5.0`
-  - `pos.NotionalUSDT == 6.17` (spotFilled * spotAvg = 1.234 * 5.0 — matches HEAD successful Dir B line 632 `NotionalUSDT = spotFilled * spotAvg // Use gross for notional tracking`; Dir B intentionally asymmetric: SpotSize net, NotionalUSDT gross)
+  - `pos.NotionalUSDT == 6.15` (spotNetReceived * spotAvg = 1.23 * 5.0 — matches HEAD FINAL successful Dir B state after outer overwrite at execution.go:402 `pos.NotionalUSDT = actualNotional` where `actualNotional := spotFilledQty * spotEntryPrice` and `spotFilledQty = spotNetReceived`. Line 632's transient gross value is overwritten by the outer flow, so pending-error path must write net directly since it bypasses the outer overwrite.)
   - `pos.FuturesSide == "short"`
-  - `capitalAmount == 6.17` preserved in pendingFuturesEntryError (spotFilled * spotAvg = 1.234 * 5.0 for capital accounting)
+  - `capitalAmount == 6.15` in pendingFuturesEntryError (spotNetReceived * spotAvg — matches HEAD `commitSpotCapital(reservation, posID, actualNotional)` at execution.go:413 where actualNotional is net)
 
 **Next monitor cycle:**
 - Save the updated position to mock DB.
@@ -1625,10 +1770,18 @@ Risk mitigation is handled via staged deploy: deploy to VPS off-peak, monitor lo
   * **#5 NEW gap (not previously raised)**: `GetFundingRate` still sends `symbol` in signed GET to `/api/v2/mix/market/current-fund-rate`. Discovery scans and exit funding checks can fail for non-ASCII bitget symbols after #1's strict errors expose the 40009. Needed dedicated non-ASCII fallback subitem.
   * **#15 reviewer self-contradiction corrected by reading HEAD**: v17 audit claimed HEAD's successful Dir B uses `pos.NotionalUSDT = spotNetReceived * spotAvg` (net), but its own BEFORE quote and HEAD at execution.go:632 both show `pos.NotionalUSDT = spotFilled * spotAvg // Use gross for notional tracking`. Cross-checked via Read of spotengine/execution.go: Dir B intentionally asymmetric — SpotSize = net (line 627), NotionalUSDT = gross (line 632). v16 audit misled us into switching NotionalUSDT to net in v15-v17; reverting to gross in v18 to match HEAD pattern.
   * #16c: margin-fills fallback path (for spot-fills-returned-nothing case) was also silently swallowing errors; added symmetric `log.Printf` on that path too.
-- v18: (this version) — addresses v17 fresh-audit findings:
-  * **#5b NEW**: added `GetFundingRate` non-ASCII fallback subitem with concrete BEFORE/AFTER. No-filter endpoint returns all USDT-FUTURES rates (~400-800 rows, ~10-20 KB); local `strings.EqualFold` filter matches target symbol. Cache-deferred pending load measurement.
-  * **#15 revert to gross**: Dir B `pos.NotionalUSDT = spotFilled * spotAvg` (matches HEAD line 632 explicit comment "Use gross for notional tracking"). Test assertion restored to `pos.NotionalUSDT == 6.17`. `capitalAmount == 6.17` also kept (gross for capital accounting to match `commitSpotCapital` in HEAD). Plan comment tightened noting Dir B asymmetry (SpotSize net, NotionalUSDT gross) is intentional and matches HEAD.
-  * #16c: added margin-fills error log (both query paths now logged).
+- v18: addresses v17 fresh-audit findings (most of which were correctly identified):
+  * **#5b NEW**: added `GetFundingRate` non-ASCII fallback subitem.
+  * **#15 incorrectly reverted to gross** based on a direct Read of HEAD line 632 showing `pos.NotionalUSDT = spotFilled * spotAvg // Use gross for notional tracking`. Conclusion was WRONG because we didn't trace the outer flow.
+  * #16c: added margin-fills error log.
+- v18 Codex fresh-thread full independent audit (xhigh): NEEDS-REVISION — 3 findings:
+  * #1: pass-through map comments cited wrong line numbers (43011/43025 at adapter.go:400; actually at 175, 1376; 40872 actually at 401).
+  * #5b: AFTER block returned `(0, error)` but HEAD signature is `(*exchange.FundingRate, error)` — completely wrong signature, would not compile.
+  * **#15 REVERSED**: traced outer flow. HEAD's final persisted Dir B NotionalUSDT is NET because inner executeBuySpotShort line 632 writes gross transiently, but outer ManualOpen at execution.go:402 overwrites `pos.NotionalUSDT = actualNotional` where `actualNotional := spotFilledQty * spotEntryPrice` and `spotFilledQty = spotNetReceived` (from inner return at line 634). `commitSpotCapital` at line 413 also uses net. Pending-error path bypasses the outer overwrite, so must write net directly to produce equivalent final state.
+- v19: (this version) — addresses v18 fresh-audit findings:
+  * #1: corrected pass-through map comments and the preceding comment block to cite verified line numbers (40872 → adapter.go:401; 43011, 43025 → adapter.go:175 AND 1376).
+  * **#5b**: replaced AFTER block with full `GetFundingRate` implementation returning `*exchange.FundingRate` — unified ASCII + non-ASCII via `noFilter := containsNonASCII(symbol)` bool, preserving all existing response fields (Rate, NextRate, Interval, NextFunding, MaxRate, MinRate, Symbol). Added behavior-change notes: strict float parse on Rate, skip `GetFundingInterval` for non-ASCII (same HMAC issue), `fr.Symbol` fallback to input.
+  * **#15**: reverted to NET after tracing outer ManualOpen flow. `pos.NotionalUSDT = spotNetReceived * spotAvg`, `capitalAmount = spotNetReceived * spotAvg`, test assertions `== 6.15` restored. Plan comment documents the inner-transient → outer-overwrite pattern explicitly so future reviewers don't repeat the confusion.
 - v13 original: (kept for history)
   * Field name corrected: `SpotSize` (NOT `SpotFilledQty`) per HEAD models/spot_position.go
   * Dir A vs Dir B specific fields documented: Dir A uses `SpotSize = spotFilled` (gross, borrowed+sold); Dir B uses `SpotSize = spotNetReceived` (net after fee deduction). Each sets correct `FuturesSide`.
