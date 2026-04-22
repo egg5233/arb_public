@@ -2,6 +2,7 @@ package pricegaptrader
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"strconv"
 	"sync"
@@ -11,6 +12,11 @@ import (
 	"arb/internal/models"
 	"arb/pkg/exchange"
 )
+
+// PAPER-MODE INVARIANT (Plan 09-03 Pitfall 2): monitor.go NEVER reads
+// t.cfg.PriceGapPaperMode. Mode is stamped once at entry (execution.go openPair);
+// this file reads pos.Mode exclusively so that flipping the global flag mid-life
+// cannot flip an in-flight position from paper → live close or vice versa.
 
 // monitorSeq — global atomic counter; every startMonitor invocation mints a
 // unique token. The goroutine holds its own token; the cleanup defer compares
@@ -155,28 +161,31 @@ func (t *Tracker) closePair(pos *models.PriceGapPosition, reason string) {
 	decS := t.sizeDecimals(pos.ShortExchange, pos.Symbol)
 
 	// Simultaneous IOC ReduceOnly on both legs (D-12).
+	// pos.Mode drives the paper/live branch inside placeCloseLegIOC (Pitfall 2).
 	var wg sync.WaitGroup
 	var lr, sr fillResult
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		lr = t.placeCloseLegIOC(longEx, pos.Symbol, exchange.SideSell, pos.LongSize, decL, pos.LongMidAtDecision)
+		lr = t.placeCloseLegIOC(longEx, pos, exchange.SideSell, pos.LongSize, decL, pos.LongMidAtDecision)
 	}()
 	go func() {
 		defer wg.Done()
-		sr = t.placeCloseLegIOC(shortEx, pos.Symbol, exchange.SideBuy, pos.ShortSize, decS, pos.ShortMidAtDecision)
+		sr = t.placeCloseLegIOC(shortEx, pos, exchange.SideBuy, pos.ShortSize, decS, pos.ShortMidAtDecision)
 	}()
 	wg.Wait()
 
-	// Remainder via MARKET ReduceOnly (D-12 §Pitfall 4).
+	// Remainder via MARKET ReduceOnly (D-12 §Pitfall 4). In paper mode the IOC
+	// leg synthesizes a full fill, so the remainder branches below are skipped;
+	// the live path is unchanged.
 	if lr.filled < pos.LongSize {
 		rem := pos.LongSize - lr.filled
-		t.closeLegMarket(longEx, pos.Symbol, exchange.SideSell, rem, decL)
+		t.closeLegMarketForPos(longEx, pos, exchange.SideSell, rem, decL, pos.LongMidAtDecision)
 		lr.filled = pos.LongSize
 	}
 	if sr.filled < pos.ShortSize {
 		rem := pos.ShortSize - sr.filled
-		t.closeLegMarket(shortEx, pos.Symbol, exchange.SideBuy, rem, decS)
+		t.closeLegMarketForPos(shortEx, pos, exchange.SideBuy, rem, decS, pos.ShortMidAtDecision)
 		sr.filled = pos.ShortSize
 	}
 
@@ -255,12 +264,34 @@ type vwapReader interface {
 // at exit is approximated against the entry mid (D-21); this preserves the
 // sign and magnitude of any adverse selection between entry and exit. Tests
 // inject vwap via the interface to assert exact PnL math.
+//
+// Paper-mode chokepoint (Plan 09-03 Pattern 2): when pos.Mode == "paper",
+// the function synthesizes a close-leg fill at mid ± (pos.ModeledSlipBps / 2)
+// and returns WITHOUT calling ex.PlaceOrder. The branch is gated on pos.Mode
+// (not t.cfg.PriceGapPaperMode) so a mid-life flag flip cannot leak real
+// orders into the wire for an in-flight paper position (Pitfall 2).
 func (t *Tracker) placeCloseLegIOC(
-	ex exchange.Exchange, symbol string, side exchange.Side,
+	ex exchange.Exchange, pos *models.PriceGapPosition, side exchange.Side,
 	size float64, decimals int, fallbackPrice float64,
 ) fillResult {
 	if size <= 0 {
 		return fillResult{}
+	}
+	symbol := pos.Symbol
+	if pos.Mode == models.PriceGapModePaper {
+		adverse := fallbackPrice * (pos.ModeledSlipBps / 2.0) / 10_000.0
+		synth := fallbackPrice
+		if side == exchange.SideBuy {
+			synth = fallbackPrice + adverse
+		}
+		if side == exchange.SideSell {
+			synth = fallbackPrice - adverse
+		}
+		return fillResult{
+			orderID: fmt.Sprintf("paper_close_%s_%d", symbol, time.Now().UnixNano()),
+			filled:  roundStep(size, decimals),
+			price:   synth,
+		}
 	}
 	params := exchange.PlaceOrderParams{
 		Symbol:     symbol,
@@ -286,4 +317,24 @@ func (t *Tracker) placeCloseLegIOC(
 		}
 	}
 	return fillResult{orderID: orderID, filled: qty, price: price}
+}
+
+// closeLegMarketForPos wraps closeLegMarket with paper-mode branching on pos.Mode.
+// In paper mode it is a no-op (the IOC synth already filled the full size);
+// live mode delegates to closeLegMarket exactly as before. Split out so the
+// mode-read invariant lives in one place per package (Pitfall 2).
+func (t *Tracker) closeLegMarketForPos(
+	ex exchange.Exchange, pos *models.PriceGapPosition, side exchange.Side,
+	size float64, decimals int, fallbackPrice float64,
+) {
+	if size <= 0 {
+		return
+	}
+	if pos.Mode == models.PriceGapModePaper {
+		// Paper IOC synth always returns a full fill; remainder branch is a no-op.
+		// Keep symmetry with live path; no exchange call is made.
+		_ = fallbackPrice
+		return
+	}
+	t.closeLegMarket(ex, pos.Symbol, side, size, decimals)
 }
