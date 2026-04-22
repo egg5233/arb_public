@@ -2,7 +2,7 @@
 
 Version: v15
 Date: 2026-04-22
-Status: REVIEWING
+Status: ALL PASS
 
 ## Direction change from v1
 
@@ -1373,9 +1373,10 @@ Risk mitigation is handled via staged deploy: deploy to VPS off-peak, monitor lo
   * Monitor-pass assertions now track observable counters: `GetSpotMarginOrderCalls` unchanged (proves spot reconciler gated), `GetOrderFilledQtyCalls` incremented (proves futures reconciler ran).
   * Added recovery-success assertion: after second reconcile with mock returning `(filled, nil)`, `PendingFuturesEntryOrderID` cleared and `FuturesSize > 0`.
 - v14 Codex independent re-review (fresh thread, xhigh): NEEDS-REVISION — 2 findings (#15 defensive gate too strict; #16a CheckPermissions needs retryable/5xx branching).
-- v15: (this version) — addresses v14:
+- v15: addresses v14:
   * #15 defensive gate: removed `if pos.PendingEntryOrderID == "" { return }` check. Existing recovery checkpoints may legitimately have empty `PendingEntryOrderID` (spot leg confirmed, futures hedge still pending recovery). Only gate on `PendingFuturesEntryOrderID != ""`. Added explanatory comment in AFTER block.
   * #16a CheckPermissions: added "endpoint reached" inference preservation. Under strict errors, differentiate `*APIError` classes: 40009 → `PermDenied`; `retryableCodes[code]` → `PermUnknown`; 5xx HTTP status (via `strconv.Atoi`) → `PermUnknown`; any other `*APIError` → `PermGranted` (endpoint reached, rejected for non-auth reason). Documented `retryableCodes` reference to `client.go` and `strconv` import requirement.
+- **v15 Codex independent re-review (resume thread): ALL PASS.** Plan approved for implementation.
 - v13 original: (kept for history)
   * Field name corrected: `SpotSize` (NOT `SpotFilledQty`) per HEAD models/spot_position.go
   * Dir A vs Dir B specific fields documented: Dir A uses `SpotSize = spotFilled` (gross, borrowed+sold); Dir B uses `SpotSize = spotNetReceived` (net after fee deduction). Each sets correct `FuturesSide`.
