@@ -150,7 +150,8 @@ func (s *Server) isMutatingEndpoint(r *http.Request) bool {
 	path := r.URL.Path
 	return strings.HasPrefix(path, "/api/positions/") ||
 		path == "/api/transfer" ||
-		path == "/api/spot/open"
+		path == "/api/spot/open" ||
+		strings.HasPrefix(path, "/api/pricegap/candidate/")
 }
 
 // loginRequest is the expected body for POST /api/login.

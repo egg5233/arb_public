@@ -134,6 +134,15 @@ func (s *Server) Start() {
 	mux.HandleFunc("/api/analytics/pnl-history", s.cors(s.authMiddleware(s.handleGetAnalyticsPnLHistory)))
 	mux.HandleFunc("/api/analytics/summary", s.cors(s.authMiddleware(s.handleGetAnalyticsSummary)))
 
+	// Price-gap tracker (Phase 9 dashboard)
+	mux.HandleFunc("GET /api/pricegap/state", s.cors(s.authMiddleware(s.handlePriceGapState)))
+	mux.HandleFunc("GET /api/pricegap/candidates", s.cors(s.authMiddleware(s.handlePriceGapCandidates)))
+	mux.HandleFunc("GET /api/pricegap/positions", s.cors(s.authMiddleware(s.handlePriceGapPositions)))
+	mux.HandleFunc("GET /api/pricegap/closed", s.cors(s.authMiddleware(s.handlePriceGapClosed)))
+	mux.HandleFunc("GET /api/pricegap/metrics", s.cors(s.authMiddleware(s.handlePriceGapMetrics)))
+	mux.HandleFunc("POST /api/pricegap/candidate/{symbol}/disable", s.cors(s.authMiddleware(s.handlePriceGapCandidateDisable)))
+	mux.HandleFunc("POST /api/pricegap/candidate/{symbol}/enable", s.cors(s.authMiddleware(s.handlePriceGapCandidateEnable)))
+
 	// Capital allocation
 	mux.HandleFunc("/api/allocation", s.cors(s.authMiddleware(s.handleGetAllocation)))
 

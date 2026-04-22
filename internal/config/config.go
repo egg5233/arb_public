@@ -1745,6 +1745,14 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	analyticsMap["enable_analytics"] = c.EnableAnalytics
 	analyticsMap["analytics_db_path"] = c.AnalyticsDBPath
 
+	// Price-gap tracker (Phase 9 Plan 02). Only persist the two dashboard-
+	// writable flags. Static fields (candidates, budgets, etc.) remain
+	// whatever the raw map already carries — SaveJSON is not authoritative
+	// for them and must not overwrite operator-edited values.
+	priceGap := getMap(raw, "price_gap")
+	priceGap["enabled"] = c.PriceGapEnabled
+	priceGap["paper_mode"] = c.PriceGapPaperMode
+
 	out, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)

@@ -756,6 +756,18 @@ type configUpdate struct {
 	Safety      *safetyUpdate              `json:"safety"`
 	Analytics   *analyticsUpdate           `json:"analytics"`
 	Allocation  *allocationUpdate          `json:"allocation"`
+	PriceGap    *priceGapUpdate            `json:"price_gap"`
+	// Flat compatibility path: the dashboard UI may send the paper-mode toggle
+	// at the root level as `price_gap_paper_mode` (simplest binding shape).
+	// Either form updates cfg.PriceGapPaperMode. Nested form wins on conflict.
+	PriceGapPaperMode *bool `json:"price_gap_paper_mode"`
+}
+
+// priceGapUpdate mirrors the "price_gap" block of /api/config POST bodies.
+// Phase 9 D-12: PaperMode is the dashboard-writable live/paper toggle.
+type priceGapUpdate struct {
+	Enabled   *bool `json:"enabled"`
+	PaperMode *bool `json:"paper_mode"`
 }
 
 type allocationUpdate struct {
@@ -1543,6 +1555,21 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		if bundledOverride {
 			s.cfg.RiskProfile = "custom"
 		}
+	}
+
+	// Price-gap tracker config apply (Phase 9 Plan 02). Accepts either the
+	// nested "price_gap" block or the flat "price_gap_paper_mode" shortcut.
+	// Nested form wins when both are supplied.
+	if pg := upd.PriceGap; pg != nil {
+		if pg.Enabled != nil {
+			s.cfg.PriceGapEnabled = *pg.Enabled
+		}
+		if pg.PaperMode != nil {
+			s.cfg.PriceGapPaperMode = *pg.PaperMode
+		}
+	}
+	if upd.PriceGapPaperMode != nil && (upd.PriceGap == nil || upd.PriceGap.PaperMode == nil) {
+		s.cfg.PriceGapPaperMode = *upd.PriceGapPaperMode
 	}
 
 	// Persist config fields to Redis HASH (arb:config) using flat keys.
