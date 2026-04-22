@@ -2,7 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.33.0] - 2026-04-21
+## [0.33.1] - 2026-04-22
+
+### Added (Phase 09 Plan 04 — Price-Gap Telegram Notifications, Task 1, PG-OPS-05)
+- Three new notifier methods on `*TelegramNotifier` in `internal/notify/telegram.go`:
+  - `NotifyPriceGapEntry(pos *models.PriceGapPosition)`
+  - `NotifyPriceGapExit(pos, reason, pnl, duration)`
+  - `NotifyPriceGapRiskBlock(symbol, gate, detail)` — allowlisted gate names (`concentration`, `max_concurrent`, `kline_stale`, `delist`, `budget`, `exec_quality`), cooldown keyed per `pg_risk:<gate>:<symbol>`, detail sanitized (control chars stripped, 256-byte cap).
+- Paper-mode parity (D-22): when `pos.Mode == "paper"` messages are prefixed with `📝 PAPER ` and tagged `[PAPER]` so operators cannot mistake paper traffic for live.
+- `sanitizeForTelegram(s, max)` helper — strips C0 control characters except `\n` and `\t`, truncates to `max` bytes (T-09-18).
+- `telegramAPIBase` package-level var replaces hard-coded `https://api.telegram.org` URL to make `send()` httptest-stubbable without touching production behavior.
+- 12 new tests in `internal/notify/telegram_pricegap_test.go` covering live/paper prefixing, nil-receiver + nil-pos safety, cooldown windowing, per-key independence, unknown-gate rejection (T-09-17), detail sanitization, and zero-notional divide-safety. Full notify suite green under `-race -count=1` (20/20).
+
+
 
 ### Added (Phase 8 — Price-Gap Tracker Core, v2.0 milestone)
 - New isolated subsystem `internal/pricegaptrader/` — cross-exchange price-gap event detection and delta-neutral IOC execution (Strategy 4 MVP). Default OFF (`PriceGapEnabled=false`).

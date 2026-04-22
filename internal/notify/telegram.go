@@ -13,6 +13,11 @@ import (
 	"arb/pkg/utils"
 )
 
+// telegramAPIBase is the Telegram Bot API base URL. Exposed as a package-level
+// variable (not a constant) so tests can point at an httptest.Server. Do not
+// mutate in production code.
+var telegramAPIBase = "https://api.telegram.org"
+
 // TelegramNotifier sends trade alerts via Telegram Bot API.
 // Used by both spot-futures and perp-perp engines.
 type TelegramNotifier struct {
@@ -43,7 +48,7 @@ func NewTelegram(botToken, chatID string) *TelegramNotifier {
 // send delivers a message via Telegram sendMessage API. Best-effort: logs
 // errors but never blocks the caller.
 func (t *TelegramNotifier) send(text string) {
-	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", t.botToken)
+	apiURL := fmt.Sprintf("%s/bot%s/sendMessage", telegramAPIBase, t.botToken)
 	form := url.Values{
 		"chat_id":    {t.chatID},
 		"text":       {text},
@@ -325,4 +330,111 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dh%dm", h, m)
 	}
 	return fmt.Sprintf("%dm", m)
+}
+
+// ---------------------------------------------------------------------------
+// Price-gap notification methods (Phase 9, PG-OPS-05)
+// ---------------------------------------------------------------------------
+
+// priceGapGateAllowlist bounds the set of gate names accepted by
+// NotifyPriceGapRiskBlock. Per threat T-09-17, unknown gate names are rejected
+// to prevent cooldown-bypass via crafted keys (e.g., gate="../evil").
+var priceGapGateAllowlist = map[string]struct{}{
+	"concentration":   {},
+	"max_concurrent":  {},
+	"kline_stale":     {},
+	"delist":          {},
+	"budget":          {},
+	"exec_quality":    {},
+}
+
+// sanitizeForTelegram strips control characters (\x00–\x1F) other than \t and
+// \n and truncates the result to at most max bytes. Per threat T-09-18 this
+// hardens detail strings that are operator- or error-derived before they cross
+// into the outbound chat body.
+func sanitizeForTelegram(s string, max int) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == '\n' || r == '\t' {
+			b.WriteRune(r)
+			continue
+		}
+		if r < 0x20 {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	out := b.String()
+	if max > 0 && len(out) > max {
+		out = out[:max]
+	}
+	return out
+}
+
+// priceGapTag returns the logging tag + message prefix for paper vs live
+// positions (D-22 parity). Paper-mode alerts carry the leading "📝 PAPER "
+// prefix so operators cannot mistake paper traffic for live.
+func priceGapTag(pos *models.PriceGapPosition) (tag, prefix string) {
+	tag = "LIVE"
+	prefix = ""
+	if pos != nil && pos.Mode == models.PriceGapModePaper {
+		tag = "PAPER"
+		prefix = "\xF0\x9F\x93\x9D PAPER "
+	}
+	return
+}
+
+// NotifyPriceGapEntry sends an alert when a new price-gap position is opened.
+// Nil-receiver and nil-pos safe.
+func (t *TelegramNotifier) NotifyPriceGapEntry(pos *models.PriceGapPosition) {
+	if t == nil || pos == nil {
+		return
+	}
+	tag, prefix := priceGapTag(pos)
+	text := fmt.Sprintf(
+		"%sPRICE-GAP ENTRY [%s]\nSymbol: %s\nLong: %s  Short: %s\nSize: %.4f  Notional: $%.2f\nEntry spread: %.1f bps  Modeled: %.1f bps",
+		prefix, tag, pos.Symbol, pos.LongExchange, pos.ShortExchange,
+		pos.LongSize, pos.NotionalUSDT, pos.EntrySpreadBps, pos.ModeledSlipBps,
+	)
+	go t.send(text)
+}
+
+// NotifyPriceGapExit sends an alert when a price-gap position closes. PnL is
+// reported both in USDT and in bps relative to notional (zero-safe).
+// Nil-receiver and nil-pos safe.
+func (t *TelegramNotifier) NotifyPriceGapExit(pos *models.PriceGapPosition, reason string, pnl float64, duration time.Duration) {
+	if t == nil || pos == nil {
+		return
+	}
+	tag, prefix := priceGapTag(pos)
+	pnlBps := 0.0
+	if pos.NotionalUSDT > 0 {
+		pnlBps = pnl / pos.NotionalUSDT * 10_000.0
+	}
+	text := fmt.Sprintf(
+		"%sPRICE-GAP EXIT [%s]\nSymbol: %s  Reason: %s\nPnL: $%.2f (%.1f bps)\nRealized slippage: %.1f bps\nHold: %s",
+		prefix, tag, pos.Symbol, formatExitReason(reason),
+		pnl, pnlBps, pos.RealizedSlipBps, formatDuration(duration),
+	)
+	go t.send(text)
+}
+
+// NotifyPriceGapRiskBlock sends an alert when a price-gap entry is rejected by
+// a risk gate. Cooldown is keyed per (gate, symbol) so a spinning gate on one
+// symbol cannot suppress alerts on another. Gate names are allowlisted
+// (T-09-17) and detail strings are sanitized (T-09-18).
+// Nil-receiver safe.
+func (t *TelegramNotifier) NotifyPriceGapRiskBlock(symbol, gate, detail string) {
+	if t == nil {
+		return
+	}
+	if _, ok := priceGapGateAllowlist[gate]; !ok {
+		return
+	}
+	if !t.checkCooldown("pg_risk:" + gate + ":" + symbol) {
+		return
+	}
+	cleaned := sanitizeForTelegram(detail, 256)
+	go t.send(fmt.Sprintf("PRICE-GAP RISK BLOCK\nSymbol: %s  Gate: %s\n%s", symbol, gate, cleaned))
 }
