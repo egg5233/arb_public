@@ -1,11 +1,12 @@
 ---
 phase: 9
 slug: price-gap-dashboard-paper-live-operations
-status: draft
+status: approved
 shadcn_initialized: false
 preset: none
 created: 2026-04-22
 revised: 2026-04-22
+reviewed_at: 2026-04-22
 ---
 
 # Phase 9 — UI Design Contract
