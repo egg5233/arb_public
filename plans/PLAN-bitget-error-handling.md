@@ -1,6 +1,6 @@
 # PLAN: Bitget Error Handling + Full Non-ASCII Symbol Support
 
-Version: v14
+Version: v15
 Date: 2026-04-22
 Status: REVIEWING
 
@@ -1056,19 +1056,19 @@ if futFilled <= 0 {
 }
 ```
 
-**Defensive gate in existing `reconcilePendingEntry`**: also add an early-return when pos has `PendingFuturesEntryOrderID` set. Prevents spot-reconciler stepping on futures-reconciler territory even if the clear above is missed:
+**Defensive gate in existing `reconcilePendingEntry`**: also add an early-return when pos has `PendingFuturesEntryOrderID` set. Prevents spot-reconciler stepping on futures-reconciler territory even if the clear above is missed. **Do NOT add `if pos.PendingEntryOrderID == "" { return }` gate** — existing recovery checkpoints may legitimately have empty `PendingEntryOrderID` (spot leg already confirmed, futures hedge still needs recovery), and skipping those would break established recovery paths.
 
 ```go
 func (e *SpotEngine) reconcilePendingEntry(pos *models.SpotFuturesPosition) {
-	// Skip if this position's pending state belongs to futures leg — the
-	// futures reconciler handles it.
+	// Skip only if this position's pending state belongs to the futures leg.
+	// Do not return merely because PendingEntryOrderID is empty: existing
+	// recovery supports durable checkpoints where the spot leg is already
+	// confirmed and the futures hedge still needs to be recovered or placed.
 	if pos.PendingFuturesEntryOrderID != "" {
 		return
 	}
-	if pos.PendingEntryOrderID == "" {
-		return
-	}
-	// existing body ...
+
+	// existing body unchanged ...
 }
 ```
 
@@ -1213,18 +1213,33 @@ json.Unmarshal([]byte(raw), &body)
 if body.Code == "40009" { return exchange.PermDenied }
 ```
 
+**CRITICAL — preserve "endpoint reached" inference**: current HEAD treats any non-nil error as "probe unknown" only because the legacy client returns raw body on all responses; in practice, a non-40009 HTTP 4xx from the permission endpoint meant the probe reached bitget (auth worked, permission check responded), which equals `PermGranted` (the endpoint exists and responded; 40009 is the only signal for `PermDenied`). Under strict errors (#1), every non-2xx becomes `*APIError`, so the naive migration below would flip expected validation failures to `PermUnknown` and break permission UI on bitget.
+
+Must branch on code class: retryable codes (transient) → `PermUnknown`; 5xx HTTP status → `PermUnknown`; 40009 → `PermDenied`; any other `*APIError` (non-retryable, non-5xx, non-40009) → `PermGranted` (endpoint reached, just rejected for other reason).
+
 AFTER:
 ```go
 raw, err := a.client.Get(...)
 var apiErr *APIError
-if errors.As(err, &apiErr) && apiErr.Code == "40009" {
-	return exchange.PermDenied
+if errors.As(err, &apiErr) {
+	if apiErr.Code == "40009" {
+		return exchange.PermDenied
+	}
+	if retryableCodes[apiErr.Code] {
+		return exchange.PermUnknown
+	}
+	if n, convErr := strconv.Atoi(apiErr.Code); convErr == nil && n >= 500 && n <= 599 {
+		return exchange.PermUnknown
+	}
+	return exchange.PermGranted
 }
 if err != nil {
 	return exchange.PermUnknown
 }
 // existing success path
 ```
+
+`retryableCodes` refers to the package-level map defined in `pkg/exchange/bitget/client.go` (used by `isRetryable` per #1). `strconv.Atoi` handles HTTP-status-synthesized APIError codes (#1 sets `apiErr.Code = strconv.Itoa(resp.StatusCode)` when body has no code). Import `strconv` in `adapter.go` if not already imported.
 
 Apply same pattern to any other code-based branching (e.g. `EnsureOneWayMode` code `40774`). Grep for `body.Code ==` and `resp.Code ==` patterns in adapter.go during implementation.
 
@@ -1353,10 +1368,14 @@ Risk mitigation is handled via staged deploy: deploy to VPS off-peak, monitor lo
 - v12 Codex independent re-review: NEEDS-REVISION — 3 findings (field names, Dir A/B specifics, plan conflict).
 - v13: addresses v12 (SpotSize field name, Dir A/B values, persistPendingFuturesEntry clarification).
 - v13 Codex independent re-review: NEEDS-REVISION — 2 test spec precision findings.
-- v14: (this version) — addresses v13:
+- v14: addresses v13:
   * Regression test spec tightened with exact value assertions: Dir A `SpotSize == spotFilled`, Dir B `SpotSize == spotNetReceived` (prevents accidental gross persistence in Dir B). Specific `spotFilled=1.234`, `spotAvg=5.0`, `FeeDeducted=0.001`, `QtyStep=0.01` values documented.
   * Monitor-pass assertions now track observable counters: `GetSpotMarginOrderCalls` unchanged (proves spot reconciler gated), `GetOrderFilledQtyCalls` incremented (proves futures reconciler ran).
   * Added recovery-success assertion: after second reconcile with mock returning `(filled, nil)`, `PendingFuturesEntryOrderID` cleared and `FuturesSize > 0`.
+- v14 Codex independent re-review (fresh thread, xhigh): NEEDS-REVISION — 2 findings (#15 defensive gate too strict; #16a CheckPermissions needs retryable/5xx branching).
+- v15: (this version) — addresses v14:
+  * #15 defensive gate: removed `if pos.PendingEntryOrderID == "" { return }` check. Existing recovery checkpoints may legitimately have empty `PendingEntryOrderID` (spot leg confirmed, futures hedge still pending recovery). Only gate on `PendingFuturesEntryOrderID != ""`. Added explanatory comment in AFTER block.
+  * #16a CheckPermissions: added "endpoint reached" inference preservation. Under strict errors, differentiate `*APIError` classes: 40009 → `PermDenied`; `retryableCodes[code]` → `PermUnknown`; 5xx HTTP status (via `strconv.Atoi`) → `PermUnknown`; any other `*APIError` → `PermGranted` (endpoint reached, rejected for non-auth reason). Documented `retryableCodes` reference to `client.go` and `strconv` import requirement.
 - v13 original: (kept for history)
   * Field name corrected: `SpotSize` (NOT `SpotFilledQty`) per HEAD models/spot_position.go
   * Dir A vs Dir B specific fields documented: Dir A uses `SpotSize = spotFilled` (gross, borrowed+sold); Dir B uses `SpotSize = spotNetReceived` (net after fee deduction). Each sets correct `FuturesSide`.
