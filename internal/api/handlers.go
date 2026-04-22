@@ -176,6 +176,7 @@ func (s *Server) handleGetPositionFunding(w http.ResponseWriter, r *http.Request
 	}
 
 	var events []fundingEvent
+	var partialLegs []string
 
 	// Build time-bounded leg windows so we only include funding payments
 	// that occurred while THIS position held each leg. Without this,
@@ -223,6 +224,8 @@ func (s *Server) handleGetPositionFunding(w http.ResponseWriter, r *http.Request
 		}
 		fees, err := exch.GetFundingFees(pos.Symbol, leg.start)
 		if err != nil {
+			s.log.Warn("handleGetPositionFunding: GetFundingFees(%s) on %s failed: %v", pos.Symbol, leg.name, err)
+			partialLegs = append(partialLegs, leg.name)
 			continue
 		}
 		for _, f := range fees {
@@ -250,8 +253,10 @@ func (s *Server) handleGetPositionFunding(w http.ResponseWriter, r *http.Request
 	})
 
 	if events == nil {
-		writeJSON(w, http.StatusOK, Response{OK: true, Data: []interface{}{}})
-		return
+		events = []fundingEvent{}
+	}
+	if len(partialLegs) > 0 {
+		w.Header().Set("X-Partial-Legs", strings.Join(partialLegs, ","))
 	}
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: events})
 }
