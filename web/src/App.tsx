@@ -14,11 +14,12 @@ import Rejections from './pages/Rejections.tsx';
 import Permissions from './pages/Permissions.tsx';
 import Analytics from './pages/Analytics.tsx';
 import SpotPositions from './pages/SpotPositions.tsx';
+import PriceGap from './pages/PriceGap.tsx';
 import { LocaleContext, getStoredLocale, storeLocale, t as translate, type Locale } from './i18n/index.ts';
 import { ThemeContext, getStoredTheme, storeTheme, type Theme } from './theme/index.ts';
 import type { ExchangeInfo } from './types.ts';
 
-type Page = 'overview' | 'opportunities' | 'positions' | 'spot-positions' | 'history' | 'analytics' | 'config' | 'transfers' | 'logs' | 'rejections' | 'permissions';
+type Page = 'overview' | 'opportunities' | 'positions' | 'spot-positions' | 'price-gap' | 'history' | 'analytics' | 'config' | 'transfers' | 'logs' | 'rejections' | 'permissions';
 
 const UPDATE_DISMISS_KEY = 'arb_update_dismissed';
 
@@ -241,6 +242,8 @@ function App() {
             getHistory={api.getSpotHistory}
           />
         );
+      case 'price-gap':
+        return <PriceGap />;
       case 'history':
         return <History getHistory={api.getHistory} />;
       case 'analytics':

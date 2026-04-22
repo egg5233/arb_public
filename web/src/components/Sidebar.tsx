@@ -16,6 +16,7 @@ const navItems: { id: string; labelKey: TranslationKey; icon: string }[] = [
   { id: 'opportunities', labelKey: 'nav.opportunities', icon: '\u25B2' },
   { id: 'positions', labelKey: 'nav.positions', icon: '\u25C6' },
   { id: 'spot-positions', labelKey: 'nav.spotPositions', icon: '\u25C8' },
+  { id: 'price-gap', labelKey: 'nav.pricegap', icon: '\u25C7' },
   { id: 'history', labelKey: 'nav.history', icon: '\u25CB' },
   { id: 'analytics', labelKey: 'nav.analytics', icon: '\u2261' },
   { id: 'transfers', labelKey: 'nav.transfers', icon: '\u21C4' },
