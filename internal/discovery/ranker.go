@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"arb/internal/models"
-	"arb/pkg/utils"
 )
 
 // FeeSchedule holds maker/taker fee rates for an exchange.
@@ -66,9 +65,6 @@ func (s *Scanner) RankOpportunities(loris *models.LorisResponse) []models.Opport
 	for _, baseSym := range loris.Symbols {
 		// Loris uses bare symbols (e.g. "BTC"); exchange contracts use "BTCUSDT".
 		upper := strings.ToUpper(baseSym)
-		if !utils.IsValidBaseSymbol(upper) {
-			continue
-		}
 		symbol := upper + "USDT"
 
 		// Step 1: Collect and normalize rates to bps-per-hour for supported exchanges.

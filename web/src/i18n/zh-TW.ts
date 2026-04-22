@@ -141,6 +141,7 @@ const zhTW: Record<TranslationKey, string> = {
   'pos.longPnl': '多方損益',
   'pos.shortPnl': '空方損益',
   'pos.fundingHistory': '資金費率歷史',
+  'pos.fundingPartial': '資金費率歷史不完整 — 無法取得：{legs}',
   'pos.rotationHistory': '輪換歷史',
   'pos.openTime': '開倉時間',
   'pos.from': '從',

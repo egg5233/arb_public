@@ -211,12 +211,6 @@ func (s *Server) handleSpotManualOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	symbol := strings.ToUpper(strings.TrimSpace(req.Symbol))
-	if !strings.HasSuffix(symbol, "USDT") || !utils.IsValidBaseSymbol(strings.TrimSuffix(symbol, "USDT")) {
-		writeJSON(w, http.StatusBadRequest, Response{Error: "invalid symbol: expected ASCII USDT symbol"})
-		return
-	}
-
 	if s.spotOpenPosition == nil {
 		writeJSON(w, http.StatusServiceUnavailable, Response{Error: "spot engine not available"})
 		return
@@ -362,11 +356,6 @@ func (s *Server) handleSpotTestInject(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, Response{Error: "symbol and exchange required"})
 		return
 	}
-	symbol := strings.ToUpper(strings.TrimSpace(req.Symbol))
-	if !strings.HasSuffix(symbol, "USDT") || !utils.IsValidBaseSymbol(strings.TrimSuffix(symbol, "USDT")) {
-		writeJSON(w, http.StatusBadRequest, Response{Error: "invalid symbol: expected ASCII USDT symbol"})
-		return
-	}
 	if s.spotInjectTestOpp == nil {
 		writeJSON(w, http.StatusServiceUnavailable, Response{Error: "spot engine not available"})
 		return
@@ -374,7 +363,7 @@ func (s *Server) handleSpotTestInject(w http.ResponseWriter, r *http.Request) {
 	s.spotInjectTestOpp(req.Symbol, req.Exchange)
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: map[string]string{
 		"status": "injected",
-		"symbol": symbol,
+		"symbol": strings.ToUpper(req.Symbol),
 	}})
 }
 
@@ -615,13 +604,6 @@ func (s *Server) handleSpotTestLifecycle(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	symbol := strings.ToUpper(strings.TrimSpace(req.Symbol))
-	if !strings.HasSuffix(symbol, "USDT") || !utils.IsValidBaseSymbol(strings.TrimSuffix(symbol, "USDT")) {
-		writeJSON(w, http.StatusBadRequest, Response{Error: "invalid symbol: expected ASCII USDT symbol"})
-		return
-	}
-	baseCoin := strings.TrimSuffix(symbol, "USDT")
-
 	if s.spotInjectTestOpp == nil || s.spotOpenPosition == nil || s.spotClosePosition == nil {
 		writeJSON(w, http.StatusServiceUnavailable, Response{Error: "spot engine not available"})
 		return
@@ -633,6 +615,8 @@ func (s *Server) handleSpotTestLifecycle(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	symbol := strings.ToUpper(req.Symbol)
+	baseCoin := strings.TrimSuffix(symbol, "USDT")
 	report := lifecycleReport{
 		Exchange: req.Exchange,
 		Symbol:   symbol,
@@ -1025,10 +1009,6 @@ func (s *Server) handleSpotBacktest(w http.ResponseWriter, r *http.Request) {
 	req.Direction = strings.TrimSpace(req.Direction)
 	if req.Symbol == "" || req.Exchange == "" || req.Direction == "" {
 		writeJSON(w, http.StatusBadRequest, Response{Error: "symbol, exchange, direction required"})
-		return
-	}
-	if !strings.HasSuffix(req.Symbol, "USDT") || !utils.IsValidBaseSymbol(strings.TrimSuffix(req.Symbol, "USDT")) {
-		writeJSON(w, http.StatusBadRequest, Response{Error: "invalid symbol: expected ASCII USDT symbol"})
 		return
 	}
 	if req.Direction != "buy_spot_short" && req.Direction != "borrow_sell_long" {

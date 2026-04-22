@@ -139,6 +139,7 @@ const en = {
   'pos.longPnl': 'Long PnL',
   'pos.shortPnl': 'Short PnL',
   'pos.fundingHistory': 'Funding History',
+  'pos.fundingPartial': 'Funding history incomplete — unavailable for: {legs}',
   'pos.rotationHistory': 'Rotation History',
   'pos.openTime': 'Opened',
   'pos.from': 'From',

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, Fragment, type FC } from 'react';
-import type { Position, FundingEvent } from '../types.ts';
+import type { Position, FundingEvent, FundingHistoryResult } from '../types.ts';
 import { useLocale } from '../i18n/index.ts';
 import { tradingUrl } from '../utils/tradingUrl.tsx';
 
@@ -7,7 +7,7 @@ import { tradingUrl } from '../utils/tradingUrl.tsx';
 interface PositionsProps {
   positions: Position[];
   onClose?: (positionId: string) => Promise<void>;
-  onFetchFunding?: (positionId: string) => Promise<FundingEvent[]>;
+  onFetchFunding?: (positionId: string) => Promise<FundingHistoryResult>;
   blacklist?: string[];
   onBlacklistToggle?: (symbol: string) => Promise<void>;
 }
@@ -59,6 +59,7 @@ const Positions: FC<PositionsProps> = ({ positions, onClose, onFetchFunding, bla
   const [closeError, setCloseError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [fundingHistory, setFundingHistory] = useState<FundingEvent[]>([]);
+  const [fundingPartialLegs, setFundingPartialLegs] = useState<string[]>([]);
   const [fundingLoading, setFundingLoading] = useState(false);
   const fetchIdRef = useRef<string | null>(null);
 
@@ -66,23 +67,27 @@ const Positions: FC<PositionsProps> = ({ positions, onClose, onFetchFunding, bla
     if (expandedId === id) {
       setExpandedId(null);
       setFundingHistory([]);
+      setFundingPartialLegs([]);
       fetchIdRef.current = null;
       return;
     }
     setExpandedId(id);
     setFundingHistory([]);
+    setFundingPartialLegs([]);
     fetchIdRef.current = id;
     if (onFetchFunding) {
       setFundingLoading(true);
       try {
-        const events = await onFetchFunding(id);
+        const result = await onFetchFunding(id);
         // Only apply if this is still the expanded position (prevents race).
         if (fetchIdRef.current === id) {
-          setFundingHistory(events);
+          setFundingHistory(result.events);
+          setFundingPartialLegs(result.partialLegs);
         }
       } catch {
         if (fetchIdRef.current === id) {
           setFundingHistory([]);
+          setFundingPartialLegs([]);
         }
       } finally {
         if (fetchIdRef.current === id) {
@@ -97,6 +102,7 @@ const Positions: FC<PositionsProps> = ({ positions, onClose, onFetchFunding, bla
     if (expandedId && !positions.find(p => p.id === expandedId)) {
       setExpandedId(null);
       setFundingHistory([]);
+      setFundingPartialLegs([]);
     }
   }, [positions, expandedId]);
 
@@ -238,6 +244,11 @@ const Positions: FC<PositionsProps> = ({ positions, onClose, onFetchFunding, bla
                             {t('pos.fundingCollected')}: ${p.funding_collected.toFixed(4)}
                           </span>
                         </div>
+                        {fundingPartialLegs.length > 0 && (
+                          <div className="mb-2 px-2 py-1.5 rounded bg-yellow-500/10 border border-yellow-500/30 text-yellow-300 text-[11px]">
+                            {t('pos.fundingPartial').replace('{legs}', fundingPartialLegs.join(', '))}
+                          </div>
+                        )}
                         {fundingLoading ? (
                           <div className="text-gray-500 text-xs py-3 text-center">{t('pos.loading')}</div>
                         ) : fundingHistory.length === 0 ? (
@@ -515,6 +526,11 @@ const Positions: FC<PositionsProps> = ({ positions, onClose, onFetchFunding, bla
                           ${p.funding_collected.toFixed(4)}
                         </span>
                       </div>
+                      {fundingPartialLegs.length > 0 && (
+                        <div className="mb-2 px-2 py-1.5 rounded bg-yellow-500/10 border border-yellow-500/30 text-yellow-300 text-[11px]">
+                          {t('pos.fundingPartial').replace('{legs}', fundingPartialLegs.join(', '))}
+                        </div>
+                      )}
                       {fundingLoading ? (
                         <div className="text-gray-500 text-xs py-3 text-center">{t('pos.loading')}</div>
                       ) : fundingHistory.length === 0 ? (
