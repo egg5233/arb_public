@@ -13,10 +13,11 @@ import (
 	"arb/pkg/exchange"
 )
 
-// PAPER-MODE INVARIANT (Plan 09-03 Pitfall 2): monitor.go NEVER reads
-// t.cfg.PriceGapPaperMode. Mode is stamped once at entry (execution.go openPair);
-// this file reads pos.Mode exclusively so that flipping the global flag mid-life
-// cannot flip an in-flight position from paper → live close or vice versa.
+// PAPER-MODE INVARIANT (Plan 09-03 Pitfall 2): monitor.go NEVER reads the
+// global paper-mode config flag. Mode is stamped once at entry
+// (execution.go openPair); this file reads pos.Mode exclusively so that
+// flipping the global flag mid-life cannot flip an in-flight position
+// from paper -> live close or vice versa.
 
 // monitorSeq — global atomic counter; every startMonitor invocation mints a
 // unique token. The goroutine holds its own token; the cleanup defer compares
@@ -268,8 +269,8 @@ type vwapReader interface {
 // Paper-mode chokepoint (Plan 09-03 Pattern 2): when pos.Mode == "paper",
 // the function synthesizes a close-leg fill at mid ± (pos.ModeledSlipBps / 2)
 // and returns WITHOUT calling ex.PlaceOrder. The branch is gated on pos.Mode
-// (not t.cfg.PriceGapPaperMode) so a mid-life flag flip cannot leak real
-// orders into the wire for an in-flight paper position (Pitfall 2).
+// (not on the global paper-mode flag) so a mid-life flag flip cannot leak
+// real orders into the wire for an in-flight paper position (Pitfall 2).
 func (t *Tracker) placeCloseLegIOC(
 	ex exchange.Exchange, pos *models.PriceGapPosition, side exchange.Side,
 	size float64, decimals int, fallbackPrice float64,
