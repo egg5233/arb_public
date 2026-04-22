@@ -1,6 +1,6 @@
 # PLAN: Bitget Error Handling + Full Non-ASCII Symbol Support
 
-Version: v16
+Version: v17
 Date: 2026-04-22
 Status: REVIEWING
 
@@ -122,8 +122,8 @@ if bitgetPassThroughCodes[envelope.Code] {
 
 // Non-2xx HTTP is always error. Synthesize APIError from status if body has
 // no usable code (e.g. HTML response, empty body).
-// IMPORTANT: assign to the named `err` return var so the metrics defer at
-// client.go:97-103 sees the error for observability.
+// IMPORTANT: assign to the local `err` variable captured by the metrics defer
+// at client.go:97-103 so bitget API errors are recorded for observability.
 if resp.StatusCode >= 400 {
 	if envelope.Code != "" {
 		err = &APIError{Code: envelope.Code, Msg: envelope.Msg}
@@ -176,29 +176,49 @@ func (e *APIError) Error() string {
 
 **Import additions required:**
 
-BEFORE (client.go:3-7):
+BEFORE (client.go:3-18, actual HEAD):
 ```go
 import (
+	"arb/pkg/exchange"
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"sort"
+	"strings"
+	"time"
 )
 ```
 
 AFTER:
 ```go
 import (
+	"arb/pkg/exchange"
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"sort"
 	"strconv"
+	"strings"
+	"time"
 )
 ```
 
-(`strconv` for `strconv.Itoa(resp.StatusCode)`, `errors` for `errors.As` in updated `isRetryable`)
+Two additions: `errors` (for `errors.As` in updated `isRetryable`), `strconv` (for `strconv.Itoa(resp.StatusCode)`).
 
 **Retry interaction:** `retryDo` uses `isRetryable(err, rawResp)`. After fix, rawResp is `""` when error returned; isRetryable must also inspect `*APIError.Code`:
 ```go
@@ -673,17 +693,33 @@ writeJSON(w, http.StatusOK, Response{OK: true, Data: map[string]interface{}{
 
 **Chosen approach: `X-Partial-Legs` response header** (less breaking than response shape change).
 
-Backend:
+Backend — must preserve existing empty-array response pattern (HEAD returns empty array literal when `events == nil`):
+
+BEFORE (current HEAD pattern):
 ```go
+if events == nil {
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: []interface{}{}})
+	return
+}
+writeJSON(w, http.StatusOK, Response{OK: true, Data: events})
+```
+
+AFTER:
+```go
+if events == nil {
+	events = []fundingEvent{}
+}
 if len(partialLegs) > 0 {
 	w.Header().Set("X-Partial-Legs", strings.Join(partialLegs, ","))
 }
 writeJSON(w, http.StatusOK, Response{OK: true, Data: events})
 ```
 
+Collapsing to a single `writeJSON` after normalization lets the header apply uniformly whether events are present or empty. Return shape stays `[]fundingEvent{}` on the wire (no visible behavior change for existing clients).
+
 **Frontend — concrete because `request()` helper unwraps JSON and discards headers at `useApi.ts:48`:**
 
-The current generic `request<T>()` can't expose headers. `getPositionFunding` must bypass it (or `request()` extended). Bypass is simpler — only this hook needs headers:
+The current generic `request<T>()` can't expose headers. `getPositionFunding` must bypass it (or `request()` extended). Bypass is simpler — only this hook needs headers. **Must preserve 401 handling** that `request()` currently performs (token clear + reload) — inline it in the bypass:
 
 ```ts
 // web/src/types.ts — add:
@@ -699,7 +735,15 @@ const getPositionFunding = useCallback(async (positionId: string): Promise<Fundi
 	if (token) headers.Authorization = `Bearer ${token}`;
 
 	const res = await fetch(`/api/positions/${positionId}/funding`, { headers });
-	if (!res.ok) throw new Error(`Funding history failed (${res.status})`);
+	if (res.status === 401) {
+		clearToken();
+		window.location.reload();
+		throw new Error('Unauthorized');
+	}
+	if (!res.ok) {
+		const body = await res.json().catch(() => null) as { error?: string } | null;
+		throw new Error(body?.error || `Funding history failed (${res.status})`);
+	}
 
 	const partialLegs = (res.headers.get('X-Partial-Legs') || '')
 		.split(',')
@@ -712,6 +756,8 @@ const getPositionFunding = useCallback(async (positionId: string): Promise<Fundi
 	return { events: body.data ?? [], partialLegs };
 }, []);
 ```
+
+`getToken` and `clearToken` helpers must match the names used elsewhere in `useApi.ts`; grep the file during implementation to use the exact identifiers (`getToken` / `clearToken` per current convention; adjust if they're named differently).
 
 **Caller updates required (not just the hook):**
 - `web/src/pages/Positions.tsx` — `PositionsProps.onFetchFunding` signature changes from `Promise<FundingEvent[]>` to `Promise<FundingHistoryResult>`
@@ -1038,16 +1084,20 @@ if cfErr != nil {
 	// BorrowAmount already set earlier after spot confirmation, no-op here
 	// FuturesSize/FuturesEntry intentionally NOT set — futures leg state is unknown
 
-	// Dir B (line 619) — replace SpotSize value:
-	// pos.SpotSize = spotNetReceived     // NET after fee deduction (Dir B buys spot)
+	// Dir B (line 619) — use net received (matches HEAD's successful Dir B persistence
+	// formula `actualNotional := spotFilledQty * spotEntryPrice` where the caller
+	// passes `spotFilledQty = spotNetReceived` per return signature
+	// `return spotAvg, futAvg, spotNetReceived, futFilled, nil`):
+	// pos.SpotSize = spotNetReceived           // NET after fee deduction
+	// pos.NotionalUSDT = spotNetReceived * spotAvg
 	// pos.FuturesSide = "short"
-	// (other fields same as Dir A)
+	// (SpotEntryPrice, PendingEntryOrderID clear — same as Dir A)
 
 	return &pendingFuturesEntryError{
 		posID:         pos.ID,
 		orderID:       orderID,
 		pendingPos:    pos,
-		capitalAmount: spotFilled * spotAvg, // actual filled notional
+		capitalAmount: spotFilled * spotAvg, // actual filled notional (pre-fee for capital accounting)
 		err:           cfErr,
 	}
 }
@@ -1182,8 +1232,9 @@ Unit tests per call site:
   - `pos.PendingFuturesEntryOrderID == orderID`
   - `pos.SpotSize == 1.23` (exactly spotNetReceived — protects against accidental gross persistence)
   - `pos.SpotEntryPrice == 5.0`
-  - `pos.NotionalUSDT == 6.17` (spotFilled * spotAvg — gross here, per HEAD pattern)
+  - `pos.NotionalUSDT == 6.15` (spotNetReceived * spotAvg = 1.23 * 5.0 — matches HEAD's successful Dir B `actualNotional := spotFilledQty * spotEntryPrice` where the caller passes `spotFilledQty = spotNetReceived`)
   - `pos.FuturesSide == "short"`
+  - `capitalAmount == 6.17` preserved in pendingFuturesEntryError (spotFilled * spotAvg = 1.234 * 5.0 for capital accounting)
 
 **Next monitor cycle:**
 - Save the updated position to mock DB.
@@ -1294,9 +1345,45 @@ if err := exch.CancelAllOrders(symbol); err != nil {
 
 Errors should be logged and continue (do not abort surrounding operation), matching existing patterns for cleanup calls elsewhere in engine.
 
-#### 16c. `pkg/exchange/bitget/adapter.go:populateBitgetFeeDeducted` — log fill fetch errors
+#### 16c. `pkg/exchange/bitget/margin.go:populateBitgetFeeDeducted` — log fill fetch errors
 
-Currently silent on fee-fill query errors. Add log + preserve existing "fee unknown" semantic. Minor change, diagnostic only.
+Function lives in `margin.go` (not `adapter.go`). Currently swallows fee-fill query errors via `err == nil` guard. After #1, errors propagate but this helper's caller expects "fee unknown = 0 fee" semantic preserved. Add log on error path while keeping existing behavior (do not abort caller).
+
+BEFORE (current pattern in margin.go — grep `populateBitgetFeeDeducted` to locate exact line):
+```go
+if raw, err := a.client.Get("/api/v2/spot/trade/fills", fillParams); err == nil {
+	var resp fillResp
+	if json.Unmarshal([]byte(raw), &resp) == nil && resp.Code == "00000" {
+		for _, f := range resp.Data {
+			if strings.EqualFold(f.FeeDetail.FeeCoin, baseCoin) {
+				fee, _ := strconv.ParseFloat(f.FeeDetail.TotalFee, 64)
+				totalFee += fee
+				found = true
+			}
+		}
+	}
+}
+```
+
+AFTER:
+```go
+if raw, err := a.client.Get("/api/v2/spot/trade/fills", fillParams); err == nil {
+	var resp fillResp
+	if json.Unmarshal([]byte(raw), &resp) == nil && resp.Code == "00000" {
+		for _, f := range resp.Data {
+			if strings.EqualFold(f.FeeDetail.FeeCoin, baseCoin) {
+				fee, _ := strconv.ParseFloat(f.FeeDetail.TotalFee, 64)
+				totalFee += fee
+				found = true
+			}
+		}
+	}
+} else {
+	log.Printf("[bitget] populateBitgetFeeDeducted spot fills failed order=%s symbol=%s: %v", orderID, symbol, err)
+}
+```
+
+Import requirement: add `"log"` to `pkg/exchange/bitget/margin.go` imports if not already present (grep `import` block to verify). Diagnostic-only; preserves existing "fee unknown → 0 fee" semantic on error.
 
 ### 17. `confirmFill` callers in exit.go and consolidate.go
 
@@ -1427,9 +1514,20 @@ Risk mitigation is handled via staged deploy: deploy to VPS off-peak, monitor lo
 - v15 Codex FRESH-thread full independent audit (xhigh): NEEDS-REVISION — 2 findings not caught by resume-thread review:
   * #1 metrics note: plan claimed `doRequest` uses named returns, actual HEAD uses unnamed returns + local `var err error`. Text was inaccurate.
   * #16b CancelAllOrders: "audit call sites" too vague; bitget adapter still silently discards both Post errors (returns nil unconditionally). Needed concrete BEFORE/AFTER + caller update pattern.
-- v16: (this version) — addresses fresh-audit findings:
+- v16: addresses v15 fresh-audit findings:
   * #1 metrics note: rewritten to describe unnamed return + local `var err error` pattern; clarified new error paths must assign to local `err` before returning.
   * #16b CancelAllOrders: added concrete BEFORE/AFTER adapter code using `errors.Join`; `errors` import note; caller update pattern with log+continue semantics.
+- v16 Codex fresh-thread full independent audit (xhigh): NEEDS-REVISION — 4 findings:
+  * #1: imports BEFORE/AFTER block was abbreviated (5 lines); actual HEAD has 15 lines. Also the inline comment in client.go AFTER still said "named `err` return var" after v16 fixed the prose.
+  * #13: backend snippet didn't preserve existing `[]fundingEvent{}` empty-array pattern; frontend bypass dropped existing 401 handling (token clear + reload).
+  * #15: Dir B NotionalUSDT used gross `spotFilled * spotAvg`; actual HEAD successful Dir B uses net `spotNetReceived * spotAvg` (caller passes `spotFilledQty = spotNetReceived`).
+  * #16c: function lives in `margin.go`, not `adapter.go`; plan lacked concrete BEFORE/AFTER and `log` import note.
+- v17: (this version) — addresses v16 fresh-audit findings:
+  * #1: expanded imports BEFORE/AFTER to match actual HEAD (15 → 17 imports, adding `errors` and `strconv`); updated inline code comment from "named `err` return var" to "local `err` variable captured by the metrics defer".
+  * #13 backend: switched from two `writeJSON` branches to single `writeJSON` after normalizing `events = []fundingEvent{}` when nil. Preserves on-wire empty-array behavior.
+  * #13 frontend: added `res.status === 401 → clearToken() + reload()` branch to bypass, plus JSON-error-body extraction on non-401 non-ok responses. Noted `getToken`/`clearToken` name verification during implementation.
+  * #15 Dir B: changed test-spec `pos.NotionalUSDT == 6.17` to `== 6.15` (spotNetReceived * spotAvg = 1.23 * 5.0); added `capitalAmount == 6.17` preservation assertion; tightened plan comment on Dir B persistence formula referencing HEAD `actualNotional := spotFilledQty * spotEntryPrice` with `spotFilledQty = spotNetReceived`.
+  * #16c: retitled section to `margin.go`; added concrete BEFORE/AFTER code from HEAD with `log.Printf` on error path; noted `"log"` import requirement.
 - v13 original: (kept for history)
   * Field name corrected: `SpotSize` (NOT `SpotFilledQty`) per HEAD models/spot_position.go
   * Dir A vs Dir B specific fields documented: Dir A uses `SpotSize = spotFilled` (gross, borrowed+sold); Dir B uses `SpotSize = spotNetReceived` (net after fee deduction). Each sets correct `FuturesSide`.
