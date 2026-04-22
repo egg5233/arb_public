@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Multi-Strategy Expansion
 status: executing
-stopped_at: Completed 09-02-PLAN.md
-last_updated: "2026-04-22T03:45:46.926Z"
+stopped_at: Completed 09-03-PLAN.md
+last_updated: "2026-04-22T03:57:26.697Z"
 last_activity: 2026-04-22
 progress:
   total_phases: 2
   completed_phases: 1
   total_plans: 16
-  completed_plans: 10
-  percent: 63
+  completed_plans: 11
+  percent: 69
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-21 after v1.0 shipped)
 ## Current Position
 
 Phase: 09 (price-gap-dashboard-paper-live-operations) — EXECUTING
-Plan: 3 of 8
+Plan: 4 of 8
 Status: Ready to execute
 Last activity: 2026-04-22
 
@@ -82,6 +82,7 @@ Progress (v2.0): [          ] 0%
 | Phase 08 P08 | 12m | 3 tasks | 4 files |
 | Phase 09 P01 | 35min | 3 tasks | 13 files |
 | Phase 09 P02 | 45min | 2 tasks | 11 files |
+| Phase 09 P03 | 30m | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -153,6 +154,8 @@ v1.0 decisions below (retained for reference):
 - [Phase 09]: Phase 9 Plan 02: IsCandidateDisabled → 4-tuple with JSON {reason, disabled_at}; legacy plain-string readable for backward compat (Pitfall 6).
 - [Phase 09]: Flat price_gap_paper_mode root field accepted alongside nested price_gap.paper_mode; nested wins on conflict. SaveJSON persists both flags through the existing .bak writer.
 - [Phase 09]: isMutatingEndpoint extended to /api/pricegap/candidate/ so POST disable/enable enforce auth even when DashboardPassword is unset (T-09-06 hardening).
+- [Phase 09]: Paper mode ships as a single chokepoint at ex.PlaceOrder; pos.Mode stamped once at entry, monitor reads pos.Mode only (Pitfall 2 immutability).
+- [Phase 09]: Synth fill price = mid ± (modeled/2)/10_000 so realized slippage is non-zero and the Phase 8 pipeline is exercised (Pitfall 7).
 
 ### Pending Todos
 
@@ -176,7 +179,7 @@ None yet. Next action: `/gsd-plan-phase 8` to decompose Phase 8 into executable 
 
 ## Session Continuity
 
-Last session: 2026-04-22T03:45:46.921Z
-Stopped at: Completed 09-02-PLAN.md
+Last session: 2026-04-22T03:57:26.540Z
+Stopped at: Completed 09-03-PLAN.md
 Resume file: None
 Next command: `/gsd-plan-phase 8`
