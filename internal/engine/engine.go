@@ -991,7 +991,11 @@ func (e *Engine) run() {
 
 			switch result.Type {
 			case discovery.RebalanceScan:
-				e.rebalanceFunds()
+				if e.cfg.EnablePoolAllocator && e.cfg.RotateScanMinute != e.cfg.RebalanceScanMinute {
+					e.log.Info("rebalanceScan: skipped (pool allocator enabled, rotateScan handles rebalance)")
+				} else {
+					e.rebalanceFunds()
+				}
 				e.log.Info("run loop: rebalanceScan handler done")
 			case discovery.ExitScan:
 				e.checkIntervalChanges()
@@ -1004,7 +1008,7 @@ func (e *Engine) run() {
 				// NOTE: When EnablePoolAllocator=false, rotate-scan intentionally skips
 				// rebalance; only the dedicated rebalance-scan minute triggers it.
 				// Pass 1 rank-first is invoked inside rebalanceFunds regardless.
-				if e.cfg.EnablePoolAllocator {
+				if e.cfg.EnablePoolAllocator && e.cfg.RotateScanMinute != e.cfg.RebalanceScanMinute {
 					e.log.Info("rotateScan: starting rebalanceFunds")
 					e.rebalanceFunds()
 					e.log.Info("rotateScan: rebalanceFunds done")

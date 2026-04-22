@@ -191,8 +191,21 @@ func (e *SpotEngine) discoveryLoop() {
 
 	// Load cached opportunities from previous session for instant dashboard display.
 	if cached := e.loadCachedOpps(); len(cached) > 0 {
-		e.log.Info("loaded %d cached spot opportunities for instant display", len(cached))
-		e.pushOppsToAPI(cached)
+		var clean []SpotArbOpportunity
+		for _, opp := range cached {
+			base := strings.TrimSuffix(strings.ToUpper(opp.Symbol), "USDT")
+			if !utils.IsValidBaseSymbol(base) {
+				continue
+			}
+			if opp.BaseCoin != "" && !utils.IsValidBaseSymbol(strings.ToUpper(opp.BaseCoin)) {
+				continue
+			}
+			clean = append(clean, opp)
+		}
+		if len(clean) > 0 {
+			e.log.Info("loaded %d cached spot opportunities for instant display", len(clean))
+			e.pushOppsToAPI(clean)
+		}
 	}
 
 	// Initial scan on startup.
@@ -372,6 +385,11 @@ func (e *SpotEngine) InjectTestOpportunity(symbol, exchName string) {
 	symbol = strings.ToUpper(strings.TrimSpace(symbol))
 	exchName = strings.ToLower(strings.TrimSpace(exchName))
 	baseCoin := strings.TrimSuffix(symbol, "USDT")
+
+	if !utils.IsValidBaseSymbol(baseCoin) {
+		e.log.Warn("InjectTestOpportunity: rejected non-ASCII symbol %q", symbol)
+		return
+	}
 
 	now := time.Now()
 	testOpps := []SpotArbOpportunity{

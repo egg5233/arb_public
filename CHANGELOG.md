@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.42] - 2026-04-22
+
+### Fixed
+- **ASCII symbol guard across discovery pipeline + spot API handlers (plan `plans/PLAN-ascii-symbol-guard.md` v4 ALL PASS on Codex normal + independent review + post-implementation review)** — Loris API returns non-ASCII symbols (e.g. `龙虾`, `币安人生`) that previously entered the ranker, passed `hasContract()` on some exchanges, passed 22/23 verification checks, and could reach entry scan causing one-legged positions, wasted API calls, and infinite retry loops. Added `utils.IsValidBaseSymbol(^[A-Z0-9]+$)` guard at 9 entry points: Loris/CoinGlass ranker (silent skip, fires every cycle), `InjectTestOpportunity` (WARN log), `loadCachedOpps` startup filter, and 4 API handlers (`/spot/manual-open`, `/spot/test-inject`, `/spot/test-lifecycle`, `/spot/backtest`) return HTTP 400 with "expected ASCII USDT symbol" error.
+- **Pool Allocator double-rebalance fix** — when `EnablePoolAllocator=true`, `rebalanceFunds()` previously ran twice per cycle (at RebalanceScan :10/:20 AND RotateScan :35), causing ~15-25-min-apart double transfers, wasted fees (e.g. gateio→okx $1), and suboptimal fund distribution. RebalanceScan handler now skips when allocator enabled (symmetric with existing RotateScan guard). Both guards also check `RotateScanMinute != RebalanceScanMinute` to handle same-minute misconfiguration — if user sets both minutes equal, scanner's else-if dispatch picks RebalanceScan and RotateScan never fires, so skipping would strand rebalancing entirely.
+
+### Added
+- **`pkg/utils/symbol.go`** — shared `IsValidBaseSymbol` helper with compiled regex (zero-alloc per match). Used by `internal/discovery`, `internal/spotengine`, and `internal/api`.
+- **`pkg/utils/symbol_test.go`** — unit test covering 7 valid symbols (BTC, 1000SATS, 1MBABYDOGE, 0G, 1INCH, 10000000AIDOGE, etc.) and 7 invalid (Chinese chars, slashes, underscores, empty, whitespace, accented chars).
+
 ## [0.32.41] - 2026-04-21
 
 ### Fixed

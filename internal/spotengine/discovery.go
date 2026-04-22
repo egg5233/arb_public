@@ -14,6 +14,7 @@ import (
 	"arb/internal/models"
 	"arb/internal/scraper"
 	"arb/pkg/exchange"
+	"arb/pkg/utils"
 )
 
 // SpotArbOpportunity represents a scored spot-futures arbitrage opportunity.
@@ -173,7 +174,11 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 			e.log.Info("native discovery: shutdown requested, aborting scan early")
 			return opps
 		}
-		symbol := strings.ToUpper(baseSym) + "USDT"
+		upper := strings.ToUpper(baseSym)
+		if !utils.IsValidBaseSymbol(upper) {
+			continue
+		}
+		symbol := upper + "USDT"
 
 		for exchName, smExch := range e.spotMargin {
 			if e.stopping() {
@@ -401,8 +406,14 @@ func (e *SpotEngine) runCoinGlassFallback() []SpotArbOpportunity {
 		if direction == "" || baseCoin == "" {
 			continue
 		}
+		if !utils.IsValidBaseSymbol(strings.ToUpper(baseCoin)) {
+			continue
+		}
 
 		spotSymbol := normalizeSymbol(item.Symbol)
+		if !utils.IsValidBaseSymbol(strings.TrimSuffix(strings.ToUpper(spotSymbol), "USDT")) {
+			continue
+		}
 		isActive := activeKeys[spotSymbol+":"+exchName+":"+direction]
 
 		// Parse funding APR from the APR field (e.g. "43.21%"). Keep zero/negative
