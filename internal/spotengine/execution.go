@@ -373,6 +373,40 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 			e.log.Error("ManualOpen: %s on %s — pending entry error: %v", symbol, exchName, err)
 			return err
 		}
+
+		// Pending-futures entry: spot leg confirmed but futures fill state
+		// UNKNOWN (e.g. bitget REST error on GetOrderFilledQty). Persist the
+		// pending-futures checkpoint so monitor's reconcilePendingFuturesEntry
+		// can resume recovery on next tick. Mirrors pending-spot branch above.
+		var pendingFutErr *pendingFuturesEntryError
+		if errors.As(err, &pendingFutErr) {
+			recoverySaveFailed := false
+			targetPos := entryPos
+			if pendingFutErr.pendingPos != nil {
+				targetPos = pendingFutErr.pendingPos
+			}
+			if saveErr := e.persistPendingFuturesEntry(targetPos, pendingFutErr.orderID); saveErr != nil {
+				e.log.Error("ManualOpen: failed to persist pending futures recovery %s: %v", pendingFutErr.posID, saveErr)
+				recoverySaveFailed = true
+			}
+			amount := plannedNotional
+			if pendingFutErr.capitalAmount > 0 {
+				amount = pendingFutErr.capitalAmount
+			}
+			if commitErr := e.commitSpotCapital(reservation, pendingFutErr.posID, amount); commitErr != nil {
+				e.log.Error("ManualOpen: capital commit failed for pending futures entry %s: %v", pendingFutErr.posID, commitErr)
+			}
+			// Guard broadcast — persistPendingFuturesEntry already broadcasts via
+			// persistPendingCheckpoint on success, so only broadcast here if we
+			// did NOT call save (i.e. save failed). In both paths we skip the
+			// stale-state broadcast when save failed.
+			if recoverySaveFailed {
+				return fmt.Errorf("%w (manual recovery position %s could not be persisted; existing pending record retained)", err, pendingFutErr.posID)
+			}
+			e.log.Error("ManualOpen: %s on %s — pending futures entry error: %v", symbol, exchName, err)
+			return err
+		}
+
 		e.abandonPendingEntry(entryPos, "entry_failed")
 		e.releaseSpotReservation(reservation)
 		e.log.Error("ManualOpen: %s on %s — execution failed: %v", symbol, exchName, err)
@@ -503,7 +537,32 @@ func (e *SpotEngine) executeBorrowSellLong(
 	e.log.Info("ManualOpen [borrow_sell_long] step 2: futures order placed: %s", futOrderID)
 
 	// Confirm futures fill.
-	futFilled, futAvg = e.confirmFuturesFill(futExch, futOrderID, symbol)
+	futFilled, futAvg, cfErr := e.confirmFuturesFill(futExch, futOrderID, symbol)
+	if cfErr != nil {
+		// Fill state is UNKNOWN (e.g. bitget REST error). The spot leg was
+		// already confirmed above, so we MUST NOT rollback spot — the futures
+		// order may actually have filled and the hedge could be intact. Instead
+		// persist confirmed spot fields directly (bypassing the outer ManualOpen
+		// overwrite which never runs because we return with error) and hand off
+		// to reconcilePendingFuturesEntry via the pendingFuturesEntryError.
+		//
+		// For Dir A, spotNetReceived == spotFilled (no fee net-off on SELL), so
+		// gross == net here — using spotFilled for clarity.
+		pos.PendingEntryOrderID = ""
+		pos.SpotSize = spotFilled
+		pos.SpotEntryPrice = spotAvg
+		pos.NotionalUSDT = spotFilled * spotAvg
+		pos.FuturesSide = "long"
+		pos.BorrowAmount = borrowAmt
+		// FuturesSize/FuturesEntry intentionally NOT set — futures leg state is unknown.
+		return 0, 0, 0, 0, 0, &pendingFuturesEntryError{
+			posID:         pos.ID,
+			orderID:       futOrderID,
+			pendingPos:    pos,
+			capitalAmount: spotFilled * spotAvg,
+			err:           cfErr,
+		}
+	}
 	if futFilled <= 0 {
 		e.log.Error("ManualOpen [borrow_sell_long] step 2: futures order got 0 fill — rolling back spot sell")
 		e.rollbackSpotOrder(smExch, symbol, exchange.SideBuy, spotFilledStr, buybackQuote, true)
@@ -616,7 +675,34 @@ func (e *SpotEngine) executeBuySpotShort(
 	e.log.Info("ManualOpen [buy_spot_short] step 2: futures order placed: %s", futOrderID)
 
 	// Confirm futures fill.
-	futFilled, futAvg = e.confirmFuturesFill(futExch, futOrderID, symbol)
+	futFilled, futAvg, cfErr := e.confirmFuturesFill(futExch, futOrderID, symbol)
+	if cfErr != nil {
+		// Fill state UNKNOWN — do NOT rollback spot. Spot leg is already
+		// confirmed; the futures order may have filled and reconciliation must
+		// resume via reconcilePendingFuturesEntry on next monitor tick.
+		//
+		// Persist the FINAL Dir B state (NET, not gross) to match the successful
+		// Dir B path's HEAD state AFTER the outer ManualOpen overwrite at
+		// execution.go line 402 (`pos.NotionalUSDT = actualNotional` where
+		// actualNotional = spotFilledQty * spotEntryPrice = spotNetReceived * spotAvg).
+		// The inner function's transient gross write (pos.NotionalUSDT =
+		// spotFilled * spotAvg) is overwritten by the outer flow in the
+		// successful path, so when we return with error and the outer overwrite
+		// is skipped, we must write the NET value here directly.
+		pos.PendingEntryOrderID = ""
+		pos.SpotSize = spotNetReceived
+		pos.SpotEntryPrice = spotAvg
+		pos.NotionalUSDT = spotNetReceived * spotAvg
+		pos.FuturesSide = "short"
+		// FuturesSize/FuturesEntry intentionally NOT set — futures leg state is unknown.
+		return 0, 0, 0, 0, &pendingFuturesEntryError{
+			posID:         pos.ID,
+			orderID:       futOrderID,
+			pendingPos:    pos,
+			capitalAmount: spotNetReceived * spotAvg, // matches commitSpotCapital(actualNotional) at successful path
+			err:           cfErr,
+		}
+	}
 	if futFilled <= 0 {
 		e.log.Error("ManualOpen [buy_spot_short] step 2: futures order got 0 fill — rolling back spot buy")
 		e.rollbackSpotOrder(smExch, symbol, exchange.SideSell, spotFilledStr, "", false)
@@ -640,7 +726,9 @@ func (e *SpotEngine) executeBuySpotShort(
 
 // confirmFuturesFill checks WS then REST to get fill quantity and average price
 // for a futures IOC order. Mirrors the perp-perp engine's confirmFill pattern.
-func (e *SpotEngine) confirmFuturesFill(exch exchange.Exchange, orderID, symbol string) (filledQty, avgPrice float64) {
+// Returns a non-nil error ONLY when fill state is UNKNOWN (e.g. REST query
+// failed after order was placed). Confirmed zero-fill returns (0, 0, nil).
+func (e *SpotEngine) confirmFuturesFill(exch exchange.Exchange, orderID, symbol string) (filledQty, avgPrice float64, err error) {
 	deadline := time.Now().Add(5 * time.Second)
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
@@ -648,7 +736,7 @@ func (e *SpotEngine) confirmFuturesFill(exch exchange.Exchange, orderID, symbol 
 	for {
 		if upd, ok := exch.GetOrderUpdate(orderID); ok {
 			if upd.Status == "filled" || upd.Status == "cancelled" {
-				return upd.FilledVolume, upd.AvgPrice
+				return upd.FilledVolume, upd.AvgPrice, nil
 			}
 		}
 		if time.Now().After(deadline) {
@@ -662,7 +750,7 @@ func (e *SpotEngine) confirmFuturesFill(exch exchange.Exchange, orderID, symbol 
 		if upd.Status == "filled" || upd.Status == "cancelled" {
 			e.log.Info("confirmFuturesFill: WS terminal %s: status=%s filled=%.6f avg=%.8f",
 				orderID, upd.Status, upd.FilledVolume, upd.AvgPrice)
-			return upd.FilledVolume, upd.AvgPrice
+			return upd.FilledVolume, upd.AvgPrice, nil
 		}
 		e.log.Warn("confirmFuturesFill: timeout %s: WS status=%s filled=%.6f (non-terminal)",
 			orderID, upd.Status, upd.FilledVolume)
@@ -671,23 +759,23 @@ func (e *SpotEngine) confirmFuturesFill(exch exchange.Exchange, orderID, symbol 
 	}
 
 	// Cancel any resting order and query REST.
-	if err := exch.CancelOrder(symbol, orderID); err != nil {
-		e.log.Warn("confirmFuturesFill: cancel %s: %v", orderID, err)
+	if cancelErr := exch.CancelOrder(symbol, orderID); cancelErr != nil {
+		e.log.Warn("confirmFuturesFill: cancel %s: %v", orderID, cancelErr)
 	}
 	time.Sleep(200 * time.Millisecond)
 
 	restFilled, restErr := exch.GetOrderFilledQty(orderID, symbol)
 	if restErr != nil {
 		e.log.Warn("confirmFuturesFill: REST query %s failed: %v", orderID, restErr)
-		return 0, 0
+		return 0, 0, fmt.Errorf("futures fill state unknown for %s: %w", orderID, restErr)
 	}
 	e.log.Info("confirmFuturesFill: REST %s filled=%.6f", orderID, restFilled)
 
 	// Try to get avg price from WS store after REST fallback.
 	if upd, ok := exch.GetOrderUpdate(orderID); ok && upd.AvgPrice > 0 {
-		return restFilled, upd.AvgPrice
+		return restFilled, upd.AvgPrice, nil
 	}
-	return restFilled, 0
+	return restFilled, 0, nil
 }
 
 type pendingSpotExitError struct {
@@ -723,6 +811,30 @@ func (e *pendingSpotEntryError) Error() string {
 	}
 	return fmt.Sprintf("%s on order %s: %v", state, e.orderID, e.err)
 }
+
+// pendingFuturesEntryError is returned by entry paths (executeBorrowSellLong /
+// executeBuySpotShort) when the spot leg has already confirmed but the futures
+// fill state is UNKNOWN (e.g. bitget REST query returned an API error after
+// the order was accepted). ManualOpen's top-level error branch must catch this
+// via errors.As and persist a pending-futures checkpoint so the monitor's
+// reconcilePendingFuturesEntry can resume recovery once the exchange error
+// clears. Mirror of pendingSpotEntryError — same fields, same handling pattern.
+type pendingFuturesEntryError struct {
+	posID         string
+	orderID       string
+	pendingPos    *models.SpotFuturesPosition // optional — set when entry flow has constructed pos with confirmed spot fields
+	capitalAmount float64                     // optional — actual spot fill notional for capital commit
+	err           error
+}
+
+func (e *pendingFuturesEntryError) Error() string {
+	if e.err == nil {
+		return fmt.Sprintf("futures entry order %s awaiting confirmation", e.orderID)
+	}
+	return fmt.Sprintf("futures entry order %s awaiting confirmation: %v", e.orderID, e.err)
+}
+
+func (e *pendingFuturesEntryError) Unwrap() error { return e.err }
 
 // Without a durable pending-entry checkpoint, immediately unwind the accepted
 // spot leg so restart recovery never depends on a record that was not saved.
@@ -929,6 +1041,18 @@ func (e *SpotEngine) persistPendingEntry(pos *models.SpotFuturesPosition, orderI
 	return e.persistPendingCheckpoint(pos)
 }
 
+// persistPendingFuturesEntry stores a pending-futures-entry checkpoint: spot
+// leg is already confirmed and fields written by the caller; futures leg state
+// is unknown and only the futures order ID is stashed here for reconciliation.
+// Caller MUST clear PendingEntryOrderID (spot pending ID) BEFORE invoking this
+// helper; otherwise reconcilePendingEntry will reprocess an already-confirmed
+// spot leg and may place a duplicate hedge. Method intentionally does NOT
+// touch PendingEntryOrderID so enforcement stays explicit at the call site.
+func (e *SpotEngine) persistPendingFuturesEntry(pos *models.SpotFuturesPosition, orderID string) error {
+	pos.PendingFuturesEntryOrderID = orderID
+	return e.persistPendingCheckpoint(pos)
+}
+
 func (e *SpotEngine) persistPendingCheckpoint(pos *models.SpotFuturesPosition) error {
 	pos.Status = models.SpotStatusPending
 	pos.UpdatedAt = time.Now().UTC()
@@ -957,6 +1081,16 @@ func (e *SpotEngine) abandonPendingEntry(pos *models.SpotFuturesPosition, reason
 }
 
 func (e *SpotEngine) reconcilePendingEntry(pos *models.SpotFuturesPosition) {
+	// Defensive gate: positions whose pending state belongs to the FUTURES leg
+	// must be routed through reconcilePendingFuturesEntry, not this spot-side
+	// reconciler. Do NOT additionally gate on `PendingEntryOrderID == ""` —
+	// legitimate recovery checkpoints may carry an empty PendingEntryOrderID
+	// (spot leg already confirmed, futures hedge still needs placement) and
+	// must continue to fall through the existing recovery flow below.
+	if pos.PendingFuturesEntryOrderID != "" {
+		return
+	}
+
 	lock, acquired, err := e.db.AcquireOwnedLock(spotEntryLockKey, spotEntryLockTTL)
 	if err != nil {
 		e.log.Error("pending entry %s: acquire lock: %v", pos.ID, err)
@@ -1094,7 +1228,21 @@ func (e *SpotEngine) reconcilePendingEntry(pos *models.SpotFuturesPosition) {
 		return
 	}
 
-	futFilled, futAvg := e.confirmFuturesFill(futExch, orderID, pos.Symbol)
+	futFilled, futAvg, cfErr := e.confirmFuturesFill(futExch, orderID, pos.Symbol)
+	if cfErr != nil {
+		// Fill state UNKNOWN — cannot return an error (reconcilePendingEntry is
+		// void). Persist pending-futures checkpoint directly so next monitor
+		// cycle retries via reconcilePendingFuturesEntry.
+		if saveErr := e.persistPendingFuturesEntry(pos, orderID); saveErr != nil {
+			e.log.Error("reconcilePendingEntry %s: persistPendingFuturesEntry failed: %v", pos.ID, saveErr)
+			// Don't broadcast stale state; just return so monitor retries next cycle.
+			return
+		}
+		// persistPendingFuturesEntry -> persistPendingCheckpoint already broadcast
+		// on success, so no extra broadcast needed here.
+		e.log.Warn("pending entry %s: futures hedge fill unknown, pending-futures persisted, will retry next cycle: %v", pos.ID, cfErr)
+		return
+	}
 	if futFilled <= 0 {
 		e.log.Warn("pending entry %s: futures hedge order %s got 0 fill", pos.ID, orderID)
 		return
@@ -1415,7 +1563,11 @@ func (e *SpotEngine) closeDirectionA(
 				}
 				return fmt.Errorf("close futures long failed: %w", placeErr)
 			}
-			filled, avg := e.confirmFuturesFill(futExch, orderID, pos.Symbol)
+			filled, avg, cfErr := e.confirmFuturesFill(futExch, orderID, pos.Symbol)
+			if cfErr != nil {
+				// Close path is idempotent — safe to retry on next monitor cycle.
+				return fmt.Errorf("futures fill state unknown for order %s: %w", orderID, cfErr)
+			}
 			if filled <= 0 {
 				return fmt.Errorf("futures close got 0 fill (order %s)", orderID)
 			}
@@ -1698,7 +1850,11 @@ func (e *SpotEngine) closeDirectionB(
 				}
 				return fmt.Errorf("close futures short failed: %w", placeErr)
 			}
-			filled, avg := e.confirmFuturesFill(futExch, orderID, pos.Symbol)
+			filled, avg, cfErr := e.confirmFuturesFill(futExch, orderID, pos.Symbol)
+			if cfErr != nil {
+				// Close path is idempotent — safe to retry on next monitor cycle.
+				return fmt.Errorf("futures fill state unknown for order %s: %w", orderID, cfErr)
+			}
 			if filled <= 0 {
 				return fmt.Errorf("futures close got 0 fill (order %s)", orderID)
 			}
@@ -1906,7 +2062,12 @@ func (e *SpotEngine) emergencyClose(
 			ch <- result{leg: "futures", err: fmt.Errorf("futures close: %w", err)}
 			return
 		}
-		_, avg := e.confirmFuturesFill(futExch, orderID, pos.Symbol)
+		_, avg, cfErr := e.confirmFuturesFill(futExch, orderID, pos.Symbol)
+		if cfErr != nil {
+			// Close path is idempotent — safe to retry on next monitor cycle.
+			ch <- result{leg: "futures", err: fmt.Errorf("futures fill state unknown for order %s: %w", orderID, cfErr)}
+			return
+		}
 		ch <- result{leg: "futures", avg: avg}
 	}()
 
