@@ -1,6 +1,6 @@
 # PLAN: Bitget Error Handling + Full Non-ASCII Symbol Support
 
-Version: v21
+Version: v22
 Date: 2026-04-22
 Status: REVIEWING
 
@@ -831,9 +831,9 @@ Place test CLI under `cmd/peertest/` to avoid touching existing `cmd/livetest/` 
 
 ### 12. `internal/risk/health.go:getLegPnL` — log silent swallow
 
-BEFORE (line 358-360 verified at HEAD):
+BEFORE (HEAD `internal/risk/health.go:358` verbatim):
 ```go
-positions, err := exch.GetPosition(symbol)
+positions, err := exch.GetPosition(pos.Symbol)
 if err != nil {
 	return 0
 }
@@ -841,9 +841,9 @@ if err != nil {
 
 AFTER (ASCII-only log string to avoid any downstream logging issues):
 ```go
-positions, err := exch.GetPosition(symbol)
+positions, err := exch.GetPosition(pos.Symbol)
 if err != nil {
-	h.log.Warn("getLegPnL: GetPosition(%s) on %s failed: %v - counting as 0", symbol, exchName, err)
+	h.log.Warn("getLegPnL: GetPosition(%s) on %s failed: %v - counting as 0", pos.Symbol, exchName, err)
 	return 0
 }
 ```
@@ -882,9 +882,9 @@ writeJSON(w, http.StatusOK, Response{OK: true, Data: map[string]interface{}{
 
 **Frontend updates required (shape change is breaking):**
 - `web/src/types.ts` — add `FundingHistoryResponse { events: FundingEvent[]; partial_legs: string[] }` type
-- `web/src/hooks/useApi.ts:161` — update `useFundingHistory` hook return type to unwrap `response.data.events` (currently expects `FundingEvent[]` directly)
+- `web/src/hooks/useApi.ts:161` — update `getPositionFunding` callback return type to unwrap `response.data.events` (HEAD hook name is `getPositionFunding`, NOT `useFundingHistory`; verified at useApi.ts:161)
 - `web/src/pages/Positions.tsx` — use `data.events` for rendering, show warning banner if `data.partial_legs.length > 0`
-- `web/src/i18n/en.ts` + `zh-TW.ts` — add translation keys: `positions.fundingPartial = "Funding history incomplete — exchange data unavailable for: {legs}"`
+- `web/src/i18n/en.ts` + `zh-TW.ts` — add translation key under existing `pos.*` namespace (HEAD uses `pos.*` e.g. `pos.fundingHistory` at en.ts:141 and zh-TW.ts:143; NOT `positions.*`): `pos.fundingPartial = "Funding history incomplete — exchange data unavailable for: {legs}"`
 
 **Chosen approach: `X-Partial-Legs` response header** (less breaking than response shape change).
 
@@ -955,9 +955,52 @@ const getPositionFunding = useCallback(async (positionId: string): Promise<Fundi
 `getToken` and `clearToken` helpers must match the names used elsewhere in `useApi.ts`; grep the file during implementation to use the exact identifiers (`getToken` / `clearToken` per current convention; adjust if they're named differently).
 
 **Caller updates required (not just the hook):**
-- `web/src/pages/Positions.tsx` — `PositionsProps.onFetchFunding` signature changes from `Promise<FundingEvent[]>` to `Promise<FundingHistoryResult>`
-- `toggleExpand()` in Positions.tsx — use `result.events` for events list, `result.partialLegs` for warning banner conditional
-- `web/src/i18n/en.ts` + `zh-TW.ts` — add `positions.fundingPartial = "Funding history incomplete — unavailable for: {legs}"` and the Chinese equivalent
+
+`web/src/pages/Positions.tsx` — `PositionsProps.onFetchFunding` signature change (verified at HEAD Positions.tsx:10 and :78 per remote audit):
+
+BEFORE:
+```ts
+onFetchFunding?: (positionId: string) => Promise<FundingEvent[]>;
+```
+```ts
+const events = await onFetchFunding(id);
+```
+
+AFTER:
+```ts
+onFetchFunding?: (positionId: string) => Promise<FundingHistoryResult>;
+```
+```ts
+const result = await onFetchFunding(id);
+if (fetchIdRef.current === id) {
+	setFundingHistory(result.events);
+	setFundingPartialLegs(result.partialLegs);
+}
+```
+
+**i18n keys — under `pos.*` namespace** (HEAD verified; existing `pos.fundingHistory` at en.ts:141 and zh-TW.ts:143):
+
+BEFORE:
+```ts
+// web/src/i18n/en.ts:141
+'pos.fundingHistory': 'Funding History',
+```
+```ts
+// web/src/i18n/zh-TW.ts:143
+'pos.fundingHistory': '資金費率歷史',
+```
+
+AFTER:
+```ts
+// web/src/i18n/en.ts
+'pos.fundingHistory': 'Funding History',
+'pos.fundingPartial': 'Funding history incomplete — unavailable for: {legs}',
+```
+```ts
+// web/src/i18n/zh-TW.ts
+'pos.fundingHistory': '資金費率歷史',
+'pos.fundingPartial': '資金費率歷史不完整 — 無法取得：{legs}',
+```
 
 ### 14. `consolidate.go:615, 621` — add log on silent continue
 
@@ -1923,8 +1966,14 @@ Risk mitigation is handled via staged deploy: deploy to VPS off-peak, monitor lo
   * #15c: separated Dir A and Dir B into two complete AFTER blocks with exact HEAD BEFORE context (lines 506-510 for Dir A, 619-623 for Dir B). Each block is self-contained and compileable with correct return-value arity. Dir A uses `spotFilled * spotAvg` (gross == net since no fee net-off), Dir B uses `spotNetReceived * spotAvg` (net — matches HEAD final state after outer overwrite). Preserved rollback paths for `futFilled <= 0` sanity check that follows the error branch.
 - v20 Codex fresh-thread full independent audit (xhigh): NEEDS-REVISION — 1 finding:
   * #15a: plan cited `engine.go:2630/2682` as caller lines but those are **inside** `retrySecondLeg` (the IOC/MKT retry loops). Actual callers are at `3688, 3727, 3932, 3971`. Additionally, plan lacked concrete signature change + caller update code showing how partial `totalFilled` is persisted when retry exits with unknown state.
-- v21: (this version) — addresses v20 fresh-audit:
+- v21: addresses v20 fresh-audit:
   * #15a retrySecondLeg: retitled header to "signature change + caller updates" with explicit clarification that 2630/2682 are internal loops, not callers. Added full BEFORE/AFTER for: function signature (2573: `(float64, float64)` → `(float64, float64, error)`), IOC loop (2630-2634), MKT loop (2682-2685), terminal return (2707-2711), and one complete caller at 3688-3693 showing partial persistence with `StatusPartial`, `second_leg_fill_unknown`, `errPartialEntry`. Noted the other 3 callers (3727/3932/3971) apply same pattern mirrored by long/short side. Flagged `errPartialEntry` sentinel + `models.StatusPartial` verification.
+- v21 REMOTE dispatch-mcp codex review (fresh thread via dispatch.egg5233.com, task 163f2064): NEEDS-REVISION — 2 findings (15 items PASS, including #15a caller-line correction verified):
+  * #12 BEFORE not verbatim HEAD: `internal/risk/health.go:358` uses `exch.GetPosition(pos.Symbol)` not `exch.GetPosition(symbol)`. Cosmetic accuracy.
+  * #13 frontend notes inaccurate: plan referenced nonexistent `useFundingHistory` hook (actual hook is `getPositionFunding` at useApi.ts:161); plan used wrong i18n namespace `positions.*` (actual namespace is `pos.*` per HEAD en.ts:141 / zh-TW.ts:143).
+- v22: (this version) — addresses v21 remote-audit findings:
+  * #12: replaced BEFORE snippet with verbatim HEAD (`pos.Symbol` not `symbol`); AFTER log string uses `pos.Symbol` consistently.
+  * #13: corrected frontend references to `getPositionFunding` (actual name), added concrete Positions.tsx BEFORE/AFTER at lines 10 and 78 showing `PositionsProps.onFetchFunding` signature change and the `fetchIdRef` guard pattern, and supplied concrete i18n BEFORE/AFTER at en.ts:141 and zh-TW.ts:143 using the existing `pos.*` namespace (`pos.fundingPartial` key added alongside existing `pos.fundingHistory`).
 - v13 original: (kept for history)
   * Field name corrected: `SpotSize` (NOT `SpotFilledQty`) per HEAD models/spot_position.go
   * Dir A vs Dir B specific fields documented: Dir A uses `SpotSize = spotFilled` (gross, borrowed+sold); Dir B uses `SpotSize = spotNetReceived` (net after fee deduction). Each sets correct `FuturesSide`.
