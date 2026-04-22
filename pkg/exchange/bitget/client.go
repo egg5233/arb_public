@@ -8,11 +8,13 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -27,6 +29,26 @@ const (
 var retryableCodes = map[string]bool{
 	"429":   true, // HTTP rate limit
 	"40900": true, // Bitget server-side throttling
+}
+
+// bitgetPassThroughCodes lists bitget error codes whose semantics are treated
+// as success by existing adapter call sites (idempotent operations). Each must
+// have a documented call site that relies on the code being preserved.
+var bitgetPassThroughCodes = map[string]bool{
+	"40872": true, // SetMarginMode: margin mode already set (adapter.go:401)
+	"43011": true, // CancelOrder / CancelStopLoss: order already finalized (adapter.go:175, 1376)
+	"43025": true, // CancelOrder / CancelStopLoss: same semantic family (adapter.go:175, 1376)
+}
+
+// APIError is a structured bitget API error, carrying the error code and
+// message from the response envelope or synthesized from an HTTP status.
+type APIError struct {
+	Code string `json:"code"`
+	Msg  string `json:"msg"`
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("bitget API error %s: %s", e.Code, e.Msg)
 }
 
 // Client is a self-contained REST client for the Bitget v2 API.
@@ -173,12 +195,60 @@ func (c *Client) doRequest(method, path string, queryParams, bodyParams map[stri
 		return "", err
 	}
 
+	// Parse envelope once for downstream branching.
+	var envelope struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	_ = json.Unmarshal(data, &envelope)
+
+	// Idempotent codes that existing adapter methods treat as success (line numbers
+	// verified against HEAD adapter.go):
+	// - 43011 "order already cancelled/finalized" — CancelOrder adapter.go:175,
+	//   CancelStopLoss adapter.go:1376
+	// - 40872 "margin mode already set" — SetMarginMode adapter.go:401
+	// - 43025 same semantic family as 43011 — CancelOrder adapter.go:175,
+	//   CancelStopLoss adapter.go:1376
+	// Pass these through untouched so existing idempotent handling keeps working.
+	if bitgetPassThroughCodes[envelope.Code] {
+		return string(data), nil
+	}
+
+	// Non-2xx HTTP is always error. Synthesize APIError from status if body has
+	// no usable code (e.g. HTML response, empty body).
+	// IMPORTANT: assign to the local `err` variable captured by the metrics defer
+	// above so bitget API errors are recorded for observability.
+	if resp.StatusCode >= 400 {
+		if envelope.Code != "" {
+			err = &APIError{Code: envelope.Code, Msg: envelope.Msg}
+			return "", err
+		}
+		err = &APIError{Code: strconv.Itoa(resp.StatusCode), Msg: fmt.Sprintf("bitget HTTP %d: %s", resp.StatusCode, string(data))}
+		return "", err
+	}
+
+	// HTTP 2xx but logical failure (code != "00000").
+	if envelope.Code != "" && envelope.Code != "00000" {
+		err = &APIError{Code: envelope.Code, Msg: envelope.Msg}
+		return "", err
+	}
+
 	return string(data), nil
 }
 
 // isRetryable checks whether an error or API response code is transient
 // and worth retrying (network errors, rate limits, server-side throttling).
 func isRetryable(err error, rawResp string) bool {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && retryableCodes[apiErr.Code] {
+		return true
+	}
+	// 5xx HTTP status synthesized into APIError via doRequest (#1): retry.
+	if apiErr != nil {
+		if n, convErr := strconv.Atoi(apiErr.Code); convErr == nil && n >= 500 && n <= 599 {
+			return true
+		}
+	}
 	if err != nil {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "timeout") ||
@@ -187,9 +257,9 @@ func isRetryable(err error, rawResp string) bool {
 			strings.Contains(errMsg, "connection reset") {
 			return true
 		}
-		return false
 	}
-
+	// Existing rawResp inspection retained for backward compat if rawResp
+	// ever returned (e.g. passthrough codes above).
 	if rawResp != "" {
 		var base struct {
 			Code string `json:"code"`
@@ -200,7 +270,6 @@ func isRetryable(err error, rawResp string) bool {
 			}
 		}
 	}
-
 	return false
 }
 
