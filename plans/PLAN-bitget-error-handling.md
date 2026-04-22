@@ -2,7 +2,7 @@
 
 Version: v22
 Date: 2026-04-22
-Status: REVIEWING
+Status: ALL PASS
 
 ## Direction change from v1
 
@@ -1971,9 +1971,10 @@ Risk mitigation is handled via staged deploy: deploy to VPS off-peak, monitor lo
 - v21 REMOTE dispatch-mcp codex review (fresh thread via dispatch.egg5233.com, task 163f2064): NEEDS-REVISION — 2 findings (15 items PASS, including #15a caller-line correction verified):
   * #12 BEFORE not verbatim HEAD: `internal/risk/health.go:358` uses `exch.GetPosition(pos.Symbol)` not `exch.GetPosition(symbol)`. Cosmetic accuracy.
   * #13 frontend notes inaccurate: plan referenced nonexistent `useFundingHistory` hook (actual hook is `getPositionFunding` at useApi.ts:161); plan used wrong i18n namespace `positions.*` (actual namespace is `pos.*` per HEAD en.ts:141 / zh-TW.ts:143).
-- v22: (this version) — addresses v21 remote-audit findings:
+- v22: addresses v21 remote-audit findings:
   * #12: replaced BEFORE snippet with verbatim HEAD (`pos.Symbol` not `symbol`); AFTER log string uses `pos.Symbol` consistently.
   * #13: corrected frontend references to `getPositionFunding` (actual name), added concrete Positions.tsx BEFORE/AFTER at lines 10 and 78 showing `PositionsProps.onFetchFunding` signature change and the `fetchIdRef` guard pattern, and supplied concrete i18n BEFORE/AFTER at en.ts:141 and zh-TW.ts:143 using the existing `pos.*` namespace (`pos.fundingPartial` key added alongside existing `pos.fundingHistory`).
+- **v22 REMOTE dispatch-mcp codex review (fresh thread via dispatch.egg5233.com, task 58772305): ALL PASS — verdict `approved`.** Plan approved for implementation. All 17+ items verified against HEAD `13139a9d`.
 - v13 original: (kept for history)
   * Field name corrected: `SpotSize` (NOT `SpotFilledQty`) per HEAD models/spot_position.go
   * Dir A vs Dir B specific fields documented: Dir A uses `SpotSize = spotFilled` (gross, borrowed+sold); Dir B uses `SpotSize = spotNetReceived` (net after fee deduction). Each sets correct `FuturesSide`.
