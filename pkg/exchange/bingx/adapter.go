@@ -362,8 +362,12 @@ func (a *Adapter) CancelOrder(symbol, orderID string) error {
 
 // GetPendingOrders returns open orders for a symbol.
 func (a *Adapter) GetPendingOrders(symbol string) ([]exchange.Order, error) {
+	realSymbol, _, err := a.resolveSymbol(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("bingx GetPendingOrders resolve: %w", err)
+	}
 	params := map[string]string{
-		"symbol": toBingXSymbol(symbol),
+		"symbol": realSymbol,
 	}
 	result, err := a.client.Get("/openApi/swap/v2/trade/openOrders", params)
 	if err != nil {
@@ -388,14 +392,20 @@ func (a *Adapter) GetPendingOrders(symbol string) ([]exchange.Order, error) {
 
 	orders := make([]exchange.Order, 0, len(resp.Orders))
 	for _, o := range resp.Orders {
+		bare, mult, err := a.canonicalSymbol(o.Symbol)
+		if err != nil {
+			return nil, fmt.Errorf("bingx GetPendingOrders canonical: %w", err)
+		}
+		price, _ := strconv.ParseFloat(o.Price, 64)
+		size, _ := strconv.ParseFloat(o.Quantity, 64)
 		orders = append(orders, exchange.Order{
 			OrderID:   o.OrderID.String(),
 			ClientOid: o.ClientOrderID,
-			Symbol:    fromBingXSymbol(o.Symbol),
+			Symbol:    bare,
 			Side:      fromBingXSide(o.Side),
 			OrderType: strings.ToLower(o.Type),
-			Price:     o.Price,
-			Size:      o.Quantity,
+			Price:     exchange.FormatFloat(exchange.ScalePriceFromContracts(price, mult)),
+			Size:      exchange.FormatFloat(exchange.ScaleSizeFromContracts(size, mult)),
 			Status:    normalizeBingXOrderStatus(o.Status),
 		})
 	}
@@ -405,8 +415,12 @@ func (a *Adapter) GetPendingOrders(symbol string) ([]exchange.Order, error) {
 // GetOrderFilledQty returns the cumulative filled quantity for an order.
 // It also stores the avg price in the order store so confirmFill can pick it up.
 func (a *Adapter) GetOrderFilledQty(orderID, symbol string) (float64, error) {
+	realSymbol, mult, err := a.resolveSymbol(symbol)
+	if err != nil {
+		return 0, fmt.Errorf("bingx GetOrderFilledQty resolve: %w", err)
+	}
 	params := map[string]string{
-		"symbol":  toBingXSymbol(symbol),
+		"symbol":  realSymbol,
 		"orderId": orderID,
 	}
 	result, err := a.client.Get("/openApi/swap/v2/trade/order", params)
@@ -429,9 +443,11 @@ func (a *Adapter) GetOrderFilledQty(orderID, symbol string) (float64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("bingx GetOrderFilledQty parse qty: %w", err)
 	}
+	qty = exchange.ScaleSizeFromContracts(qty, mult)
 
 	// Store avg price in order store so confirmFill can retrieve it.
 	avgPrice, _ := strconv.ParseFloat(resp.Order.AvgPrice, 64)
+	avgPrice = exchange.ScalePriceFromContracts(avgPrice, mult)
 	if qty > 0 && avgPrice > 0 {
 		a.orderStore.Store(orderID, exchange.OrderUpdate{
 			OrderID:      orderID,

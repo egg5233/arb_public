@@ -604,7 +604,7 @@ func (b *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 					ci.MinSize = exchange.ScaleSizeFromContracts(minQty, mult)
 					ci.MaxSize = exchange.ScaleSizeFromContracts(maxQty, mult)
 					ci.StepSize = exchange.ScaleSizeFromContracts(stepQty, mult)
-					ci.SizeDecimals = countDecimals(f.StepSize)
+					ci.SizeDecimals = countDecimals(exchange.FormatFloat(ci.StepSize))
 				case "PRICE_FILTER":
 					tickSize, _ := strconv.ParseFloat(f.TickSize, 64)
 					ci.PriceStep = exchange.ScalePriceFromContracts(tickSize, mult)
@@ -638,7 +638,7 @@ func (b *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 				ci.MinSize = exchange.ScaleSizeFromContracts(minQty, mult)
 				ci.MaxSize = exchange.ScaleSizeFromContracts(maxQty, mult)
 				ci.StepSize = exchange.ScaleSizeFromContracts(stepQty, mult)
-				ci.SizeDecimals = countDecimals(f.StepSize)
+				ci.SizeDecimals = countDecimals(exchange.FormatFloat(ci.StepSize))
 			case "PRICE_FILTER":
 				tickSize, _ := strconv.ParseFloat(f.TickSize, 64)
 				ci.PriceStep = exchange.ScalePriceFromContracts(tickSize, mult)

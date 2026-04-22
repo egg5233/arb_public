@@ -786,7 +786,11 @@ func (a *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
 		"productType": productTypeUSDTFutures,
 	}
 	if !noFilter {
-		params["symbol"] = symbol
+		realSymbol, _, err := a.resolveSymbol(symbol)
+		if err != nil {
+			return nil, fmt.Errorf("GetFundingRate resolve: %w", err)
+		}
+		params["symbol"] = realSymbol
 	}
 
 	raw, err := a.client.Get("/api/v2/mix/market/current-fund-rate", params)
@@ -864,7 +868,7 @@ func (a *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
 	}
 
 	fr := &exchange.FundingRate{
-		Symbol:      d.Symbol,
+		Symbol:      symbol,
 		Rate:        rate,
 		NextRate:    nextRate,
 		Interval:    interval,
@@ -883,8 +887,12 @@ func (a *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
 }
 
 func (a *Adapter) GetFundingInterval(symbol string) (time.Duration, error) {
+	realSymbol, _, err := a.resolveSymbol(symbol)
+	if err != nil {
+		return 8 * time.Hour, nil
+	}
 	params := map[string]string{
-		"symbol":      symbol,
+		"symbol":      realSymbol,
 		"productType": productTypeUSDTFutures,
 	}
 

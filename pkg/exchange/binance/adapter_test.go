@@ -331,3 +331,63 @@ func TestLoadAllContracts_Binance_DeliveryDateParsing(t *testing.T) {
 		t.Errorf("BTCUSDT_240329 (quarterly) DeliveryDate = %v, want zero (only PERPETUAL contracts should be flagged)", quarterly.DeliveryDate)
 	}
 }
+
+func TestLoadAllContracts_Binance_PrefixSizeDecimalsUseScaledStep(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/fapi/v1/exchangeInfo":
+			json.NewEncoder(w).Encode(map[string]any{
+				"symbols": []map[string]any{
+					{
+						"symbol":       "1000PEPEUSDT",
+						"baseAsset":    "1000PEPE",
+						"status":       "TRADING",
+						"contractType": "PERPETUAL",
+						"deliveryDate": int64(4133404800000),
+						"filters": []map[string]any{
+							{
+								"filterType": "LOT_SIZE",
+								"minQty":     "0.001",
+								"maxQty":     "1000",
+								"stepSize":   "0.001",
+							},
+							{
+								"filterType": "PRICE_FILTER",
+								"tickSize":   "0.0001",
+							},
+						},
+					},
+				},
+			})
+		case "/fapi/v1/leverageBracket":
+			json.NewEncoder(w).Encode([]any{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	adapter := &Adapter{
+		client:    NewClient("testkey", "testsecret").WithBaseURL(srv.URL),
+		apiKey:    "testkey",
+		secretKey: "testsecret",
+		priceSyms: make(map[string]bool),
+		depthSyms: make(map[string]bool),
+	}
+
+	contracts, err := adapter.LoadAllContracts()
+	if err != nil {
+		t.Fatalf("LoadAllContracts: %v", err)
+	}
+
+	pepe, ok := contracts["PEPEUSDT"]
+	if !ok {
+		t.Fatal("PEPEUSDT not found")
+	}
+	if pepe.StepSize != 1 {
+		t.Fatalf("StepSize = %v, want 1", pepe.StepSize)
+	}
+	if pepe.SizeDecimals != 0 {
+		t.Fatalf("SizeDecimals = %d, want 0", pepe.SizeDecimals)
+	}
+}
