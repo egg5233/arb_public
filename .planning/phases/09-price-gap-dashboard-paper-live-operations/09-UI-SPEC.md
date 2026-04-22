@@ -5,6 +5,7 @@ status: draft
 shadcn_initialized: false
 preset: none
 created: 2026-04-22
+revised: 2026-04-22
 ---
 
 # Phase 9 — UI Design Contract
@@ -44,27 +45,33 @@ Matches existing dashboard usage. Multiples of 4 only.
 
 **Row density:** Tables use `py-2` (8px vertical) per row with `text-sm` content — identical to `Positions.tsx` L132, L168. Dense by design per D-02.
 
-**Exceptions:** Badge pill uses `px-1.5 py-0.5` (6px × 2px) — matches `Positions.tsx` L374 rotation badge; non-grid value is intentional for pill proportion.
+**Inherited patterns (not re-declared here):** Badge pill classes are inherited verbatim from `web/src/pages/Positions.tsx` L374 (rotation badge). This spec does not re-declare those non-grid values; they are referenced as shipped patterns, not new declarations.
 
 ---
 
 ## Typography
 
-Three sizes + two badge sub-sizes already shipped in `Positions.tsx`. No new sizes introduced.
+Three sizes shipped in `Positions.tsx`. No new sizes introduced. **Exactly two font weights are used across the page.**
 
 | Role | Tailwind | Size | Weight | Line Height |
 |------|----------|------|--------|-------------|
-| Section heading | `text-xl font-bold` | 20px | 700 | 1.3 |
+| Page title | `text-xl font-bold` | 20px | 700 | 1.3 |
+| Section heading | `text-sm font-bold` | 14px | 700 | 1.4 |
 | Table body | `text-sm` | 14px | 400 | 1.5 |
 | Table secondary / meta | `text-xs` | 12px | 400 | 1.4 |
-| Badge / micro label | `text-[10px]` | 10px | 500/700 | 1 |
 | Numeric cells | `font-mono tabular-nums` | 14px | 400 | 1.5 |
+| Badge label | `text-[10px]` | 10px | 400 | 1 |
+| Badge glyph / mode pill | `text-[10px] font-bold` | 10px | 700 | 1 |
 
-**Weights in use:** 400 (regular body + numeric), 500 (badge labels like `f.side` in `Positions.tsx` L284), 600 (sub-section headers `font-semibold`), 700 (page title `font-bold`, badge glyphs).
+**Weights in use (exhaustive, 2 total):**
+- **400 (regular):** all body text, numeric cells, column headers, secondary labels, badge labels, muted copy
+- **700 (bold):** page title, section headers, PAPER/LIVE mode pill glyphs
+
+500 and 600 are not used anywhere in the Price-Gap page. Any existing `font-semibold` pattern from `Positions.tsx` that is reused in Phase 9 is rendered with `font-bold` (700) instead.
 
 **Heading levels:**
 - Page title: `<h2 className="text-xl font-bold text-gray-100">Price-Gap</h2>` (matches `Positions.tsx` L124)
-- Section headings inside the page: `text-sm font-semibold text-gray-300 tracking-wide uppercase` (matches pattern at `Positions.tsx` L236)
+- Section headings inside the page: `text-sm font-bold text-gray-300 tracking-wide uppercase`
 
 ---
 
@@ -85,13 +92,13 @@ Inherits the existing dark-dashboard palette verbatim. No new colors introduced.
 | Text muted | `text-gray-500` / `text-gray-600` | #6B7280 | Timestamps, empty-state copy, disabled glyphs |
 
 **Accent reserved for (the 10% — exhaustive list):**
-1. PAPER badge pill in Symbol column: `bg-violet-500/15 text-violet-400 text-[10px] font-bold px-1.5 py-0.5 rounded` (D-08)
+1. PAPER badge pill in Symbol column: violet pill using inherited badge shell from `Positions.tsx` L374; text classes `text-violet-400 text-[10px] font-bold` (D-08)
 2. Soft row tint for paper-mode rows in Live Positions & Closed Log: `bg-violet-500/5` (D-08 — "soft row tint")
 3. Telegram `📝 PAPER` prefix visualization (in-dashboard preview only, if shown)
 
 Violet is specifically **not** applied to: primary CTAs, nav items, links, highlights, headings, metrics, or any other interactive element. Violet exclusively means "paper mode."
 
-**Destructive confirmation modal:** Reuses the exact pattern at `Positions.tsx` L602–630 — `fixed inset-0 bg-black/50` overlay + `bg-gray-900 border border-gray-700 rounded-lg p-6 max-w-sm` panel + `bg-red-600` primary button + `bg-gray-700` cancel.
+**Destructive confirmation modal:** Reuses the exact pattern at `Positions.tsx` L602–630 — `fixed inset-0 bg-black/50` overlay + `bg-gray-900 border border-gray-700 rounded-lg p-6 max-w-sm` panel + `bg-red-600` primary button + `bg-gray-700` secondary button.
 
 **Semantic color rules (D-22 parity):**
 - `realized_bps > modeled_bps` → `text-red-400` (worse than expected)
@@ -111,8 +118,8 @@ Violet is specifically **not** applied to: primary CTAs, nav items, links, highl
 | Short exchange link | `text-red-400 hover:underline` | `Positions.tsx` L165 |
 | Disabled row | row wrapper `opacity-60 bg-yellow-500/5` | new — consistent with muted + warning tokens |
 | Paper row | row wrapper `bg-violet-500/5` | new per D-08 |
-| LIVE badge | `bg-green-500/15 text-green-400 text-[10px] font-bold px-1.5 py-0.5 rounded` | mirrors side badge at `Positions.tsx` L284 |
-| PAPER badge | `bg-violet-500/15 text-violet-400 text-[10px] font-bold px-1.5 py-0.5 rounded` | new, parallel to LIVE |
+| LIVE badge | `text-green-400 text-[10px] font-bold` on inherited badge shell | mirrors side badge at `Positions.tsx` L284 |
+| PAPER badge | `text-violet-400 text-[10px] font-bold` on inherited badge shell | new, parallel to LIVE |
 
 ---
 
@@ -130,7 +137,7 @@ Per D-01 — single scroll with five stacked sections in fixed order. Wrapper: `
 
 Each section is wrapped in: `<div className="bg-gray-900 border border-gray-800 rounded-lg p-4 overflow-x-auto">` (matches `Positions.tsx` L127).
 
-Section title above each panel: `<h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wide mb-3">{t(...)}</h3>`.
+Section title above each panel: `<h3 className="text-sm font-bold text-gray-300 uppercase tracking-wide mb-3">{t(...)}</h3>`.
 
 ---
 
@@ -190,9 +197,9 @@ Columns fixed per D-04. **Default sort pinned to close-time descending** (not us
 | Disabled reason · at | `pricegap.col.disabledInfo` | left |
 | Action | - | right |
 
-**Disabled row rendering:** apply `bg-yellow-500/5 opacity-60` to the `<tr>`. Status cell shows `Disabled` in `text-yellow-400`. Reason column shows `{reason} · {formatAge(disabled_at)} ago`. Action column shows a single yellow `Re-enable` button (`bg-yellow-600/20 text-yellow-400 hover:bg-yellow-600/40 px-2 py-0.5 text-xs rounded`).
+**Disabled row rendering:** apply `bg-yellow-500/5 opacity-60` to the `<tr>`. Status cell shows `Disabled` in `text-yellow-400`. Reason column shows `{reason} · {formatAge(disabled_at)} ago`. Action column shows a single yellow `Re-enable` button (`bg-yellow-600/20 text-yellow-400 hover:bg-yellow-600/40 px-2 py-1 text-xs rounded`).
 
-**Enabled row rendering:** Status cell shows `Active` in `text-green-400`. Action column shows a muted `Disable` button (`bg-gray-700/40 text-gray-300 hover:bg-gray-700/60 text-xs rounded px-2 py-0.5`).
+**Enabled row rendering:** Status cell shows `Active` in `text-green-400`. Action column shows a muted `Disable` button (`bg-gray-700/40 text-gray-300 hover:bg-gray-700/60 text-xs rounded px-2 py-1`).
 
 **Default sort:** Symbol alphabetical. Disabled rows stay inline (D-13) — do not re-sort to bottom.
 
@@ -223,7 +230,7 @@ Title: Disable BTCUSDT?
 Body:  This candidate will be blocked from new entries.
        Existing open positions stay open.
 Field: Reason (optional) — placeholder "manual"
-Buttons: Disable (bg-red-600 text-white) | Cancel (bg-gray-700 text-gray-300)
+Buttons: Disable (bg-red-600 text-white) | Keep active (bg-gray-700 text-gray-300)
 ```
 
 On confirm, POST writes `pg:candidate:disabled:<symbol>` with `{reason: text || "manual", disabled_at: now}`.
@@ -237,7 +244,7 @@ Title: Re-enable {SYMBOL}?
 Body:  Disabled {age} ago for: {reason}
        {supplemental detail if exec_quality: "realized X bps vs modeled Y bps"}
        Re-enabling clears the safety gate.
-Buttons: Re-enable (bg-red-600 text-white) | Cancel (bg-gray-700)
+Buttons: Re-enable (bg-red-600 text-white) | Keep disabled (bg-gray-700)
 ```
 
 Note: Re-enable uses the destructive-red button intentionally — it clears a safety gate (D-14).
@@ -337,11 +344,15 @@ All copy added to **both** `web/src/i18n/en.ts` and `web/src/i18n/zh-TW.ts` in l
 | `pricegap.modal.disableBody` | `Blocks new entries on this candidate. Existing positions are not closed.` | `將阻止此配對開新倉。現有持倉不會平倉。` |
 | `pricegap.modal.disableReasonLabel` | `Reason (optional)` | `原因（可選）` |
 | `pricegap.modal.disableReasonPlaceholder` | `manual` | `手動` |
+| `pricegap.modal.disable.confirm` | `Disable` | `停用` |
+| `pricegap.modal.disable.keepActive` | `Keep active` | `維持啟用` |
 | `pricegap.modal.reenableTitle` | `Re-enable {symbol}?` | `重新啟用 {symbol}？` |
 | `pricegap.modal.reenableBody` | `Disabled {age} ago for: {reason}. Re-enabling clears the safety gate.` | `{age} 前因「{reason}」停用。重新啟用將解除安全閘。` |
 | `pricegap.modal.reenableExecQuality` | `Realized {realized} bps vs modeled {modeled} bps.` | `實際 {realized} bps vs 模型 {modeled} bps。` |
-| `pricegap.modal.confirm` | `Confirm` | `確認` |
-| `pricegap.modal.cancel` | `Cancel` | `取消` |
+| `pricegap.modal.reEnable.confirm` | `Re-enable` | `重新啟用` |
+| `pricegap.modal.reEnable.keepDisabled` | `Keep disabled` | `維持停用` |
+
+Note: no generic `pricegap.modal.cancel` key exists — every dismissive action uses a context-specific label (`Keep active`, `Keep disabled`) that names what stays true if the user dismisses the modal. Generic "Cancel" is prohibited on this page.
 
 ### Empty states
 
@@ -475,10 +486,14 @@ Per canonical refs: add to `web/src/App.tsx`.
 - Copy `Positions.tsx` scaffold, replace data shape, wire new WS handlers. Do not introduce new colors, sizes, or interaction patterns.
 - The violet accent is the only novel color — use `violet-400`, `violet-500/15`, `violet-500/5` and nothing else in that family.
 - Reuse `formatAge`, `formatDateTime`, `formatPrice`, `pnlColor` helpers from `Positions.tsx` — import them or move to a shared util if duplicated in more than one page.
+- Use **only** `font-bold` (700) and default regular (400) weights. Do not introduce `font-medium` (500) or `font-semibold` (600) — they are not part of this page's type system.
+- Badge pill shell is inherited from `Positions.tsx` L374 — do not re-declare padding values in new CSS.
 
 ### For the ui-checker
 - Validate: PAPER accent used ONLY for paper-mode elements; no more than 3 destructive surfaces on the page; no more than 4 color roles per section; every i18n key added to both locale files; all modals follow the existing `Positions.tsx` L602 shell.
 - Validate the per-column i18n keys exist in both `en.ts` and `zh-TW.ts`.
+- Validate that only two font weights appear across the page source: 400 (default) and 700 (`font-bold`).
+- Validate that all modal dismiss buttons use context-specific copy (`Keep active` / `Keep disabled`) — a literal `Cancel` label is a checker failure.
 
 ---
 
@@ -492,3 +507,12 @@ Per canonical refs: add to `web/src/App.tsx`.
 - [ ] Dimension 6 Registry Safety: PASS
 
 **Approval:** pending
+
+---
+
+## Revision Log
+
+**2026-04-22 (revision 1):** Fixed 3 blocking issues flagged by gsd-ui-checker:
+1. Copywriting — removed generic `pricegap.modal.cancel` key; split into context-specific `pricegap.modal.disable.keepActive` (`Keep active` / `維持啟用`) and `pricegap.modal.reEnable.keepDisabled` (`Keep disabled` / `維持停用`). Modal body diagrams updated accordingly.
+2. Typography — collapsed weight set from 4 (400/500/600/700) to 2 (400/700). All `font-semibold` references rewritten to `font-bold`; badge 500-weight label tier removed. Weights-in-use list is now exhaustive at two entries.
+3. Spacing — removed the `px-1.5 py-0.5` exception declaration. Badge pill classes are now explicitly noted as inherited verbatim from `web/src/pages/Positions.tsx` L374 rather than re-declared in this spec. Only multiples of 4 are declared here. Action button padding raised to `px-2 py-1` (grid-aligned).
