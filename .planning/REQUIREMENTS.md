@@ -26,16 +26,16 @@ Requirements for this milestone. Each maps to roadmap phases 8+.
 ### Dashboard & Operations
 
 - [ ] **PG-OPS-01**: New Dashboard "Price-Gap" tab shows candidate list with per-candidate enable/disable toggle
-- [ ] **PG-OPS-02**: Dashboard shows live price-gap positions with entry spread, current spread, hold time, current PnL
-- [ ] **PG-OPS-03**: Dashboard shows closed positions log with realized-vs-modeled edge comparison
-- [ ] **PG-OPS-04**: Paper mode toggle runs full event/entry logic without placing real orders (used for first ~3 live days)
-- [ ] **PG-OPS-05**: Telegram notifications fire on entry, exit, and risk-gate blocks (reusing existing notifier infrastructure)
+- [x] **PG-OPS-02**: Dashboard shows live price-gap positions with entry spread, current spread, hold time, current PnL
+- [x] **PG-OPS-03**: Dashboard shows closed positions log with realized-vs-modeled edge comparison
+- [x] **PG-OPS-04**: Paper mode toggle runs full event/entry logic without placing real orders (used for first ~3 live days)
+- [x] **PG-OPS-05**: Telegram notifications fire on entry, exit, and risk-gate blocks (reusing existing notifier infrastructure)
 - [x] **PG-OPS-06**: Config switch `PriceGapEnabled` (default OFF) gates the entire subsystem, with round-trip dashboard API persistence
 
 ### Live Validation Infrastructure
 
-- [ ] **PG-VAL-01**: Every trade logs realized slippage vs modeled slippage (data supports exec-quality gate PG-RISK-03 and future model tuning)
-- [ ] **PG-VAL-02**: Dashboard computes rolling 7d/30d net bps/day per candidate (supports human promote/demote decisions)
+- [x] **PG-VAL-01**: Every trade logs realized slippage vs modeled slippage (data supports exec-quality gate PG-RISK-03 and future model tuning)
+- [x] **PG-VAL-02**: Dashboard computes rolling 7d/30d net bps/day per candidate (supports human promote/demote decisions)
 
 **Total v2.0 requirements:** 18
 
@@ -90,13 +90,13 @@ Which phases cover which requirements. Populated by roadmapper.
 | PG-RISK-04 | Phase 8 | Complete |
 | PG-RISK-05 | Phase 8 | Complete |
 | PG-OPS-01 | Phase 9 | Pending |
-| PG-OPS-02 | Phase 9 | Pending |
-| PG-OPS-03 | Phase 9 | Pending |
-| PG-OPS-04 | Phase 9 | Pending |
-| PG-OPS-05 | Phase 9 | Pending |
+| PG-OPS-02 | Phase 9 | Complete |
+| PG-OPS-03 | Phase 9 | Complete |
+| PG-OPS-04 | Phase 9 | Complete |
+| PG-OPS-05 | Phase 9 | Complete |
 | PG-OPS-06 | Phase 8 | Complete |
-| PG-VAL-01 | Phase 9 | Pending |
-| PG-VAL-02 | Phase 9 | Pending |
+| PG-VAL-01 | Phase 9 | Complete |
+| PG-VAL-02 | Phase 9 | Complete |
 
 **Coverage:**
 - v2.0 requirements: 18 total
