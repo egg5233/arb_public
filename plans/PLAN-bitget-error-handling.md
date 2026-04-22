@@ -1,6 +1,6 @@
 # PLAN: Bitget Error Handling + Full Non-ASCII Symbol Support
 
-Version: v17
+Version: v18
 Date: 2026-04-22
 Status: REVIEWING
 
@@ -454,6 +454,67 @@ Data struct {
 **30-day window cap**: if `since` > 30 days ago, bitget docs cap query span. In practice our usage queries from `pos.CreatedAt` which is always recent. If needed, iterate in 30-day chunks — deferred to implementation.
 
 Same pagination pattern applies to GetUserTrades (#7), GetClosePnL (#8), and GetOrderFilledQty fallback (#9) when they use no-symbol endpoints. Apply consistently.
+
+### 5b. `pkg/exchange/bitget/adapter.go:GetFundingRate` — non-ASCII fallback
+
+HEAD `GetFundingRate` passes `symbol` in a signed GET to `/api/v2/mix/market/current-fund-rate`. Under bitget's non-ASCII HMAC rejection, this fails 40009 for symbols like `龙虾USDT`. Discovery scans and exit funding checks both call `GetFundingRate`, so without a fallback those paths silently break for non-ASCII symbols after #1's strict errors expose them.
+
+**Key docs reference** (`doc/bitget/bitget-futures-api-docs.md`): `/api/v2/mix/market/current-fund-rate` accepts `productType` alone (optional `symbol`). When `symbol` is omitted, the response is an array of rows, each with a `symbol` field — filter locally.
+
+BEFORE (current pattern):
+```go
+params := map[string]string{
+	"symbol":      symbol,
+	"productType": productTypeUSDTFutures,
+}
+raw, err := a.client.Get("/api/v2/mix/market/current-fund-rate", params)
+// parse single-row response, return
+```
+
+AFTER:
+```go
+if containsNonASCII(symbol) {
+	params := map[string]string{"productType": productTypeUSDTFutures}
+	raw, err := a.client.Get("/api/v2/mix/market/current-fund-rate", params)
+	if err != nil {
+		return 0, fmt.Errorf("GetFundingRate no-filter: %w", err)
+	}
+	var resp struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+		Data []struct {
+			Symbol      string `json:"symbol"`
+			FundingRate string `json:"fundingRate"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		return 0, fmt.Errorf("GetFundingRate no-filter unmarshal: %w", err)
+	}
+	if resp.Code != "" && resp.Code != "00000" {
+		return 0, &APIError{Code: resp.Code, Msg: resp.Msg}
+	}
+	for _, row := range resp.Data {
+		if strings.EqualFold(row.Symbol, symbol) {
+			rate, err := strconv.ParseFloat(row.FundingRate, 64)
+			if err != nil {
+				return 0, fmt.Errorf("GetFundingRate parse %q: %w", row.FundingRate, err)
+			}
+			return rate, nil
+		}
+	}
+	return 0, fmt.Errorf("GetFundingRate: symbol %s not found in no-filter response", symbol)
+}
+
+// ASCII fast path (unchanged): symbol in query
+params := map[string]string{
+	"symbol":      symbol,
+	"productType": productTypeUSDTFutures,
+}
+raw, err := a.client.Get("/api/v2/mix/market/current-fund-rate", params)
+// ... existing single-row parse unchanged
+```
+
+**Data volume note:** no-filter endpoint returns all USDT-FUTURES current funding rates (~400-800 rows). Safe per request (single snapshot), but may add ~10-20 KB payload. Not rate-limited beyond existing per-endpoint quotas. Consider caching for 30s if called hot during scan cycles — deferred to implementation based on load measurements.
 
 ### 6. `pkg/exchange/bitget/adapter.go:GetPosition` — non-ASCII fallback
 
@@ -1084,20 +1145,20 @@ if cfErr != nil {
 	// BorrowAmount already set earlier after spot confirmation, no-op here
 	// FuturesSize/FuturesEntry intentionally NOT set — futures leg state is unknown
 
-	// Dir B (line 619) — use net received (matches HEAD's successful Dir B persistence
-	// formula `actualNotional := spotFilledQty * spotEntryPrice` where the caller
-	// passes `spotFilledQty = spotNetReceived` per return signature
-	// `return spotAvg, futAvg, spotNetReceived, futFilled, nil`):
+	// Dir B (line 619) — mirror HEAD successful Dir B at execution.go:627-632:
+	// - SpotSize = spotNetReceived (net after fee — "what we can actually sell on exit")
+	// - NotionalUSDT = spotFilled * spotAvg (gross — HEAD comment: "Use gross for notional tracking")
 	// pos.SpotSize = spotNetReceived           // NET after fee deduction
-	// pos.NotionalUSDT = spotNetReceived * spotAvg
+	// pos.SpotEntryPrice = spotAvg
+	// pos.NotionalUSDT = spotFilled * spotAvg  // GROSS — matches HEAD line 632
 	// pos.FuturesSide = "short"
-	// (SpotEntryPrice, PendingEntryOrderID clear — same as Dir A)
+	// (PendingEntryOrderID clear — same as Dir A)
 
 	return &pendingFuturesEntryError{
 		posID:         pos.ID,
 		orderID:       orderID,
 		pendingPos:    pos,
-		capitalAmount: spotFilled * spotAvg, // actual filled notional (pre-fee for capital accounting)
+		capitalAmount: spotFilled * spotAvg, // gross filled notional — matches commitSpotCapital calls in HEAD
 		err:           cfErr,
 	}
 }
@@ -1230,9 +1291,9 @@ Unit tests per call site:
 - Exact assertions:
   - `pos.PendingEntryOrderID == ""`
   - `pos.PendingFuturesEntryOrderID == orderID`
-  - `pos.SpotSize == 1.23` (exactly spotNetReceived — protects against accidental gross persistence)
+  - `pos.SpotSize == 1.23` (exactly spotNetReceived — matches HEAD successful Dir B line 627 `SpotSize = spotNetReceived // Net after fee — what we can actually sell on exit`)
   - `pos.SpotEntryPrice == 5.0`
-  - `pos.NotionalUSDT == 6.15` (spotNetReceived * spotAvg = 1.23 * 5.0 — matches HEAD's successful Dir B `actualNotional := spotFilledQty * spotEntryPrice` where the caller passes `spotFilledQty = spotNetReceived`)
+  - `pos.NotionalUSDT == 6.17` (spotFilled * spotAvg = 1.234 * 5.0 — matches HEAD successful Dir B line 632 `NotionalUSDT = spotFilled * spotAvg // Use gross for notional tracking`; Dir B intentionally asymmetric: SpotSize net, NotionalUSDT gross)
   - `pos.FuturesSide == "short"`
   - `capitalAmount == 6.17` preserved in pendingFuturesEntryError (spotFilled * spotAvg = 1.234 * 5.0 for capital accounting)
 
@@ -1349,7 +1410,7 @@ Errors should be logged and continue (do not abort surrounding operation), match
 
 Function lives in `margin.go` (not `adapter.go`). Currently swallows fee-fill query errors via `err == nil` guard. After #1, errors propagate but this helper's caller expects "fee unknown = 0 fee" semantic preserved. Add log on error path while keeping existing behavior (do not abort caller).
 
-BEFORE (current pattern in margin.go — grep `populateBitgetFeeDeducted` to locate exact line):
+BEFORE (current pattern in margin.go — includes BOTH spot-fills query AND margin-fills fallback query, both silently swallowed):
 ```go
 if raw, err := a.client.Get("/api/v2/spot/trade/fills", fillParams); err == nil {
 	var resp fillResp
@@ -1359,6 +1420,21 @@ if raw, err := a.client.Get("/api/v2/spot/trade/fills", fillParams); err == nil 
 				fee, _ := strconv.ParseFloat(f.FeeDetail.TotalFee, 64)
 				totalFee += fee
 				found = true
+			}
+		}
+	}
+}
+
+// Try margin fills if spot fills returned nothing.
+if !found {
+	if raw, err := a.client.Get("/api/v2/margin/crossed/fills", fillParams); err == nil {
+		var resp fillResp
+		if json.Unmarshal([]byte(raw), &resp) == nil && resp.Code == "00000" {
+			for _, f := range resp.Data {
+				if strings.EqualFold(f.FeeDetail.FeeCoin, baseCoin) {
+					fee, _ := strconv.ParseFloat(f.FeeDetail.TotalFee, 64)
+					totalFee += fee
+				}
 			}
 		}
 	}
@@ -1381,9 +1457,26 @@ if raw, err := a.client.Get("/api/v2/spot/trade/fills", fillParams); err == nil 
 } else {
 	log.Printf("[bitget] populateBitgetFeeDeducted spot fills failed order=%s symbol=%s: %v", orderID, symbol, err)
 }
+
+// Try margin fills if spot fills returned nothing.
+if !found {
+	if raw, err := a.client.Get("/api/v2/margin/crossed/fills", fillParams); err == nil {
+		var resp fillResp
+		if json.Unmarshal([]byte(raw), &resp) == nil && resp.Code == "00000" {
+			for _, f := range resp.Data {
+				if strings.EqualFold(f.FeeDetail.FeeCoin, baseCoin) {
+					fee, _ := strconv.ParseFloat(f.FeeDetail.TotalFee, 64)
+					totalFee += fee
+				}
+			}
+		}
+	} else {
+		log.Printf("[bitget] populateBitgetFeeDeducted margin fills failed order=%s symbol=%s: %v", orderID, symbol, err)
+	}
+}
 ```
 
-Import requirement: add `"log"` to `pkg/exchange/bitget/margin.go` imports if not already present (grep `import` block to verify). Diagnostic-only; preserves existing "fee unknown → 0 fee" semantic on error.
+Import requirement: add `"log"` to `pkg/exchange/bitget/margin.go` imports if not already present (grep `import` block to verify). Diagnostic-only; preserves existing "fee unknown → 0 fee" semantic on error. Both query paths must log so silent fallback-on-silent-fallback cases are observable.
 
 ### 17. `confirmFill` callers in exit.go and consolidate.go
 
@@ -1522,12 +1615,20 @@ Risk mitigation is handled via staged deploy: deploy to VPS off-peak, monitor lo
   * #13: backend snippet didn't preserve existing `[]fundingEvent{}` empty-array pattern; frontend bypass dropped existing 401 handling (token clear + reload).
   * #15: Dir B NotionalUSDT used gross `spotFilled * spotAvg`; actual HEAD successful Dir B uses net `spotNetReceived * spotAvg` (caller passes `spotFilledQty = spotNetReceived`).
   * #16c: function lives in `margin.go`, not `adapter.go`; plan lacked concrete BEFORE/AFTER and `log` import note.
-- v17: (this version) — addresses v16 fresh-audit findings:
+- v17: addresses v16 fresh-audit findings:
   * #1: expanded imports BEFORE/AFTER to match actual HEAD (15 → 17 imports, adding `errors` and `strconv`); updated inline code comment from "named `err` return var" to "local `err` variable captured by the metrics defer".
   * #13 backend: switched from two `writeJSON` branches to single `writeJSON` after normalizing `events = []fundingEvent{}` when nil. Preserves on-wire empty-array behavior.
   * #13 frontend: added `res.status === 401 → clearToken() + reload()` branch to bypass, plus JSON-error-body extraction on non-401 non-ok responses. Noted `getToken`/`clearToken` name verification during implementation.
   * #15 Dir B: changed test-spec `pos.NotionalUSDT == 6.17` to `== 6.15` (spotNetReceived * spotAvg = 1.23 * 5.0); added `capitalAmount == 6.17` preservation assertion; tightened plan comment on Dir B persistence formula referencing HEAD `actualNotional := spotFilledQty * spotEntryPrice` with `spotFilledQty = spotNetReceived`.
   * #16c: retitled section to `margin.go`; added concrete BEFORE/AFTER code from HEAD with `log.Printf` on error path; noted `"log"` import requirement.
+- v17 Codex fresh-thread full independent audit (xhigh): NEEDS-REVISION — 3 findings:
+  * **#5 NEW gap (not previously raised)**: `GetFundingRate` still sends `symbol` in signed GET to `/api/v2/mix/market/current-fund-rate`. Discovery scans and exit funding checks can fail for non-ASCII bitget symbols after #1's strict errors expose the 40009. Needed dedicated non-ASCII fallback subitem.
+  * **#15 reviewer self-contradiction corrected by reading HEAD**: v17 audit claimed HEAD's successful Dir B uses `pos.NotionalUSDT = spotNetReceived * spotAvg` (net), but its own BEFORE quote and HEAD at execution.go:632 both show `pos.NotionalUSDT = spotFilled * spotAvg // Use gross for notional tracking`. Cross-checked via Read of spotengine/execution.go: Dir B intentionally asymmetric — SpotSize = net (line 627), NotionalUSDT = gross (line 632). v16 audit misled us into switching NotionalUSDT to net in v15-v17; reverting to gross in v18 to match HEAD pattern.
+  * #16c: margin-fills fallback path (for spot-fills-returned-nothing case) was also silently swallowing errors; added symmetric `log.Printf` on that path too.
+- v18: (this version) — addresses v17 fresh-audit findings:
+  * **#5b NEW**: added `GetFundingRate` non-ASCII fallback subitem with concrete BEFORE/AFTER. No-filter endpoint returns all USDT-FUTURES rates (~400-800 rows, ~10-20 KB); local `strings.EqualFold` filter matches target symbol. Cache-deferred pending load measurement.
+  * **#15 revert to gross**: Dir B `pos.NotionalUSDT = spotFilled * spotAvg` (matches HEAD line 632 explicit comment "Use gross for notional tracking"). Test assertion restored to `pos.NotionalUSDT == 6.17`. `capitalAmount == 6.17` also kept (gross for capital accounting to match `commitSpotCapital` in HEAD). Plan comment tightened noting Dir B asymmetry (SpotSize net, NotionalUSDT gross) is intentional and matches HEAD.
+  * #16c: added margin-fills error log (both query paths now logged).
 - v13 original: (kept for history)
   * Field name corrected: `SpotSize` (NOT `SpotFilledQty`) per HEAD models/spot_position.go
   * Dir A vs Dir B specific fields documented: Dir A uses `SpotSize = spotFilled` (gross, borrowed+sold); Dir B uses `SpotSize = spotNetReceived` (net after fee deduction). Each sets correct `FuturesSide`.
