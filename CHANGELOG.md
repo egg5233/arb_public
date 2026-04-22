@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.33.0] - 2026-04-22
+
+### Fixed
+- **Bitget error swallowing + non-ASCII symbol support (plan `plans/PLAN-bitget-error-handling.md` v22 ALL PASS — approved by remote dispatch-mcp codex review task 58772305)** — bitget client's `doRequest` previously returned `(body, nil)` regardless of HTTP status or response `code`, masking every transient API failure as "no data". Concrete symptom: position `龙虾usdt-1776800704405` `funding_collected=-0.069` tracked only binance long leg, missing bitget short leg's +0.914 USDT funding (verified via no-symbol-filter bitget API). Root cause: non-ASCII symbol (`龙虾USDT`) in signed GET query fails bitget HMAC with 40009, client swallowed the error. Four coordinated phases across 5 parallel worktrees:
+  - **Phase A — bitget adapter strict errors + non-ASCII fallbacks**: `doRequest` checks HTTP status AND `envelope.Code` with pass-through map for idempotent codes (40872, 43011, 43025); `isRetryable` inspects `*APIError` via `errors.As` + 5xx class retry. Non-ASCII fallback endpoints added: `GetFundingFees`, `GetFundingRate`, `GetPosition`, `GetUserTrades`, `GetClosePnL`, `GetOrderFilledQty`. `CheckPermissions` migrated to `errors.As` with class branching (40009→PermDenied, retryable/5xx→PermUnknown, other→PermGranted). `CancelAllOrders` surfaces both errors via `errors.Join`. `populateBitgetFeeDeducted` logs both spot-fills and margin-fills errors.
+  - **Phase B — engine caller safety**: `retrySecondLeg` signature adds `error` return; 4 callers (engine.go:3688/3727/3932/3971) persist `StatusPartial` + `FailureReason="second_leg_fill_unknown"` on unknown-state error to prevent duplicate orders (2× exposure risk). `confirmFill` adds error propagation; all callers in `exit.go` + `consolidate.go` audited. `consolidate.go` logs silent continue on `GetClosePnL` failure.
+  - **Phase C — spotengine pending-futures recovery**: new `pendingFuturesEntryError` struct + `PendingFuturesEntryOrderID` field + `reconcilePendingFuturesEntry` monitor method. `confirmFuturesFill` returns error on unknown REST state; Dir A (borrow_sell_long) persists `spotFilled*spotAvg` gross, Dir B (buy_spot_short) persists `spotNetReceived*spotAvg` net to match HEAD final state after outer ManualOpen overwrite at line 402. Defensive gate in `reconcilePendingEntry` routes pending-futures to its own reconciler.
+  - **Phase D — revert v0.32.42 ASCII guards + frontend partial-legs UI**: removed `IsValidBaseQuoteSymbol` guards from discovery/ranker, discovery/scanner, spotengine/discovery, spotengine/engine, api/spot_handlers (v0.32.42 blocked non-ASCII at source — wrong approach; exchanges list these symbols, so blocking loses real arbitrage opportunities). Deleted `pkg/utils/symbol.go` (`containsNonASCII` moved to `pkg/exchange/bitget/util.go`). Backend `handleGetPositionFunding` logs failed legs + sets `X-Partial-Legs` header. Frontend `getPositionFunding` bypass preserves 401 handling, exposes header; `Positions.tsx` renders warning banner; new `pos.fundingPartial` i18n key (EN + zh-TW).
+- **`cmd/peertest/` (#11)** — read-only CLI empirically tests Bybit/OKX/Gate/BingX/Binance for same HMAC issue using dynamically discovered non-ASCII symbols via `LoadAllContracts`.
+
 ## [0.32.42] - 2026-04-22
 
 ### Fixed
