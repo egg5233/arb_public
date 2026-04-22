@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.33.2] - 2026-04-23
+
+### Added
+- **Dashboard version display** — sidebar now shows `v<version>` next to the connection indicator so deploy status is visible at a glance. Version is injected at build time from the repo `VERSION` file via Vite `define` (`web/vite.config.ts`, `web/src/components/Sidebar.tsx`).
+
 ## [0.33.1] - 2026-04-22
 
 ### Fixed
