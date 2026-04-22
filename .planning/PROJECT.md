@@ -68,7 +68,8 @@ A multi-strategy arbitrage platform that monitors funding rate differentials and
 ### Active (v2.0 candidates)
 
 **Strategy 4 — Cross-Exchange Price-Gap Arbitrage (Priority 1)**
-- [ ] Minimal price-gap tracker (MVP, Option C): static candidate config, delta-neutral entry/exit, Gate concentration cap + hard denylist, 4h max-hold, paper mode → live with \$5k budget
+- [x] Minimal price-gap tracker (Phase 8, v0.33.0): `internal/pricegaptrader/` with delta-neutral IOC entry/exit, 5-gate pre-entry risk (Gate concentration, max concurrent, kline staleness, delist veto, budget), 4h max-hold + T/2 reversion exit, exec-quality auto-disable, startup rehydration, pg-admin CLI for reversal. Default OFF per PG-OPS-06. Paper mode + live budget come in Phase 9.
+- [ ] Phase 9: Dashboard UI, paper mode, Telegram alerts, rolling metrics (PG-OPS-01..05, PG-VAL-01..02)
 - [ ] Validate edge on live data for 4–8 weeks (gate to (D) full architecture)
 - [ ] (Deferred) Full (D) Gated Discovery architecture: scanner + registry + state machine — see `/tmp/phase0-pricegap/STRATEGY_DESIGN.md`
 
@@ -92,7 +93,7 @@ A multi-strategy arbitrage platform that monitors funding rate differentials and
 ## Context
 
 - **Live system**: perp-perp since mid-March 2026; spot-futures live since 2026-04-01
-- **Current version**: 0.32.34 at v1.0 closure
+- **Current version**: 0.33.0 (Phase 8 shipped — price-gap tracker core, default OFF)
 - **Codebase**: ~15k+ Go, React dashboard, 6 exchange adapters. See `.planning/codebase/` for full analysis.
 - **v1.0 metrics**: 7 phases, 21 plans, 381 commits over 30 days (2026-03-23 → 2026-04-21)
 - **v1.0 audit**: classified `tech_debt` — 10/24 clean-passed requirements, 12 partial (human_needed verif), 1 dropped, 1 unsatisfied (Phase 07 missing VERIFICATION.md, code live). All code shipped and working in production; debt is documentation/verification only.
@@ -130,4 +131,4 @@ A multi-strategy arbitrage platform that monitors funding rate differentials and
 This document evolves at phase transitions and milestone boundaries.
 
 ---
-*Last updated: 2026-04-21 after v1.0 milestone shipped*
+*Last updated: 2026-04-22 after Phase 8 (price-gap tracker core) shipped at v0.33.0*
