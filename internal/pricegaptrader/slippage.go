@@ -73,5 +73,23 @@ func (t *Tracker) recordSlippageAndMaybeDisable(pos *models.PriceGapPosition) {
 			return
 		}
 		t.log.Warn("pricegap: AUTO-DISABLED %s (%s)", pos.Symbol, reason)
+
+		// Phase 9 Plan 06 auto-disable hook — push a pg_event + a
+		// pg_candidate_update so the UI flips the candidate row to disabled
+		// without a full state refetch, and alert the operator via Telegram
+		// (gate="exec_quality" is on the Plan 04 allowlist).
+		disabledAt := time.Now().Unix()
+		t.broadcaster.BroadcastPriceGapEvent(PriceGapEvent{
+			Type:   "auto_disable",
+			Symbol: pos.Symbol,
+			Reason: "exec_quality",
+		})
+		t.broadcaster.BroadcastPriceGapCandidateUpdate(PriceGapCandidateUpdate{
+			Symbol:     pos.Symbol,
+			Disabled:   true,
+			Reason:     reason,
+			DisabledAt: disabledAt,
+		})
+		t.notifier.NotifyPriceGapRiskBlock(pos.Symbol, "exec_quality", reason)
 	}
 }

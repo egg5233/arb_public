@@ -1,6 +1,7 @@
 package pricegaptrader
 
 import (
+	"fmt"
 	"strings"
 
 	"arb/internal/models"
@@ -31,6 +32,14 @@ type GateDecision struct {
 // interface-driven DI). Production passes *discovery.Scanner (which has
 // func (s *Scanner) IsDelisted(symbol string) bool — satisfies the
 // interface directly). Tests pass a fakeDelistChecker.
+//
+// Phase 9 Plan 06 — Telegram risk-block hook: on each denial we invoke
+// t.notifier.NotifyPriceGapRiskBlock(symbol, gate, detail) using gate names
+// that match the Plan 04 allowlist (concentration, max_concurrent,
+// kline_stale, delist, budget, exec_quality). Gates outside the allowlist
+// (per_position_cap, stale-less-than-threshold) invoke nothing — the
+// notifier's allowlist would silently drop unknown gates anyway, so the
+// call is elided to make intent explicit at the call site.
 func (t *Tracker) preEntry(
 	cand models.PriceGapCandidate,
 	requestedNotionalUSDT float64,
@@ -44,15 +53,20 @@ func (t *Tracker) preEntry(
 		// Fail-open on Redis error — matches existing project pattern (Phase 03-02)
 		t.log.Warn("pricegap: disable-flag read failed, fail-open: %v", err)
 	} else if disabled {
-		return GateDecision{Err: ErrPriceGapCandidateDisabled, Reason: "exec_quality_disabled: " + reason}
+		t.notifier.NotifyPriceGapRiskBlock(cand.Symbol, "exec_quality", reason)
+		return GateDecision{Err: ErrPriceGapCandidateDisabled, Reason: "exec_quality: " + reason}
 	}
 
 	// Gate 2: max concurrent (PG-RISK-04)
 	if len(activePositions) >= t.cfg.PriceGapMaxConcurrent {
+		t.notifier.NotifyPriceGapRiskBlock(cand.Symbol, "max_concurrent",
+			fmt.Sprintf("active=%d limit=%d", len(activePositions), t.cfg.PriceGapMaxConcurrent))
 		return GateDecision{Err: ErrPriceGapMaxConcurrent, Reason: "max_concurrent"}
 	}
 
 	// Gate 3: per-position notional cap (PG-RISK-05)
+	// No Telegram alert: this gate fires on caller-side sizing logic bugs,
+	// not on market or concentration signals operators need to act on.
 	if requestedNotionalUSDT > cand.MaxPositionUSDT {
 		return GateDecision{Err: ErrPriceGapPerPositionCap, Reason: "per_position_cap"}
 	}
@@ -63,6 +77,9 @@ func (t *Tracker) preEntry(
 		activeNotional += p.NotionalUSDT
 	}
 	if activeNotional+requestedNotionalUSDT > t.cfg.PriceGapBudget {
+		t.notifier.NotifyPriceGapRiskBlock(cand.Symbol, "budget",
+			fmt.Sprintf("active=$%.0f requested=$%.0f cap=$%.0f",
+				activeNotional, requestedNotionalUSDT, t.cfg.PriceGapBudget))
 		return GateDecision{Err: ErrPriceGapBudgetExceeded, Reason: "budget"}
 	}
 
@@ -79,7 +96,10 @@ func (t *Tracker) preEntry(
 		}
 		cap := t.cfg.PriceGapBudget * t.cfg.PriceGapGateConcentrationPct
 		if gateNotional+requestedNotionalUSDT > cap {
-			return GateDecision{Err: ErrPriceGapGateConcentrationCap, Reason: "gate_concentration"}
+			t.notifier.NotifyPriceGapRiskBlock(cand.Symbol, "concentration",
+				fmt.Sprintf("gate=$%.0f requested=$%.0f cap=$%.0f",
+					gateNotional, requestedNotionalUSDT, cap))
+			return GateDecision{Err: ErrPriceGapGateConcentrationCap, Reason: "concentration"}
 		}
 	}
 
@@ -87,10 +107,13 @@ func (t *Tracker) preEntry(
 	// t.delist is the injected models.DelistChecker (Plan 01); production
 	// wires *discovery.Scanner, tests wire a fakeDelistChecker.
 	if t.delist != nil && t.delist.IsDelisted(cand.Symbol) {
-		return GateDecision{Err: ErrPriceGapDelistedLeg, Reason: "delisted"}
+		t.notifier.NotifyPriceGapRiskBlock(cand.Symbol, "delist", "delist/halt detected")
+		return GateDecision{Err: ErrPriceGapDelistedLeg, Reason: "delist"}
 	}
 	if det.StalenessSec >= float64(t.cfg.PriceGapKlineStalenessSec) {
-		return GateDecision{Err: ErrPriceGapStaleBBO, Reason: "stale_bbo"}
+		t.notifier.NotifyPriceGapRiskBlock(cand.Symbol, "kline_stale",
+			fmt.Sprintf("stalenessSec=%.1f limit=%d", det.StalenessSec, t.cfg.PriceGapKlineStalenessSec))
+		return GateDecision{Err: ErrPriceGapStaleBBO, Reason: "kline_stale"}
 	}
 
 	return GateDecision{Approved: true}

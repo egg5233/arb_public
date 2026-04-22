@@ -158,6 +158,14 @@ func (t *Tracker) openPair(
 	if err := t.db.SavePriceGapPosition(pos); err != nil {
 		t.log.Warn("pricegap: SavePriceGapPosition failed for %s: %v", posID, err)
 	}
+
+	// Phase 9 Plan 06 entry hook — broadcast + Telegram AFTER persistence so
+	// consumers see the stored state. Both sides are nil-safe (NoopBroadcaster
+	// / NoopNotifier defaults; TelegramNotifier nil-receiver safe per Plan 04).
+	// Paper-mode fires identically (D-22 — paper parity).
+	t.broadcaster.BroadcastPriceGapEvent(PriceGapEvent{Type: "entry", Position: pos})
+	t.notifier.NotifyPriceGapEntry(pos)
+	t.maybeBroadcastPositions()
 	return pos, nil
 }
 

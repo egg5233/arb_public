@@ -72,6 +72,19 @@ type Tracker struct {
 	// Defaults to NoopBroadcaster{} in NewTracker so callers without a hub
 	// (tests, CLI) never risk nil deref.
 	broadcaster Broadcaster
+
+	// PriceGapNotifier DI seam (Phase 9 Plan 06) — Telegram alerts on
+	// entry / exit / risk-block / auto-disable. Defaults to NoopNotifier{}
+	// so callers without Telegram configured never risk nil deref.
+	notifier PriceGapNotifier
+
+	// Heartbeat throttle (Plan 06 D-06 / Pitfall 3): BroadcastPriceGapPositions
+	// is rate-limited to at most one call per `priceGapPositionsMinInterval`
+	// (2s). Called (a) from tickLoop every ~2s, and (b) right after every
+	// entry / exit hook. The mutex guards lastPositionsBroadcast ONLY — the
+	// broadcast itself happens outside the critical section.
+	positionsBroadcastMu   sync.Mutex
+	lastPositionsBroadcast time.Time
 }
 
 // NewTracker constructs a Tracker with injected dependencies. The store and
@@ -95,6 +108,7 @@ func NewTracker(
 		monitorHandles: make(map[string]monitorHandle),
 		entryInFlight:  make(map[string]bool),
 		broadcaster:    NoopBroadcaster{},
+		notifier:       NoopNotifier{},
 	}
 }
 
@@ -107,6 +121,55 @@ func (t *Tracker) SetBroadcaster(b Broadcaster) {
 		return
 	}
 	t.broadcaster = b
+}
+
+// SetNotifier swaps the Telegram notifier (Phase 9 Plan 06 wiring; cmd/main.go
+// calls this after notify.NewTelegram). Passing nil reverts to NoopNotifier so
+// downstream hooks can always call methods safely even when Telegram is
+// unconfigured (no bot token / no chat id).
+func (t *Tracker) SetNotifier(n PriceGapNotifier) {
+	if n == nil {
+		t.notifier = NoopNotifier{}
+		return
+	}
+	t.notifier = n
+}
+
+// priceGapPositionsMinInterval is the minimum gap between consecutive
+// BroadcastPriceGapPositions calls (T-09-26 throttle). Per-event
+// BroadcastPriceGapEvent is unthrottled — event rate is bounded by trading
+// cadence, not noise.
+const priceGapPositionsMinInterval = 2 * time.Second
+
+// maybeBroadcastPositions emits the full active-positions list to the
+// dashboard WS hub, but at most once per priceGapPositionsMinInterval.
+//
+// Called from three sites:
+//  1. After every openPair hook (so the UI sees a new entry immediately).
+//  2. After every closePair hook (so the UI sees the exit immediately).
+//  3. From the heartbeat ticker in tickLoop (so the UI stays in sync even
+//     with zero trading activity).
+//
+// Throttle rationale (T-09-26, Pitfall 3): a tick or a storm of exits can
+// otherwise fan out identical full-list pushes back-to-back. The per-event
+// stream (entry/exit/auto_disable) carries the actual news; pg_positions is
+// just the reconciliation snapshot.
+func (t *Tracker) maybeBroadcastPositions() {
+	t.positionsBroadcastMu.Lock()
+	if time.Since(t.lastPositionsBroadcast) < priceGapPositionsMinInterval {
+		t.positionsBroadcastMu.Unlock()
+		return
+	}
+	t.lastPositionsBroadcast = time.Now()
+	t.positionsBroadcastMu.Unlock()
+
+	active, err := t.db.GetActivePriceGapPositions()
+	if err != nil {
+		// Non-fatal: log and drop; next heartbeat will retry.
+		t.log.Warn("pricegap: maybeBroadcastPositions GetActivePriceGapPositions: %v", err)
+		return
+	}
+	t.broadcaster.BroadcastPriceGapPositions(active)
 }
 
 // Start spawns the tick goroutine + rehydrates active positions.
@@ -157,6 +220,13 @@ func (t *Tracker) tickLoop() {
 	firstTick := time.After(7 * time.Second)
 	var ticker *time.Ticker
 
+	// Heartbeat ticker (Plan 06 D-06): pushes pg_positions every 2s so the
+	// dashboard stays in sync even when no entries/exits fire. Runs concurrently
+	// with the poll-cadence ticker; the throttle in maybeBroadcastPositions
+	// guarantees the per-event path and the heartbeat path do not duplicate.
+	heartbeat := time.NewTicker(priceGapPositionsMinInterval)
+	defer heartbeat.Stop()
+
 	for {
 		select {
 		case <-t.stopCh:
@@ -169,6 +239,8 @@ func (t *Tracker) tickLoop() {
 			t.runTick(time.Now())
 		case now := <-chanTick(ticker):
 			t.runTick(now)
+		case <-heartbeat.C:
+			t.maybeBroadcastPositions()
 		}
 	}
 }

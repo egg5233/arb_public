@@ -239,6 +239,14 @@ func (t *Tracker) closePair(pos *models.PriceGapPosition, reason string) {
 	_ = t.db.RemoveActivePriceGapPosition(pos.ID)
 	_ = t.db.AddPriceGapHistory(pos)
 
+	// Phase 9 Plan 06 exit hook — broadcast + Telegram AFTER history is LPUSHed
+	// so consumers see the persisted final state. Both are nil-safe (Noops
+	// installed at construction). Paper and live fire identically (D-22).
+	duration := time.Since(pos.OpenedAt)
+	t.broadcaster.BroadcastPriceGapEvent(PriceGapEvent{Type: "exit", Position: pos, Reason: reason})
+	t.notifier.NotifyPriceGapExit(pos, reason, pos.RealizedPnL, duration)
+	t.maybeBroadcastPositions()
+
 	// Exec-quality rolling-window follow-up (PG-RISK-03 — see slippage.go).
 	t.recordSlippageAndMaybeDisable(pos)
 

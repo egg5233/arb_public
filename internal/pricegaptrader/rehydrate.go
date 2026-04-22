@@ -8,6 +8,15 @@ import (
 	"arb/pkg/exchange"
 )
 
+// INVARIANT: rehydrate MUST NOT broadcast or notify — see Pitfall 3.
+// Phase 9 Plan 06 deliberately withholds WS broadcasts and Telegram alerts
+// from the rehydration path. Re-emitting entry events for every restored
+// position at startup would flood the hub and spam operators with alerts
+// for positions they already know about (RESEARCH §Pitfall 3 "WS broadcast
+// storm on rehydrate"). The invariant is enforced at test time by
+// TestRehydratePathSilent in tracker_broadcast_test.go — adding a
+// t.broadcaster.* or t.notifier.* call here will fail that test.
+//
 // rehydrate runs at Start(); for each position in pg:positions:active:
 //   - Verify BOTH legs still exist on the exchange (GetPosition total > 0).
 //   - If either leg is zero-size (exchange side closed while we were down),
