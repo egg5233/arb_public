@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.33.2] - 2026-04-22
+
+### Added (Phase 09 Plan 04 — Regression Guardrail, Task 2, T-09-20)
+- `internal/notify/telegram_regression_test.go` pins byte-for-byte output for every pre-Phase-9 `Notify*` method: `NotifyAutoEntry` (Dir A + Dir B), `NotifyAutoExit` (positive + negative PnL), `NotifyEmergencyClose`, `NotifySLTriggered`, `NotifyEmergencyClosePerp`, `NotifyConsecutiveAPIErrors` (with + without error), `NotifyLossLimitBreached`, `NotifySpotHedgeBroken`, `NotifySpotCloseBlocked`.
+- `TestRegression_AllNilSafe` pins the nil-receiver invariant for all existing methods so future refactors of the shared `send`/`checkCooldown` helpers cannot silently break paging.
+- Any accidental format drift on a perp-perp or spot-futures alert body will now fail a unit test (`go test ./internal/notify/... -count=1 -race`, 30/30 green).
+
 ## [0.33.1] - 2026-04-22
 
 ### Added (Phase 09 Plan 04 — Price-Gap Telegram Notifications, Task 1, PG-OPS-05)
