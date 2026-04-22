@@ -20,21 +20,31 @@ import (
 
 func (b *Adapter) StartPriceStream(symbols []string) {
 	b.priceMu.Lock()
+	resolved := make([]string, 0, len(symbols))
 	for _, s := range symbols {
-		b.priceSyms[s] = true
+		real, _, err := b.resolveSymbol(s)
+		if err != nil {
+			continue
+		}
+		b.priceSyms[real] = true
+		resolved = append(resolved, real)
 	}
 	b.priceMu.Unlock()
 
-	go b.runPriceStream(symbols)
+	go b.runPriceStream(resolved)
 }
 
 func (b *Adapter) SubscribeSymbol(symbol string) bool {
+	realSymbol, _, err := b.resolveSymbol(symbol)
+	if err != nil {
+		return false
+	}
 	b.priceMu.Lock()
-	if b.priceSyms[symbol] {
+	if b.priceSyms[realSymbol] {
 		b.priceMu.Unlock()
 		return false
 	}
-	b.priceSyms[symbol] = true
+	b.priceSyms[realSymbol] = true
 	b.priceMu.Unlock()
 
 	// If the WS connection exists, send a subscribe message
@@ -43,7 +53,7 @@ func (b *Adapter) SubscribeSymbol(symbol string) bool {
 	b.priceMu.Unlock()
 
 	if conn != nil {
-		stream := strings.ToLower(symbol) + "@bookTicker"
+		stream := strings.ToLower(realSymbol) + "@bookTicker"
 		msg := map[string]interface{}{
 			"method": "SUBSCRIBE",
 			"params": []string{stream},
@@ -56,11 +66,19 @@ func (b *Adapter) SubscribeSymbol(symbol string) bool {
 }
 
 func (b *Adapter) GetBBO(symbol string) (exchange.BBO, bool) {
-	val, ok := b.priceStore.Load(symbol)
+	realSymbol, mult, err := b.resolveSymbol(symbol)
+	if err != nil {
+		return exchange.BBO{}, false
+	}
+	val, ok := b.priceStore.Load(realSymbol)
 	if !ok {
 		return exchange.BBO{}, false
 	}
-	return val.(exchange.BBO), true
+	bbo := val.(exchange.BBO)
+	return exchange.BBO{
+		Bid: exchange.ScalePriceFromContracts(bbo.Bid, mult),
+		Ask: exchange.ScalePriceFromContracts(bbo.Ask, mult),
+	}, true
 }
 
 func (b *Adapter) GetPriceStore() *sync.Map {
@@ -72,17 +90,21 @@ func (b *Adapter) GetPriceStore() *sync.Map {
 // ---------------------------------------------------------------------------
 
 func (b *Adapter) SubscribeDepth(symbol string) bool {
+	realSymbol, _, err := b.resolveSymbol(symbol)
+	if err != nil {
+		return false
+	}
 	b.priceMu.Lock()
-	if b.depthSyms[symbol] {
+	if b.depthSyms[realSymbol] {
 		b.priceMu.Unlock()
 		return false
 	}
-	b.depthSyms[symbol] = true
+	b.depthSyms[realSymbol] = true
 	conn := b.priceConn
 	b.priceMu.Unlock()
 
 	if conn != nil {
-		stream := strings.ToLower(symbol) + "@depth20@100ms"
+		stream := strings.ToLower(realSymbol) + "@depth20@100ms"
 		msg := map[string]interface{}{
 			"method": "SUBSCRIBE",
 			"params": []string{stream},
@@ -95,19 +117,23 @@ func (b *Adapter) SubscribeDepth(symbol string) bool {
 }
 
 func (b *Adapter) UnsubscribeDepth(symbol string) bool {
+	realSymbol, _, err := b.resolveSymbol(symbol)
+	if err != nil {
+		return false
+	}
 	b.priceMu.Lock()
-	if !b.depthSyms[symbol] {
+	if !b.depthSyms[realSymbol] {
 		b.priceMu.Unlock()
 		return false
 	}
-	delete(b.depthSyms, symbol)
+	delete(b.depthSyms, realSymbol)
 	conn := b.priceConn
 	b.priceMu.Unlock()
 
-	b.depthStore.Delete(symbol)
+	b.depthStore.Delete(realSymbol)
 
 	if conn != nil {
-		stream := strings.ToLower(symbol) + "@depth20@100ms"
+		stream := strings.ToLower(realSymbol) + "@depth20@100ms"
 		msg := map[string]interface{}{
 			"method": "UNSUBSCRIBE",
 			"params": []string{stream},
@@ -120,11 +146,34 @@ func (b *Adapter) UnsubscribeDepth(symbol string) bool {
 }
 
 func (b *Adapter) GetDepth(symbol string) (*exchange.Orderbook, bool) {
-	val, ok := b.depthStore.Load(symbol)
+	realSymbol, mult, err := b.resolveSymbol(symbol)
+	if err != nil {
+		return nil, false
+	}
+	val, ok := b.depthStore.Load(realSymbol)
 	if !ok {
 		return nil, false
 	}
-	return val.(*exchange.Orderbook), true
+	ob := val.(*exchange.Orderbook)
+	clone := &exchange.Orderbook{
+		Symbol: symbol,
+		Time:   ob.Time,
+		Bids:   make([]exchange.PriceLevel, len(ob.Bids)),
+		Asks:   make([]exchange.PriceLevel, len(ob.Asks)),
+	}
+	for i, level := range ob.Bids {
+		clone.Bids[i] = exchange.PriceLevel{
+			Price:    exchange.ScalePriceFromContracts(level.Price, mult),
+			Quantity: exchange.ScaleSizeFromContracts(level.Quantity, mult),
+		}
+	}
+	for i, level := range ob.Asks {
+		clone.Asks[i] = exchange.PriceLevel{
+			Price:    exchange.ScalePriceFromContracts(level.Price, mult),
+			Quantity: exchange.ScaleSizeFromContracts(level.Quantity, mult),
+		}
+	}
+	return clone, true
 }
 
 func (b *Adapter) runPriceStream(symbols []string) {

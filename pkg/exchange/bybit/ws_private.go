@@ -27,17 +27,19 @@ type PrivateWS struct {
 	connMu               sync.Mutex
 	orderStore           *sync.Map
 	onFill               *func(exchange.OrderUpdate)
+	normalize            func(symbol string, qty float64, price float64) (string, float64, float64)
 	done                 chan struct{}
 	orderMetricsCallback exchange.OrderMetricsCallback
 }
 
 // NewPrivateWS creates a new private WebSocket handler.
-func NewPrivateWS(apiKey, secretKey string, orderStore *sync.Map, onFill *func(exchange.OrderUpdate)) *PrivateWS {
+func NewPrivateWS(apiKey, secretKey string, orderStore *sync.Map, onFill *func(exchange.OrderUpdate), normalize func(symbol string, qty float64, price float64) (string, float64, float64)) *PrivateWS {
 	return &PrivateWS{
 		apiKey:     apiKey,
 		secretKey:  secretKey,
 		orderStore: orderStore,
 		onFill:     onFill,
+		normalize:  normalize,
 		done:       make(chan struct{}),
 	}
 }
@@ -213,6 +215,10 @@ func (ws *PrivateWS) handleMessage(msg []byte) {
 	for _, o := range orderMsg.Data {
 		filledQty, _ := strconv.ParseFloat(o.CumExecQty, 64)
 		avgPrice, _ := strconv.ParseFloat(o.AvgPrice, 64)
+		symbol := o.Symbol
+		if ws.normalize != nil {
+			symbol, filledQty, avgPrice = ws.normalize(symbol, filledQty, avgPrice)
+		}
 
 		update := exchange.OrderUpdate{
 			OrderID:      o.OrderID,
@@ -220,13 +226,13 @@ func (ws *PrivateWS) handleMessage(msg []byte) {
 			Status:       normalizeOrderStatus(o.OrderStatus),
 			FilledVolume: filledQty,
 			AvgPrice:     avgPrice,
-			Symbol:       o.Symbol,
+			Symbol:       symbol,
 			ReduceOnly:   o.ReduceOnly,
 		}
 
 		ws.orderStore.Store(o.OrderID, update)
 		log.Info("order update: %s %s status=%s filled=%.6f avg=%.8f reduceOnly=%v",
-			o.Symbol, o.OrderID, update.Status, filledQty, avgPrice, o.ReduceOnly)
+			symbol, o.OrderID, update.Status, filledQty, avgPrice, o.ReduceOnly)
 		if update.Status == "filled" && update.FilledVolume > 0 && ws.orderMetricsCallback != nil {
 			ws.orderMetricsCallback(exchange.OrderMetricEvent{
 				Type:      exchange.OrderMetricFilled,

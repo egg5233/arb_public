@@ -580,6 +580,7 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 			SizeDecimals:    sizeDecimals,
 			PriceStep:       priceStep,
 			PriceDecimals:   countDecimals(c.OrderPriceRound),
+			Multiplier:      exchange.NormalizeMultiplier(quantoMult),
 			MaintenanceRate: mr,
 		}
 		result[internalSymbol] = ci

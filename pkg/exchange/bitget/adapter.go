@@ -22,6 +22,7 @@ type Adapter struct {
 	apiKey               string
 	secretKey            string
 	passphrase           string
+	aliases              exchange.SymbolAliasCache
 	orderCallback        func(exchange.OrderUpdate)
 	wsMetricsCallback    exchange.WSMetricsCallback
 	orderMetricsCallback exchange.OrderMetricsCallback
@@ -112,17 +113,97 @@ func (a *Adapter) CheckPermissions() exchange.PermissionResult {
 	return r
 }
 
+func (a *Adapter) resolveSymbol(symbol string) (string, float64, error) {
+	if real, mult, hit := a.aliases.ResolveCached(symbol); hit {
+		return real, mult, nil
+	}
+	if err := a.aliases.Ensure(func() error {
+		_, err := a.LoadAllContracts()
+		return err
+	}); err != nil {
+		return "", 0, fmt.Errorf("resolveSymbol %s: %w", symbol, err)
+	}
+	real, mult, _ := a.aliases.ResolveCached(symbol)
+	return real, mult, nil
+}
+
+func (a *Adapter) canonicalSymbol(symbol string) (string, float64, error) {
+	if bare, mult, hit := a.aliases.CanonicalCached(symbol); hit {
+		return bare, mult, nil
+	}
+	if err := a.aliases.Ensure(func() error {
+		_, err := a.LoadAllContracts()
+		return err
+	}); err != nil {
+		return "", 0, fmt.Errorf("canonicalSymbol %s: %w", symbol, err)
+	}
+	bare, mult, _ := a.aliases.CanonicalCached(symbol)
+	return bare, mult, nil
+}
+
+func (a *Adapter) contractInfo(symbol string) (exchange.ContractInfo, error) {
+	contracts, err := a.LoadAllContracts()
+	if err != nil {
+		return exchange.ContractInfo{}, err
+	}
+	info, ok := contracts[symbol]
+	if !ok {
+		return exchange.ContractInfo{}, fmt.Errorf("contract info not found for %s", symbol)
+	}
+	return info, nil
+}
+
+func (a *Adapter) nativeOrderSize(symbol string, sizeBase string, mult float64) (string, error) {
+	size, err := strconv.ParseFloat(sizeBase, 64)
+	if err != nil {
+		return "", err
+	}
+	info, err := a.contractInfo(symbol)
+	if err != nil {
+		return "", err
+	}
+	step := exchange.NativeContractStep(info)
+	minSize := exchange.NativeContractMin(info)
+	contracts := exchange.ScaleSizeToContracts(size, mult)
+	if step > 0 {
+		contracts = math.Floor(contracts/step) * step
+	}
+	if contracts <= 0 || (minSize > 0 && contracts < minSize) {
+		return "", exchange.ErrBelowMinSize
+	}
+	return exchange.FormatFloat(contracts), nil
+}
+
+func (a *Adapter) nativeOrderPrice(priceBase string, mult float64) (string, error) {
+	if priceBase == "" {
+		return "", nil
+	}
+	price, err := strconv.ParseFloat(priceBase, 64)
+	if err != nil {
+		return "", err
+	}
+	return exchange.FormatFloat(exchange.ScalePriceToContracts(price, mult)), nil
+}
+
 // ==================== Orders ====================
 
 func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 	log.Printf("[bitget] PlaceOrder: symbol=%s side=%s type=%s size=%s price=%s force=%s reduceOnly=%v",
 		req.Symbol, req.Side, req.OrderType, req.Size, req.Price, req.Force, req.ReduceOnly)
+	realSymbol, mult, err := a.resolveSymbol(req.Symbol)
+	if err != nil {
+		return "", fmt.Errorf("PlaceOrder resolve: %w", err)
+	}
+	size, err := a.nativeOrderSize(req.Symbol, req.Size, mult)
+	if err != nil {
+		return "", fmt.Errorf("PlaceOrder size: %w", err)
+	}
 	params := map[string]string{
-		"symbol":      req.Symbol,
+		"symbol":      realSymbol,
 		"productType": productTypeUSDTFutures,
 		"marginCoin":  marginCoinUSDT,
 		"marginMode":  "crossed",
-		"size":        req.Size,
+		"size":        size,
 		"side":        string(req.Side),
 		"orderType":   req.OrderType,
 		"force":       req.Force,
@@ -133,7 +214,11 @@ func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 		params["clientOid"] = fmt.Sprintf("arb-%d", time.Now().UnixNano())
 	}
 	if req.Price != "" {
-		params["price"] = req.Price
+		price, err := a.nativeOrderPrice(req.Price, mult)
+		if err != nil {
+			return "", fmt.Errorf("PlaceOrder price: %w", err)
+		}
+		params["price"] = price
 	}
 	if req.ReduceOnly {
 		params["reduceOnly"] = "YES"
@@ -169,8 +254,12 @@ func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 }
 
 func (a *Adapter) CancelOrder(symbol, orderID string) error {
+	realSymbol, _, err := a.resolveSymbol(symbol)
+	if err != nil {
+		return fmt.Errorf("cancel resolve: %w", err)
+	}
 	params := map[string]string{
-		"symbol":      symbol,
+		"symbol":      realSymbol,
 		"productType": productTypeUSDTFutures,
 		"orderId":     orderID,
 	}
@@ -194,8 +283,12 @@ func (a *Adapter) CancelOrder(symbol, orderID string) error {
 }
 
 func (a *Adapter) GetPendingOrders(symbol string) ([]exchange.Order, error) {
+	realSymbol, _, err := a.resolveSymbol(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("GetPendingOrders resolve: %w", err)
+	}
 	params := map[string]string{
-		"symbol":      symbol,
+		"symbol":      realSymbol,
 		"productType": productTypeUSDTFutures,
 	}
 
@@ -229,14 +322,20 @@ func (a *Adapter) GetPendingOrders(symbol string) ([]exchange.Order, error) {
 
 	out := make([]exchange.Order, len(resp.Data.EntrustedList))
 	for i, o := range resp.Data.EntrustedList {
+		bare, mult, err := a.canonicalSymbol(o.Symbol)
+		if err != nil {
+			return nil, fmt.Errorf("GetPendingOrders canonical: %w", err)
+		}
+		price, _ := strconv.ParseFloat(o.Price, 64)
+		size, _ := strconv.ParseFloat(o.Size, 64)
 		out[i] = exchange.Order{
 			OrderID:   o.OrderId,
 			ClientOid: o.ClientOid,
-			Symbol:    o.Symbol,
+			Symbol:    bare,
 			Side:      o.Side,
 			OrderType: o.OrderType,
-			Price:     o.Price,
-			Size:      o.Size,
+			Price:     exchange.FormatFloat(exchange.ScalePriceFromContracts(price, mult)),
+			Size:      exchange.FormatFloat(exchange.ScaleSizeFromContracts(size, mult)),
 			Status:    o.Status,
 		}
 	}
@@ -250,9 +349,12 @@ func (a *Adapter) GetOrderFilledQty(orderID, symbol string) (float64, error) {
 	if containsNonASCII(symbol) {
 		return a.getOrderFilledQtyViaFills(orderID)
 	}
-
+	realSymbol, mult, err := a.resolveSymbol(symbol)
+	if err != nil {
+		return 0, fmt.Errorf("GetOrderFilledQty resolve: %w", err)
+	}
 	params := map[string]string{
-		"symbol":      symbol,
+		"symbol":      realSymbol,
 		"orderId":     orderID,
 		"productType": productTypeUSDTFutures,
 	}
@@ -283,11 +385,11 @@ func (a *Adapter) GetOrderFilledQty(orderID, symbol string) (float64, error) {
 		a.orderMetricsCallback(exchange.OrderMetricEvent{
 			Type:      exchange.OrderMetricFilled,
 			OrderID:   orderID,
-			FilledQty: qty,
+			FilledQty: exchange.ScaleSizeFromContracts(qty, mult),
 			Timestamp: time.Now(),
 		})
 	}
-	return qty, err
+	return exchange.ScaleSizeFromContracts(qty, mult), err
 }
 
 // getOrderFilledQtyViaFills is the non-ASCII fallback for GetOrderFilledQty.
@@ -357,9 +459,12 @@ func (a *Adapter) GetPosition(symbol string) ([]exchange.Position, error) {
 		}
 		return filtered, nil
 	}
-
+	realSymbol, _, err := a.resolveSymbol(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("GetPosition resolve: %w", err)
+	}
 	params := map[string]string{
-		"symbol":      symbol,
+		"symbol":      realSymbol,
 		"marginCoin":  marginCoinUSDT,
 		"productType": productTypeUSDTFutures,
 	}
@@ -369,7 +474,7 @@ func (a *Adapter) GetPosition(symbol string) ([]exchange.Position, error) {
 		return nil, err
 	}
 
-	return parsePositions(raw)
+	return a.parsePositions(raw)
 }
 
 func (a *Adapter) GetAllPositions() ([]exchange.Position, error) {
@@ -383,10 +488,10 @@ func (a *Adapter) GetAllPositions() ([]exchange.Position, error) {
 		return nil, err
 	}
 
-	return parsePositions(raw)
+	return a.parsePositions(raw)
 }
 
-func parsePositions(raw string) ([]exchange.Position, error) {
+func (a *Adapter) parsePositions(raw string) ([]exchange.Position, error) {
 	var resp struct {
 		Code string `json:"code"`
 		Msg  string `json:"msg"`
@@ -418,17 +523,25 @@ func parsePositions(raw string) ([]exchange.Position, error) {
 		if total == 0 {
 			continue
 		}
+		bare, mult, err := a.canonicalSymbol(p.Symbol)
+		if err != nil {
+			return nil, fmt.Errorf("parsePositions canonical: %w", err)
+		}
+		available, _ := strconv.ParseFloat(p.Available, 64)
+		openPrice, _ := strconv.ParseFloat(p.AverageOpenPrice, 64)
+		liqPrice, _ := strconv.ParseFloat(p.LiquidationPrice, 64)
+		markPrice, _ := strconv.ParseFloat(p.MarkPrice, 64)
 		out = append(out, exchange.Position{
-			Symbol:           p.Symbol,
+			Symbol:           bare,
 			HoldSide:         p.HoldSide,
-			Total:            p.Total,
-			Available:        p.Available,
-			AverageOpenPrice: p.AverageOpenPrice,
+			Total:            exchange.FormatFloat(exchange.ScaleSizeFromContracts(total, mult)),
+			Available:        exchange.FormatFloat(exchange.ScaleSizeFromContracts(available, mult)),
+			AverageOpenPrice: exchange.FormatFloat(exchange.ScalePriceFromContracts(openPrice, mult)),
 			UnrealizedPL:     p.UnrealizedPL,
 			Leverage:         p.Leverage,
 			MarginMode:       p.MarginMode,
-			LiquidationPrice: p.LiquidationPrice,
-			MarkPrice:        p.MarkPrice,
+			LiquidationPrice: exchange.FormatFloat(exchange.ScalePriceFromContracts(liqPrice, mult)),
+			MarkPrice:        exchange.FormatFloat(exchange.ScalePriceFromContracts(markPrice, mult)),
 			FundingFee:       p.TotalFee,
 		})
 	}
@@ -438,8 +551,12 @@ func parsePositions(raw string) ([]exchange.Position, error) {
 // ==================== Account Config ====================
 
 func (a *Adapter) SetLeverage(symbol string, leverage string, holdSide string) error {
+	realSymbol, _, err := a.resolveSymbol(symbol)
+	if err != nil {
+		return fmt.Errorf("SetLeverage resolve: %w", err)
+	}
 	params := map[string]string{
-		"symbol":      symbol,
+		"symbol":      realSymbol,
 		"productType": productTypeUSDTFutures,
 		"marginCoin":  marginCoinUSDT,
 		"leverage":    leverage,
@@ -464,6 +581,10 @@ func (a *Adapter) SetLeverage(symbol string, leverage string, holdSide string) e
 }
 
 func (a *Adapter) SetMarginMode(symbol string, mode string) error {
+	realSymbol, _, err := a.resolveSymbol(symbol)
+	if err != nil {
+		return fmt.Errorf("SetMarginMode resolve: %w", err)
+	}
 	// Bitget API expects "crossed" not "cross" for cross margin mode.
 	apiMode := mode
 	if strings.ToLower(mode) == "cross" {
@@ -471,7 +592,7 @@ func (a *Adapter) SetMarginMode(symbol string, mode string) error {
 	}
 
 	params := map[string]string{
-		"symbol":      symbol,
+		"symbol":      realSymbol,
 		"productType": productTypeUSDTFutures,
 		"marginCoin":  marginCoinUSDT,
 		"marginMode":  apiMode, // "isolated" or "crossed"
@@ -512,6 +633,7 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 		Msg  string `json:"msg"`
 		Data []struct {
 			Symbol         string `json:"symbol"`
+			BaseCoin       string `json:"baseCoin"`
 			MinTradeNum    string `json:"minTradeNum"`
 			VolumePlace    string `json:"volumePlace"`
 			SizeMultiplier string `json:"sizeMultiplier"`
@@ -528,6 +650,9 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 	}
 
 	result := make(map[string]exchange.ContractInfo, len(resp.Data))
+	aliasMap := make(map[string]string, len(resp.Data))
+	reverseMap := make(map[string]string, len(resp.Data))
+	multiplierMap := make(map[string]float64, len(resp.Data))
 	for _, c := range resp.Data {
 		minSize, _ := strconv.ParseFloat(c.MinTradeNum, 64)
 		stepSize, _ := strconv.ParseFloat(c.SizeMultiplier, 64)
@@ -554,20 +679,33 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 			priceStep = 1e-4
 		}
 
-		result[c.Symbol] = exchange.ContractInfo{
-			Symbol:        c.Symbol,
-			MinSize:       minSize,
-			StepSize:      stepSize,
-			MaxSize:       maxSize,
-			SizeDecimals:  volPlace,
-			PriceStep:     priceStep,
-			PriceDecimals: priceDec,
+		bareBase, mult := exchange.DetectPrefixMultiplier(c.BaseCoin)
+		if bareBase == "" {
+			bareBase = strings.TrimSuffix(c.Symbol, "USDT")
+		}
+		bareSymbol := bareBase + "USDT"
+		info := exchange.ContractInfo{
+			Symbol:        bareSymbol,
+			MinSize:       exchange.ScaleSizeFromContracts(minSize, mult),
+			StepSize:      exchange.ScaleSizeFromContracts(stepSize, mult),
+			MaxSize:       exchange.ScaleSizeFromContracts(maxSize, mult),
+			SizeDecimals:  countDecimalsFloat(exchange.ScaleSizeFromContracts(stepSize, mult)),
+			PriceStep:     exchange.ScalePriceFromContracts(priceStep, mult),
+			PriceDecimals: countDecimalsFloat(exchange.ScalePriceFromContracts(priceStep, mult)),
+			Multiplier:    exchange.NormalizeMultiplier(mult),
+		}
+		result[bareSymbol] = info
+		multiplierMap[bareSymbol] = exchange.NormalizeMultiplier(mult)
+		if mult > 1 {
+			aliasMap[bareSymbol] = c.Symbol
+			reverseMap[c.Symbol] = bareSymbol
 		}
 	}
 
 	if len(result) == 0 {
 		return nil, fmt.Errorf("no contract settings loaded")
 	}
+	a.aliases.Replace(aliasMap, reverseMap, multiplierMap)
 	return result, nil
 }
 
@@ -880,9 +1018,13 @@ func (a *Adapter) GetOrderbook(symbol string, depth int) (*exchange.Orderbook, e
 	if depth <= 0 {
 		depth = 20
 	}
+	realSymbol, mult, err := a.resolveSymbol(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("GetOrderbook resolve: %w", err)
+	}
 
 	params := map[string]string{
-		"symbol":      symbol,
+		"symbol":      realSymbol,
 		"productType": productTypeUSDTFutures,
 		"limit":       strconv.Itoa(depth),
 	}
@@ -926,7 +1068,10 @@ func (a *Adapter) GetOrderbook(symbol string, depth int) (*exchange.Orderbook, e
 		}
 		p := parseRawFloat(ask[0])
 		q := parseRawFloat(ask[1])
-		ob.Asks = append(ob.Asks, exchange.PriceLevel{Price: p, Quantity: q})
+		ob.Asks = append(ob.Asks, exchange.PriceLevel{
+			Price:    exchange.ScalePriceFromContracts(p, mult),
+			Quantity: exchange.ScaleSizeFromContracts(q, mult),
+		})
 	}
 
 	ob.Bids = make([]exchange.PriceLevel, 0, len(resp.Data.Bids))
@@ -936,7 +1081,10 @@ func (a *Adapter) GetOrderbook(symbol string, depth int) (*exchange.Orderbook, e
 		}
 		p := parseRawFloat(bid[0])
 		q := parseRawFloat(bid[1])
-		ob.Bids = append(ob.Bids, exchange.PriceLevel{Price: p, Quantity: q})
+		ob.Bids = append(ob.Bids, exchange.PriceLevel{
+			Price:    exchange.ScalePriceFromContracts(p, mult),
+			Quantity: exchange.ScaleSizeFromContracts(q, mult),
+		})
 	}
 
 	return ob, nil
@@ -1118,29 +1266,45 @@ func mapChainToBitget(chain string) string {
 func (a *Adapter) StartPriceStream(symbols []string) {
 	a.ws = NewWSClient()
 	a.ws.SetMetricsCallback(a.wsMetricsCallback)
-	a.ws.Start(symbols)
+	resolved := make([]string, 0, len(symbols))
+	for _, symbol := range symbols {
+		real, _, err := a.resolveSymbol(symbol)
+		if err != nil {
+			continue
+		}
+		resolved = append(resolved, real)
+	}
+	a.ws.Start(resolved)
 }
 
 func (a *Adapter) SubscribeSymbol(symbol string) bool {
 	if a.ws == nil {
 		return false
 	}
-	return a.ws.SubscribeSymbol(symbol)
+	real, _, err := a.resolveSymbol(symbol)
+	if err != nil {
+		return false
+	}
+	return a.ws.SubscribeSymbol(real)
 }
 
 func (a *Adapter) GetBBO(symbol string) (exchange.BBO, bool) {
 	if a.ws == nil {
 		return exchange.BBO{}, false
 	}
-	if !strings.Contains(symbol, "USDT") {
-		symbol += "USDT"
+	real, mult, err := a.resolveSymbol(symbol)
+	if err != nil {
+		return exchange.BBO{}, false
 	}
-	val, ok := a.ws.store.prices.Load(symbol)
+	val, ok := a.ws.store.prices.Load(real)
 	if !ok {
 		return exchange.BBO{}, false
 	}
 	bbo := val.(bbo)
-	return exchange.BBO{Bid: bbo.Bid, Ask: bbo.Ask}, true
+	return exchange.BBO{
+		Bid: exchange.ScalePriceFromContracts(bbo.Bid, mult),
+		Ask: exchange.ScalePriceFromContracts(bbo.Ask, mult),
+	}, true
 }
 
 func (a *Adapter) GetPriceStore() *sync.Map {
@@ -1156,34 +1320,68 @@ func (a *Adapter) SubscribeDepth(symbol string) bool {
 	if a.ws == nil {
 		return false
 	}
-	return a.ws.SubscribeDepth(symbol)
+	real, _, err := a.resolveSymbol(symbol)
+	if err != nil {
+		return false
+	}
+	return a.ws.SubscribeDepth(real)
 }
 
 func (a *Adapter) UnsubscribeDepth(symbol string) bool {
 	if a.ws == nil {
 		return false
 	}
-	return a.ws.UnsubscribeDepth(symbol)
+	real, _, err := a.resolveSymbol(symbol)
+	if err != nil {
+		return false
+	}
+	return a.ws.UnsubscribeDepth(real)
 }
 
 func (a *Adapter) GetDepth(symbol string) (*exchange.Orderbook, bool) {
 	if a.ws == nil {
 		return nil, false
 	}
-	if !strings.Contains(symbol, "USDT") {
-		symbol += "USDT"
+	real, mult, err := a.resolveSymbol(symbol)
+	if err != nil {
+		return nil, false
 	}
-	val, ok := a.ws.depthStore.Load(symbol)
+	val, ok := a.ws.depthStore.Load(real)
 	if !ok {
 		return nil, false
 	}
-	return val.(*exchange.Orderbook), true
+	ob := val.(*exchange.Orderbook)
+	clone := &exchange.Orderbook{
+		Symbol: symbol,
+		Time:   ob.Time,
+		Bids:   make([]exchange.PriceLevel, len(ob.Bids)),
+		Asks:   make([]exchange.PriceLevel, len(ob.Asks)),
+	}
+	for i, level := range ob.Bids {
+		clone.Bids[i] = exchange.PriceLevel{
+			Price:    exchange.ScalePriceFromContracts(level.Price, mult),
+			Quantity: exchange.ScaleSizeFromContracts(level.Quantity, mult),
+		}
+	}
+	for i, level := range ob.Asks {
+		clone.Asks[i] = exchange.PriceLevel{
+			Price:    exchange.ScalePriceFromContracts(level.Price, mult),
+			Quantity: exchange.ScaleSizeFromContracts(level.Quantity, mult),
+		}
+	}
+	return clone, true
 }
 
 // ==================== WebSocket: Private ====================
 
 func (a *Adapter) StartPrivateStream() {
-	a.wsPriv = NewWSPrivateClient(a.apiKey, a.secretKey, a.passphrase, &a.orderCallback)
+	a.wsPriv = NewWSPrivateClient(a.apiKey, a.secretKey, a.passphrase, &a.orderCallback, func(symbol string, qty float64, price float64) (string, float64, float64) {
+		bare, mult, err := a.canonicalSymbol(symbol)
+		if err != nil {
+			return symbol, qty, price
+		}
+		return bare, exchange.ScaleSizeFromContracts(qty, mult), exchange.ScalePriceFromContracts(price, mult)
+	})
 	a.wsPriv.SetOrderMetricsCallback(a.orderMetricsCallback)
 	a.wsPriv.Start()
 }
@@ -1202,6 +1400,7 @@ func (a *Adapter) GetOrderUpdate(orderID string) (exchange.OrderUpdate, bool) {
 		Status:       info.Status,
 		FilledVolume: info.FilledVolume,
 		AvgPrice:     info.AvgPrice,
+		Symbol:       info.Symbol,
 	}, true
 }
 
@@ -1210,6 +1409,19 @@ func parseRawFloat(raw json.RawMessage) float64 {
 	s := strings.Trim(string(raw), "\"")
 	f, _ := strconv.ParseFloat(s, 64)
 	return f
+}
+
+func countDecimalsFloat(v float64) int {
+	return countDecimals(exchange.FormatFloat(v))
+}
+
+func countDecimals(s string) int {
+	idx := strings.IndexByte(s, '.')
+	if idx < 0 {
+		return 0
+	}
+	d := strings.TrimRight(s[idx+1:], "0")
+	return len(d)
 }
 
 // Compile-time interface check.
@@ -1232,7 +1444,11 @@ func (b *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 		"limit":       strconv.Itoa(limit),
 	}
 	if !nonASCII {
-		params["symbol"] = symbol
+		realSymbol, _, err := b.resolveSymbol(symbol)
+		if err != nil {
+			return nil, fmt.Errorf("GetUserTrades resolve: %w", err)
+		}
+		params["symbol"] = realSymbol
 	}
 	body, err := b.client.Get("/api/v2/mix/order/fills", params)
 	if err != nil {
@@ -1272,6 +1488,10 @@ func (b *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 		}
 		price, _ := strconv.ParseFloat(t.Price, 64)
 		qty, _ := strconv.ParseFloat(t.BaseVolume, 64)
+		bare, mult, err := b.canonicalSymbol(t.Symbol)
+		if err != nil {
+			return nil, fmt.Errorf("GetUserTrades canonical: %w", err)
+		}
 		var fee float64
 		feeCoin := "USDT"
 		if len(t.FeeDetail) > 0 {
@@ -1287,10 +1507,10 @@ func (b *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 		trades = append(trades, exchange.Trade{
 			TradeID:  t.TradeID,
 			OrderID:  t.OrderID,
-			Symbol:   t.Symbol,
+			Symbol:   bare,
 			Side:     strings.ToLower(t.Side),
-			Price:    price,
-			Quantity: qty,
+			Price:    exchange.ScalePriceFromContracts(price, mult),
+			Quantity: exchange.ScaleSizeFromContracts(qty, mult),
 			Fee:      fee,
 			FeeCoin:  feeCoin,
 			Time:     time.UnixMilli(ms),
@@ -1306,9 +1526,12 @@ func (a *Adapter) GetFundingFees(symbol string, since time.Time) ([]exchange.Fun
 	if containsNonASCII(symbol) {
 		return a.getFundingFeesViaNoFilter(symbol, since)
 	}
-
+	realSymbol, _, err := a.resolveSymbol(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("GetFundingFees resolve: %w", err)
+	}
 	params := map[string]string{
-		"symbol":       symbol,
+		"symbol":       realSymbol,
 		"productType":  "USDT-FUTURES",
 		"businessType": "contract_settle_fee",
 		"startTime":    strconv.FormatInt(since.UnixMilli(), 10),
@@ -1340,7 +1563,7 @@ func (a *Adapter) GetFundingFees(symbol string, since time.Time) ([]exchange.Fun
 	out := make([]exchange.FundingPayment, 0, len(resp.Data.Bills))
 	for _, b := range resp.Data.Bills {
 		// Filter: only include bills matching the requested symbol.
-		if b.Symbol != "" && b.Symbol != symbol {
+		if b.Symbol != "" && b.Symbol != realSymbol {
 			continue
 		}
 		amt, _ := strconv.ParseFloat(b.Amount, 64)
@@ -1439,13 +1662,19 @@ func (a *Adapter) getFundingFeesViaNoFilter(symbol string, since time.Time) ([]e
 // non-ASCII symbols the signed query omits `symbol` and filters locally.
 func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.ClosePnL, error) {
 	nonASCII := containsNonASCII(symbol)
+	mult := 1.0
 	params := map[string]string{
 		"productType": "USDT-FUTURES",
 		"startTime":   strconv.FormatInt(since.UnixMilli(), 10),
 		"limit":       "20",
 	}
 	if !nonASCII {
-		params["symbol"] = symbol
+		realSymbol, resolvedMult, err := a.resolveSymbol(symbol)
+		if err != nil {
+			return nil, fmt.Errorf("GetClosePnL resolve: %w", err)
+		}
+		params["symbol"] = realSymbol
+		mult = resolvedMult
 	}
 	body, err := a.client.Get("/api/v2/mix/position/history-position", params)
 	if err != nil {
@@ -1498,9 +1727,9 @@ func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 			Fees:       openFee + closeFee,
 			Funding:    funding,
 			NetPnL:     netProfit,
-			EntryPrice: entryPrice,
-			ExitPrice:  exitPrice,
-			CloseSize:  closeSize,
+			EntryPrice: exchange.ScalePriceFromContracts(entryPrice, mult),
+			ExitPrice:  exchange.ScalePriceFromContracts(exitPrice, mult),
+			CloseSize:  exchange.ScaleSizeFromContracts(closeSize, mult),
 			Side:       r.HoldSide, // already "long" or "short"
 			CloseTime:  time.UnixMilli(ms),
 		})
@@ -1510,16 +1739,28 @@ func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 
 // PlaceStopLoss places a plan (conditional) order on Bitget.
 func (a *Adapter) PlaceStopLoss(params exchange.StopLossParams) (string, error) {
+	realSymbol, mult, err := a.resolveSymbol(params.Symbol)
+	if err != nil {
+		return "", fmt.Errorf("PlaceStopLoss resolve: %w", err)
+	}
+	size, err := a.nativeOrderSize(params.Symbol, params.Size, mult)
+	if err != nil {
+		return "", fmt.Errorf("PlaceStopLoss size: %w", err)
+	}
+	triggerPrice, err := a.nativeOrderPrice(params.TriggerPrice, mult)
+	if err != nil {
+		return "", fmt.Errorf("PlaceStopLoss trigger: %w", err)
+	}
 	p := map[string]string{
-		"symbol":       params.Symbol,
+		"symbol":       realSymbol,
 		"productType":  productTypeUSDTFutures,
 		"marginCoin":   marginCoinUSDT,
 		"marginMode":   "crossed",
 		"planType":     "normal_plan",
 		"orderType":    "market",
-		"triggerPrice": params.TriggerPrice,
+		"triggerPrice": triggerPrice,
 		"triggerType":  "mark_price",
-		"size":         params.Size,
+		"size":         size,
 		"side":         string(params.Side),
 		"reduceOnly":   "YES",
 	}
@@ -1548,16 +1789,28 @@ func (a *Adapter) PlaceStopLoss(params exchange.StopLossParams) (string, error) 
 
 // PlaceTakeProfit places a take-profit plan order on Bitget futures.
 func (a *Adapter) PlaceTakeProfit(params exchange.TakeProfitParams) (string, error) {
+	realSymbol, mult, err := a.resolveSymbol(params.Symbol)
+	if err != nil {
+		return "", fmt.Errorf("PlaceTakeProfit resolve: %w", err)
+	}
+	size, err := a.nativeOrderSize(params.Symbol, params.Size, mult)
+	if err != nil {
+		return "", fmt.Errorf("PlaceTakeProfit size: %w", err)
+	}
+	triggerPrice, err := a.nativeOrderPrice(params.TriggerPrice, mult)
+	if err != nil {
+		return "", fmt.Errorf("PlaceTakeProfit trigger: %w", err)
+	}
 	p := map[string]string{
-		"symbol":       params.Symbol,
+		"symbol":       realSymbol,
 		"productType":  productTypeUSDTFutures,
 		"marginCoin":   marginCoinUSDT,
 		"marginMode":   "crossed",
 		"planType":     "normal_plan",
 		"orderType":    "market",
-		"triggerPrice": params.TriggerPrice,
+		"triggerPrice": triggerPrice,
 		"triggerType":  "mark_price",
-		"size":         params.Size,
+		"size":         size,
 		"side":         string(params.Side),
 		"reduceOnly":   "YES",
 	}
@@ -1591,8 +1844,12 @@ func (a *Adapter) CancelTakeProfit(symbol, orderID string) error {
 
 // CancelStopLoss cancels a plan (conditional) order on Bitget.
 func (a *Adapter) CancelStopLoss(symbol, orderID string) error {
+	realSymbol, _, err := a.resolveSymbol(symbol)
+	if err != nil {
+		return fmt.Errorf("CancelStopLoss resolve: %w", err)
+	}
 	p := map[string]string{
-		"symbol":      symbol,
+		"symbol":      realSymbol,
 		"productType": productTypeUSDTFutures,
 		"orderId":     orderID,
 	}
@@ -1618,14 +1875,18 @@ func (a *Adapter) CancelStopLoss(symbol, orderID string) error {
 // Surfaces both cancel errors joined via errors.Join so callers can log which
 // subset failed; previous HEAD silently discarded both errors.
 func (a *Adapter) CancelAllOrders(symbol string) error {
+	realSymbol, _, err := a.resolveSymbol(symbol)
+	if err != nil {
+		return fmt.Errorf("CancelAllOrders resolve: %w", err)
+	}
 	var errs []error
 	if _, err := a.client.Post("/api/v2/mix/order/cancel-plan-order", map[string]string{
-		"symbol": symbol, "productType": "USDT-FUTURES",
+		"symbol": realSymbol, "productType": "USDT-FUTURES",
 	}); err != nil {
 		errs = append(errs, fmt.Errorf("cancel plan orders: %w", err))
 	}
 	if _, err := a.client.Post("/api/v2/mix/order/batch-cancel-orders", map[string]string{
-		"symbol": symbol, "productType": "USDT-FUTURES",
+		"symbol": realSymbol, "productType": "USDT-FUTURES",
 	}); err != nil {
 		errs = append(errs, fmt.Errorf("batch cancel orders: %w", err))
 	}

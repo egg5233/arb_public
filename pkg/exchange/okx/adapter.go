@@ -606,6 +606,7 @@ func (a *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 			SizeDecimals:  countDecimalsFloat(stepSize),
 			PriceStep:     priceStep,
 			PriceDecimals: countDecimals(inst.TickSz),
+			Multiplier:    exchange.NormalizeMultiplier(ctVal),
 		}
 	}
 

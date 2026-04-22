@@ -24,6 +24,7 @@ var wsPrivLog = utils.NewLogger("bitget-ws-priv")
 type orderInfo struct {
 	OrderID      string
 	ClientOID    string
+	Symbol       string
 	Status       string  // NEW, PARTIALLY_FILLED, FILLED, CANCELED
 	FilledVolume float64 // accBaseVolume
 	AvgPrice     float64
@@ -54,11 +55,12 @@ type WSPrivateClient struct {
 	stop                 chan struct{}
 	store                *orderStore
 	onFill               *func(exchange.OrderUpdate)
+	normalize            func(symbol string, qty float64, price float64) (string, float64, float64)
 	orderMetricsCallback exchange.OrderMetricsCallback
 }
 
 // NewWSPrivateClient creates a new private WebSocket client.
-func NewWSPrivateClient(apiKey, secretKey, passphrase string, onFill *func(exchange.OrderUpdate)) *WSPrivateClient {
+func NewWSPrivateClient(apiKey, secretKey, passphrase string, onFill *func(exchange.OrderUpdate), normalize func(symbol string, qty float64, price float64) (string, float64, float64)) *WSPrivateClient {
 	return &WSPrivateClient{
 		apiKey:     apiKey,
 		secretKey:  secretKey,
@@ -66,6 +68,7 @@ func NewWSPrivateClient(apiKey, secretKey, passphrase string, onFill *func(excha
 		stop:       make(chan struct{}),
 		store:      &orderStore{},
 		onFill:     onFill,
+		normalize:  normalize,
 	}
 }
 
@@ -199,21 +202,25 @@ func (ws *WSPrivateClient) handlePrivateMessage(msg []byte) {
 		avgPriceStr, _ := dataMap["priceAvg"].(string)
 		avgPrice, _ := strconv.ParseFloat(avgPriceStr, 64)
 
-		info := orderInfo{
-			OrderID:      orderID,
-			ClientOID:    clientOid,
-			Status:       strings.ToLower(status),
-			FilledVolume: filled,
-			AvgPrice:     avgPrice,
-		}
-		ws.store.UpdateOrder(info)
-
 		// In one-way mode, reduceOnly="YES" means this is a close fill
 		// (SL trigger, TP trigger, or liquidation).
 		isClose := strings.EqualFold(reduceOnly, "YES")
 
 		// Normalize instId to internal symbol format (e.g. "4USDT").
 		symbol := strings.TrimSuffix(instId, "_UMCBL")
+		if ws.normalize != nil {
+			symbol, filled, avgPrice = ws.normalize(symbol, filled, avgPrice)
+		}
+
+		info := orderInfo{
+			OrderID:      orderID,
+			ClientOID:    clientOid,
+			Symbol:       symbol,
+			Status:       strings.ToLower(status),
+			FilledVolume: filled,
+			AvgPrice:     avgPrice,
+		}
+		ws.store.UpdateOrder(info)
 
 		if filled > 0 {
 			wsPrivLog.Info("order update: %s status=%s filled=%.6f avg=%.8f reduceOnly=%s symbol=%s",

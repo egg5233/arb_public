@@ -25,6 +25,7 @@ type Adapter struct {
 	client    *Client
 	apiKey    string
 	secretKey string
+	aliases   exchange.SymbolAliasCache
 
 	// Price stream
 	priceStore sync.Map // symbol -> exchange.BBO
@@ -155,6 +156,84 @@ func NewAdapter(cfg exchange.ExchangeConfig) *Adapter {
 
 func (b *Adapter) Name() string { return "binance" }
 
+func (b *Adapter) resolveSymbol(symbol string) (string, float64, error) {
+	if b.client == nil {
+		return symbol, 1, nil
+	}
+	if real, mult, hit := b.aliases.ResolveCached(symbol); hit {
+		return real, mult, nil
+	}
+	if err := b.aliases.Ensure(func() error {
+		_, err := b.LoadAllContracts()
+		return err
+	}); err != nil {
+		return "", 0, fmt.Errorf("resolveSymbol %s: %w", symbol, err)
+	}
+	real, mult, _ := b.aliases.ResolveCached(symbol)
+	return real, mult, nil
+}
+
+func (b *Adapter) canonicalSymbol(symbol string) (string, float64, error) {
+	if b.client == nil {
+		return symbol, 1, nil
+	}
+	if bare, mult, hit := b.aliases.CanonicalCached(symbol); hit {
+		return bare, mult, nil
+	}
+	if err := b.aliases.Ensure(func() error {
+		_, err := b.LoadAllContracts()
+		return err
+	}); err != nil {
+		return "", 0, fmt.Errorf("canonicalSymbol %s: %w", symbol, err)
+	}
+	bare, mult, _ := b.aliases.CanonicalCached(symbol)
+	return bare, mult, nil
+}
+
+func (b *Adapter) contractInfo(symbol string) (exchange.ContractInfo, error) {
+	contracts, err := b.LoadAllContracts()
+	if err != nil {
+		return exchange.ContractInfo{}, err
+	}
+	info, ok := contracts[symbol]
+	if !ok {
+		return exchange.ContractInfo{}, fmt.Errorf("contract info not found for %s", symbol)
+	}
+	return info, nil
+}
+
+func (b *Adapter) nativeOrderSize(symbol string, sizeBase string, mult float64) (string, error) {
+	size, err := strconv.ParseFloat(sizeBase, 64)
+	if err != nil {
+		return "", err
+	}
+	info, err := b.contractInfo(symbol)
+	if err != nil {
+		return "", err
+	}
+	step := exchange.NativeContractStep(info)
+	minSize := exchange.NativeContractMin(info)
+	contracts := exchange.ScaleSizeToContracts(size, mult)
+	if step > 0 {
+		contracts = math.Floor(contracts/step) * step
+	}
+	if contracts <= 0 || (minSize > 0 && contracts < minSize) {
+		return "", exchange.ErrBelowMinSize
+	}
+	return exchange.FormatFloat(contracts), nil
+}
+
+func (b *Adapter) nativeOrderPrice(priceBase string, mult float64) (string, error) {
+	if priceBase == "" {
+		return "", nil
+	}
+	price, err := strconv.ParseFloat(priceBase, 64)
+	if err != nil {
+		return "", err
+	}
+	return exchange.FormatFloat(exchange.ScalePriceToContracts(price, mult)), nil
+}
+
 // ---------------------------------------------------------------------------
 // Orders
 // ---------------------------------------------------------------------------
@@ -162,14 +241,26 @@ func (b *Adapter) Name() string { return "binance" }
 func (b *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 	log.Printf("[binance] PlaceOrder: symbol=%s side=%s type=%s size=%s price=%s force=%s reduceOnly=%v",
 		req.Symbol, req.Side, req.OrderType, req.Size, req.Price, req.Force, req.ReduceOnly)
+	realSymbol, mult, err := b.resolveSymbol(req.Symbol)
+	if err != nil {
+		return "", fmt.Errorf("PlaceOrder resolve: %w", err)
+	}
+	qty, err := b.nativeOrderSize(req.Symbol, req.Size, mult)
+	if err != nil {
+		return "", fmt.Errorf("PlaceOrder size: %w", err)
+	}
 	params := map[string]string{
-		"symbol":   req.Symbol,
+		"symbol":   realSymbol,
 		"side":     mapSide(req.Side),
 		"type":     mapOrderType(req.OrderType),
-		"quantity": req.Size,
+		"quantity": qty,
 	}
 	if req.OrderType == "limit" {
-		params["price"] = req.Price
+		price, err := b.nativeOrderPrice(req.Price, mult)
+		if err != nil {
+			return "", fmt.Errorf("PlaceOrder price: %w", err)
+		}
+		params["price"] = price
 		params["timeInForce"] = mapTimeInForce(req.Force)
 	}
 	if req.ReduceOnly {
@@ -203,11 +294,15 @@ func (b *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 }
 
 func (b *Adapter) CancelOrder(symbol, orderID string) error {
+	realSymbol, _, err := b.resolveSymbol(symbol)
+	if err != nil {
+		return fmt.Errorf("CancelOrder resolve: %w", err)
+	}
 	params := map[string]string{
-		"symbol":  symbol,
+		"symbol":  realSymbol,
 		"orderId": orderID,
 	}
-	_, err := b.client.Delete("/fapi/v1/order", params)
+	_, err = b.client.Delete("/fapi/v1/order", params)
 	if err != nil {
 		// Ignore "Unknown order" -- already cancelled or filled
 		if isAPIError(err, -2011) {
@@ -219,7 +314,11 @@ func (b *Adapter) CancelOrder(symbol, orderID string) error {
 }
 
 func (b *Adapter) GetPendingOrders(symbol string) ([]exchange.Order, error) {
-	params := map[string]string{"symbol": symbol}
+	realSymbol, _, err := b.resolveSymbol(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("GetPendingOrders resolve: %w", err)
+	}
+	params := map[string]string{"symbol": realSymbol}
 	body, err := b.client.Get("/fapi/v1/openOrders", params)
 	if err != nil {
 		return nil, fmt.Errorf("GetPendingOrders: %w", err)
@@ -245,14 +344,20 @@ func (b *Adapter) GetPendingOrders(symbol string) ([]exchange.Order, error) {
 		if o.Type == "STOP_MARKET" || o.Type == "TAKE_PROFIT_MARKET" {
 			continue
 		}
+		bare, mult, err := b.canonicalSymbol(o.Symbol)
+		if err != nil {
+			return nil, fmt.Errorf("GetPendingOrders canonical: %w", err)
+		}
+		price, _ := strconv.ParseFloat(o.Price, 64)
+		qty, _ := strconv.ParseFloat(o.OrigQty, 64)
 		out = append(out, exchange.Order{
 			OrderID:   strconv.FormatInt(o.OrderID, 10),
 			ClientOid: o.ClientOrderID,
-			Symbol:    o.Symbol,
+			Symbol:    bare,
 			Side:      strings.ToLower(o.Side),
 			OrderType: strings.ToLower(o.Type),
-			Price:     o.Price,
-			Size:      o.OrigQty,
+			Price:     exchange.FormatFloat(exchange.ScalePriceFromContracts(price, mult)),
+			Size:      exchange.FormatFloat(exchange.ScaleSizeFromContracts(qty, mult)),
 			Status:    o.Status,
 		})
 	}
@@ -260,8 +365,12 @@ func (b *Adapter) GetPendingOrders(symbol string) ([]exchange.Order, error) {
 }
 
 func (b *Adapter) GetOrderFilledQty(orderID, symbol string) (float64, error) {
+	realSymbol, mult, err := b.resolveSymbol(symbol)
+	if err != nil {
+		return 0, fmt.Errorf("GetOrderFilledQty resolve: %w", err)
+	}
 	params := map[string]string{
-		"symbol":  symbol,
+		"symbol":  realSymbol,
 		"orderId": orderID,
 	}
 	body, err := b.client.Get("/fapi/v1/order", params)
@@ -280,11 +389,11 @@ func (b *Adapter) GetOrderFilledQty(orderID, symbol string) (float64, error) {
 		b.orderMetricsCallback(exchange.OrderMetricEvent{
 			Type:      exchange.OrderMetricFilled,
 			OrderID:   orderID,
-			FilledQty: qty,
+			FilledQty: exchange.ScaleSizeFromContracts(qty, mult),
 			Timestamp: time.Now(),
 		})
 	}
-	return qty, nil
+	return exchange.ScaleSizeFromContracts(qty, mult), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -292,7 +401,11 @@ func (b *Adapter) GetOrderFilledQty(orderID, symbol string) (float64, error) {
 // ---------------------------------------------------------------------------
 
 func (b *Adapter) GetPosition(symbol string) ([]exchange.Position, error) {
-	params := map[string]string{"symbol": symbol}
+	realSymbol, _, err := b.resolveSymbol(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("GetPosition resolve: %w", err)
+	}
+	params := map[string]string{"symbol": realSymbol}
 	return b.fetchPositions(params)
 }
 
@@ -335,11 +448,18 @@ func (b *Adapter) fetchPositions(params map[string]string) ([]exchange.Position,
 	out := make([]exchange.Position, 0, len(raw))
 	for _, p := range raw {
 		amt, _ := strconv.ParseFloat(p.PositionAmt, 64)
+		bare, mult, err := b.canonicalSymbol(p.Symbol)
+		if err != nil {
+			return nil, fmt.Errorf("fetchPositions canonical: %w", err)
+		}
 		holdSide := "long"
 		if amt < 0 {
 			holdSide = "short"
 		}
-		absAmt := strconv.FormatFloat(math.Abs(amt), 'f', -1, 64)
+		absAmt := exchange.FormatFloat(exchange.ScaleSizeFromContracts(math.Abs(amt), mult))
+		entryPrice, _ := strconv.ParseFloat(p.EntryPrice, 64)
+		liqPrice, _ := strconv.ParseFloat(p.LiquidationPrice, 64)
+		markPrice, _ := strconv.ParseFloat(p.MarkPrice, 64)
 
 		marginMode := "crossed"
 		if strings.ToLower(p.MarginType) == "isolated" {
@@ -347,16 +467,16 @@ func (b *Adapter) fetchPositions(params map[string]string) ([]exchange.Position,
 		}
 
 		out = append(out, exchange.Position{
-			Symbol:           p.Symbol,
+			Symbol:           bare,
 			HoldSide:         holdSide,
 			Total:            absAmt,
 			Available:        absAmt,
-			AverageOpenPrice: p.EntryPrice,
+			AverageOpenPrice: exchange.FormatFloat(exchange.ScalePriceFromContracts(entryPrice, mult)),
 			UnrealizedPL:     p.UnRealizedProfit,
 			Leverage:         p.Leverage,
 			MarginMode:       marginMode,
-			LiquidationPrice: p.LiquidationPrice,
-			MarkPrice:        p.MarkPrice,
+			LiquidationPrice: exchange.FormatFloat(exchange.ScalePriceFromContracts(liqPrice, mult)),
+			MarkPrice:        exchange.FormatFloat(exchange.ScalePriceFromContracts(markPrice, mult)),
 		})
 	}
 	return out, nil
@@ -367,11 +487,15 @@ func (b *Adapter) fetchPositions(params map[string]string) ([]exchange.Position,
 // ---------------------------------------------------------------------------
 
 func (b *Adapter) SetLeverage(symbol string, leverage string, holdSide string) error {
+	realSymbol, _, err := b.resolveSymbol(symbol)
+	if err != nil {
+		return fmt.Errorf("SetLeverage resolve: %w", err)
+	}
 	params := map[string]string{
-		"symbol":   symbol,
+		"symbol":   realSymbol,
 		"leverage": leverage,
 	}
-	_, err := b.client.Post("/fapi/v1/leverage", params)
+	_, err = b.client.Post("/fapi/v1/leverage", params)
 	if err != nil {
 		return fmt.Errorf("SetLeverage: %w", err)
 	}
@@ -379,16 +503,20 @@ func (b *Adapter) SetLeverage(symbol string, leverage string, holdSide string) e
 }
 
 func (b *Adapter) SetMarginMode(symbol string, mode string) error {
+	realSymbol, _, err := b.resolveSymbol(symbol)
+	if err != nil {
+		return fmt.Errorf("SetMarginMode resolve: %w", err)
+	}
 	binanceMode := "CROSSED"
 	if strings.ToLower(mode) == "isolated" {
 		binanceMode = "ISOLATED"
 	}
 
 	params := map[string]string{
-		"symbol":     symbol,
+		"symbol":     realSymbol,
 		"marginType": binanceMode,
 	}
-	_, err := b.client.Post("/fapi/v1/marginType", params)
+	_, err = b.client.Post("/fapi/v1/marginType", params)
 	if err != nil {
 		// -4046: "No need to change margin type" -- already set
 		if isAPIError(err, -4046) {
@@ -421,6 +549,7 @@ func (b *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 	var resp struct {
 		Symbols []struct {
 			Symbol       string `json:"symbol"`
+			BaseAsset    string `json:"baseAsset"`
 			Status       string `json:"status"`
 			ContractType string `json:"contractType"`
 			DeliveryDate int64  `json:"deliveryDate"`
@@ -443,11 +572,55 @@ func (b *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 	const deliveryDateSentinelCutoffMs int64 = 4102444800000 // 2099-12-31 UTC
 
 	result := make(map[string]exchange.ContractInfo, len(resp.Symbols))
+	aliasMap := make(map[string]string, len(resp.Symbols))
+	reverseMap := make(map[string]string, len(resp.Symbols))
+	multiplierMap := make(map[string]float64, len(resp.Symbols))
 	for _, sym := range resp.Symbols {
 		if sym.Status != "TRADING" {
 			continue
 		}
-		ci := exchange.ContractInfo{Symbol: sym.Symbol}
+		bareSymbol := sym.Symbol
+		if strings.HasSuffix(sym.Symbol, "USDT") {
+			bareBase, mult := exchange.DetectPrefixMultiplier(sym.BaseAsset)
+			if bareBase == "" {
+				bareBase = strings.TrimSuffix(sym.Symbol, "USDT")
+			}
+			bareSymbol = bareBase + "USDT"
+			ci := exchange.ContractInfo{Symbol: bareSymbol, Multiplier: exchange.NormalizeMultiplier(mult)}
+			// Flag scheduled delist via deliveryDate ONLY for true perpetuals.
+			// Dated quarterlies have contractType like "CURRENT_QUARTER" — skip
+			// them so this field means "perpetual with scheduled delist".
+			if sym.ContractType == "PERPETUAL" &&
+				sym.DeliveryDate > 0 &&
+				sym.DeliveryDate < deliveryDateSentinelCutoffMs {
+				ci.DeliveryDate = time.UnixMilli(sym.DeliveryDate).UTC()
+			}
+			for _, f := range sym.Filters {
+				switch f.FilterType {
+				case "LOT_SIZE":
+					minQty, _ := strconv.ParseFloat(f.MinQty, 64)
+					maxQty, _ := strconv.ParseFloat(f.MaxQty, 64)
+					stepQty, _ := strconv.ParseFloat(f.StepSize, 64)
+					ci.MinSize = exchange.ScaleSizeFromContracts(minQty, mult)
+					ci.MaxSize = exchange.ScaleSizeFromContracts(maxQty, mult)
+					ci.StepSize = exchange.ScaleSizeFromContracts(stepQty, mult)
+					ci.SizeDecimals = countDecimals(f.StepSize)
+				case "PRICE_FILTER":
+					tickSize, _ := strconv.ParseFloat(f.TickSize, 64)
+					ci.PriceStep = exchange.ScalePriceFromContracts(tickSize, mult)
+					ci.PriceDecimals = countDecimals(exchange.FormatFloat(ci.PriceStep))
+				}
+			}
+			result[bareSymbol] = ci
+			multiplierMap[bareSymbol] = exchange.NormalizeMultiplier(mult)
+			if mult > 1 {
+				aliasMap[bareSymbol] = sym.Symbol
+				reverseMap[sym.Symbol] = bareSymbol
+			}
+			continue
+		}
+		mult := 1.0
+		ci := exchange.ContractInfo{Symbol: bareSymbol, Multiplier: 1}
 		// Flag scheduled delist via deliveryDate ONLY for true perpetuals.
 		// Dated quarterlies have contractType like "CURRENT_QUARTER" — skip
 		// them so this field means "perpetual with scheduled delist".
@@ -459,16 +632,25 @@ func (b *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 		for _, f := range sym.Filters {
 			switch f.FilterType {
 			case "LOT_SIZE":
-				ci.MinSize, _ = strconv.ParseFloat(f.MinQty, 64)
-				ci.MaxSize, _ = strconv.ParseFloat(f.MaxQty, 64)
-				ci.StepSize, _ = strconv.ParseFloat(f.StepSize, 64)
+				minQty, _ := strconv.ParseFloat(f.MinQty, 64)
+				maxQty, _ := strconv.ParseFloat(f.MaxQty, 64)
+				stepQty, _ := strconv.ParseFloat(f.StepSize, 64)
+				ci.MinSize = exchange.ScaleSizeFromContracts(minQty, mult)
+				ci.MaxSize = exchange.ScaleSizeFromContracts(maxQty, mult)
+				ci.StepSize = exchange.ScaleSizeFromContracts(stepQty, mult)
 				ci.SizeDecimals = countDecimals(f.StepSize)
 			case "PRICE_FILTER":
-				ci.PriceStep, _ = strconv.ParseFloat(f.TickSize, 64)
-				ci.PriceDecimals = countDecimals(f.TickSize)
+				tickSize, _ := strconv.ParseFloat(f.TickSize, 64)
+				ci.PriceStep = exchange.ScalePriceFromContracts(tickSize, mult)
+				ci.PriceDecimals = countDecimals(exchange.FormatFloat(ci.PriceStep))
 			}
 		}
-		result[sym.Symbol] = ci
+		result[bareSymbol] = ci
+		multiplierMap[bareSymbol] = exchange.NormalizeMultiplier(mult)
+		if mult > 1 {
+			aliasMap[bareSymbol] = sym.Symbol
+			reverseMap[sym.Symbol] = bareSymbol
+		}
 	}
 
 	if len(result) == 0 {
@@ -476,7 +658,8 @@ func (b *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 	}
 
 	// Load tier-1 maintenance rates from leverageBracket (authenticated)
-	b.loadMaintenanceRates(result)
+	b.loadMaintenanceRates(result, reverseMap)
+	b.aliases.Replace(aliasMap, reverseMap, multiplierMap)
 
 	return result, nil
 }
@@ -488,7 +671,7 @@ func (b *Adapter) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 // loadMaintenanceRates fetches leverageBracket data for all symbols and populates
 // the first bracket's maintMarginRatio in each ContractInfo.
 // NOTE: leverageBracket is a USER_DATA endpoint requiring authentication.
-func (b *Adapter) loadMaintenanceRates(contracts map[string]exchange.ContractInfo) {
+func (b *Adapter) loadMaintenanceRates(contracts map[string]exchange.ContractInfo, reverseMap map[string]string) {
 	body, err := b.client.Get("/fapi/v1/leverageBracket", map[string]string{})
 	if err != nil {
 		log.Printf("[binance] loadMaintenanceRates: %v", err)
@@ -511,7 +694,11 @@ func (b *Adapter) loadMaintenanceRates(contracts map[string]exchange.ContractInf
 	}
 
 	for _, item := range brackets {
-		ci, ok := contracts[item.Symbol]
+		symbol := item.Symbol
+		if mapped, ok := reverseMap[item.Symbol]; ok {
+			symbol = mapped
+		}
+		ci, ok := contracts[symbol]
 		if !ok || len(item.Brackets) == 0 {
 			continue
 		}
@@ -519,7 +706,7 @@ func (b *Adapter) loadMaintenanceRates(contracts map[string]exchange.ContractInf
 		rate := item.Brackets[0].MaintMarginRatio
 		if rate > 0 && rate < 1.0 {
 			ci.MaintenanceRate = rate
-			contracts[item.Symbol] = ci
+			contracts[symbol] = ci
 		}
 	}
 }
@@ -528,8 +715,12 @@ func (b *Adapter) loadMaintenanceRates(contracts map[string]exchange.ContractInf
 // notional size by querying the authenticated leverageBracket endpoint.
 // Binance maintMarginRatio is already decimal (0.0065 = 0.65%).
 func (b *Adapter) GetMaintenanceRate(symbol string, notionalUSDT float64) (float64, error) {
+	realSymbol, _, err := b.resolveSymbol(symbol)
+	if err != nil {
+		return 0, fmt.Errorf("GetMaintenanceRate resolve: %w", err)
+	}
 	params := map[string]string{
-		"symbol": symbol,
+		"symbol": realSymbol,
 	}
 	body, err := b.client.Get("/fapi/v1/leverageBracket", params)
 	if err != nil {
@@ -589,7 +780,11 @@ func (b *Adapter) GetMaintenanceRate(symbol string, notionalUSDT float64) (float
 // ---------------------------------------------------------------------------
 
 func (b *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
-	params := map[string]string{"symbol": symbol}
+	realSymbol, _, err := b.resolveSymbol(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("GetFundingRate resolve: %w", err)
+	}
+	params := map[string]string{"symbol": realSymbol}
 	body, err := b.client.Get("/fapi/v1/premiumIndex", params)
 	if err != nil {
 		return nil, fmt.Errorf("GetFundingRate: %w", err)
@@ -610,14 +805,14 @@ func (b *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
 	nextFunding := time.UnixMilli(resp.NextFundingTime)
 
 	// Get funding interval and rate caps from fundingInfo
-	fi, err := b.getFundingInfo(symbol)
+	fi, err := b.getFundingInfo(realSymbol)
 	if err != nil {
 		// Default to 8 hours if we can't determine the interval
 		fi = &fundingInfo{Interval: 8 * time.Hour}
 	}
 
 	return &exchange.FundingRate{
-		Symbol:      resp.Symbol,
+		Symbol:      symbol,
 		Rate:        rate,
 		Interval:    fi.Interval,
 		NextFunding: nextFunding,
@@ -677,7 +872,11 @@ func (b *Adapter) getFundingInfo(symbol string) (*fundingInfo, error) {
 }
 
 func (b *Adapter) GetFundingInterval(symbol string) (time.Duration, error) {
-	fi, err := b.getFundingInfo(symbol)
+	realSymbol, _, err := b.resolveSymbol(symbol)
+	if err != nil {
+		return 0, fmt.Errorf("GetFundingInterval resolve: %w", err)
+	}
+	fi, err := b.getFundingInfo(realSymbol)
 	if err != nil {
 		return 0, err
 	}
@@ -783,8 +982,12 @@ func (b *Adapter) GetOrderbook(symbol string, depth int) (*exchange.Orderbook, e
 	if depth <= 0 {
 		depth = 20
 	}
+	realSymbol, mult, err := b.resolveSymbol(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("GetOrderbook resolve: %w", err)
+	}
 	params := map[string]string{
-		"symbol": symbol,
+		"symbol": realSymbol,
 		"limit":  strconv.Itoa(depth),
 	}
 	body, err := b.client.Get("/fapi/v1/depth", params)
@@ -816,7 +1019,10 @@ func (b *Adapter) GetOrderbook(symbol string, depth int) (*exchange.Orderbook, e
 			}
 			price, _ := strconv.ParseFloat(priceStr, 64)
 			qty, _ := strconv.ParseFloat(qtyStr, 64)
-			levels = append(levels, exchange.PriceLevel{Price: price, Quantity: qty})
+			levels = append(levels, exchange.PriceLevel{
+				Price:    exchange.ScalePriceFromContracts(price, mult),
+				Quantity: exchange.ScaleSizeFromContracts(qty, mult),
+			})
 		}
 		return levels
 	}
@@ -1042,8 +1248,12 @@ func (b *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 	if limit <= 0 {
 		limit = 100
 	}
+	realSymbol, _, err := b.resolveSymbol(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("GetUserTrades resolve: %w", err)
+	}
 	params := map[string]string{
-		"symbol":    symbol,
+		"symbol":    realSymbol,
 		"startTime": strconv.FormatInt(startTime.UnixMilli(), 10),
 		"limit":     strconv.Itoa(limit),
 	}
@@ -1071,6 +1281,10 @@ func (b *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 	for _, t := range resp {
 		price, _ := strconv.ParseFloat(t.Price, 64)
 		qty, _ := strconv.ParseFloat(t.Qty, 64)
+		bare, mult, err := b.canonicalSymbol(t.Symbol)
+		if err != nil {
+			return nil, fmt.Errorf("GetUserTrades canonical: %w", err)
+		}
 		fee, _ := strconv.ParseFloat(t.Commission, 64)
 		if fee < 0 {
 			fee = -fee
@@ -1078,10 +1292,10 @@ func (b *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 		trades = append(trades, exchange.Trade{
 			TradeID:  strconv.FormatInt(t.ID, 10),
 			OrderID:  strconv.FormatInt(t.OrderID, 10),
-			Symbol:   t.Symbol,
+			Symbol:   bare,
 			Side:     strings.ToLower(t.Side),
-			Price:    price,
-			Quantity: qty,
+			Price:    exchange.ScalePriceFromContracts(price, mult),
+			Quantity: exchange.ScaleSizeFromContracts(qty, mult),
 			Fee:      fee,
 			FeeCoin:  t.CommissionAsset,
 			Time:     time.UnixMilli(t.Time),
@@ -1092,8 +1306,12 @@ func (b *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 
 // GetFundingFees returns funding fee history for a symbol since the given time.
 func (b *Adapter) GetFundingFees(symbol string, since time.Time) ([]exchange.FundingPayment, error) {
+	realSymbol, _, err := b.resolveSymbol(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("GetFundingFees resolve: %w", err)
+	}
 	params := map[string]string{
-		"symbol":     symbol,
+		"symbol":     realSymbol,
 		"incomeType": "FUNDING_FEE",
 		"startTime":  strconv.FormatInt(since.UnixMilli(), 10),
 		"limit":      "1000",
@@ -1126,12 +1344,16 @@ func (b *Adapter) GetFundingFees(symbol string, since time.Time) ([]exchange.Fun
 // Binance has no single position-close endpoint, so we sum REALIZED_PNL,
 // COMMISSION, and FUNDING_FEE income records for the symbol.
 func (b *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.ClosePnL, error) {
+	realSymbol, _, err := b.resolveSymbol(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("GetClosePnL resolve: %w", err)
+	}
 	var pricePnL, fees, funding float64
 
 	// Query each income type separately for reliability.
 	for _, incomeType := range []string{"REALIZED_PNL", "COMMISSION", "FUNDING_FEE"} {
 		params := map[string]string{
-			"symbol":     symbol,
+			"symbol":     realSymbol,
 			"incomeType": incomeType,
 			"startTime":  strconv.FormatInt(since.UnixMilli(), 10),
 			"limit":      "1000",
@@ -1175,12 +1397,20 @@ func (b *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 // PlaceStopLoss places a STOP_MARKET algo order on Binance futures.
 // Since 2025-12-09, conditional orders must use POST /fapi/v1/algoOrder.
 func (b *Adapter) PlaceStopLoss(params exchange.StopLossParams) (string, error) {
+	realSymbol, mult, err := b.resolveSymbol(params.Symbol)
+	if err != nil {
+		return "", fmt.Errorf("PlaceStopLoss resolve: %w", err)
+	}
+	triggerPrice, err := b.nativeOrderPrice(params.TriggerPrice, mult)
+	if err != nil {
+		return "", fmt.Errorf("PlaceStopLoss trigger: %w", err)
+	}
 	p := map[string]string{
 		"algoType":      "CONDITIONAL",
-		"symbol":        params.Symbol,
+		"symbol":        realSymbol,
 		"side":          mapSide(params.Side),
 		"type":          "STOP_MARKET",
-		"triggerPrice":  params.TriggerPrice,
+		"triggerPrice":  triggerPrice,
 		"closePosition": "true",
 	}
 
@@ -1200,13 +1430,25 @@ func (b *Adapter) PlaceStopLoss(params exchange.StopLossParams) (string, error) 
 
 // PlaceTakeProfit places a take-profit market order on Binance futures using the algo order API.
 func (b *Adapter) PlaceTakeProfit(params exchange.TakeProfitParams) (string, error) {
+	realSymbol, mult, err := b.resolveSymbol(params.Symbol)
+	if err != nil {
+		return "", fmt.Errorf("PlaceTakeProfit resolve: %w", err)
+	}
+	triggerPrice, err := b.nativeOrderPrice(params.TriggerPrice, mult)
+	if err != nil {
+		return "", fmt.Errorf("PlaceTakeProfit trigger: %w", err)
+	}
+	qty, err := b.nativeOrderSize(params.Symbol, params.Size, mult)
+	if err != nil {
+		return "", fmt.Errorf("PlaceTakeProfit size: %w", err)
+	}
 	p := map[string]string{
 		"algoType":      "CONDITIONAL",
-		"symbol":        params.Symbol,
+		"symbol":        realSymbol,
 		"side":          mapSide(params.Side),
 		"type":          "TAKE_PROFIT_MARKET",
-		"triggerPrice":  params.TriggerPrice,
-		"quantity":      params.Size,
+		"triggerPrice":  triggerPrice,
+		"quantity":      qty,
 		"closePosition": "false",
 	}
 
@@ -1263,8 +1505,12 @@ func (b *Adapter) EnsureOneWayMode() error {
 
 // CancelAllOrders cancels all open orders (regular + conditional/algo) for a symbol.
 func (b *Adapter) CancelAllOrders(symbol string) error {
-	b.client.Delete("/fapi/v1/allOpenOrders", map[string]string{"symbol": symbol})
-	b.client.Delete("/fapi/v1/algoOpenOrders", map[string]string{"symbol": symbol})
+	realSymbol, _, err := b.resolveSymbol(symbol)
+	if err != nil {
+		return fmt.Errorf("CancelAllOrders resolve: %w", err)
+	}
+	b.client.Delete("/fapi/v1/allOpenOrders", map[string]string{"symbol": realSymbol})
+	b.client.Delete("/fapi/v1/algoOpenOrders", map[string]string{"symbol": realSymbol})
 	return nil
 }
 

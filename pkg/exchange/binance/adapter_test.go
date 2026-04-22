@@ -134,6 +134,20 @@ func TestGetMaintenanceRate_Binance_TierMatching(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/fapi/v1/exchangeInfo":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"symbols": []map[string]interface{}{
+					{
+						"symbol":    "ETHUSDT",
+						"baseAsset": "ETH",
+						"status":    "TRADING",
+						"filters": []map[string]interface{}{
+							{"filterType": "LOT_SIZE", "minQty": "0.001", "maxQty": "1000", "stepSize": "0.001"},
+							{"filterType": "PRICE_FILTER", "tickSize": "0.01"},
+						},
+					},
+				},
+			})
 		case "/fapi/v1/leverageBracket":
 			// Verify authentication
 			if r.Header.Get("X-MBX-APIKEY") != "" {
@@ -224,6 +238,7 @@ func TestLoadAllContracts_Binance_DeliveryDateParsing(t *testing.T) {
 					{
 						// Normal live perpetual: year-2100 sentinel.
 						"symbol":       "BTCUSDT",
+						"baseAsset":    "BTC",
 						"status":       "TRADING",
 						"contractType": "PERPETUAL",
 						"deliveryDate": int64(4133404800000), // 2100-12-25 sentinel
@@ -236,6 +251,7 @@ func TestLoadAllContracts_Binance_DeliveryDateParsing(t *testing.T) {
 						// Delisting perpetual still in TRADING (the critical case).
 						// 1775725200000 = 2026-04-09T09:00:00Z
 						"symbol":       "WIFUSDT",
+						"baseAsset":    "WIF",
 						"status":       "TRADING",
 						"contractType": "PERPETUAL",
 						"deliveryDate": int64(1775725200000),
@@ -248,6 +264,7 @@ func TestLoadAllContracts_Binance_DeliveryDateParsing(t *testing.T) {
 						// Dated quarterly: contractType != PERPETUAL → must NOT
 						// be flagged as a delist even with a real deliveryDate.
 						"symbol":       "BTCUSDT_240329",
+						"baseAsset":    "BTC",
 						"status":       "TRADING",
 						"contractType": "CURRENT_QUARTER",
 						"deliveryDate": int64(1711699200000), // 2024-03-29

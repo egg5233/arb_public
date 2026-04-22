@@ -123,6 +123,13 @@ func (b *Adapter) handlePrivateMessage(msg []byte) {
 		oid := strconv.FormatInt(o.OrderID, 10)
 		filledVol, _ := strconv.ParseFloat(o.FilledQty, 64)
 		avgPrice, _ := strconv.ParseFloat(o.AvgPrice, 64)
+		symbol, mult, err := b.canonicalSymbol(o.Symbol)
+		if err != nil {
+			symbol = o.Symbol
+			mult = 1
+		}
+		filledVol = exchange.ScaleSizeFromContracts(filledVol, mult)
+		avgPrice = exchange.ScalePriceFromContracts(avgPrice, mult)
 
 		// ReduceOnly is true when the exchange explicitly marks the fill as reducing position,
 		// OR when it results from a TRIGGERED conditional order with closePosition=true.
@@ -131,7 +138,7 @@ func (b *Adapter) handlePrivateMessage(msg []byte) {
 			(o.ClosePosition && (o.OrigOrderType == "STOP_MARKET" || o.OrigOrderType == "TAKE_PROFIT_MARKET"))
 
 		wsPrivLog.Info("order update: %s %s %s status=%s filled=%.6f avg=%.8f R=%v cp=%v ot=%s isClose=%v",
-			o.Symbol, o.Side, oid, o.OrderStatus, filledVol, avgPrice, o.ReduceOnly, o.ClosePosition, o.OrigOrderType, isCloseFill)
+			symbol, o.Side, oid, o.OrderStatus, filledVol, avgPrice, o.ReduceOnly, o.ClosePosition, o.OrigOrderType, isCloseFill)
 
 		upd := exchange.OrderUpdate{
 			OrderID:      oid,
@@ -139,7 +146,7 @@ func (b *Adapter) handlePrivateMessage(msg []byte) {
 			Status:       strings.ToLower(o.OrderStatus),
 			FilledVolume: filledVol,
 			AvgPrice:     avgPrice,
-			Symbol:       o.Symbol,
+			Symbol:       symbol,
 			ReduceOnly:   isCloseFill,
 		}
 		b.orderStore.Store(oid, upd)
@@ -173,9 +180,15 @@ func (b *Adapter) handlePrivateMessage(msg []byte) {
 			remap := exchange.AlgoRemap{
 				AlgoID: strconv.FormatInt(algo.Order.AlgoID, 10),
 				RealID: algo.Order.RealID,
-				Symbol: algo.Order.Symbol,
+				Symbol: func() string {
+					bare, _, err := b.canonicalSymbol(algo.Order.Symbol)
+					if err != nil {
+						return algo.Order.Symbol
+					}
+					return bare
+				}(),
 			}
-			wsPrivLog.Info("algo remap: %s algoID=%s → realID=%s", algo.Order.Symbol, remap.AlgoID, remap.RealID)
+			wsPrivLog.Info("algo remap: %s algoID=%s → realID=%s", remap.Symbol, remap.AlgoID, remap.RealID)
 			if cb := b.getAlgoRemapCallback(); cb != nil {
 				cb(remap)
 			}

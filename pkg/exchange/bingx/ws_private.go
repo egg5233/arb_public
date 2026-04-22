@@ -26,19 +26,24 @@ type PrivateWS struct {
 	connMu               sync.Mutex
 	orderStore           *sync.Map
 	onFill               *func(exchange.OrderUpdate)
+	normalize            func(symbol string, qty float64, price float64) (string, float64, float64)
 	orderMetricsCallback exchange.OrderMetricsCallback
 	listenKey            string
 	done                 chan struct{}
 }
 
 // NewPrivateWS creates a new private WebSocket handler.
-func NewPrivateWS(client *Client, orderStore *sync.Map, onFill *func(exchange.OrderUpdate)) *PrivateWS {
-	return &PrivateWS{
+func NewPrivateWS(client *Client, orderStore *sync.Map, onFill *func(exchange.OrderUpdate), normalize ...func(symbol string, qty float64, price float64) (string, float64, float64)) *PrivateWS {
+	ws := &PrivateWS{
 		client:     client,
 		orderStore: orderStore,
 		onFill:     onFill,
 		done:       make(chan struct{}),
 	}
+	if len(normalize) > 0 {
+		ws.normalize = normalize[0]
+	}
+	return ws
 }
 
 func (ws *PrivateWS) SetOrderMetricsCallback(fn exchange.OrderMetricsCallback) {
@@ -250,6 +255,9 @@ func (ws *PrivateWS) handleMessage(msg []byte) {
 
 	// Convert BingX symbol format "BTC-USDT" → "BTCUSDT"
 	symbol := strings.ReplaceAll(o.Symbol, "-", "")
+	if ws.normalize != nil {
+		symbol, filledQty, avgPrice = ws.normalize(symbol, filledQty, avgPrice)
+	}
 
 	// reduceOnly: explicit flag or inferred from STOP_MARKET / TAKE_PROFIT_MARKET order type
 	reduceOnly := o.ReduceOnly || o.OrderType == "STOP_MARKET" || o.OrderType == "TAKE_PROFIT_MARKET"

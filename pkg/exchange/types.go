@@ -112,6 +112,7 @@ type ContractInfo struct {
 	SizeDecimals    int
 	PriceStep       float64
 	PriceDecimals   int
+	Multiplier      float64
 	MaintenanceRate float64 // tier-1 maintenance margin rate as decimal (0.005 = 0.5%). 0 = unknown.
 	// DeliveryDate marks a scheduled delist/expiry for the contract. Zero value
 	// means a normal perpetual (no scheduled delivery). A non-zero value is the
@@ -351,6 +352,10 @@ type MarginInterestRatePoint struct {
 // ErrHistoricalBorrowNotSupported is returned by GetMarginInterestRateHistory on
 // exchanges that do not expose a public historical borrow-rate API.
 var ErrHistoricalBorrowNotSupported = errors.New("historical borrow rate not supported on this exchange")
+
+// ErrBelowMinSize is returned when contract-step rounding trims an order below
+// the exchange's native minimum quantity.
+var ErrBelowMinSize = errors.New("below minimum size")
 
 // MarginBalance holds spot margin account info for a coin.
 type MarginBalance struct {

@@ -50,6 +50,15 @@ All notable changes to this project will be documented in this file.
 
 ## [0.32.41] - 2026-04-21
 
+## [0.32.42] - 2026-04-22
+
+### Fixed
+- **Prefix-multiplier futures normalization for Binance / Bybit / Bitget / BingX** (`pkg/exchange/...`) — bare symbols like `PEPEUSDT`, `QUBICUSDT`, and other low-price coins could map to native prefixed contracts such as `1000PEPEUSDT`, `10000QUBICUSDT`, `1000CATUSDT`, or `1000PEPE-USDT`, but the adapters were still sending the bare symbol and raw base-unit size directly to the exchange. For prefixed contracts this meant order quantity and returned prices were off by the contract multiplier, creating a live over-order and notional-accounting risk. Added shared prefix detection plus `ContractInfo.Multiplier`, taught the four affected adapters to build bare-symbol contract tables with alias maps, resolve bare->native symbols fail-closed after contract-load, convert outbound order size to contract units, convert outbound prices to per-contract prices, and convert inbound positions, orderbooks, user trades, and private order updates back to engine-facing base units / per-base prices. OKX and Gate.io behavior stays unchanged apart from now filling the informational `Multiplier` field in `ContractInfo`.
+
+### Added
+- **Shared exchange helper for prefixed contracts** (`pkg/exchange/prefix.go`, `pkg/exchange/prefix_test.go`) — `DetectPrefixMultiplier` plus common multiplier/price/size helpers for adapter-boundary conversions.
+- **Focused regression coverage for the new boundary behavior** — helper tests and updated Binance / Bybit adapter tests for lazy alias population assumptions now that symbol normalization depends on contract metadata.
+
 ### Fixed
 - **Stage 2 DB-failure fund stranding (codex independent review `d1ac2563` Finding #1 HIGH)** — when `db.GetActivePositions()` failed transiently between Stage 1 and Stage 2, `applyAllocatorOverrides` had already drained `e.allocOverrides` but Stage 2 bailed without executing, and the existing salvage block excluded in-scan symbols via `inScan[sym]`, stranding rebalance-funded capital until the next cycle. Plan `plans/PLAN-stage2-db-failure-salvage.md` v6 ALL PASS on normal + independent Codex review. Two complementary fixes:
   - **Retry helper** (`getActivePositionsWithRetry`, 2 attempts / 300ms backoff) — survives transient Redis blips at the two critical Stage 2 + salvage call sites.
@@ -571,4 +580,3 @@ No source additions beyond the 7 fix sites + 2 helper functions. `go build` clea
 
 ### Removed
 - **50% deviation guard** — removed spread deviation filter from allocator alternatives that blocked valid exchange pairs when primary pair had unusually high spread
-

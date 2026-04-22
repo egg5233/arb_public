@@ -120,6 +120,29 @@ func TestMaintenanceRateNormalization_Bybit(t *testing.T) {
 func TestGetMaintenanceRate_Bybit_TierMatching(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v5/market/instruments-info":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"retCode": 0,
+				"retMsg":  "OK",
+				"result": map[string]interface{}{
+					"list": []map[string]interface{}{
+						{
+							"symbol":       "BTCUSDT",
+							"baseCoin":     "BTC",
+							"status":       "Trading",
+							"contractType": "LinearPerpetual",
+							"lotSizeFilter": map[string]string{
+								"minOrderQty": "0.001",
+								"maxOrderQty": "100",
+								"qtyStep":     "0.001",
+							},
+							"priceFilter": map[string]string{
+								"tickSize": "0.1",
+							},
+						},
+					},
+				},
+			})
 		case "/v5/market/risk-limit":
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"retCode": 0,
@@ -190,6 +213,29 @@ func TestGetFundingFeesPaginatesTransactionLog(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v5/market/instruments-info":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"retCode": 0,
+				"retMsg":  "OK",
+				"result": map[string]interface{}{
+					"list": []map[string]interface{}{
+						{
+							"symbol":       "BTCUSDT",
+							"baseCoin":     "BTC",
+							"status":       "Trading",
+							"contractType": "LinearPerpetual",
+							"lotSizeFilter": map[string]string{
+								"minOrderQty": "0.001",
+								"maxOrderQty": "100",
+								"qtyStep":     "0.001",
+							},
+							"priceFilter": map[string]string{
+								"tickSize": "0.1",
+							},
+						},
+					},
+				},
+			})
 		case "/v5/account/transaction-log":
 			cursor := r.URL.Query().Get("cursor")
 			if cursor == "" {
@@ -277,6 +323,29 @@ func TestGetFundingFeesWalksTransactionLog24hWindows(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v5/market/instruments-info":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"retCode": 0,
+				"retMsg":  "OK",
+				"result": map[string]interface{}{
+					"list": []map[string]interface{}{
+						{
+							"symbol":       "BTCUSDT",
+							"baseCoin":     "BTC",
+							"status":       "Trading",
+							"contractType": "LinearPerpetual",
+							"lotSizeFilter": map[string]string{
+								"minOrderQty": "0.001",
+								"maxOrderQty": "100",
+								"qtyStep":     "0.001",
+							},
+							"priceFilter": map[string]string{
+								"tickSize": "0.1",
+							},
+						},
+					},
+				},
+			})
 		case "/v5/account/transaction-log":
 			startMs, _ := strconv.ParseInt(r.URL.Query().Get("startTime"), 10, 64)
 			endMs, _ := strconv.ParseInt(r.URL.Query().Get("endTime"), 10, 64)
