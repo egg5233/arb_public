@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -37,21 +38,20 @@ type priceGapCandidateView struct {
 	DisabledAt int64  `json:"disabled_at,omitempty"`
 }
 
-// priceGapCandidateMetrics is the per-candidate metrics row. Plan 05 fills in
-// the computation; this plan ships an empty slice so the UI can render.
-type priceGapCandidateMetrics struct {
-	Symbol string `json:"symbol"`
-}
-
 // priceGapStateResponse is the aggregate seed payload.
+//
+// Metrics is the real per-candidate rolling-window aggregator output
+// (pricegaptrader.CandidateMetrics, Plan 09-05). Padded with zero-activity rows
+// for every configured candidate without history so the UI always renders a
+// row per configured pair (UI-SPEC § Rolling Metrics table).
 type priceGapStateResponse struct {
-	Enabled         bool                         `json:"enabled"`
-	PaperMode       bool                         `json:"paper_mode"`
-	Budget          float64                      `json:"budget"`
-	Candidates      []priceGapCandidateView      `json:"candidates"`
-	ActivePositions []*models.PriceGapPosition   `json:"active_positions"`
-	RecentClosed    []*models.PriceGapPosition   `json:"recent_closed"`
-	Metrics         []priceGapCandidateMetrics   `json:"metrics"`
+	Enabled         bool                              `json:"enabled"`
+	PaperMode       bool                              `json:"paper_mode"`
+	Budget          float64                           `json:"budget"`
+	Candidates      []priceGapCandidateView           `json:"candidates"`
+	ActivePositions []*models.PriceGapPosition        `json:"active_positions"`
+	RecentClosed    []*models.PriceGapPosition        `json:"recent_closed"`
+	Metrics         []pricegaptrader.CandidateMetrics `json:"metrics"`
 }
 
 // priceGapHistoryLimitDefault is the default page size for /api/pricegap/closed.
@@ -109,6 +109,8 @@ func (s *Server) handlePriceGapState(w http.ResponseWriter, r *http.Request) {
 		history = []*models.PriceGapPosition{}
 	}
 
+	metrics, _ := s.computeMetricsForResponse()
+
 	resp := priceGapStateResponse{
 		Enabled:         s.cfg.PriceGapEnabled,
 		PaperMode:       s.cfg.PriceGapPaperMode,
@@ -116,9 +118,67 @@ func (s *Server) handlePriceGapState(w http.ResponseWriter, r *http.Request) {
 		Candidates:      candidates,
 		ActivePositions: active,
 		RecentClosed:    history,
-		Metrics:         []priceGapCandidateMetrics{}, // Plan 05 fills this in
+		Metrics:         metrics,
 	}
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: resp})
+}
+
+// computeMetricsForResponse reads the full pg:history window (capped at 500 by
+// Phase 8 D-14, so T-09-22 DoS ceiling is preserved here) and returns
+// per-candidate rolling metrics padded with zero-activity rows for every
+// configured candidate that has no trade history. Shared by handlePriceGapState
+// and handlePriceGapMetrics so the two responses cannot drift.
+//
+// Only reads pg:history: the D-23 write-path stamps every field the aggregator
+// needs onto each history row (D-24 simplification — single-data-source rule).
+func (s *Server) computeMetricsForResponse() ([]pricegaptrader.CandidateMetrics, error) {
+	var history []*models.PriceGapPosition
+	if s.db != nil {
+		rows, err := s.db.GetPriceGapHistory(0, priceGapHistoryLimitMax)
+		if err != nil {
+			return padWithConfigCandidates(nil, s.cfg.PriceGapCandidates), err
+		}
+		history = rows
+	}
+	computed := pricegaptrader.ComputeCandidateMetrics(history, time.Now())
+	return padWithConfigCandidates(computed, s.cfg.PriceGapCandidates), nil
+}
+
+// padWithConfigCandidates appends a zero-valued CandidateMetrics row for every
+// entry in `configured` whose <symbol>_<long>_<short> key is not already
+// present in `computed`. Final slice is re-sorted desc by Bps30dPerDay so
+// populated rows rank above zero-activity rows.
+func padWithConfigCandidates(
+	computed []pricegaptrader.CandidateMetrics,
+	configured []models.PriceGapCandidate,
+) []pricegaptrader.CandidateMetrics {
+	out := make([]pricegaptrader.CandidateMetrics, 0, len(computed)+len(configured))
+	out = append(out, computed...)
+	seen := make(map[string]struct{}, len(computed))
+	for _, r := range computed {
+		seen[r.Candidate] = struct{}{}
+	}
+	for _, c := range configured {
+		key := c.Symbol + "_" + c.LongExch + "_" + c.ShortExch
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		out = append(out, pricegaptrader.CandidateMetrics{
+			Candidate:     key,
+			Symbol:        c.Symbol,
+			LongExchange:  c.LongExch,
+			ShortExchange: c.ShortExch,
+		})
+		seen[key] = struct{}{}
+	}
+	// Re-sort so populated rows stay on top; stable tiebreak on Candidate key.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Bps30dPerDay != out[j].Bps30dPerDay {
+			return out[i].Bps30dPerDay > out[j].Bps30dPerDay
+		}
+		return out[i].Candidate < out[j].Candidate
+	})
+	return out
 }
 
 // handlePriceGapCandidates returns candidates + disable state only.
@@ -184,15 +244,24 @@ func (s *Server) handlePriceGapClosed(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: history})
 }
 
-// handlePriceGapMetrics — stub per-candidate metrics endpoint. Plan 05
-// replaces the body with the real computer; here we return an empty slice
-// so the UI has a stable shape to bind to.
+// handlePriceGapMetrics returns per-candidate rolling 24h / 7d / 30d metrics,
+// padded with zero-activity rows for every configured candidate that has no
+// trade history yet (UI-SPEC § Rolling Metrics table).
+//
+// Backed by pricegaptrader.ComputeCandidateMetrics — a pure function — reading
+// pg:history via GetPriceGapHistory; no secondary store read (D-24).
 func (s *Server) handlePriceGapMetrics(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	writeJSON(w, http.StatusOK, Response{OK: true, Data: []priceGapCandidateMetrics{}})
+	metrics, err := s.computeMetricsForResponse()
+	if err != nil {
+		s.log.Error("computeMetricsForResponse: %v", err)
+		writeJSON(w, http.StatusInternalServerError, Response{Error: "failed to compute metrics"})
+		return
+	}
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: metrics})
 }
 
 // priceGapDisableRequest is the optional POST body for the disable endpoint.
