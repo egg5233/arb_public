@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Multi-Strategy Expansion
 status: executing
-stopped_at: Completed 09-04-PLAN.md
-last_updated: "2026-04-22T04:03:42.522Z"
+stopped_at: Completed 09-05-PLAN.md
+last_updated: "2026-04-22T04:12:34.040Z"
 last_activity: 2026-04-22
 progress:
   total_phases: 2
   completed_phases: 1
   total_plans: 16
-  completed_plans: 12
-  percent: 75
+  completed_plans: 13
+  percent: 81
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-21 after v1.0 shipped)
 ## Current Position
 
 Phase: 09 (price-gap-dashboard-paper-live-operations) — EXECUTING
-Plan: 5 of 8
+Plan: 6 of 8
 Status: Ready to execute
 Last activity: 2026-04-22
 
@@ -84,6 +84,7 @@ Progress (v2.0): [          ] 0%
 | Phase 09 P02 | 45min | 2 tasks | 11 files |
 | Phase 09 P03 | 30m | 2 tasks | 3 files |
 | Phase 09 P04 | 25min | 2 tasks | 5 files |
+| Phase 09 P05 | 35m | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -157,6 +158,8 @@ v1.0 decisions below (retained for reference):
 - [Phase 09]: isMutatingEndpoint extended to /api/pricegap/candidate/ so POST disable/enable enforce auth even when DashboardPassword is unset (T-09-06 hardening).
 - [Phase 09]: Paper mode ships as a single chokepoint at ex.PlaceOrder; pos.Mode stamped once at entry, monitor reads pos.Mode only (Pitfall 2 immutability).
 - [Phase 09]: Synth fill price = mid ± (modeled/2)/10_000 so realized slippage is non-zero and the Phase 8 pipeline is exercised (Pitfall 7).
+- [Phase 09]: PG-VAL-02 rolling metrics aggregator is a PURE function with caller-supplied clock; cumulative 24h/7d/30d windows; handler (not library) pads zero-activity rows from cfg.PriceGapCandidates
+- [Phase 09]: D-24 simplification confirmed: pg:history alone suffices for metrics — no pg:slippage:* read path introduced (Plan 09-01 D-23 bridge stamped Modeled/RealizedSlipBps onto every history row)
 
 ### Pending Todos
 
@@ -180,7 +183,7 @@ None yet. Next action: `/gsd-plan-phase 8` to decompose Phase 8 into executable 
 
 ## Session Continuity
 
-Last session: 2026-04-22T04:03:42.516Z
-Stopped at: Completed 09-04-PLAN.md
+Last session: 2026-04-22T04:12:24.090Z
+Stopped at: Completed 09-05-PLAN.md
 Resume file: None
 Next command: `/gsd-plan-phase 8`
