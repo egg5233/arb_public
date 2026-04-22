@@ -67,6 +67,11 @@ type Tracker struct {
 	// Entry serialization — per-symbol locks to avoid double-fire across ticks.
 	entryMu       sync.Mutex
 	entryInFlight map[string]bool
+
+	// Broadcaster DI seam (Phase 9, Plan 06 wires the WS hub implementation).
+	// Defaults to NoopBroadcaster{} in NewTracker so callers without a hub
+	// (tests, CLI) never risk nil deref.
+	broadcaster Broadcaster
 }
 
 // NewTracker constructs a Tracker with injected dependencies. The store and
@@ -89,7 +94,19 @@ func NewTracker(
 		monitors:       make(map[string]context.CancelFunc),
 		monitorHandles: make(map[string]monitorHandle),
 		entryInFlight:  make(map[string]bool),
+		broadcaster:    NoopBroadcaster{},
 	}
+}
+
+// SetBroadcaster swaps the broadcaster (Phase 9 wiring; the main binary calls
+// this from cmd/main.go after api.Server is constructed). Passing nil reverts
+// to NoopBroadcaster so downstream code can always call methods safely.
+func (t *Tracker) SetBroadcaster(b Broadcaster) {
+	if b == nil {
+		t.broadcaster = NoopBroadcaster{}
+		return
+	}
+	t.broadcaster = b
 }
 
 // Start spawns the tick goroutine + rehydrates active positions.

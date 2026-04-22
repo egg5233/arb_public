@@ -1,0 +1,83 @@
+package pricegaptrader
+
+import (
+	"sync/atomic"
+	"testing"
+
+	"arb/internal/config"
+	"arb/internal/models"
+)
+
+// TestNoopBroadcaster_DoesNotPanic — the zero-behavior broadcaster must accept
+// every call without side effect and without panicking.
+func TestNoopBroadcaster_DoesNotPanic(t *testing.T) {
+	var b Broadcaster = NoopBroadcaster{}
+	b.BroadcastPriceGapPositions(nil)
+	b.BroadcastPriceGapPositions([]*models.PriceGapPosition{{ID: "x"}})
+	b.BroadcastPriceGapEvent(PriceGapEvent{Type: "entry"})
+	b.BroadcastPriceGapCandidateUpdate(PriceGapCandidateUpdate{Symbol: "SOONUSDT", Disabled: true})
+}
+
+// TestTracker_DefaultBroadcasterIsNoop — NewTracker must install
+// NoopBroadcaster so tracker code can unconditionally call broadcaster methods.
+func TestTracker_DefaultBroadcasterIsNoop(t *testing.T) {
+	tr := NewTracker(nil, nil, nil, &config.Config{})
+	if tr.broadcaster == nil {
+		t.Fatal("broadcaster nil after NewTracker — should default to NoopBroadcaster")
+	}
+	if _, ok := tr.broadcaster.(NoopBroadcaster); !ok {
+		t.Fatalf("default broadcaster: got %T, want NoopBroadcaster", tr.broadcaster)
+	}
+}
+
+// mockBroadcaster records calls so we can assert the DI field is reachable.
+type mockBroadcaster struct {
+	positions int64
+	events    int64
+	candidate int64
+}
+
+func (m *mockBroadcaster) BroadcastPriceGapPositions(_ []*models.PriceGapPosition) {
+	atomic.AddInt64(&m.positions, 1)
+}
+
+func (m *mockBroadcaster) BroadcastPriceGapEvent(PriceGapEvent) {
+	atomic.AddInt64(&m.events, 1)
+}
+
+func (m *mockBroadcaster) BroadcastPriceGapCandidateUpdate(PriceGapCandidateUpdate) {
+	atomic.AddInt64(&m.candidate, 1)
+}
+
+// TestTracker_SetBroadcaster_Reachable — SetBroadcaster installs a custom
+// broadcaster, and the tracker's field routes every call into it.
+func TestTracker_SetBroadcaster_Reachable(t *testing.T) {
+	tr := NewTracker(nil, nil, nil, &config.Config{})
+	mb := &mockBroadcaster{}
+	tr.SetBroadcaster(mb)
+
+	tr.broadcaster.BroadcastPriceGapPositions(nil)
+	tr.broadcaster.BroadcastPriceGapEvent(PriceGapEvent{})
+	tr.broadcaster.BroadcastPriceGapCandidateUpdate(PriceGapCandidateUpdate{})
+
+	if atomic.LoadInt64(&mb.positions) != 1 {
+		t.Errorf("positions calls: got %d, want 1", mb.positions)
+	}
+	if atomic.LoadInt64(&mb.events) != 1 {
+		t.Errorf("events calls: got %d, want 1", mb.events)
+	}
+	if atomic.LoadInt64(&mb.candidate) != 1 {
+		t.Errorf("candidate calls: got %d, want 1", mb.candidate)
+	}
+}
+
+// TestTracker_SetBroadcaster_NilRevertsToNoop — passing nil must restore
+// NoopBroadcaster so callers can never see a nil broadcaster field.
+func TestTracker_SetBroadcaster_NilRevertsToNoop(t *testing.T) {
+	tr := NewTracker(nil, nil, nil, &config.Config{})
+	tr.SetBroadcaster(&mockBroadcaster{})
+	tr.SetBroadcaster(nil)
+	if _, ok := tr.broadcaster.(NoopBroadcaster); !ok {
+		t.Fatalf("SetBroadcaster(nil) broadcaster: got %T, want NoopBroadcaster", tr.broadcaster)
+	}
+}
