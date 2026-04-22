@@ -65,15 +65,19 @@ func (t *Tracker) openPair(
 	longCh := make(chan fillResult, 1)
 	shortCh := make(chan fillResult, 1)
 
+	// Paper-mode synthesis uses candidate's ModeledSlippageBps — derived from
+	// the Phase 8 detector and already stamped on pos.ModeledSlipBps below.
+	modeledEdgeBps := cand.ModeledSlippageBps
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		longCh <- t.placeLeg(longEx, cand.Symbol, exchange.SideBuy, sizeBase, decL, "ioc", det.MidLong)
+		longCh <- t.placeLeg(longEx, cand.Symbol, exchange.SideBuy, sizeBase, decL, "ioc", det.MidLong, modeledEdgeBps)
 	}()
 	go func() {
 		defer wg.Done()
-		shortCh <- t.placeLeg(shortEx, cand.Symbol, exchange.SideSell, sizeBase, decS, "ioc", det.MidShort)
+		shortCh <- t.placeLeg(shortEx, cand.Symbol, exchange.SideSell, sizeBase, decS, "ioc", det.MidShort, modeledEdgeBps)
 	}()
 	wg.Wait()
 
@@ -123,6 +127,14 @@ func (t *Tracker) openPair(
 	}
 
 	// Persist the matched position.
+	//
+	// Mode is stamped ONCE at entry (Pitfall 2 — immutability through lifecycle).
+	// All downstream monitors / close paths read pos.Mode, NEVER t.cfg.PriceGapPaperMode
+	// mid-life. This is the single read of the global flag in the entire package.
+	mode := models.PriceGapModeLive
+	if t.cfg.PriceGapPaperMode {
+		mode = models.PriceGapModePaper
+	}
 	posID := fmt.Sprintf("pg_%s_%s_%s_%d", cand.Symbol, cand.LongExch, cand.ShortExch, time.Now().UnixNano())
 	pos := &models.PriceGapPosition{
 		ID:                 posID,
@@ -130,6 +142,7 @@ func (t *Tracker) openPair(
 		LongExchange:       cand.LongExch,
 		ShortExchange:      cand.ShortExch,
 		Status:             models.PriceGapStatusOpen,
+		Mode:               mode,
 		EntrySpreadBps:     det.SpreadBps,
 		ThresholdBps:       cand.ThresholdBps,
 		NotionalUSDT:       match * ((lr.price + sr.price) / 2.0),
@@ -151,10 +164,33 @@ func (t *Tracker) openPair(
 // placeLeg submits a single leg and returns a fillResult populated from
 // GetOrderFilledQty. The fill price is stamped as the caller-supplied mid
 // (det.MidLong / det.MidShort) because the adapter interface returns only qty.
+//
+// Paper-mode chokepoint (Plan 09-03 Pattern 2): when t.cfg.PriceGapPaperMode
+// is true, the function DOES NOT call ex.PlaceOrder. It synthesizes a fill at
+// mid ± (modeledEdgeBps / 2) so realized slippage is non-zero and the Phase 8
+// slippage pipeline is fully exercised (Pitfall 7). This is the SINGLE
+// divergence point between paper and live on the entry path; openPair's
+// lock acquisition, circuit-breaker accounting, and persistence all run
+// identically in paper mode.
 func (t *Tracker) placeLeg(
 	ex exchange.Exchange, symbol string, side exchange.Side,
-	sizeBase float64, decimals int, force string, fillPrice float64,
+	sizeBase float64, decimals int, force string, fillPrice float64, modeledEdgeBps float64,
 ) fillResult {
+	if t.cfg.PriceGapPaperMode {
+		adverse := fillPrice * (modeledEdgeBps / 2.0) / 10_000.0
+		synth := fillPrice
+		if side == exchange.SideBuy {
+			synth = fillPrice + adverse // buy adverse = higher than mid
+		}
+		if side == exchange.SideSell {
+			synth = fillPrice - adverse // sell adverse = lower than mid
+		}
+		return fillResult{
+			orderID: fmt.Sprintf("paper_%s_%d", symbol, time.Now().UnixNano()),
+			filled:  roundStep(sizeBase, decimals),
+			price:   synth,
+		}
+	}
 	params := exchange.PlaceOrderParams{
 		Symbol:    symbol,
 		Side:      side,
