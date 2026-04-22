@@ -25,7 +25,7 @@ Requirements for this milestone. Each maps to roadmap phases 8+.
 
 ### Dashboard & Operations
 
-- [ ] **PG-OPS-01**: New Dashboard "Price-Gap" tab shows candidate list with per-candidate enable/disable toggle
+- [x] **PG-OPS-01**: New Dashboard "Price-Gap" tab shows candidate list with per-candidate enable/disable toggle
 - [x] **PG-OPS-02**: Dashboard shows live price-gap positions with entry spread, current spread, hold time, current PnL
 - [x] **PG-OPS-03**: Dashboard shows closed positions log with realized-vs-modeled edge comparison
 - [x] **PG-OPS-04**: Paper mode toggle runs full event/entry logic without placing real orders (used for first ~3 live days)
@@ -89,7 +89,7 @@ Which phases cover which requirements. Populated by roadmapper.
 | PG-RISK-03 | Phase 8 | Complete |
 | PG-RISK-04 | Phase 8 | Complete |
 | PG-RISK-05 | Phase 8 | Complete |
-| PG-OPS-01 | Phase 9 | Pending |
+| PG-OPS-01 | Phase 9 | Complete |
 | PG-OPS-02 | Phase 9 | Complete |
 | PG-OPS-03 | Phase 9 | Complete |
 | PG-OPS-04 | Phase 9 | Complete |

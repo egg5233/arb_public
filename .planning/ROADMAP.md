@@ -73,7 +73,7 @@ Seed input: `/tmp/phase0-pricegap/STRATEGY_DESIGN.md` (§3.5 candidate shortlist
   5. Dashboard shows per-candidate rolling 7d and 30d net bps/day computed from logged realized-slippage data, giving the operator the evidence needed to promote/demote candidates manually
 **Plans**: 8 plans
   - [x] 09-01-PLAN.md — Phase 8 bridge: Position.Mode, PriceGapPaperMode, GetPriceGapHistory, Broadcaster DI, i18n sync gate (PG-OPS-02, -04, -05, PG-VAL-02)
-  - [ ] 09-02-PLAN.md — REST handlers for /api/pricegap/* + Broadcaster impl on *Server + paper_mode /api/config round-trip (PG-OPS-01, -02, -03, -04, PG-VAL-02)
+  - [x] 09-02-PLAN.md — REST handlers for /api/pricegap/* + Broadcaster impl on *Server + paper_mode /api/config round-trip (PG-OPS-01, -02, -03, -04, PG-VAL-02)
   - [ ] 09-03-PLAN.md — Paper-mode branch in openPair + placeLeg/placeCloseLegIOC with mid±(modeled/2) synth (PG-OPS-04, PG-VAL-01)
   - [ ] 09-04-PLAN.md — Telegram NotifyPriceGapEntry/Exit/RiskBlock + regression fixtures for existing notify paths (PG-OPS-05)
   - [ ] 09-05-PLAN.md — On-demand ComputeCandidateMetrics aggregator + /api/pricegap/metrics wiring (PG-OPS-05, PG-VAL-01, PG-VAL-02)
