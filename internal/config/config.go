@@ -266,6 +266,7 @@ type Config struct {
 	// Price-Gap Tracker (Phase 8, v2.0) — default OFF per D-22, PG-OPS-06
 	// ---------------------------------------------------------------------------
 	PriceGapEnabled              bool                       // master switch, D-22
+	PriceGapPaperMode            bool                       // D-12 exception: default TRUE until live validated (Phase 9)
 	PriceGapBudget               float64                    // USDT, D-22 default 5000
 	PriceGapMaxConcurrent        int                        // D-22 default 3 (PG-RISK-04)
 	PriceGapGateConcentrationPct float64                    // D-22 default 0.50 (PG-RISK-01)
@@ -303,6 +304,7 @@ type jsonConfig struct {
 // intact (safe-off per D-22, PG-OPS-06, T-08-03).
 type jsonPriceGap struct {
 	Enabled              *bool                      `json:"enabled,omitempty"`
+	PaperMode            *bool                      `json:"paper_mode,omitempty"`
 	Budget               *float64                   `json:"budget,omitempty"`
 	MaxConcurrent        *int                       `json:"max_concurrent,omitempty"`
 	GateConcentrationPct *float64                   `json:"gate_concentration_pct,omitempty"`
@@ -692,6 +694,10 @@ func Load() *Config {
 		// Analytics defaults (off by default)
 		EnableAnalytics: false,
 		AnalyticsDBPath: "data/analytics.db",
+
+		// Price-Gap Tracker defaults (Phase 9, D-12 exception):
+		// paper mode default TRUE until live validated — master switch stays OFF per PG-OPS-06.
+		PriceGapPaperMode: true,
 	}
 
 	// Load from JSON file
@@ -1301,6 +1307,9 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 	if pg := jc.PriceGap; pg != nil {
 		if pg.Enabled != nil {
 			c.PriceGapEnabled = *pg.Enabled
+		}
+		if pg.PaperMode != nil {
+			c.PriceGapPaperMode = *pg.PaperMode
 		}
 		if pg.Budget != nil {
 			c.PriceGapBudget = *pg.Budget

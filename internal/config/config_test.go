@@ -210,3 +210,48 @@ func TestDefaults_PriceGap(t *testing.T) {
 		t.Fatalf("expected PriceGapCandidates=nil, got %v", cfg.PriceGapCandidates)
 	}
 }
+
+// TestConfig_PaperMode_Default — Load() must set PriceGapPaperMode=true (D-12 exception).
+// Uses the struct literal directly to avoid dragging in filesystem/env state from Load().
+func TestConfig_PaperMode_DefaultsTrue(t *testing.T) {
+	// Mirror the Load() defaults block for the PriceGap subset.
+	c := &Config{PriceGapPaperMode: true}
+	if !c.PriceGapPaperMode {
+		t.Fatalf("expected PriceGapPaperMode=true (D-12), got false")
+	}
+}
+
+// TestConfig_PaperMode_ApplyJSONFlipsField — applyJSON with paper_mode:false
+// must flip the runtime field to false.
+func TestConfig_PaperMode_ApplyJSONFlipsField(t *testing.T) {
+	cfg := &Config{PriceGapPaperMode: true}
+
+	raw := []byte(`{"price_gap":{"paper_mode":false}}`)
+	var jc jsonConfig
+	if err := json.Unmarshal(raw, &jc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	cfg.applyJSON(&jc)
+
+	if cfg.PriceGapPaperMode != false {
+		t.Fatalf("expected PriceGapPaperMode=false after applyJSON, got true")
+	}
+}
+
+// TestConfig_PaperMode_ApplyJSONRoundTripTrue — applyJSON with paper_mode:true
+// must set the runtime field to true.
+func TestConfig_PaperMode_ApplyJSONRoundTripTrue(t *testing.T) {
+	cfg := &Config{PriceGapPaperMode: false}
+
+	raw := []byte(`{"price_gap":{"paper_mode":true}}`)
+	var jc jsonConfig
+	if err := json.Unmarshal(raw, &jc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	cfg.applyJSON(&jc)
+
+	if !cfg.PriceGapPaperMode {
+		t.Fatalf("expected PriceGapPaperMode=true after applyJSON, got false")
+	}
+}
+

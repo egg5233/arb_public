@@ -122,6 +122,34 @@ func (c *Client) RemoveActivePriceGapPosition(id string) error {
 	return c.rdb.SRem(context.Background(), keyPricegapActive, id).Err()
 }
 
+// GetPriceGapHistory returns up to `limit` closed positions from the pg:history
+// LIST, newest first, skipping the first `offset` entries. Returns (nil, nil)
+// for limit <= 0. Records missing a Mode field (pre-Phase-9) are normalized to
+// "live" via models.NormalizeMode on decode (Phase 9 D-12).
+func (c *Client) GetPriceGapHistory(offset, limit int) ([]*models.PriceGapPosition, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	ctx := context.Background()
+	raws, err := c.rdb.LRange(ctx, keyPricegapHistory, int64(offset), int64(offset+limit-1)).Result()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*models.PriceGapPosition, 0, len(raws))
+	for _, r := range raws {
+		var p models.PriceGapPosition
+		if err := json.Unmarshal([]byte(r), &p); err != nil {
+			continue
+		}
+		models.NormalizeMode(&p)
+		out = append(out, &p)
+	}
+	return out, nil
+}
+
 // AddPriceGapHistory pushes the position to the pg:history list (most recent
 // first) and trims to priceGapHistoryCap entries.
 func (c *Client) AddPriceGapHistory(p *models.PriceGapPosition) error {

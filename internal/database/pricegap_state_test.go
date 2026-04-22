@@ -327,3 +327,91 @@ func TestPriceGapState_InterfaceAssertion(t *testing.T) {
 		t.Fatal("store nil after assertion")
 	}
 }
+
+// TestGetPriceGapHistory_NewestFirst — Reader returns LPUSH'd items newest-first
+// and honors limit.
+func TestGetPriceGapHistory_NewestFirst(t *testing.T) {
+	db, _ := newPriceGapTestClient(t)
+
+	// Push three distinct closed positions in order id1, id2, id3.
+	for i, id := range []string{"id1", "id2", "id3"} {
+		p := fixturePosition(id, models.PriceGapStatusClosed)
+		p.RealizedPnL = float64(i + 1)
+		if err := db.AddPriceGapHistory(p); err != nil {
+			t.Fatalf("AddPriceGapHistory(%s): %v", id, err)
+		}
+	}
+
+	got, err := db.GetPriceGapHistory(0, 10)
+	if err != nil {
+		t.Fatalf("GetPriceGapHistory: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len: got %d, want 3", len(got))
+	}
+	// LPUSH -> newest first: id3, id2, id1.
+	if got[0].ID != "id3" || got[1].ID != "id2" || got[2].ID != "id1" {
+		t.Fatalf("order: got [%s,%s,%s], want [id3,id2,id1]",
+			got[0].ID, got[1].ID, got[2].ID)
+	}
+}
+
+// TestGetPriceGapHistory_Offset — offset=N skips the N newest entries.
+func TestGetPriceGapHistory_Offset(t *testing.T) {
+	db, _ := newPriceGapTestClient(t)
+
+	for _, id := range []string{"a", "b", "c", "d", "e", "f", "g"} {
+		p := fixturePosition(id, models.PriceGapStatusClosed)
+		_ = db.AddPriceGapHistory(p)
+	}
+
+	// Newest order: g, f, e, d, c, b, a. Offset 2 -> start at e.
+	got, err := db.GetPriceGapHistory(2, 3)
+	if err != nil {
+		t.Fatalf("GetPriceGapHistory: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len: got %d, want 3", len(got))
+	}
+	if got[0].ID != "e" || got[1].ID != "d" || got[2].ID != "c" {
+		t.Fatalf("offset order: got [%s,%s,%s], want [e,d,c]",
+			got[0].ID, got[1].ID, got[2].ID)
+	}
+}
+
+// TestGetPriceGapHistory_ZeroLimit — limit<=0 returns (nil, nil) without error.
+func TestGetPriceGapHistory_ZeroLimit(t *testing.T) {
+	db, _ := newPriceGapTestClient(t)
+	for _, id := range []string{"a", "b"} {
+		_ = db.AddPriceGapHistory(fixturePosition(id, models.PriceGapStatusClosed))
+	}
+	got, err := db.GetPriceGapHistory(0, 0)
+	if err != nil {
+		t.Fatalf("GetPriceGapHistory: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected nil slice, got %v", got)
+	}
+}
+
+// TestGetPriceGapHistory_NormalizesLegacyMode — a pre-Phase-9 record persisted
+// without a "mode" key must come back with Mode="live" after the reader normalizes.
+func TestGetPriceGapHistory_NormalizesLegacyMode(t *testing.T) {
+	db, mr := newPriceGapTestClient(t)
+
+	// Manually push a legacy JSON blob (no "mode" key) directly into the list
+	// to simulate a record persisted before Phase 9.
+	legacy := `{"id":"legacy-1","symbol":"SOONUSDT","status":"closed","realized_pnl":1.5}`
+	mr.Lpush(keyPricegapHistory, legacy)
+
+	got, err := db.GetPriceGapHistory(0, 10)
+	if err != nil {
+		t.Fatalf("GetPriceGapHistory: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len: got %d, want 1", len(got))
+	}
+	if got[0].Mode != models.PriceGapModeLive {
+		t.Fatalf("legacy Mode: got %q, want %q", got[0].Mode, models.PriceGapModeLive)
+	}
+}
