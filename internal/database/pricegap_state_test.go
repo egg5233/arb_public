@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -179,36 +180,137 @@ func TestPriceGapState_DisableFlag(t *testing.T) {
 	db, _ := newPriceGapTestClient(t)
 
 	// Initially missing.
-	disabled, reason, err := db.IsCandidateDisabled("SOONUSDT")
+	disabled, reason, disabledAt, err := db.IsCandidateDisabled("SOONUSDT")
 	if err != nil {
 		t.Fatalf("IsCandidateDisabled initial: %v", err)
 	}
-	if disabled || reason != "" {
-		t.Fatalf("initial disable: got (%v,%q), want (false,\"\")", disabled, reason)
+	if disabled || reason != "" || disabledAt != 0 {
+		t.Fatalf("initial disable: got (%v,%q,%d), want (false,\"\",0)", disabled, reason, disabledAt)
 	}
 
-	// Set → Is returns (true, reason).
+	// Set → Is returns (true, reason, disabledAt>=before).
+	before := time.Now().Unix()
 	if err := db.SetCandidateDisabled("SOONUSDT", "exec_quality_breach"); err != nil {
 		t.Fatalf("SetCandidateDisabled: %v", err)
 	}
-	disabled, reason, err = db.IsCandidateDisabled("SOONUSDT")
+	disabled, reason, disabledAt, err = db.IsCandidateDisabled("SOONUSDT")
 	if err != nil {
 		t.Fatalf("IsCandidateDisabled after set: %v", err)
 	}
 	if !disabled || reason != "exec_quality_breach" {
 		t.Fatalf("after set: got (%v,%q), want (true,\"exec_quality_breach\")", disabled, reason)
 	}
+	if disabledAt < before {
+		t.Fatalf("after set: disabledAt=%d, want >= %d", disabledAt, before)
+	}
 
 	// Clear → back to false.
 	if err := db.ClearCandidateDisabled("SOONUSDT"); err != nil {
 		t.Fatalf("ClearCandidateDisabled: %v", err)
 	}
-	disabled, reason, err = db.IsCandidateDisabled("SOONUSDT")
+	disabled, reason, disabledAt, err = db.IsCandidateDisabled("SOONUSDT")
 	if err != nil {
 		t.Fatalf("IsCandidateDisabled after clear: %v", err)
 	}
-	if disabled || reason != "" {
-		t.Fatalf("after clear: got (%v,%q), want (false,\"\")", disabled, reason)
+	if disabled || reason != "" || disabledAt != 0 {
+		t.Fatalf("after clear: got (%v,%q,%d), want (false,\"\",0)", disabled, reason, disabledAt)
+	}
+}
+
+// TestIsCandidateDisabled_JSONShape — new Phase-9 JSON-encoded value round-trips
+// reason and disabled_at via IsCandidateDisabled.
+func TestIsCandidateDisabled_JSONShape(t *testing.T) {
+	db, mr := newPriceGapTestClient(t)
+
+	// Directly inject a JSON-shaped value with a known disabled_at to prove the
+	// reader parses JSON correctly (SetCandidateDisabled also writes JSON, but
+	// we want to assert an exact disabled_at timestamp here).
+	const fixedAt = int64(1714867200)
+	payload := `{"reason":"exchange maint window","disabled_at":1714867200}`
+	mr.Set(keyPricegapDisabledPrefix+"BTCUSDT", payload)
+
+	disabled, reason, disabledAt, err := db.IsCandidateDisabled("BTCUSDT")
+	if err != nil {
+		t.Fatalf("IsCandidateDisabled: %v", err)
+	}
+	if !disabled {
+		t.Fatalf("disabled=false, want true")
+	}
+	if reason != "exchange maint window" {
+		t.Fatalf("reason=%q, want %q", reason, "exchange maint window")
+	}
+	if disabledAt != fixedAt {
+		t.Fatalf("disabledAt=%d, want %d", disabledAt, fixedAt)
+	}
+}
+
+// TestIsCandidateDisabled_LegacyPlainString — legacy pre-Phase-9 plain-string
+// values must remain readable: treat raw string as reason, disabled_at=0.
+func TestIsCandidateDisabled_LegacyPlainString(t *testing.T) {
+	db, mr := newPriceGapTestClient(t)
+
+	// Simulate a pre-Phase-9 record written by the old pg-admin CLI.
+	mr.Set(keyPricegapDisabledPrefix+"ETHUSDT", "legacy reason text")
+
+	disabled, reason, disabledAt, err := db.IsCandidateDisabled("ETHUSDT")
+	if err != nil {
+		t.Fatalf("IsCandidateDisabled: %v", err)
+	}
+	if !disabled {
+		t.Fatalf("disabled=false, want true")
+	}
+	if reason != "legacy reason text" {
+		t.Fatalf("reason=%q, want %q", reason, "legacy reason text")
+	}
+	if disabledAt != 0 {
+		t.Fatalf("disabledAt=%d, want 0 (legacy)", disabledAt)
+	}
+}
+
+// TestSetCandidateDisabled_WritesJSON — SetCandidateDisabled must persist the
+// new JSON shape with disabled_at stamped.
+func TestSetCandidateDisabled_WritesJSON(t *testing.T) {
+	db, mr := newPriceGapTestClient(t)
+
+	if err := db.SetCandidateDisabled("SOLUSDT", "test_reason"); err != nil {
+		t.Fatalf("SetCandidateDisabled: %v", err)
+	}
+
+	raw, err := mr.Get(keyPricegapDisabledPrefix + "SOLUSDT")
+	if err != nil {
+		t.Fatalf("mr.Get: %v", err)
+	}
+	// Must parse as JSON with our expected fields.
+	var v struct {
+		Reason     string `json:"reason"`
+		DisabledAt int64  `json:"disabled_at"`
+	}
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		t.Fatalf("value is not valid JSON: %v (raw=%q)", err, raw)
+	}
+	if v.Reason != "test_reason" {
+		t.Fatalf("JSON reason=%q, want %q", v.Reason, "test_reason")
+	}
+	if v.DisabledAt == 0 {
+		t.Fatalf("JSON disabled_at=0, want non-zero unix timestamp")
+	}
+}
+
+// TestClearCandidateDisabled_RemovesKey — ClearCandidateDisabled must DEL the key.
+func TestClearCandidateDisabled_RemovesKey(t *testing.T) {
+	db, mr := newPriceGapTestClient(t)
+
+	if err := db.SetCandidateDisabled("XRPUSDT", "to_clear"); err != nil {
+		t.Fatalf("SetCandidateDisabled: %v", err)
+	}
+	if !mr.Exists(keyPricegapDisabledPrefix + "XRPUSDT") {
+		t.Fatalf("precondition: key must exist after Set")
+	}
+	if err := db.ClearCandidateDisabled("XRPUSDT"); err != nil {
+		t.Fatalf("ClearCandidateDisabled: %v", err)
+	}
+	if mr.Exists(keyPricegapDisabledPrefix + "XRPUSDT") {
+		t.Fatalf("key still present after Clear")
 	}
 }
 

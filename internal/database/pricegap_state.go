@@ -173,23 +173,52 @@ func (c *Client) AddPriceGapHistory(p *models.PriceGapPosition) error {
 // Candidate disable flag (D-19, D-20)
 // ---------------------------------------------------------------------------
 
-// IsCandidateDisabled returns (true, reason, nil) when the disable flag exists
-// for the symbol; (false, "", nil) when the key is missing.
-func (c *Client) IsCandidateDisabled(symbol string) (bool, string, error) {
-	reason, err := c.rdb.Get(context.Background(), keyPricegapDisabledPrefix+symbol).Result()
-	if err == redis.Nil {
-		return false, "", nil
-	}
-	if err != nil {
-		return false, "", err
-	}
-	return true, reason, nil
+// disabledPayload is the JSON shape written by SetCandidateDisabled since
+// Phase 9 (Pitfall 6). Legacy pre-Phase-9 values were plain strings — see
+// the json.Unmarshal fallback in IsCandidateDisabled for backward compat.
+type disabledPayload struct {
+	Reason     string `json:"reason"`
+	DisabledAt int64  `json:"disabled_at"`
 }
 
-// SetCandidateDisabled writes the disable flag with the given human-readable
-// reason. No TTL — exec-quality disable is a sticky flag cleared via /api.
+// IsCandidateDisabled returns (true, reason, disabledAt, nil) when the disable
+// flag exists for the symbol; (false, "", 0, nil) when the key is missing.
+//
+// The on-disk value is expected to be a JSON blob {reason, disabled_at} since
+// Phase 9. To preserve compatibility with legacy plain-string values written by
+// pre-Phase-9 pg-admin, a failed json.Unmarshal falls back to treating the raw
+// string as reason with disabledAt=0.
+func (c *Client) IsCandidateDisabled(symbol string) (bool, string, int64, error) {
+	raw, err := c.rdb.Get(context.Background(), keyPricegapDisabledPrefix+symbol).Result()
+	if err == redis.Nil {
+		return false, "", 0, nil
+	}
+	if err != nil {
+		return false, "", 0, err
+	}
+	var p disabledPayload
+	if jerr := json.Unmarshal([]byte(raw), &p); jerr == nil && (p.Reason != "" || p.DisabledAt != 0) {
+		return true, p.Reason, p.DisabledAt, nil
+	}
+	// Legacy plain-string value — treat as reason with no timestamp.
+	return true, raw, 0, nil
+}
+
+// SetCandidateDisabled writes the disable flag as a JSON blob
+// {reason, disabled_at: now-unix-seconds}. Single-writer invariant:
+// both dashboard /api/pricegap/candidate/.../disable and pg-admin CLI
+// call this method (Pitfall 6). No TTL — exec-quality disable is sticky
+// and cleared only via /api/pricegap/candidate/.../enable or pg-admin.
 func (c *Client) SetCandidateDisabled(symbol, reason string) error {
-	return c.rdb.Set(context.Background(), keyPricegapDisabledPrefix+symbol, reason, 0).Err()
+	payload := disabledPayload{
+		Reason:     reason,
+		DisabledAt: time.Now().Unix(),
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal disabled payload: %w", err)
+	}
+	return c.rdb.Set(context.Background(), keyPricegapDisabledPrefix+symbol, data, 0).Err()
 }
 
 // ClearCandidateDisabled removes the disable flag for the symbol.

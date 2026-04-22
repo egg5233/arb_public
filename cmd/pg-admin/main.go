@@ -19,6 +19,7 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"arb/internal/config"
 	"arb/internal/database"
@@ -87,13 +88,18 @@ func cmdStatus(cfg *config.Config, db *database.Client) {
 	fmt.Printf("\nDisabled candidates:\n")
 	anyDisabled := false
 	for _, cand := range cfg.PriceGapCandidates {
-		disabled, reason, err := db.IsCandidateDisabled(cand.Symbol)
+		disabled, reason, disabledAt, err := db.IsCandidateDisabled(cand.Symbol)
 		if err != nil {
 			continue
 		}
 		if disabled {
 			anyDisabled = true
-			fmt.Printf("  %-10s  reason: %s\n", cand.Symbol, reason)
+			if disabledAt > 0 {
+				fmt.Printf("  %-10s  reason: %s  (since %s)\n",
+					cand.Symbol, reason, time.Unix(disabledAt, 0).Format("2006-01-02 15:04:05"))
+			} else {
+				fmt.Printf("  %-10s  reason: %s\n", cand.Symbol, reason)
+			}
 		}
 	}
 	if !anyDisabled {

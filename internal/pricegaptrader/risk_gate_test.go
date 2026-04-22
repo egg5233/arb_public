@@ -40,9 +40,9 @@ func newFakeStore() *fakeStore {
 	}
 }
 
-func (f *fakeStore) IsCandidateDisabled(symbol string) (bool, string, error) {
+func (f *fakeStore) IsCandidateDisabled(symbol string) (bool, string, int64, error) {
 	r, ok := f.disabled[symbol]
-	return ok, r, nil
+	return ok, r, 0, nil
 }
 func (f *fakeStore) GetActivePriceGapPositions() ([]*models.PriceGapPosition, error) {
 	return f.active, nil

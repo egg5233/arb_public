@@ -39,7 +39,7 @@ func (t *Tracker) preEntry(
 ) GateDecision {
 
 	// Gate 1: exec-quality disabled
-	disabled, reason, err := t.db.IsCandidateDisabled(cand.Symbol)
+	disabled, reason, _, err := t.db.IsCandidateDisabled(cand.Symbol)
 	if err != nil {
 		// Fail-open on Redis error — matches existing project pattern (Phase 03-02)
 		t.log.Warn("pricegap: disable-flag read failed, fail-open: %v", err)

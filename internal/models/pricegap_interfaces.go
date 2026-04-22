@@ -36,8 +36,10 @@ type PriceGapStore interface {
 	AddPriceGapHistory(p *PriceGapPosition) error
 	RemoveActivePriceGapPosition(id string) error
 
-	// Exec-quality disable flag (D-19, D-20)
-	IsCandidateDisabled(symbol string) (bool, string, error)
+	// Exec-quality disable flag (D-19, D-20; Phase 9 Pitfall 6)
+	// Returns (disabled, reason, disabledAtUnixSec, err). disabledAt is 0 for
+	// legacy plain-string values written by pre-Phase-9 pg-admin.
+	IsCandidateDisabled(symbol string) (bool, string, int64, error)
 	SetCandidateDisabled(symbol, reason string) error
 	ClearCandidateDisabled(symbol string) error
 
