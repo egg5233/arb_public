@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.34.0] - 2026-04-22
+
+### Added (Phase 09 — Price-Gap Dashboard & Paper→Live Operations, v2.0 milestone)
+
+- **Price-Gap dashboard tab (PG-OPS-01)** — `web/src/pages/PriceGap.tsx`. Candidate list with Disable / Re-enable confirmation modals, Live Positions table with Entry / Current / Hold / PnL columns, Closed Log with Modeled / Realized / Delta columns (color-coded by sign), Rolling Metrics section showing 24h / 7d / 30d bps/day per candidate, default-sorted by 30d descending. Nav placement between spot-positions and history.
+- **Paper-mode toggle (PG-OPS-04)** — header pill flips between violet PAPER and green LIVE. Persists to `config.json` via POST `/api/config`. Default TRUE when `price_gap.paper_mode` key absent (safety-first default per D-12, Pitfall 1). Flat `price_gap_paper_mode` root field accepted alongside nested `price_gap.paper_mode`; nested wins on conflict.
+- **Mode immutability (PG-OPS-04 / Pitfall 2)** — `PriceGapPosition.Mode` field stamped once at entry in `execution.go` and never re-read from the global flag. Monitor and close paths read `pos.Mode` exclusively; flipping the runtime toggle mid-life cannot flip an in-flight position between paper and live.
+- **Synth fill slippage (PG-VAL-01 / Pitfall 7)** — paper-mode fills synthesize prices at `mid ± (modeled/2)/10_000` on both entry and exit legs. Guarantees non-zero `RealizedSlipBps` on paper closes so the Phase 8 realized-vs-modeled pipeline is fully exercised without real orders.
+- **Telegram alerts for price-gap (PG-OPS-05)** — three new `*TelegramNotifier` methods: `NotifyPriceGapEntry`, `NotifyPriceGapExit`, `NotifyPriceGapRiskBlock`. Cooldown keyed per `pg_risk:<gate>:<symbol>` with 1h window. Paper-mode messages carry a 📝 PAPER prefix so operators cannot mistake paper traffic for live. Allowlisted gate names: `concentration`, `max_concurrent`, `kline_stale`, `delist`, `budget`, `exec_quality`. Detail sanitization strips C0 control chars and truncates to 256 bytes (T-09-18).
+- **Rolling metrics aggregator (PG-VAL-02)** — pure function with caller-supplied clock; cumulative 24h / 7d / 30d windows computed from `pg:history` alone (D-24 simplification — no new write paths added). Zero-activity rows padded from `cfg.PriceGapCandidates` at the handler level.
+- **WebSocket topics** — `pg_positions` (full active-positions snapshot, throttled to 2s), `pg_event` (entry / exit / auto_disable, unthrottled), `pg_candidate_update` (disable state changes).
+- **REST API** — `/api/pricegap/{state,candidates,positions,closed,metrics}` read endpoints + `/api/pricegap/candidate/{sym}/disable` and `/api/pricegap/candidate/{sym}/enable` mutating endpoints (auth-gated via `isMutatingEndpoint`, T-09-06).
+- **Candidate disable persistence (Pitfall 6)** — `IsCandidateDisabled` now returns `(bool, reason, disabledAtUnixSec, err)`. New writes use JSON `{reason, disabled_at}`; legacy plain-string values are read transparently for backward compatibility.
+- **i18n sync gate** — `scripts/check-i18n-sync.sh` asserts every key present in `en.ts` is also present in `zh-TW.ts` and vice versa; CI-style check runs as an acceptance gate on every Phase 9 plan.
+- **Paper→live cutover integration tests (Plan 09-08)** — `TestPaperToLiveCutover` and 3 siblings drive the full lifecycle: paper entry → flag flip → live entry → paper close (synth path, no `PlaceOrder`) → live close (real path). Asserts `pg:history` carries both rows with correct Mode stamps, non-zero `RealizedSlipBps` on the paper row, and correct Telegram notifier call counts.
+- **09-UAT.md** — human-operator walkthrough checklist with 22 rows covering every PG-OPS-0X and PG-VAL-0X requirement plus i18n and accessibility. Exit criteria: every row checked blocks Phase 9 sign-off.
+
+### Changed
+
+- `PriceGapPosition` gained a `Mode` field (`"paper" | "live"`), stamped at entry and immutable through the position's lifecycle. History rows carry it; the dashboard Closed Log reads it to apply the PAPER / LIVE badge.
+- `SetCandidateDisabled` now persists JSON `{reason, disabled_at}`; the backward-compatible reader handles legacy plain-string values written by pre-Phase-9 `pg-admin`.
+- `isMutatingEndpoint` extended to cover `/api/pricegap/candidate/` paths so POST disable / enable enforce auth even when `DashboardPassword` is unset (T-09-06 hardening).
+- Plan 06 aligned `risk_gate.go` reason strings with the Plan 04 Telegram allowlist; the per-position-cap gate intentionally does not emit a Telegram alert (operator-configured cap, not a market event).
+
+### Unchanged (regression-pinned)
+
+- Perp-perp Telegram messages — `internal/notify/telegram_regression_test.go` (Plan 04) pins byte-for-byte output for every pre-Phase-9 `Notify*` method.
+- Spot-futures notification paths — same regression pinning.
+- Phase 8 tracker core behavior when `PriceGapPaperMode=false` — `paper_mode_test.go` `TestLiveMode_OpenPair_Unchanged` and sibling tests assert live-path byte-for-byte parity with pre-Phase-9 behavior.
+- The safety property that `PriceGapEnabled=false` produces zero `pg:*` Redis writes (Phase 8 Plan 07 `TestPriceGapEnabled_DefaultOff_NoTrackerInstantiated`).
+
 ## [0.33.2] - 2026-04-22
 
 ### Added (Phase 09 Plan 04 — Regression Guardrail, Task 2, T-09-20)
