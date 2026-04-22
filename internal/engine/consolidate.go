@@ -243,7 +243,9 @@ func (e *Engine) consolidatePositions(missCount map[string]int, dustIgnore map[s
 				if rem > 0 {
 					e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", ep.Symbol, closeSide, rem, exch.Name())
 				}
-				exch.CancelAllOrders(ep.Symbol)
+				if err := exch.CancelAllOrders(ep.Symbol); err != nil {
+					e.log.Warn("CancelAllOrders %s/%s failed (orphan cleanup): %v", exch.Name(), ep.Symbol, err)
+				}
 			}
 		}
 	}
@@ -703,10 +705,14 @@ func (e *Engine) markPositionClosed(pos *models.ArbitragePosition, reason string
 	// Cancel orphan TP/SL/algo orders BEFORE SavePosition — prevents race
 	// where a new entry re-uses the symbol and the async cancel wipes its orders.
 	if le, ok := e.exchanges[pos.LongExchange]; ok {
-		le.CancelAllOrders(pos.Symbol)
+		if err := le.CancelAllOrders(pos.Symbol); err != nil {
+			e.log.Warn("CancelAllOrders %s/%s (pos %s, pre-close) failed: %v", pos.LongExchange, pos.Symbol, pos.ID, err)
+		}
 	}
 	if se, ok := e.exchanges[pos.ShortExchange]; ok {
-		se.CancelAllOrders(pos.Symbol)
+		if err := se.CancelAllOrders(pos.Symbol); err != nil {
+			e.log.Warn("CancelAllOrders %s/%s (pos %s, pre-close) failed: %v", pos.ShortExchange, pos.Symbol, pos.ID, err)
+		}
 	}
 
 	pos.ExitReason = reason

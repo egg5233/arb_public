@@ -980,8 +980,12 @@ marketFallback:
 	if fullyFlat {
 		// Cancel orphan TP/SL/algo orders BEFORE marking closed — prevents race
 		// where a new entry re-uses the symbol and the async cancel wipes its orders.
-		longExch.CancelAllOrders(pos.Symbol)
-		shortExch.CancelAllOrders(pos.Symbol)
+		if err := longExch.CancelAllOrders(pos.Symbol); err != nil {
+			e.log.Warn("CancelAllOrders %s/%s (pos %s, fully-flat) failed: %v", longExch.Name(), pos.Symbol, pos.ID, err)
+		}
+		if err := shortExch.CancelAllOrders(pos.Symbol); err != nil {
+			e.log.Warn("CancelAllOrders %s/%s (pos %s, fully-flat) failed: %v", shortExch.Name(), pos.Symbol, pos.ID, err)
+		}
 
 		if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
 			fresh.RealizedPnL = realizedPnL
@@ -2109,8 +2113,12 @@ func (e *Engine) closePositionWithMode(pos *models.ArbitragePosition, emergency 
 	// Cancel orphan TP/SL/algo orders BEFORE phase-2 SavePosition — prevents
 	// race where a new entry re-uses the symbol and the async cancel wipes
 	// its orders. Order MUST stay before the predicate save.
-	longExch.CancelAllOrders(pos.Symbol)
-	shortExch.CancelAllOrders(pos.Symbol)
+	if err := longExch.CancelAllOrders(pos.Symbol); err != nil {
+		e.log.Warn("CancelAllOrders %s/%s (pos %s, pre-phase2-save) failed: %v", longExch.Name(), pos.Symbol, pos.ID, err)
+	}
+	if err := shortExch.CancelAllOrders(pos.Symbol); err != nil {
+		e.log.Warn("CancelAllOrders %s/%s (pos %s, pre-phase2-save) failed: %v", shortExch.Name(), pos.Symbol, pos.ID, err)
+	}
 
 	// Phase 2: persist Closed via predicate (Fix F). Reject if another path
 	// (consolidator) already closed it. Strict mirror of the previous
@@ -2917,7 +2925,11 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 	}
 
 	// Cancel orphan TP/SL/algo orders on old exchange after rotation close
-	go oldExch.CancelAllOrders(pos.Symbol)
+	go func() {
+		if err := oldExch.CancelAllOrders(pos.Symbol); err != nil {
+			e.log.Warn("CancelAllOrders %s/%s (pos %s, post-rotation) failed: %v", oldExch.Name(), pos.Symbol, pos.ID, err)
+		}
+	}()
 
 	// Verify old leg is actually flat before updating position record.
 	time.Sleep(500 * time.Millisecond)
