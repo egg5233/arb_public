@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"arb/internal/config"
 	"arb/internal/database"
@@ -424,4 +425,223 @@ func TestBroadcastPriceGapPositions_CallsHub(t *testing.T) {
 	s.BroadcastPriceGapCandidateUpdate(pricegaptrader.PriceGapCandidateUpdate{
 		Symbol: "BTCUSDT", Disabled: true, Reason: "test",
 	})
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/pricegap/metrics — Plan 09-05 (real impl, no longer a stub)
+// ---------------------------------------------------------------------------
+
+// seedHistoryPosition writes a closed PriceGapPosition to pg:history with a
+// controllable ClosedAt / RealizedPnL / NotionalUSDT so tests can drive the
+// aggregator deterministically.
+func seedHistoryPosition(t *testing.T, s *Server, symbol, longEx, shortEx string, age time.Duration, notional, bps float64) {
+	t.Helper()
+	pnl := bps * notional / 10_000.0
+	p := &models.PriceGapPosition{
+		ID:            symbol + "_" + longEx + "_" + shortEx + "_" + age.String(),
+		Symbol:        symbol,
+		LongExchange:  longEx,
+		ShortExchange: shortEx,
+		Status:        models.PriceGapStatusClosed,
+		Mode:          models.PriceGapModeLive,
+		NotionalUSDT:  notional,
+		RealizedPnL:   pnl,
+		ClosedAt:      time.Now().Add(-age),
+	}
+	if err := s.db.AddPriceGapHistory(p); err != nil {
+		t.Fatalf("AddPriceGapHistory: %v", err)
+	}
+}
+
+func TestHandlePriceGapMetrics_Empty(t *testing.T) {
+	s, _, token, td := newPriceGapTestServer(t)
+	defer td()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/pricegap/metrics", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler := s.authMiddleware(s.handlePriceGapMetrics)
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		OK   bool                                `json:"ok"`
+		Data []pricegaptrader.CandidateMetrics   `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("ok=false, body=%s", w.Body.String())
+	}
+	// Both configured candidates (BTCUSDT, SOONUSDT) must appear as zero-activity rows
+	// — the handler pads from cfg.PriceGapCandidates.
+	if len(resp.Data) != 2 {
+		t.Fatalf("got %d rows, want 2 (padded from config)", len(resp.Data))
+	}
+	for _, r := range resp.Data {
+		if r.TradesWindow != 0 {
+			t.Errorf("candidate %s TradesWindow=%d, want 0", r.Candidate, r.TradesWindow)
+		}
+		if r.Bps30dPerDay != 0 || r.Bps7dPerDay != 0 || r.Bps24hPerDay != 0 {
+			t.Errorf("candidate %s has non-zero bps in empty-history case: %+v", r.Candidate, r)
+		}
+	}
+}
+
+func TestHandlePriceGapMetrics_Sorted30dDesc(t *testing.T) {
+	s, _, token, td := newPriceGapTestServer(t)
+	defer td()
+
+	// Remove SOONUSDT from config so the padding rule does not inject extra rows
+	// with zero Bps30dPerDay (they would otherwise sort at the bottom and pass
+	// the test trivially). Three distinct exchange pairs → three distinct keys.
+	s.cfg.PriceGapCandidates = []models.PriceGapCandidate{
+		{Symbol: "BTCUSDT", LongExch: "binance", ShortExch: "bybit", ThresholdBps: 25, MaxPositionUSDT: 500},
+		{Symbol: "BTCUSDT", LongExch: "okx", ShortExch: "gate", ThresholdBps: 25, MaxPositionUSDT: 500},
+		{Symbol: "BTCUSDT", LongExch: "bitget", ShortExch: "bingx", ThresholdBps: 25, MaxPositionUSDT: 500},
+	}
+	// Target Bps30dPerDay values → 5, 20, 10. Using a 29d-old single trade per
+	// pair with notional=1000: bps_trade * 1000 / 10000 = pnl; Bps30dPerDay = bps_trade/30.
+	// For Bps30dPerDay=5 → bps_trade=150; =20 → 600; =10 → 300.
+	seedHistoryPosition(t, s, "BTCUSDT", "binance", "bybit", 29*24*time.Hour, 1000, 150) // 5
+	seedHistoryPosition(t, s, "BTCUSDT", "okx", "gate", 29*24*time.Hour, 1000, 600)      // 20
+	seedHistoryPosition(t, s, "BTCUSDT", "bitget", "bingx", 29*24*time.Hour, 1000, 300)  // 10
+
+	req := httptest.NewRequest(http.MethodGet, "/api/pricegap/metrics", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler := s.authMiddleware(s.handlePriceGapMetrics)
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		OK   bool                              `json:"ok"`
+		Data []pricegaptrader.CandidateMetrics `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data) != 3 {
+		t.Fatalf("got %d rows, want 3", len(resp.Data))
+	}
+	// Sort desc by Bps30dPerDay: 20 > 10 > 5.
+	if !(resp.Data[0].Bps30dPerDay > resp.Data[1].Bps30dPerDay &&
+		resp.Data[1].Bps30dPerDay > resp.Data[2].Bps30dPerDay) {
+		t.Fatalf("not sorted desc: %+v %+v %+v",
+			resp.Data[0].Bps30dPerDay, resp.Data[1].Bps30dPerDay, resp.Data[2].Bps30dPerDay)
+	}
+	// Top row must be okx/gate (bps_trade=600 → 20/day).
+	if resp.Data[0].LongExchange != "okx" || resp.Data[0].ShortExchange != "gate" {
+		t.Fatalf("top row pair = %s/%s, want okx/gate", resp.Data[0].LongExchange, resp.Data[0].ShortExchange)
+	}
+}
+
+func TestHandlePriceGapMetrics_PaddedForConfigCandidates(t *testing.T) {
+	s, _, token, td := newPriceGapTestServer(t)
+	defer td()
+
+	// Expand config to three candidates; seed history only for the first.
+	s.cfg.PriceGapCandidates = []models.PriceGapCandidate{
+		{Symbol: "BTCUSDT", LongExch: "binance", ShortExch: "bybit", ThresholdBps: 25, MaxPositionUSDT: 500},
+		{Symbol: "ETHUSDT", LongExch: "binance", ShortExch: "bybit", ThresholdBps: 25, MaxPositionUSDT: 500},
+		{Symbol: "SOLUSDT", LongExch: "binance", ShortExch: "bybit", ThresholdBps: 25, MaxPositionUSDT: 500},
+	}
+	seedHistoryPosition(t, s, "BTCUSDT", "binance", "bybit", 1*time.Hour, 1000, 30)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/pricegap/metrics", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler := s.authMiddleware(s.handlePriceGapMetrics)
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+	var resp struct {
+		OK   bool                              `json:"ok"`
+		Data []pricegaptrader.CandidateMetrics `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data) != 3 {
+		t.Fatalf("got %d rows, want 3 (BTC + ETH + SOL)", len(resp.Data))
+	}
+	// Build a key→row map and assert:
+	//  - BTCUSDT_binance_bybit has TradesWindow=1 and non-zero bps.
+	//  - ETH/SOL padded rows have TradesWindow=0 and zero bps.
+	byKey := map[string]pricegaptrader.CandidateMetrics{}
+	for _, r := range resp.Data {
+		byKey[r.Candidate] = r
+	}
+	btc, ok := byKey["BTCUSDT_binance_bybit"]
+	if !ok {
+		t.Fatalf("BTCUSDT row missing; rows=%+v", resp.Data)
+	}
+	if btc.TradesWindow != 1 {
+		t.Errorf("BTCUSDT TradesWindow=%d, want 1", btc.TradesWindow)
+	}
+	if btc.Bps24hPerDay == 0 {
+		t.Errorf("BTCUSDT Bps24hPerDay=0, want non-zero")
+	}
+	eth, ok := byKey["ETHUSDT_binance_bybit"]
+	if !ok {
+		t.Fatalf("ETHUSDT padded row missing; rows=%+v", resp.Data)
+	}
+	if eth.TradesWindow != 0 || eth.Bps30dPerDay != 0 {
+		t.Errorf("ETHUSDT padded row not zero: %+v", eth)
+	}
+	sol, ok := byKey["SOLUSDT_binance_bybit"]
+	if !ok {
+		t.Fatalf("SOLUSDT padded row missing")
+	}
+	if sol.TradesWindow != 0 {
+		t.Errorf("SOLUSDT TradesWindow=%d, want 0", sol.TradesWindow)
+	}
+}
+
+func TestHandlePriceGapState_IncludesMetrics(t *testing.T) {
+	s, _, token, td := newPriceGapTestServer(t)
+	defer td()
+
+	seedHistoryPosition(t, s, "BTCUSDT", "binance", "bybit", 1*time.Hour, 1000, 30)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/pricegap/state", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler := s.authMiddleware(s.handlePriceGapState)
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d (body=%s)", w.Code, w.Body.String())
+	}
+	// Decode through a struct that sees Metrics as the real aggregator type.
+	var resp struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Metrics []pricegaptrader.CandidateMetrics `json:"metrics"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data.Metrics) == 0 {
+		t.Fatalf("state.metrics empty, want populated (seed + padding)")
+	}
+	// At least one row must carry the seeded BTCUSDT non-zero bps.
+	var foundNonZero bool
+	for _, r := range resp.Data.Metrics {
+		if r.Candidate == "BTCUSDT_binance_bybit" && r.Bps24hPerDay > 0 {
+			foundNonZero = true
+			break
+		}
+	}
+	if !foundNonZero {
+		t.Fatalf("no BTCUSDT non-zero row in state.metrics: %+v", resp.Data.Metrics)
+	}
 }
