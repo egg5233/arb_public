@@ -79,7 +79,7 @@ Seed input: `/tmp/phase0-pricegap/STRATEGY_DESIGN.md` (§3.5 candidate shortlist
   - [x] 09-05-PLAN.md — On-demand ComputeCandidateMetrics aggregator + /api/pricegap/metrics wiring (PG-OPS-05, PG-VAL-01, PG-VAL-02)
   - [x] 09-06-PLAN.md — Tracker hook invocations at 5 call sites + cmd/main.go DI wiring (PG-OPS-02, -03, -05)
   - [x] 09-07-PLAN.md — PriceGap.tsx page + App.tsx nav + i18n lockstep per 09-UI-SPEC.md (PG-OPS-01, -02, -03, PG-VAL-02)
-  - [ ] 09-08-PLAN.md — Paper→live cutover integration test + UAT checklist + VERSION/CHANGELOG bump (all PG-OPS-0X, PG-VAL-0X)
+  - [x] 09-08-PLAN.md — Paper→live cutover integration test + UAT checklist + VERSION/CHANGELOG bump (all PG-OPS-0X, PG-VAL-0X)
 **UI hint**: yes
 
 ## Progress
