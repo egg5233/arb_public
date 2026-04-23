@@ -8,7 +8,7 @@
 
 ---
 
-**Version:** v6
+**Version:** v7
 **Date:** 2026-04-23
 **Status:** REVIEWING
 
@@ -117,9 +117,9 @@ func (e *Engine) waitForSpotBalance(donor string, required float64, timeout time
 // cause target = inflated + sentAmount to exceed reality, triggering a
 // false timeout.
 //
-// The `snapshotSpot` parameter is retained for future telemetry (e.g.
-// logging the delta between snapshot and live) but is NOT used as a
-// fallback — pre-read failure is treated as a hard donor skip.
+// The `snapshotSpot` parameter is used ONLY for error context/telemetry
+// (e.g. logging the snapshot value when the read fails). It is NOT a
+// fallback value — pre-read failure is treated as a hard donor skip.
 func (e *Engine) captureSpotBalanceForTransfer(donor string, snapshotSpot float64) (float64, error) {
     exch, ok := e.exchanges[donor]
     if !ok {
@@ -261,7 +261,7 @@ Placement notes:
 - Insert INSIDE the `if !skipOuterTransfer && donorBal.spot < requiredSpot` block (the same block that already executed `TransferToSpot`). The outer `}` at the unchanged line is the close of that `if` block; the wait must be before it.
 - If `TransferToSpot` was skipped (unified account or spot already sufficient), the pre-transfer capture and wait block are never reached.
 - Poll for the expected total spot balance after settlement, not just `movedToSpot`. Use the donor's spot balance immediately before `TransferToSpot` plus `movedToSpot`. This avoids a false early pass when the donor already had enough pre-existing spot to satisfy `movedToSpot` but not enough to satisfy the pending withdrawal. Binance and Bitget `TransferToSpot` implementations submit a single transfer and reject non-success codes (see `pkg/exchange/binance/adapter.go:838`, `pkg/exchange/bitget/adapter.go:948`), so the full-or-reject assumption holds.
-- If the pre-read `GetSpotBalance` call fails, fall back to the snapshot `donorBal.spot` captured earlier in the rebalance cycle. The wait target may be slightly conservative in that case (waits for a value that's already attainable), but this is safer than polling for only `movedToSpot`.
+- If the pre-read `GetSpotBalance` call fails, skip this donor (`surplus[bestDonor] = 0; continue`). Do not use `donorBal.spot` as a fallback: it is a rebalance-start snapshot and can be lower than live spot after earlier donor prep in the same cycle, making the post-transfer wait target too low (see codex audit `bam03kjb5`).
 
 - [ ] **Step 3: Compile check**
 
@@ -438,8 +438,8 @@ func TestWaitForSpotBalance_UnknownDonor(t *testing.T) {
 }
 
 // singleReadStub returns an error on the first GetSpotBalance call,
-// and a fixed value thereafter. Used to exercise the snapshotSpot
-// fallback in captureSpotBalanceForTransfer.
+// and a fixed value thereafter. Used to verify captureSpotBalanceForTransfer
+// returns an error instead of using snapshotSpot or a later successful read.
 type singleReadStub struct {
     exchange.Exchange
     value float64
@@ -653,6 +653,10 @@ git commit -m "chore: bump v0.33.3 for wait-spot-balance fix"
   - [HIGH] `captureAndWaitForSpotTransfer` placed pre-read AFTER `TransferToSpot`, which could double-count fast-settled transfers (preRead sees already-credited balance, then adds sentAmount on top → inflated target → false timeout). Fixed: split back into two helpers — `captureSpotBalanceForTransfer` (pre-read only, called BEFORE TransferToSpot) and existing `waitForSpotBalance` (called AFTER). Call site in Task 2 now interleaves them in correct order. Tests updated to `TestCaptureSpotBalanceForTransfer_Success` / `_ReadFallback` / `_UnknownDonor`.
 - v6 2026-04-23: codex (local companion `bam03kjb5`) — NEEDS-REVISION with 1 MEDIUM:
   - [MEDIUM] snapshot fallback in `captureSpotBalanceForTransfer` could be LOWER than live spot when an earlier donor prep in the same cycle already credited spot; falling back to the (stale) snapshot would make `preTransferSpot + movedToSpot` too low and waitForSpotBalance could pass on the earlier prep's funds rather than our own transfer. Fixed: removed snapshot fallback. On GetSpotBalance error the helper now returns an error and the caller skips the donor. `snapshotSpot` parameter retained in signature for future telemetry but no longer a fallback value. Test `_ReadFallback` renamed to `_ReadErrorSkips` and now asserts error.
+- v7 2026-04-23: codex (local companion `bjz5cvnu5`) — NEEDS-REVISION with 2 LOW wording stragglers (core logic RESOLVED from v6):
+  - [LOW] "Placement notes" bullet still described the old snapshot fallback. Fixed: rewritten to explicitly forbid using `donorBal.spot` as fallback.
+  - [LOW] `singleReadStub` doc comment still said "exercise the snapshotSpot fallback". Fixed: rewritten to say the stub verifies strict error behavior.
+  - Also: `snapshotSpot` helper doc clarified to "error context/telemetry ONLY".
 
 ---
 
