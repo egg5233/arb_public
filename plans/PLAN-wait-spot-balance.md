@@ -8,7 +8,7 @@
 
 ---
 
-**Version:** v5
+**Version:** v6
 **Date:** 2026-04-23
 **Status:** REVIEWING
 
@@ -106,14 +106,20 @@ func (e *Engine) waitForSpotBalance(donor string, required float64, timeout time
 // captureSpotBalanceForTransfer reads the donor's current spot balance.
 // Intended to be called BEFORE TransferToSpot so the caller can compute
 // `preTransferSpot + sentAmount` as the post-transfer target passed to
-// waitForSpotBalance. If GetSpotBalance errors, falls back to snapshotSpot
-// (the rebalance-cycle-captured value) — never returns a "reading error"
-// in normal operation; only the unknown-donor path can error out.
+// waitForSpotBalance. Returns an error if the read fails — the caller
+// must skip the donor. No snapshot fallback: an earlier-in-cycle donor
+// prep could have credited spot, making the rebalance-start snapshot
+// stale and causing the wait target to pass prematurely on the prior
+// prep's landed funds rather than our own TransferToSpot.
 //
 // Correctness note: this MUST happen before TransferToSpot. If it runs
 // after, a partially-settled transfer can inflate preTransferSpot and
 // cause target = inflated + sentAmount to exceed reality, triggering a
 // false timeout.
+//
+// The `snapshotSpot` parameter is retained for future telemetry (e.g.
+// logging the delta between snapshot and live) but is NOT used as a
+// fallback — pre-read failure is treated as a hard donor skip.
 func (e *Engine) captureSpotBalanceForTransfer(donor string, snapshotSpot float64) (float64, error) {
     exch, ok := e.exchanges[donor]
     if !ok {
@@ -121,8 +127,7 @@ func (e *Engine) captureSpotBalanceForTransfer(donor string, snapshotSpot float6
     }
     preBal, err := exch.GetSpotBalance()
     if err != nil {
-        e.log.Debug("rebalance: %s preTransferSpot read failed (%v), fallback to snapshot %.4f", donor, err, snapshotSpot)
-        return snapshotSpot, nil
+        return 0, fmt.Errorf("captureSpotBalanceForTransfer: %s GetSpotBalance failed (snapshot was %.4f): %w", donor, snapshotSpot, err)
     }
     return preBal.Available, nil
 }
@@ -206,9 +211,11 @@ Current code at `internal/engine/allocator.go:1904-1923` (including the earlier 
                 // MUST happen before the transfer; reading after would double-
                 // count any portion of the transfer that settled between
                 // TransferToSpot's return and this read, causing an inflated
-                // target and false timeout. Fallback to donorBal.spot on
-                // read error (never fails otherwise; unknown-donor skipped
-                // earlier by surrounding logic).
+                // target and false timeout. On read error: skip donor (no
+                // snapshot fallback because an earlier-in-cycle donor prep
+                // may have already credited spot above the snapshot value,
+                // which would cause the wait target to be too low and pass
+                // prematurely on the prior prep's funds rather than ours).
                 preTransferSpot, err := e.captureSpotBalanceForTransfer(bestDonor, donorBal.spot)
                 if err != nil {
                     e.log.Warn("rebalance: %s %v — skipping donor", bestDonor, err)
@@ -476,19 +483,22 @@ func TestCaptureSpotBalanceForTransfer_Success(t *testing.T) {
     }
 }
 
-// TestCaptureSpotBalanceForTransfer_ReadFallback verifies that when
-// GetSpotBalance returns an error, the helper falls back to the
-// passed-in snapshotSpot value without returning an error.
-func TestCaptureSpotBalanceForTransfer_ReadFallback(t *testing.T) {
-    stub := &singleReadStub{value: 999.0} // would return 999 if ever called twice, but test only calls once
+// TestCaptureSpotBalanceForTransfer_ReadErrorSkips verifies that when
+// GetSpotBalance returns an error, the helper returns an error rather
+// than silently falling back to snapshotSpot. Caller must skip donor.
+// Rationale: snapshot can be stale if an earlier donor prep in the
+// same cycle already credited spot — using it as fallback could let
+// waitForSpotBalance pass on prior-prep funds rather than our own.
+func TestCaptureSpotBalanceForTransfer_ReadErrorSkips(t *testing.T) {
+    stub := &singleReadStub{value: 999.0} // errors on first call
     eng := newWaitTestEngine(map[string]exchange.Exchange{"binance": stub})
 
-    pre, err := eng.captureSpotBalanceForTransfer("binance", 100.0)
-    if err != nil {
-        t.Fatalf("expected nil err on fallback, got: %v", err)
+    _, err := eng.captureSpotBalanceForTransfer("binance", 100.0)
+    if err == nil {
+        t.Fatal("expected error when GetSpotBalance fails, got nil (snapshot fallback was removed)")
     }
-    if pre != 100.0 {
-        t.Errorf("expected pre=100 (snapshot fallback), got %f", pre)
+    if !strings.Contains(err.Error(), "GetSpotBalance failed") {
+        t.Errorf("expected error to mention GetSpotBalance failure, got: %v", err)
     }
     if atomic.LoadInt32(&stub.calls) != 1 {
         t.Errorf("expected exactly 1 GetSpotBalance call, got %d", stub.calls)
@@ -524,7 +534,7 @@ Expected: 8/8 PASS. Timings:
 - `TestWaitForSpotBalance_Timeout` finishes in 3-4 seconds
 - `TestWaitForSpotBalance_UnknownDonor` finishes in <100ms
 - `TestCaptureSpotBalanceForTransfer_Success` finishes in <100ms
-- `TestCaptureSpotBalanceForTransfer_ReadFallback` finishes in <100ms
+- `TestCaptureSpotBalanceForTransfer_ReadErrorSkips` finishes in <100ms
 - `TestCaptureSpotBalanceForTransfer_UnknownDonor` finishes in <100ms
 
 - [ ] **Step 3: Full package test**
@@ -641,6 +651,8 @@ git commit -m "chore: bump v0.33.3 for wait-spot-balance fix"
   - [LOW] Coverage gap for pre-read-fallback path. Fixed: extracted `captureAndWaitForSpotTransfer` helper, added `TestCaptureAndWaitForSpotTransfer_PreReadFallback` + `TestCaptureAndWaitForSpotTransfer_UnknownDonor`, Task 2 call site now uses the helper.
 - v5 2026-04-23: codex (local companion `brshav1ag`) — NEEDS-REVISION with 1 HIGH logic bug:
   - [HIGH] `captureAndWaitForSpotTransfer` placed pre-read AFTER `TransferToSpot`, which could double-count fast-settled transfers (preRead sees already-credited balance, then adds sentAmount on top → inflated target → false timeout). Fixed: split back into two helpers — `captureSpotBalanceForTransfer` (pre-read only, called BEFORE TransferToSpot) and existing `waitForSpotBalance` (called AFTER). Call site in Task 2 now interleaves them in correct order. Tests updated to `TestCaptureSpotBalanceForTransfer_Success` / `_ReadFallback` / `_UnknownDonor`.
+- v6 2026-04-23: codex (local companion `bam03kjb5`) — NEEDS-REVISION with 1 MEDIUM:
+  - [MEDIUM] snapshot fallback in `captureSpotBalanceForTransfer` could be LOWER than live spot when an earlier donor prep in the same cycle already credited spot; falling back to the (stale) snapshot would make `preTransferSpot + movedToSpot` too low and waitForSpotBalance could pass on the earlier prep's funds rather than our own transfer. Fixed: removed snapshot fallback. On GetSpotBalance error the helper now returns an error and the caller skips the donor. `snapshotSpot` parameter retained in signature for future telemetry but no longer a fallback value. Test `_ReadFallback` renamed to `_ReadErrorSkips` and now asserts error.
 
 ---
 
