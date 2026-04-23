@@ -8,7 +8,7 @@
 
 ---
 
-**Version:** v3
+**Version:** v4
 **Date:** 2026-04-23
 **Status:** REVIEWING
 
@@ -66,8 +66,8 @@ Add:
 // okx classic, gate.io classic) post TransferToSpot asynchronously — the
 // REST response confirms acceptance but the spot account balance only
 // reflects the move after a short settlement lag. Without this wait, a
-// subsequent GetSpotBalance at allocator.go:1923 can read 0 and cause
-// netAmount = -fee < 0 at :1967, skipping the downstream withdraw.
+// subsequent GetSpotBalance at the caller can read stale balance and cause
+// netAmount = -fee < 0 at the guard below, skipping the downstream withdraw.
 //
 // Returns nil once the target is met. Returns an error on timeout; the
 // caller treats the error as a donor skip (surplus -> 0) and continues.
@@ -102,7 +102,30 @@ func (e *Engine) waitForSpotBalance(donor string, required float64, timeout time
         time.Sleep(pollInterval)
     }
 }
+
+// captureAndWaitForSpotTransfer encapsulates the pre-read + wait pattern
+// used by executeRebalanceFundingPlan after TransferToSpot. It reads the
+// current spot balance (pre-transfer), falls back to snapshotSpot if the
+// read errors, then polls for (pre + sentAmount). Extracted so the
+// fallback path is unit-testable.
+func (e *Engine) captureAndWaitForSpotTransfer(donor string, snapshotSpot, sentAmount float64, timeout time.Duration) error {
+    exch, ok := e.exchanges[donor]
+    if !ok {
+        return fmt.Errorf("captureAndWaitForSpotTransfer: donor %s not registered", donor)
+    }
+    var preTransferSpot float64
+    if preBal, err := exch.GetSpotBalance(); err == nil {
+        preTransferSpot = preBal.Available
+    } else {
+        preTransferSpot = snapshotSpot
+        e.log.Debug("rebalance: %s preTransferSpot read failed (%v), fallback to snapshot %.4f", donor, err, preTransferSpot)
+    }
+    target := preTransferSpot + sentAmount
+    return e.waitForSpotBalance(donor, target, timeout)
+}
 ```
+
+Note: `captureAndWaitForSpotTransfer` is designed to be called AFTER `TransferToSpot` succeeds. It does the pre-read as its first step (which races with the in-flight internal transfer — if the pre-read happens to see partial settlement, the wait target is proportionally relaxed, which is fine). The caller already captured `movedToSpot = parsedMove` before calling this helper; passing `parsedMove` as `sentAmount` ensures correctness.
 
 Also ensure `time` import is present at the top of `allocator.go` (it likely is already — verify with a grep).
 
@@ -168,21 +191,6 @@ Current code at `internal/engine/allocator.go:1904-1923` (including the earlier 
                     continue
                 }
 
-                // Capture pre-transfer spot balance BEFORE TransferToSpot so
-                // the wait loop below can poll for the expected post-transfer
-                // total (pre + sent), not just the sent amount. Prevents a
-                // false early pass when the donor already had spot >=
-                // parsedMove but the transfer itself has not settled.
-                var preTransferSpot float64
-                if preBal, err := e.exchanges[bestDonor].GetSpotBalance(); err == nil {
-                    preTransferSpot = preBal.Available
-                } else {
-                    // If the pre-read fails, fall back to the snapshot value
-                    // (still better than 0; wait loop will tolerate over-target).
-                    preTransferSpot = donorBal.spot
-                    e.log.Debug("rebalance: %s preTransferSpot read failed (%v), fallback to snapshot %.4f", bestDonor, err, preTransferSpot)
-                }
-
                 e.log.Info("rebalance: %s futures->spot %s USDT", bestDonor, moveStr)
                 if err := e.exchanges[bestDonor].TransferToSpot("USDT", moveStr); err != nil {
                     e.log.Error("rebalance: %s futures->spot failed: %v", bestDonor, err)
@@ -197,17 +205,15 @@ Current code at `internal/engine/allocator.go:1904-1923` (including the earlier 
                 movedToSpot = parsedMove
 
                 // Wait for the internal transfer to settle before reading
-                // spot balance below. Split-account exchanges return from
-                // TransferToSpot before the spot pool reflects the move;
-                // without this wait, the GetSpotBalance call below can
-                // read stale balance and cause netAmount = -fee < 0 at the
-                // guard below, silently skipping the donor withdraw.
-                // Target = preTransferSpot + movedToSpot so a pre-existing
-                // spot balance does NOT cause a false early success.
+                // spot balance below. captureAndWaitForSpotTransfer does a
+                // fresh GetSpotBalance pre-read (fallback to donorBal.spot
+                // if read errors), then polls for preTransferSpot+movedToSpot
+                // via waitForSpotBalance. Without this wait, the GetSpotBalance
+                // call below can read stale balance and cause netAmount = -fee
+                // < 0 at the guard below, silently skipping the donor withdraw.
                 // See 2026-04-23 02:35 binance->bingx incident + codex
-                // audits b1f1og3j7, bqvv15ukz, bqtfw2xow (review findings).
-                targetSpot := preTransferSpot + movedToSpot
-                if err := e.waitForSpotBalance(bestDonor, targetSpot, 10*time.Second); err != nil {
+                // audits b1f1og3j7, bqvv15ukz, bqtfw2xow, ba6l7l0eg (review findings).
+                if err := e.captureAndWaitForSpotTransfer(bestDonor, donorBal.spot, movedToSpot, 10*time.Second); err != nil {
                     e.log.Warn("rebalance: %s %v — skipping donor", bestDonor, err)
                     surplus[bestDonor] = 0
                     continue
@@ -398,6 +404,55 @@ func TestWaitForSpotBalance_UnknownDonor(t *testing.T) {
         t.Errorf("expected error to contain donor name, got: %v", err)
     }
 }
+
+// preReadErrorStub is a narrow stub for captureAndWaitForSpotTransfer test:
+// the first GetSpotBalance call (the "pre-read") returns an error; subsequent
+// calls (the wait-loop polls) return the target balance. This models the
+// fallback-to-snapshot code path in captureAndWaitForSpotTransfer.
+type preReadErrorStub struct {
+    exchange.Exchange
+    target    float64
+    calls     int32 // atomic
+}
+
+func (s *preReadErrorStub) GetSpotBalance() (*exchange.Balance, error) {
+    n := atomic.AddInt32(&s.calls, 1)
+    if n == 1 {
+        return nil, errors.New("transient pre-read error")
+    }
+    return &exchange.Balance{Available: s.target, Total: s.target}, nil
+}
+
+// TestCaptureAndWaitForSpotTransfer_PreReadFallback verifies that when the
+// initial GetSpotBalance pre-read errors, the helper falls back to the
+// passed-in snapshotSpot value and still completes the wait correctly.
+// Scenario: snapshotSpot=100, sentAmount=20 => target = 100+20 = 120.
+// Stub errors on call #1 (pre-read), then returns 120 on call #2 (wait poll).
+func TestCaptureAndWaitForSpotTransfer_PreReadFallback(t *testing.T) {
+    stub := &preReadErrorStub{target: 120.0}
+    eng := newWaitTestEngine(map[string]exchange.Exchange{"binance": stub})
+
+    err := eng.captureAndWaitForSpotTransfer("binance", 100.0, 20.0, 10*time.Second)
+    if err != nil {
+        t.Fatalf("expected success with snapshot fallback, got: %v", err)
+    }
+    if atomic.LoadInt32(&stub.calls) < 2 {
+        t.Errorf("expected at least 2 calls (1 pre-read err + 1 wait poll), got %d", stub.calls)
+    }
+}
+
+// TestCaptureAndWaitForSpotTransfer_UnknownDonor verifies the helper fails
+// fast when donor key is not registered.
+func TestCaptureAndWaitForSpotTransfer_UnknownDonor(t *testing.T) {
+    eng := newWaitTestEngine(map[string]exchange.Exchange{})
+    err := eng.captureAndWaitForSpotTransfer("nonexistent", 100, 20, 1*time.Second)
+    if err == nil {
+        t.Fatal("expected error for unknown donor, got nil")
+    }
+    if !strings.Contains(err.Error(), "nonexistent") {
+        t.Errorf("expected error to contain donor name, got: %v", err)
+    }
+}
 ```
 
 Harness notes:
@@ -407,13 +462,15 @@ Harness notes:
 
 - [ ] **Step 2: Run tests**
 
-`go test ./internal/engine/ -run 'TestWaitForSpotBalance' -v -count=1`
-Expected: 5/5 PASS. Timings:
-- `EventualSuccess` finishes in 2-3 seconds
-- `TransientError` finishes in 2-3 seconds
-- `PreExistingSpotBelowTarget` finishes in 3-4 seconds
-- `Timeout` finishes in 3-4 seconds
-- `UnknownDonor` finishes in <100ms
+`go test ./internal/engine/ -run 'TestWaitForSpotBalance|TestCaptureAndWaitForSpotTransfer' -v -count=1`
+Expected: 7/7 PASS. Timings:
+- `TestWaitForSpotBalance_EventualSuccess` finishes in 2-3 seconds
+- `TestWaitForSpotBalance_TransientError` finishes in 2-3 seconds
+- `TestWaitForSpotBalance_PreExistingSpotBelowTarget` finishes in 3-4 seconds
+- `TestWaitForSpotBalance_Timeout` finishes in 3-4 seconds
+- `TestWaitForSpotBalance_UnknownDonor` finishes in <100ms
+- `TestCaptureAndWaitForSpotTransfer_PreReadFallback` finishes in <2 seconds
+- `TestCaptureAndWaitForSpotTransfer_UnknownDonor` finishes in <100ms
 
 - [ ] **Step 3: Full package test**
 
@@ -479,7 +536,7 @@ Insert above the current `## [0.33.2]` block:
 - **Rebalance transfer timing for split-account donors** — `executeRebalanceFundingPlan` called `TransferToSpot` as fire-and-forget and then immediately read `GetSpotBalance`, which for binance/bitget-class split-account donors returned stale balance before the internal futures→spot settled. The subsequent `netAmount = spot - fee < 0` guard silently skipped the outbound withdraw, leaving recipients (e.g. bingx) unfunded. Observed 2026-04-23 02:35 UTC binance→bingx for SIGNUSDT. Fix:
   - Added `*Engine.waitForSpotBalance(donor, required, timeout)` helper that polls `GetSpotBalance` every 1s until `Available >= required` or the 10s timeout elapses (`internal/engine/allocator.go`).
   - Captured pre-transfer spot balance (`preTransferSpot`) before `TransferToSpot` and wait for `preTransferSpot + movedToSpot` using the *parsed* submitted transfer amount (`parsedMove` from `moveStr`), so neither pre-existing spot nor %.4f float rounding can cause a false success/timeout.
-  - Inserted the wait between `TransferToSpot` (line 1914) and the spot-balance read (line 1923). On timeout the donor is dropped with the same skip semantics as the existing `netAmount <= 0` guard.
+  - Inserted the wait between `TransferToSpot` and the subsequent spot-balance read. On timeout the donor is dropped with the same skip semantics as the existing `netAmount <= 0` guard.
   - Regression tests covering eventual success, transient `GetSpotBalance` error, pre-existing spot below target, timeout, and unknown donor cases (`internal/engine/wait_spot_balance_test.go`).
   - Codex independent audits (local companion tasks `b1f1og3j7`, `bqvv15ukz`, `bqtfw2xow`, gpt-5.4 xhigh) confirmed root cause and iterated the plan.
 ```
@@ -501,7 +558,7 @@ git commit -m "chore: bump v0.33.3 for wait-spot-balance fix"
 | `GetSpotBalance` rate limit on rapid 1s polls | 10 polls per 10s × few donors per cycle is well within exchange rate limits (typically 10-20 req/s spot-account allowance on binance/bitget). |
 | False positive: spot balance stays stale due to exchange-side indexer lag | 10s covers the p99 of internal transfer reflection; if still zero after 10s the transfer is likely stuck or delayed beyond recovery — donor skip is the correct safe behavior. |
 | Unified-account donors should NOT trigger wait | Fix is inside `!skipOuterTransfer` branch, which is false for unified (see line 1857-1860). No change for unified path. |
-| `movedToSpot` may be less than what actually landed if `TransferToSpot` was partially honored | We poll for `>= movedToSpot`, which is the amount we requested. Exchanges either honor the request in full or reject; partial fills are not a documented behavior for asset transfers. Even if partial, the next guard at line 1967 (`netAmount <= 0`) still catches it and skips gracefully. |
+| `movedToSpot` may be less than what actually landed if `TransferToSpot` was partially honored | We poll for `>= preTransferSpot + movedToSpot`, where `movedToSpot` is parsed from the submitted `moveStr`. Exchanges either honor the request in full or reject; partial fills are not a documented behavior for asset transfers. Even if partial, the later `netAmount <= 0` guard still catches insufficient withdrawable balance and skips gracefully. |
 | Clock / sleep interaction with existing unit tests | Tests mock the exchange, not `time.Sleep`; `time.Now()` timing is real but bounded by the test's 10s timeout — no flakiness expected on CI runners with normal scheduling. |
 
 ## Out of Scope
@@ -523,6 +580,10 @@ git commit -m "chore: bump v0.33.3 for wait-spot-balance fix"
   - [MEDIUM] `movedToSpot = moveAmt` uses raw float but actual send is `moveStr` (%.4f rounded); up to 0.00005 drift could cause false timeout. Fixed: use `parsedMove := strconv.ParseFloat(moveStr)` for `movedToSpot`.
   - [LOW] `PreExistingSpotBelowTarget` test didn't actually model pre-existing non-zero balance. Fixed: added `preSettle` field to stub; test now uses preSettle=100, target=200.
   - [LOW] CHANGELOG wording referenced outdated `movedToSpot` target semantics. Fixed: updated Task 5 entry to mention pre-transfer-spot + parsed-move.
+- v4 2026-04-23: codex (local companion `ba6l7l0eg`) — NEEDS-REVISION with 3 wording/coverage findings:
+  - [LOW] Risk table still described `movedToSpot`-only target. Fixed: updated row to `preTransferSpot + movedToSpot`.
+  - [LOW] CHANGELOG hardcoded pre-patch line numbers that will become stale. Fixed: removed `line 1914/1923` from CHANGELOG.
+  - [LOW] Coverage gap for pre-read-fallback path. Fixed: extracted `captureAndWaitForSpotTransfer` helper, added `TestCaptureAndWaitForSpotTransfer_PreReadFallback` + `TestCaptureAndWaitForSpotTransfer_UnknownDonor`, Task 2 call site now uses the helper.
 
 ---
 
