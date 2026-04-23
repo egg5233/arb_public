@@ -8,9 +8,9 @@
 
 ---
 
-**Version:** v1
+**Version:** v2
 **Date:** 2026-04-23
-**Status:** DRAFT
+**Status:** REVIEWING
 
 ## Context — Observed incident
 
@@ -148,6 +148,21 @@ Current code at `internal/engine/allocator.go:1913-1923`:
 - [ ] **Step 2: Exact AFTER**
 
 ```go
+                // Capture pre-transfer spot balance BEFORE TransferToSpot so
+                // the wait loop below can poll for the expected post-transfer
+                // total (pre + moved), not just the move amount. Prevents a
+                // false early pass when the donor already had spot >=
+                // movedToSpot but the transfer itself has not settled.
+                var preTransferSpot float64
+                if preBal, err := e.exchanges[bestDonor].GetSpotBalance(); err == nil {
+                    preTransferSpot = preBal.Available
+                } else {
+                    // If the pre-read fails, fall back to the snapshot value
+                    // (still better than 0; wait loop will tolerate over-target).
+                    preTransferSpot = donorBal.spot
+                    e.log.Debug("rebalance: %s preTransferSpot read failed (%v), fallback to snapshot %.4f", bestDonor, err, preTransferSpot)
+                }
+
                 e.log.Info("rebalance: %s futures->spot %s USDT", bestDonor, moveStr)
                 if err := e.exchanges[bestDonor].TransferToSpot("USDT", moveStr); err != nil {
                     e.log.Error("rebalance: %s futures->spot failed: %v", bestDonor, err)
@@ -161,10 +176,14 @@ Current code at `internal/engine/allocator.go:1913-1923`:
                 // spot balance below. Split-account exchanges return from
                 // TransferToSpot before the spot pool reflects the move;
                 // without this wait, the GetSpotBalance call below can
-                // read 0 and cause netAmount = -fee < 0 at the guard below,
-                // silently skipping the donor withdraw. See 2026-04-23
-                // 02:35 binance->bingx incident + codex audit b1f1og3j7.
-                if err := e.waitForSpotBalance(bestDonor, movedToSpot, 10*time.Second); err != nil {
+                // read stale balance and cause netAmount = -fee < 0 at the
+                // guard below, silently skipping the donor withdraw.
+                // Target = preTransferSpot + movedToSpot so a pre-existing
+                // spot balance does NOT cause a false early success.
+                // See 2026-04-23 02:35 binance->bingx incident + codex
+                // audits b1f1og3j7 and bqvv15ukz (review finding H1).
+                targetSpot := preTransferSpot + movedToSpot
+                if err := e.waitForSpotBalance(bestDonor, targetSpot, 10*time.Second); err != nil {
                     e.log.Warn("rebalance: %s %v — skipping donor", bestDonor, err)
                     surplus[bestDonor] = 0
                     continue
@@ -178,8 +197,9 @@ Current code at `internal/engine/allocator.go:1913-1923`:
 
 Placement notes:
 - Insert INSIDE the `if !skipOuterTransfer && donorBal.spot < requiredSpot` block (the same block that already executed `TransferToSpot`). The outer `}` at the unchanged line is the close of that `if` block; the wait must be before it.
-- If `TransferToSpot` was skipped (unified account or spot already sufficient), `movedToSpot` remains `0` and the wait block is never reached.
-- `movedToSpot` is the moveAmt we requested, not the actual settled amount; since `TransferToSpot` succeeded per the check above, polling for `>= movedToSpot` is correct: the full amount should eventually appear.
+- If `TransferToSpot` was skipped (unified account or spot already sufficient), the pre-transfer capture and wait block are never reached.
+- Poll for the expected total spot balance after settlement, not just `movedToSpot`. Use the donor's spot balance immediately before `TransferToSpot` plus `movedToSpot`. This avoids a false early pass when the donor already had enough pre-existing spot to satisfy `movedToSpot` but not enough to satisfy the pending withdrawal. Binance and Bitget `TransferToSpot` implementations submit a single transfer and reject non-success codes (see `pkg/exchange/binance/adapter.go:838`, `pkg/exchange/bitget/adapter.go:948`), so the full-or-reject assumption holds.
+- If the pre-read `GetSpotBalance` call fails, fall back to the snapshot `donorBal.spot` captured earlier in the rebalance cycle. The wait target may be slightly conservative in that case (waits for a value that's already attainable), but this is safer than polling for only `movedToSpot`.
 
 - [ ] **Step 3: Compile check**
 
@@ -208,41 +228,56 @@ Create `internal/engine/wait_spot_balance_test.go`:
 package engine
 
 import (
-    "fmt"
+    "errors"
+    "strings"
     "sync/atomic"
     "testing"
     "time"
 
     "arb/pkg/exchange"
+    "arb/pkg/utils"
 )
 
-// delayedSpotStub is a minimal exchange stub whose GetSpotBalance returns
-// 0 for the first `delayPolls` calls and then the target amount.
-// Only the two methods used by waitForSpotBalance are implemented; other
-// interface methods are left unimplemented and will panic if called —
-// test must not exercise them.
+// delayedSpotStub is a minimal exchange stub whose GetSpotBalance controls
+// the observed spot balance per-call. Only GetSpotBalance is implemented;
+// other Exchange methods are NOT overridden and will panic if called —
+// waitForSpotBalance MUST NOT exercise them.
 type delayedSpotStub struct {
-    exchange.Exchange
-    name       string
-    target     float64
-    delayPolls int32 // atomic
-    calls      int32 // atomic
+    exchange.Exchange                  // embed so unused methods are "valid" types; any actual call panics
+    target            float64          // balance once settled
+    delayPolls        int32            // zero-balance polls before settle (atomic)
+    calls             int32            // atomic
+    errOnPoll         int32            // if >0, this many polls return an error first (atomic)
 }
 
 func (s *delayedSpotStub) GetSpotBalance() (*exchange.Balance, error) {
     n := atomic.AddInt32(&s.calls, 1)
+    if atomic.LoadInt32(&s.errOnPoll) > 0 {
+        atomic.AddInt32(&s.errOnPoll, -1)
+        return nil, errors.New("transient network error")
+    }
     if n <= atomic.LoadInt32(&s.delayPolls) {
         return &exchange.Balance{Available: 0, Total: 0}, nil
     }
     return &exchange.Balance{Available: s.target, Total: s.target}, nil
 }
 
+// newWaitTestEngine returns the minimal *Engine fixture required by
+// waitForSpotBalance: just exchanges map + logger. Do NOT use
+// buildRankFirstEngine — it is overkill for this unit test and pulls
+// miniredis + risk manager wiring that is irrelevant here.
+func newWaitTestEngine(exchanges map[string]exchange.Exchange) *Engine {
+    return &Engine{
+        exchanges: exchanges,
+        log:       utils.NewLogger("test-wait-spot"),
+    }
+}
+
 // TestWaitForSpotBalance_EventualSuccess verifies the poll loop succeeds
-// when the target balance appears after a few polls.
+// when the target balance appears after a few zero-reads.
 func TestWaitForSpotBalance_EventualSuccess(t *testing.T) {
-    eng := newTestEngineWithPass1Harness(t) // reuse Task 3's harness
-    stub := &delayedSpotStub{name: "binance", target: 120.75, delayPolls: 2}
-    eng.exchanges["binance"] = stub
+    stub := &delayedSpotStub{target: 120.75, delayPolls: 2}
+    eng := newWaitTestEngine(map[string]exchange.Exchange{"binance": stub})
 
     start := time.Now()
     err := eng.waitForSpotBalance("binance", 120.75, 10*time.Second)
@@ -262,19 +297,61 @@ func TestWaitForSpotBalance_EventualSuccess(t *testing.T) {
     }
 }
 
+// TestWaitForSpotBalance_TransientError verifies the poll loop recovers
+// after a transient GetSpotBalance error and still succeeds within timeout.
+func TestWaitForSpotBalance_TransientError(t *testing.T) {
+    stub := &delayedSpotStub{target: 50.0, delayPolls: 0, errOnPoll: 2}
+    eng := newWaitTestEngine(map[string]exchange.Exchange{"binance": stub})
+
+    start := time.Now()
+    err := eng.waitForSpotBalance("binance", 50.0, 10*time.Second)
+    elapsed := time.Since(start)
+
+    if err != nil {
+        t.Fatalf("expected nil err after transient error recovers, got: %v", err)
+    }
+    if atomic.LoadInt32(&stub.calls) < 3 {
+        t.Errorf("expected at least 3 GetSpotBalance calls (2 err + 1 success), got %d", stub.calls)
+    }
+    if elapsed > 5*time.Second {
+        t.Errorf("expected success within 5s, got %s", elapsed)
+    }
+}
+
+// TestWaitForSpotBalance_PreExistingSpotBelowTarget verifies the caller's
+// expected usage: they must pass target = preTransferSpot + movedToSpot,
+// not movedToSpot alone. We simulate the pre-existing scenario by letting
+// the stub stay below target for several polls, then jump to target.
+// (Indirect — this test documents the contract; the direct test of the
+// call site is in Task 2's code change.)
+func TestWaitForSpotBalance_PreExistingSpotBelowTarget(t *testing.T) {
+    stub := &delayedSpotStub{target: 200.0, delayPolls: 3}
+    eng := newWaitTestEngine(map[string]exchange.Exchange{"binance": stub})
+
+    err := eng.waitForSpotBalance("binance", 200.0, 10*time.Second)
+    if err != nil {
+        t.Fatalf("expected eventual success, got err: %v", err)
+    }
+    if atomic.LoadInt32(&stub.calls) < 4 {
+        t.Errorf("expected at least 4 polls, got %d", stub.calls)
+    }
+}
+
 // TestWaitForSpotBalance_Timeout verifies the poll loop returns an error
 // after the timeout when the target never appears.
 func TestWaitForSpotBalance_Timeout(t *testing.T) {
-    eng := newTestEngineWithPass1Harness(t)
-    stub := &delayedSpotStub{name: "binance", target: 120.75, delayPolls: 9999} // never satisfies
-    eng.exchanges["binance"] = stub
+    stub := &delayedSpotStub{target: 120.75, delayPolls: 9999} // never satisfies
+    eng := newWaitTestEngine(map[string]exchange.Exchange{"binance": stub})
 
     start := time.Now()
-    err := eng.waitForSpotBalance("binance", 120.75, 3*time.Second) // short timeout for the test
+    err := eng.waitForSpotBalance("binance", 120.75, 3*time.Second) // short timeout for test
     elapsed := time.Since(start)
 
     if err == nil {
         t.Fatal("expected timeout error, got nil")
+    }
+    if !strings.Contains(err.Error(), "timeout") {
+        t.Errorf("expected error message to mention timeout, got: %v", err)
     }
     if elapsed < 3*time.Second {
         t.Errorf("expected at least 3s elapsed (timeout), got %s", elapsed)
@@ -287,38 +364,29 @@ func TestWaitForSpotBalance_Timeout(t *testing.T) {
 // TestWaitForSpotBalance_UnknownDonor verifies the helper fails fast when
 // the donor key is not in e.exchanges (bug guard).
 func TestWaitForSpotBalance_UnknownDonor(t *testing.T) {
-    eng := newTestEngineWithPass1Harness(t)
+    eng := newWaitTestEngine(map[string]exchange.Exchange{})
     err := eng.waitForSpotBalance("nonexistent", 100, 1*time.Second)
     if err == nil {
         t.Fatal("expected error for unknown donor, got nil")
     }
-    if want := "nonexistent"; err != nil && !contains(err.Error(), want) {
-        t.Errorf("expected error message to contain %q, got %q", want, err.Error())
+    if !strings.Contains(err.Error(), "nonexistent") {
+        t.Errorf("expected error to contain donor name, got: %v", err)
     }
-}
-
-func contains(s, sub string) bool {
-    return len(s) >= len(sub) && (s == sub || len(sub) == 0 || fmt.Sprintf("%v", s) != "" && (len(s) > 0 && indexOf(s, sub) >= 0))
-}
-func indexOf(s, sub string) int {
-    for i := 0; i+len(sub) <= len(s); i++ {
-        if s[i:i+len(sub)] == sub {
-            return i
-        }
-    }
-    return -1
 }
 ```
 
-Helper discovery note: `newTestEngineWithPass1Harness` exists in `internal/engine/rebalance_topup_test.go` (added in the top-up routing fix). It returns an `*Engine` whose `exchanges` map is mutable — extending it with `delayedSpotStub` is the established pattern. If the harness does not already expose `exchanges` publicly to tests in the same package, no change is needed because test files in the same package can access unexported fields directly.
-
-For `contains` / `indexOf` — if `strings` is already imported in the test file or a nearby existing test helper, prefer `strings.Contains`. The above hand-rolled version is only to avoid a new import if the test file is otherwise import-light; feel free to simplify to `strings.Contains(err.Error(), "nonexistent")`.
+Harness notes:
+- Do NOT reuse `buildRankFirstEngine` — it pulls miniredis + risk manager wiring irrelevant to this unit. A minimal `&Engine{exchanges, log}` fixture (via `newWaitTestEngine`) is sufficient.
+- `delayedSpotStub` embeds `exchange.Exchange` so unimplemented methods have valid types; any accidental call panics with nil interface dispatch — acceptable because `waitForSpotBalance` only calls `GetSpotBalance()`.
+- All assertions use `strings.Contains` for readability.
 
 - [ ] **Step 2: Run tests**
 
 `go test ./internal/engine/ -run 'TestWaitForSpotBalance' -v -count=1`
-Expected: 3/3 PASS. Timings:
+Expected: 5/5 PASS. Timings:
 - `EventualSuccess` finishes in 2-3 seconds
+- `TransientError` finishes in 2-3 seconds
+- `PreExistingSpotBelowTarget` finishes in 3-4 seconds
 - `Timeout` finishes in 3-4 seconds
 - `UnknownDonor` finishes in <100ms
 
@@ -420,6 +488,11 @@ git commit -m "chore: bump v0.33.3 for wait-spot-balance fix"
 ## Review History
 
 - v1 2026-04-23: DRAFT — initial plan for codex review
+- v2 2026-04-23: codex (local companion `bqvv15ukz`) — NEEDS-REVISION with 4 findings:
+  - [HIGH] `movedToSpot` alone is wrong wait target; pre-existing spot balance must be added. Fixed: insert pre-read `GetSpotBalance` before `TransferToSpot`, poll for `preTransferSpot + movedToSpot`.
+  - [MEDIUM] `newTestEngineWithPass1Harness` does not exist; use minimal `&Engine{exchanges, log}` fixture via `newWaitTestEngine`. Fixed.
+  - [LOW] Hand-rolled `contains/indexOf` replaced with `strings.Contains`. Fixed.
+  - [LOW] Missing edge-case tests (transient error, pre-existing spot below target). Fixed: added `TestWaitForSpotBalance_TransientError` and `TestWaitForSpotBalance_PreExistingSpotBelowTarget`.
 
 ---
 
