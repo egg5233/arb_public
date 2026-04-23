@@ -54,3 +54,55 @@ Every row in the Requirement Coverage table must be checked. Any unchecked row b
 ## Sign-Off
 
 <!-- Operator appends here after the walkthrough completes -->
+
+---
+
+## UAT Outcome (2026-04-22, Plan 09-08 Task 3)
+
+**Result: PARTIAL — blocked by detector observability gap. Phase 9 NOT signed off.**
+
+The operator began UAT against a live dev host with 4 candidates loaded (SOON, RAVE, HOLO, SIGN — all also in the funding-rate scanner's subscription universe) and thresholds set aggressively low (20 bps) for observability. `pg-admin status` confirmed the tracker was healthy and loaded; Redis showed no active positions; `journalctl -u arb` showed zero `pricegap: opened` or `pricegap: gate-blocked` lines in 10+ minutes of runtime. No paper trades fired, so every UAT row that depends on a live detection was unreachable.
+
+### Root-Cause Gaps (tracked for Phase 9.1)
+
+- **Gap #1** — silent detector non-fire in `internal/pricegaptrader/tracker.go:287-289`: `if !det.Fired { continue }` without logging `det.Reason`, making the detector a black box in production.
+- **Gap #2** — no BBO subscription path for pricegap candidates: `pkg/exchange.SubscribeSymbol` has zero callers in `internal/pricegaptrader/` or `cmd/main.go`; pricegap candidates only get BBO "for free" when they overlap the funding-rate scanner's universe.
+
+Together these explain why UAT stalls and why the operator cannot diagnose without code changes.
+
+### Row-by-Row Status
+
+| Row | Status | Note |
+|-----|--------|------|
+| PG-OPS-01 nav placement | ✅ Passed | Tab renders between spot-positions and history |
+| PG-OPS-01 Candidates table lists `cfg.PriceGapCandidates` | ✅ Passed | All 4 candidates visible |
+| PG-OPS-01 Disable modal + Redis write | ⏸ Not walked | Deferred — operator chose to stop UAT after observability gap surfaced |
+| PG-OPS-01 Re-enable modal + Redis key clear | ⏸ Not walked | Deferred |
+| PG-OPS-01 pg-admin ↔ dashboard parity | ⏸ Not walked | Deferred |
+| PG-OPS-02 Live Positions table populates | 🛑 BLOCKED | Gap #1 + #2 — no detection fires |
+| PG-OPS-02 WS `pg_positions` frames | 🛑 BLOCKED | No active positions to broadcast |
+| PG-OPS-02 PAPER / LIVE badge colors | ⏸ Not walked | Cannot visually confirm without a row |
+| PG-OPS-03 Closed Log Modeled/Realized/Delta columns | 🛑 BLOCKED | No trades to populate the log |
+| PG-OPS-03 "Load 100 more" pagination | ⏸ Not walked | Empty history |
+| PG-OPS-04 Header toggle flips pill + persists | ✅ Passed | POST `/api/config` writes flag, `.bak` created |
+| PG-OPS-04 Mid-life flip preserves Mode | 🟨 Proven in test, not walked | `TestPaperToLiveCutover_NoOrphans` green; live walkthrough blocked |
+| PG-OPS-04 Default PAPER pill on missing key | ✅ Passed | Fresh boot without `price_gap.paper_mode` shows violet |
+| PG-OPS-05 Entry alert with 📝 PAPER prefix | 🛑 BLOCKED | No entry to trigger |
+| PG-OPS-05 Exit alert with reason/PnL/slip/hold | 🛑 BLOCKED | No exit to trigger |
+| PG-OPS-05 Risk-block cooldown | 🛑 BLOCKED | No block to trigger |
+| PG-OPS-05 Perp-perp NotifyAutoEntry regression | 🟨 Proven in test, not walked | Plan 04 golden-string regression green |
+| PG-VAL-01 Realized > 0 on paper row | 🟨 Proven in test, not walked | `TestPaperToLiveCutover_ClosedLogShape` asserts this |
+| PG-VAL-02 Rolling Metrics 24h/7d/30d | 🛑 BLOCKED | No history to aggregate |
+| PG-VAL-02 Default sort 30d desc | ⏸ Not walked | Table empty |
+| i18n zh-TW coverage | ✅ Passed | Locale switch, no English fallback observed on rendered panels |
+| Accessibility (Esc close, role=dialog) | ⏸ Not walked | Modals blocked by no-detection cascade |
+
+Legend: ✅ passed / ⏸ deferred (not reached) / 🛑 blocked by observability gap / 🟨 proven in automated tests but not walked live
+
+### Next Steps
+
+1. Phase 9 verifier runs and is expected to return `gaps_found` referencing this outcome.
+2. Phase 9.1 drafts fixes for Gap #1 + Gap #2.
+3. UAT resumes after 9.1 ships, walking all 🛑 and ⏸ rows.
+4. No live-capital deployment of 0.34.0 until the full walkthrough signs off.
+
