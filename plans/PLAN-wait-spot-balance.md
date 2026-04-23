@@ -2,13 +2,13 @@
 
 **Goal:** Add a 10-second poll after `TransferToSpot` in the rebalance executor so split-account donor withdrawals (binance/bitget etc.) no longer fail silently when the internal futures→spot transfer has not yet reflected in spot balance. Fixes the observed 02:35 2026-04-23 production incident where binance→bingx withdraw was skipped with `netAmount=-0.10`, leaving bingx unfunded and SIGNUSDT entry rejected.
 
-**Architecture:** Insert a single call to a new `waitForSpotBalance(exch, required, timeout)` helper between `TransferToSpot` (allocator.go:1914) and the spot-balance read (allocator.go:1923-1931). The helper polls `GetSpotBalance()` every 1 second until `Available >= required` or the 10-second timeout elapses. On timeout, the donor is dropped (same skip semantics already present at :1967-1970). Unified-account donors skip the entire `TransferToSpot` branch, so the wait is only added inside the split-account `!skipOuterTransfer` block.
+**Architecture:** Insert two helpers into the rebalance executor: `captureSpotBalanceForTransfer` (pre-read, called BEFORE `TransferToSpot`) + `waitForSpotBalance` (post-transfer poll, called AFTER). The wait returns `(*exchange.Balance, error)` so the caller can reuse the observed balance for downstream margin/netAmount calculations without a redundant `GetSpotBalance`. On wait **timeout** the caller pessimistically debits donor `futures`/`futuresTotal` by `movedToSpot` and credits `spot`, so subsequent iterations don't over-commit the donor. Unified-account donors skip the entire `TransferToSpot` branch, so the wait is only added inside the split-account `!skipOuterTransfer` block. Poll loop is stop-aware (respects `e.stopCh`) so engine shutdown aborts promptly.
 
 **Tech Stack:** Go 1.26, `internal/engine/allocator.go`, `pkg/exchange/exchange.go` (`Exchange` interface already defines `GetSpotBalance`). Go stdlib `time`, `testing`.
 
 ---
 
-**Version:** v8
+**Version:** v9
 **Date:** 2026-04-23
 **Status:** REVIEWING
 
@@ -444,11 +444,14 @@ func TestWaitForSpotBalance_EventualSuccess(t *testing.T) {
     eng := newWaitTestEngine(map[string]exchange.Exchange{"binance": stub})
 
     start := time.Now()
-    err := eng.waitForSpotBalance("binance", 120.75, 10*time.Second)
+    bal, err := eng.waitForSpotBalance("binance", 120.75, 10*time.Second)
     elapsed := time.Since(start)
 
     if err != nil {
         t.Fatalf("expected nil err after delayed balance appears, got: %v", err)
+    }
+    if bal == nil || bal.Available < 120.75 {
+        t.Fatalf("expected returned bal.Available >= 120.75, got: %+v", bal)
     }
     if atomic.LoadInt32(&stub.calls) < 3 {
         t.Errorf("expected at least 3 GetSpotBalance calls (2 zero + 1 success), got %d", stub.calls)
@@ -468,11 +471,14 @@ func TestWaitForSpotBalance_TransientError(t *testing.T) {
     eng := newWaitTestEngine(map[string]exchange.Exchange{"binance": stub})
 
     start := time.Now()
-    err := eng.waitForSpotBalance("binance", 50.0, 10*time.Second)
+    bal, err := eng.waitForSpotBalance("binance", 50.0, 10*time.Second)
     elapsed := time.Since(start)
 
     if err != nil {
         t.Fatalf("expected nil err after transient error recovers, got: %v", err)
+    }
+    if bal == nil || bal.Available < 50.0 {
+        t.Fatalf("expected returned bal.Available >= 50, got: %+v", bal)
     }
     if atomic.LoadInt32(&stub.calls) < 3 {
         t.Errorf("expected at least 3 GetSpotBalance calls (2 err + 1 success), got %d", stub.calls)
@@ -492,9 +498,12 @@ func TestWaitForSpotBalance_PreExistingSpotBelowTarget(t *testing.T) {
     stub := &delayedSpotStub{preSettle: 100.0, target: 200.0, delayPolls: 3}
     eng := newWaitTestEngine(map[string]exchange.Exchange{"binance": stub})
 
-    err := eng.waitForSpotBalance("binance", 200.0, 10*time.Second)
+    bal, err := eng.waitForSpotBalance("binance", 200.0, 10*time.Second)
     if err != nil {
         t.Fatalf("expected eventual success, got err: %v", err)
+    }
+    if bal == nil || bal.Available < 200.0 {
+        t.Fatalf("expected returned bal.Available >= 200, got: %+v", bal)
     }
     if atomic.LoadInt32(&stub.calls) < 4 {
         t.Errorf("expected at least 4 polls (3 pre-settle + 1 settled), got %d", stub.calls)
@@ -508,11 +517,14 @@ func TestWaitForSpotBalance_Timeout(t *testing.T) {
     eng := newWaitTestEngine(map[string]exchange.Exchange{"binance": stub})
 
     start := time.Now()
-    err := eng.waitForSpotBalance("binance", 120.75, 3*time.Second) // short timeout for test
+    bal, err := eng.waitForSpotBalance("binance", 120.75, 3*time.Second) // short timeout for test
     elapsed := time.Since(start)
 
     if err == nil {
         t.Fatal("expected timeout error, got nil")
+    }
+    if bal != nil {
+        t.Errorf("expected nil balance on timeout, got: %+v", bal)
     }
     if !strings.Contains(err.Error(), "timeout") {
         t.Errorf("expected error message to mention timeout, got: %v", err)
@@ -529,7 +541,7 @@ func TestWaitForSpotBalance_Timeout(t *testing.T) {
 // the donor key is not in e.exchanges (bug guard).
 func TestWaitForSpotBalance_UnknownDonor(t *testing.T) {
     eng := newWaitTestEngine(map[string]exchange.Exchange{})
-    err := eng.waitForSpotBalance("nonexistent", 100, 1*time.Second)
+    _, err := eng.waitForSpotBalance("nonexistent", 100, 1*time.Second)
     if err == nil {
         t.Fatal("expected error for unknown donor, got nil")
     }
@@ -635,11 +647,14 @@ func TestWaitForSpotBalance_StopAware(t *testing.T) {
     }()
 
     start := time.Now()
-    _, err := eng.waitForSpotBalanceWithInterval("binance", 100, 5*time.Second, 500*time.Millisecond)
+    bal, err := eng.waitForSpotBalanceWithInterval("binance", 100, 5*time.Second, 500*time.Millisecond)
     elapsed := time.Since(start)
 
     if err == nil {
         t.Fatal("expected stop-aware error, got nil")
+    }
+    if bal != nil {
+        t.Errorf("expected nil balance on stop, got: %+v", bal)
     }
     if !strings.Contains(err.Error(), "stopped") {
         t.Errorf("expected error to mention stop, got: %v", err)
@@ -659,42 +674,29 @@ Skeleton:
 ```go
 package engine
 
-import (
-    "testing"
-    "time"
+import "testing"
 
-    "arb/pkg/exchange"
-)
-
-// TestExecuteRebalanceFundingPlan_DelayedSpotDonor reproduces the 2026-04-23
-// binance->bingx production race at the executor level:
-// - donor has futures=500, spot=0 pre-test
-// - recipient needs 120 via APT
-// - Exchange stub returns spot=0 for first N polls after TransferToSpot,
-//   then 120 afterward.
-// Expected post-fix behavior: wait loop observes 120, Withdraw is called,
-// recipient funded.
+// TestExecuteRebalanceFundingPlan_DelayedSpotDonor is a TODO placeholder for
+// an integration-level regression test reproducing the 2026-04-23 production
+// race at the executor level:
+//   - donor has futures=500, spot=0 pre-test
+//   - recipient needs 120 via APT
+//   - exchange stub returns spot=0 for first 2 polls after TransferToSpot,
+//     then 120 afterward
+// Expected post-fix behavior: wait observes 120, Withdraw called, recipient
+// funded. Expected pre-fix behavior: TransferToSpot happens but Withdraw
+// never called (netAmount < 0), funded empty, skip reason recorded.
 //
-// If the wait regresses, TransferToSpot happens but Withdraw is never
-// called (netAmount < 0), funded is empty, skip reason recorded.
+// This test requires scaffolding for executeRebalanceFundingPlan input
+// (transferStep, balances map, feeCache, allocator dryRun output); if that
+// scaffolding exceeds ~150 lines, keep as TODO and rely on unit tests plus
+// post-deploy log observation. Implementer decides at execution time.
 func TestExecuteRebalanceFundingPlan_DelayedSpotDonor(t *testing.T) {
-    // Build a minimal engine with one donor + one recipient.
-    // Stubs:
-    //   - delayedSpotStub as donor.GetSpotBalance (initially 0, settles to 120 after 2 polls)
-    //   - trackingTransferStub captures TransferToSpot and Withdraw calls
-    // Inject balances map with donor.futures=500, spot=0.
-    // Call e.executeRebalanceFundingPlan(<plan with one step: donor->recipient 120>).
-    // Assert: result.Funded[recipient] > 0, TransferToSpot called once,
-    //         Withdraw called once, no SkipReasons entry for recipient.
-    //
-    // This test is heavier than the unit tests (needs a full executor
-    // fixture). If the harness to build executeRebalanceFundingPlan
-    // input requires non-trivial scaffolding, this test may be deferred
-    // to a separate follow-up plan and the implementer should note that
-    // in the PR description. But the plan's intent is to attempt it.
-    t.Skip("integration harness for executeRebalanceFundingPlan pending — see Out of Scope note below")
+    t.Skip("TODO: integration harness for executeRebalanceFundingPlan; see Out of Scope")
 }
 ```
+
+Imports are ONLY `testing` (single import) so the file compiles without unused-import errors when the test is skipped. If/when the implementer unskips it, they add `time` and `exchange` imports along with the real test body.
 
 **Implementer note:** building a full integration test for `executeRebalanceFundingPlan` requires stubbing the plan input (transferStep), balances map, feeCache, and potentially the allocator's dryRun output. If the scaffolding exceeds ~150 lines, skip the integration test and rely on the helper unit tests + manual post-deploy observation (watch first 2-3 :35 cycles on VPS for `waitedSpotBal` log or `pessimistically debiting` warn). Document the skip with a clear reason in the test body.
 
@@ -706,12 +708,13 @@ Harness notes:
 - [ ] **Step 2: Run tests**
 
 `go test ./internal/engine/ -run 'TestWaitForSpotBalance|TestCaptureSpotBalanceForTransfer' -v -count=1`
-Expected: 8/8 PASS. Timings:
+Expected: 9/9 PASS. Timings:
 - `TestWaitForSpotBalance_EventualSuccess` finishes in 2-3 seconds
 - `TestWaitForSpotBalance_TransientError` finishes in 2-3 seconds
 - `TestWaitForSpotBalance_PreExistingSpotBelowTarget` finishes in 3-4 seconds
 - `TestWaitForSpotBalance_Timeout` finishes in 3-4 seconds
 - `TestWaitForSpotBalance_UnknownDonor` finishes in <100ms
+- `TestWaitForSpotBalance_StopAware` finishes in ~1.5 seconds
 - `TestCaptureSpotBalanceForTransfer_Success` finishes in <100ms
 - `TestCaptureSpotBalanceForTransfer_ReadErrorSkips` finishes in <100ms
 - `TestCaptureSpotBalanceForTransfer_UnknownDonor` finishes in <100ms
@@ -818,8 +821,9 @@ git commit -m "chore: bump v0.33.3 for wait-spot-balance fix"
 |-----------|--------------------------|----------------|-----------|
 | Rebalance executor (this fix) | `internal/engine/allocator.go:1914` | IN SCOPE | Automated, high-volume, production bug |
 | `/api/transfer` manual handler | `internal/api/handlers.go:1882` | OUT OF SCOPE | User-initiated, success/failure is observable via dashboard; user retries manually if needed |
-| Spot-futures Dir B manual open | `internal/spotengine/execution.go:212` | OUT OF SCOPE | Manual path; any settlement lag is handled by the subsequent margin-check retry inside spotengine; no silent skip |
+| Spot-futures Dir B manual open | `internal/spotengine/execution.go:212` | OUT OF SCOPE | TransferToSpot is immediately followed by a spot **buy** (not a withdraw); the buy reads fresh spot balance inside its own adapter path and will surface an explicit "insufficient balance" error from the exchange if the transfer hasn't settled. No silent skip; user-visible failure surfaces through the normal spotengine order-error channel |
 | L3 same-exchange health transfer | `internal/engine/engine.go:1210` | OUT OF SCOPE | Health-driven reactive transfer; the health monitor re-evaluates each cycle, so one missed-settlement cycle recovers automatically |
+| L5 emergency safety transfer | `internal/engine/engine.go:1597` | OUT OF SCOPE | Emergency-only (L5 margin-ratio breach); the safety transfer is fire-and-forget by design so the loop doesn't block during a critical event, and the next cycle re-measures margin ratios and re-fires if still needed |
 
 None of the OUT OF SCOPE sites have the exact "silent skip + stale balance cascade" failure mode that motivated this plan. If any of them show similar symptoms in future incidents, extract `waitForSpotBalance` usage at that site then (refactoring into a shared helper in this same file is already done).
 
@@ -854,6 +858,11 @@ None of the OUT OF SCOPE sites have the exact "silent skip + stale balance casca
   - [MED 3] Tests only covered helper, not the executor integration. Fixed in v8: added integration test skeleton (`TestExecuteRebalanceFundingPlan_DelayedSpotDonor`) with implementer note permitting deferral if harness > 150 lines, in which case manual post-deploy observation substitutes.
   - [LOW 4] Other `TransferToSpot` call sites were not triaged. Fixed in v8: explicit triage table in Out of Scope; all three other sites documented as OUT OF SCOPE with rationale.
   - [LOW 5] Poll loop used `time.Sleep` without `stopCh` awareness; tests depended on real elapsed time. Fixed in v8: added `waitForSpotBalanceWithInterval` variant + stop-aware `select` + test `TestWaitForSpotBalance_StopAware`.
+- v8 2026-04-23: codex (local companion `bfiv2sy20`) — NEEDS-REVISION with 4 plan+test consistency findings (runtime design OK):
+  - [MED] Test snippets still used old one-return signature. Fixed: updated all 5 `waitForSpotBalance` test calls to `bal, err := ...` or `_, err := ...`; added `bal != nil / >= target` assertions.
+  - [MED] Integration test skeleton imported `time` and `exchange` but only called `t.Skip` → unused imports would fail compile. Fixed: integration test file now imports only `testing`; implementer adds other imports when unskipping.
+  - [LOW] Triage table missed L5 safety transfer (engine.go:1597) and had wrong rationale for spotengine Dir B (it's followed by a spot BUY, not margin-borrow polling). Fixed: both corrected in table.
+  - [LOW] Plan summary/test-count stale ("8/8", "timeout just drops donor"). Fixed: updated to "9/9" (including StopAware); architecture summary now mentions pessimistic debit.
 
 ---
 
