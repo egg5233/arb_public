@@ -1466,6 +1466,100 @@ func (e *Engine) formatAllocatorSummary(sel *allocatorSelection) string {
 	return strings.Join(names, ", ")
 }
 
+// defaultSpotWaitPollInterval is the production poll cadence for
+// waitForSpotBalance. Tests inject a shorter interval via
+// waitForSpotBalanceWithInterval for deterministic timing.
+const defaultSpotWaitPollInterval = 1 * time.Second
+
+// captureSpotBalanceForTransfer reads the donor's current spot balance.
+// Intended to be called BEFORE TransferToSpot so the caller can compute
+// `preTransferSpot + sentAmount` as the post-transfer target passed to
+// waitForSpotBalance. Returns an error if the read fails — the caller
+// must skip the donor. No snapshot fallback: an earlier-in-cycle donor
+// prep could have credited spot, making the rebalance-start snapshot
+// stale and causing the wait target to pass prematurely on the prior
+// prep's landed funds rather than our own TransferToSpot.
+//
+// Correctness note: this MUST happen before TransferToSpot. If it runs
+// after, a partially-settled transfer can inflate preTransferSpot and
+// cause target = inflated + sentAmount to exceed reality, triggering a
+// false timeout.
+//
+// The `snapshotSpot` parameter is used ONLY for error context/telemetry
+// (e.g. logging the snapshot value when the read fails). It is NOT a
+// fallback value — pre-read failure is treated as a hard donor skip.
+func (e *Engine) captureSpotBalanceForTransfer(donor string, snapshotSpot float64) (float64, error) {
+	exch, ok := e.exchanges[donor]
+	if !ok {
+		return 0, fmt.Errorf("captureSpotBalanceForTransfer: donor %s not registered", donor)
+	}
+	preBal, err := exch.GetSpotBalance()
+	if err != nil {
+		return 0, fmt.Errorf("captureSpotBalanceForTransfer: %s GetSpotBalance failed (snapshot was %.4f): %w", donor, snapshotSpot, err)
+	}
+	return preBal.Available, nil
+}
+
+// waitForSpotBalance polls donor.GetSpotBalance() every defaultSpotWaitPollInterval
+// until Available >= required or timeout elapses. Split-account exchanges
+// (binance, bitget, okx classic, gate.io classic) post TransferToSpot
+// asynchronously — the REST response confirms acceptance but the spot
+// account balance only reflects the move after a short settlement lag.
+// Without this wait, a subsequent GetSpotBalance at the caller can read
+// stale balance and cause netAmount = -fee < 0, skipping the downstream
+// withdraw.
+//
+// Returns the observed *exchange.Balance once Available >= required.
+// Callers SHOULD use the returned balance directly instead of doing a
+// second GetSpotBalance, which could hit a stale cache or error right
+// after a successful wait.
+//
+// Returns an error on timeout; caller treats as donor skip + pessimistic
+// debit. Unified-account donors bypass the futures->spot step entirely so
+// this helper is never called in their path.
+//
+// The wait is stop-aware: `e.stopCh` closing returns a "stopped" error so
+// an engine shutdown doesn't leave the goroutine blocked up to `timeout`.
+func (e *Engine) waitForSpotBalance(donor string, required float64, timeout time.Duration) (*exchange.Balance, error) {
+	return e.waitForSpotBalanceWithInterval(donor, required, timeout, defaultSpotWaitPollInterval)
+}
+
+// waitForSpotBalanceWithInterval is the test-injectable variant.
+func (e *Engine) waitForSpotBalanceWithInterval(donor string, required float64, timeout, pollInterval time.Duration) (*exchange.Balance, error) {
+	exch, ok := e.exchanges[donor]
+	if !ok {
+		return nil, fmt.Errorf("waitForSpotBalance: donor %s not registered", donor)
+	}
+	deadline := time.Now().Add(timeout)
+	var lastAvail float64
+	var lastErr error
+	for {
+		bal, err := exch.GetSpotBalance()
+		if err == nil {
+			lastAvail = bal.Available
+			if bal.Available >= required {
+				e.log.Debug("rebalance: %s spot balance reached %.4f (required=%.4f)", donor, bal.Available, required)
+				return bal, nil
+			}
+		} else {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			if lastErr != nil {
+				return nil, fmt.Errorf("waitForSpotBalance: timeout after %s waiting for %s spot>=%.4f (last err=%v)", timeout, donor, required, lastErr)
+			}
+			return nil, fmt.Errorf("waitForSpotBalance: timeout after %s waiting for %s spot>=%.4f (last avail=%.4f)", timeout, donor, required, lastAvail)
+		}
+		// Stop-aware sleep: select on stopCh so engine shutdown doesn't
+		// block the goroutine here for up to `timeout`.
+		select {
+		case <-e.stopCh:
+			return nil, fmt.Errorf("waitForSpotBalance: engine stopped while waiting for %s spot>=%.4f", donor, required)
+		case <-time.After(pollInterval):
+		}
+	}
+}
+
 func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances map[string]rebalanceBalanceInfo, precomputedDeficits []rebalanceDeficit, plannedSteps []transferStep) rebalanceExecutionResult {
 	// PostBalances starts as a clone of caller balances. The executor mutates
 	// `balances` in place throughout (same-exchange relief, eager donor
@@ -1852,6 +1946,12 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 			}
 
 			var movedToSpot float64
+			// waitedSpotBal is set by waitForSpotBalance (v0.33.3) when a
+			// wait succeeds after TransferToSpot. The split-account
+			// GetSpotBalance block below reuses it to avoid a redundant
+			// read that could hit stale cache / transient error right
+			// after a successful wait.
+			var waitedSpotBal *exchange.Balance
 			// Only skip futures→spot transfer for unified-account exchanges
 			// (where futures and spot share the same balance pool).
 			skipOuterTransfer := false
@@ -1905,11 +2005,28 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				// Post-format zero guard: moveAmt can be a tiny positive (e.g. 0.00003)
 				// that passes float checks but rounds to "0.0000" via %.4f. Exchanges
 				// reject zero-amount transfers (bitget code=40020).
-				if parsed, _ := strconv.ParseFloat(moveStr, 64); parsed <= 0 {
+				parsedMove, _ := strconv.ParseFloat(moveStr, 64)
+				if parsedMove <= 0 {
 					e.log.Warn("rebalance: %s moveAmt %.6f rounds to zero string, skipping", bestDonor, moveAmt)
 					surplus[bestDonor] = 0
 					continue
 				}
+
+				// Capture pre-transfer spot balance BEFORE TransferToSpot.
+				// MUST happen before the transfer; reading after would double-
+				// count any portion that settled between TransferToSpot's
+				// return and this read, inflating the target and timing out.
+				// On read error: skip donor (no snapshot fallback — earlier
+				// donor prep this cycle may have already credited spot above
+				// the snapshot value, which would make the wait target too
+				// low and pass prematurely on the prior prep's funds).
+				preTransferSpot, err := e.captureSpotBalanceForTransfer(bestDonor, donorBal.spot)
+				if err != nil {
+					e.log.Warn("rebalance: %s %v — skipping donor", bestDonor, err)
+					surplus[bestDonor] = 0
+					continue
+				}
+
 				e.log.Info("rebalance: %s futures->spot %s USDT", bestDonor, moveStr)
 				if err := e.exchanges[bestDonor].TransferToSpot("USDT", moveStr); err != nil {
 					e.log.Error("rebalance: %s futures->spot failed: %v", bestDonor, err)
@@ -1917,15 +2034,54 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 					continue
 				}
 				e.recordTransfer(bestDonor, bestDonor+" spot", "USDT", "internal", moveStr, "0", "", "completed", "rebalance-prep")
-				movedToSpot = moveAmt
+				// Use parsedMove (what was sent in moveStr) so wait target
+				// matches what the exchange received, not raw moveAmt float
+				// (which may differ by up to 0.00005 due to %.4f rounding).
+				movedToSpot = parsedMove
+
+				// Wait for TransferToSpot to settle. Without this wait, the
+				// GetSpotBalance below can read stale balance and cause
+				// netAmount = -fee < 0, silently skipping the downstream
+				// withdraw. Target = preTransferSpot + movedToSpot so
+				// pre-existing spot doesn't cause false early success.
+				// On timeout: TransferToSpot already succeeded — funds are
+				// in spot but we can't observe them in time. Pessimistically
+				// debit the in-memory snapshot so subsequent iterations
+				// don't double-spend the donor's futures balance.
+				var waitErr error
+				waitedSpotBal, waitErr = e.waitForSpotBalance(bestDonor, preTransferSpot+movedToSpot, 10*time.Second)
+				if waitErr != nil {
+					e.log.Warn("rebalance: %s %v — pessimistically debiting futures by %.4f and skipping donor", bestDonor, waitErr, movedToSpot)
+					updatedDonorBal := donorBal
+					updatedDonorBal.futures -= movedToSpot
+					if updatedDonorBal.futures < 0 {
+						updatedDonorBal.futures = 0
+					}
+					updatedDonorBal.futuresTotal -= movedToSpot
+					if updatedDonorBal.futuresTotal < 0 {
+						updatedDonorBal.futuresTotal = 0
+					}
+					updatedDonorBal.spot += movedToSpot
+					balances[bestDonor] = updatedDonorBal
+					surplus[bestDonor] = 0
+					continue
+				}
+				// waitedSpotBal is now set; the split-account GetSpotBalance
+				// block below will reuse it instead of re-reading.
 			}
 
 			// Unified accounts: spot balance is 0 (same pool as futures).
 			// Use GetFuturesBalance to get the real withdrawable amount.
+			// Split accounts: if we just waited via waitForSpotBalance above,
+			// reuse `waitedSpotBal` to avoid a redundant GetSpotBalance that
+			// could hit stale cache or transient error right after the wait
+			// succeeded.
 			var donorSpotBal *exchange.Balance
 			var donorBalErr error
 			if uc, ok := e.exchanges[bestDonor].(interface{ IsUnified() bool }); ok && uc.IsUnified() {
 				donorSpotBal, donorBalErr = e.exchanges[bestDonor].GetFuturesBalance()
+			} else if waitedSpotBal != nil {
+				donorSpotBal = waitedSpotBal
 			} else {
 				donorSpotBal, donorBalErr = e.exchanges[bestDonor].GetSpotBalance()
 			}

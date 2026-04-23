@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.33.3] - 2026-04-23
+
+### Fixed
+- **Rebalance transfer timing for split-account donors** — `executeRebalanceFundingPlan` called `TransferToSpot` as fire-and-forget and then immediately read `GetSpotBalance`, which for binance/bitget-class split-account donors returned stale balance before the internal futures→spot settled. The subsequent `netAmount = spot - fee < 0` guard silently skipped the outbound withdraw, leaving recipients (e.g. bingx) unfunded. Observed 2026-04-23 02:35 UTC binance→bingx for SIGNUSDT. Fix:
+  - Added `*Engine.waitForSpotBalance(donor, required, timeout)` helper returning `(*exchange.Balance, error)` that polls `GetSpotBalance` every 1s until `Available >= required` or the 10s timeout elapses (`internal/engine/allocator.go`). Stop-aware via `select` on `e.stopCh`.
+  - Added `*Engine.captureSpotBalanceForTransfer(donor, snapshotSpot)` helper that reads the donor's current spot balance BEFORE `TransferToSpot`. On read failure it returns an error and the caller skips the donor — no snapshot fallback because an earlier-in-cycle donor prep could have credited spot above the snapshot, making the post-transfer wait target too low.
+  - Captured pre-transfer spot balance before `TransferToSpot`, waited for `preTransferSpot + movedToSpot` using the parsed submitted transfer amount (`parsedMove` from `moveStr`), and reused the returned `*Balance` for the split-account `donorSpotBal` read — avoiding a redundant `GetSpotBalance` that could hit stale cache after a successful wait.
+  - On wait timeout: pessimistically debit donor `futures`/`futuresTotal` by `movedToSpot` and credit `spot` so subsequent iterations don't over-commit the donor (funds are in spot but we can't observe them in time).
+  - Regression tests covering eventual success, transient `GetSpotBalance` error, pre-existing spot below target, timeout, unknown donor, stop-aware shutdown, and captureSpotBalanceForTransfer success/read-error/unknown-donor cases (`internal/engine/wait_spot_balance_test.go`, 9 tests).
+  - Codex independent audits (local companion tasks `b1f1og3j7`, `bqvv15ukz`, `bqtfw2xow`, `ba6l7l0eg`, `brshav1ag`, `bam03kjb5`, `bjz5cvnu5`, `bdz321szb`, `bfiv2sy20`, `buac3qov4`, gpt-5.4 xhigh) confirmed root cause and iterated the plan to v9 PASS with 8/10 production-readiness.
+
 ## [0.33.2] - 2026-04-23
 
 ### Added
