@@ -8,7 +8,7 @@
 
 ---
 
-**Version:** v2
+**Version:** v3
 **Date:** 2026-04-23
 **Status:** REVIEWING
 
@@ -127,9 +127,18 @@ git commit -m "engine(allocator): add waitForSpotBalance helper for split-accoun
 
 - [ ] **Step 1: Exact BEFORE**
 
-Current code at `internal/engine/allocator.go:1913-1923`:
+Current code at `internal/engine/allocator.go:1904-1923` (including the earlier `moveStr` zero-guard):
 
 ```go
+                moveStr := fmt.Sprintf("%.4f", moveAmt)
+                // Post-format zero guard: moveAmt can be a tiny positive (e.g. 0.00003)
+                // that passes float checks but rounds to "0.0000" via %.4f. Exchanges
+                // reject zero-amount transfers (bitget code=40020).
+                if parsed, _ := strconv.ParseFloat(moveStr, 64); parsed <= 0 {
+                    e.log.Warn("rebalance: %s moveAmt %.6f rounds to zero string, skipping", bestDonor, moveAmt)
+                    surplus[bestDonor] = 0
+                    continue
+                }
                 e.log.Info("rebalance: %s futures->spot %s USDT", bestDonor, moveStr)
                 if err := e.exchanges[bestDonor].TransferToSpot("USDT", moveStr); err != nil {
                     e.log.Error("rebalance: %s futures->spot failed: %v", bestDonor, err)
@@ -148,11 +157,22 @@ Current code at `internal/engine/allocator.go:1913-1923`:
 - [ ] **Step 2: Exact AFTER**
 
 ```go
+                moveStr := fmt.Sprintf("%.4f", moveAmt)
+                // Post-format zero guard: moveAmt can be a tiny positive (e.g. 0.00003)
+                // that passes float checks but rounds to "0.0000" via %.4f. Exchanges
+                // reject zero-amount transfers (bitget code=40020).
+                parsedMove, _ := strconv.ParseFloat(moveStr, 64)
+                if parsedMove <= 0 {
+                    e.log.Warn("rebalance: %s moveAmt %.6f rounds to zero string, skipping", bestDonor, moveAmt)
+                    surplus[bestDonor] = 0
+                    continue
+                }
+
                 // Capture pre-transfer spot balance BEFORE TransferToSpot so
                 // the wait loop below can poll for the expected post-transfer
-                // total (pre + moved), not just the move amount. Prevents a
+                // total (pre + sent), not just the sent amount. Prevents a
                 // false early pass when the donor already had spot >=
-                // movedToSpot but the transfer itself has not settled.
+                // parsedMove but the transfer itself has not settled.
                 var preTransferSpot float64
                 if preBal, err := e.exchanges[bestDonor].GetSpotBalance(); err == nil {
                     preTransferSpot = preBal.Available
@@ -170,7 +190,11 @@ Current code at `internal/engine/allocator.go:1913-1923`:
                     continue
                 }
                 e.recordTransfer(bestDonor, bestDonor+" spot", "USDT", "internal", moveStr, "0", "", "completed", "rebalance-prep")
-                movedToSpot = moveAmt
+                // Use parsedMove (the value actually sent in moveStr) so the
+                // wait target matches what the exchange received, not the raw
+                // moveAmt float (which may differ by up to 0.00005 due to
+                // %.4f rounding and could cause false timeout).
+                movedToSpot = parsedMove
 
                 // Wait for the internal transfer to settle before reading
                 // spot balance below. Split-account exchanges return from
@@ -181,7 +205,7 @@ Current code at `internal/engine/allocator.go:1913-1923`:
                 // Target = preTransferSpot + movedToSpot so a pre-existing
                 // spot balance does NOT cause a false early success.
                 // See 2026-04-23 02:35 binance->bingx incident + codex
-                // audits b1f1og3j7 and bqvv15ukz (review finding H1).
+                // audits b1f1og3j7, bqvv15ukz, bqtfw2xow (review findings).
                 targetSpot := preTransferSpot + movedToSpot
                 if err := e.waitForSpotBalance(bestDonor, targetSpot, 10*time.Second); err != nil {
                     e.log.Warn("rebalance: %s %v — skipping donor", bestDonor, err)
@@ -244,8 +268,9 @@ import (
 // waitForSpotBalance MUST NOT exercise them.
 type delayedSpotStub struct {
     exchange.Exchange                  // embed so unused methods are "valid" types; any actual call panics
-    target            float64          // balance once settled
-    delayPolls        int32            // zero-balance polls before settle (atomic)
+    preSettle         float64          // balance reported before settlement (pre-existing spot)
+    target            float64          // balance once settled (preSettle + moved amount in prod)
+    delayPolls        int32            // pre-settlement polls before target becomes visible (atomic)
     calls             int32            // atomic
     errOnPoll         int32            // if >0, this many polls return an error first (atomic)
 }
@@ -257,7 +282,7 @@ func (s *delayedSpotStub) GetSpotBalance() (*exchange.Balance, error) {
         return nil, errors.New("transient network error")
     }
     if n <= atomic.LoadInt32(&s.delayPolls) {
-        return &exchange.Balance{Available: 0, Total: 0}, nil
+        return &exchange.Balance{Available: s.preSettle, Total: s.preSettle}, nil
     }
     return &exchange.Balance{Available: s.target, Total: s.target}, nil
 }
@@ -320,12 +345,12 @@ func TestWaitForSpotBalance_TransientError(t *testing.T) {
 
 // TestWaitForSpotBalance_PreExistingSpotBelowTarget verifies the caller's
 // expected usage: they must pass target = preTransferSpot + movedToSpot,
-// not movedToSpot alone. We simulate the pre-existing scenario by letting
-// the stub stay below target for several polls, then jump to target.
-// (Indirect — this test documents the contract; the direct test of the
-// call site is in Task 2's code change.)
+// not movedToSpot alone. Models pre-existing spot=100 (below target=200)
+// for first 3 polls, then settles to 200. If waitForSpotBalance
+// incorrectly returned on the first poll (just checking >0), it would
+// wrongly report success at balance=100 < target=200.
 func TestWaitForSpotBalance_PreExistingSpotBelowTarget(t *testing.T) {
-    stub := &delayedSpotStub{target: 200.0, delayPolls: 3}
+    stub := &delayedSpotStub{preSettle: 100.0, target: 200.0, delayPolls: 3}
     eng := newWaitTestEngine(map[string]exchange.Exchange{"binance": stub})
 
     err := eng.waitForSpotBalance("binance", 200.0, 10*time.Second)
@@ -333,7 +358,7 @@ func TestWaitForSpotBalance_PreExistingSpotBelowTarget(t *testing.T) {
         t.Fatalf("expected eventual success, got err: %v", err)
     }
     if atomic.LoadInt32(&stub.calls) < 4 {
-        t.Errorf("expected at least 4 polls, got %d", stub.calls)
+        t.Errorf("expected at least 4 polls (3 pre-settle + 1 settled), got %d", stub.calls)
     }
 }
 
@@ -451,11 +476,12 @@ Insert above the current `## [0.33.2]` block:
 ## [0.33.3] - 2026-04-23
 
 ### Fixed
-- **Rebalance transfer timing for split-account donors** — `executeRebalanceFundingPlan` called `TransferToSpot` as fire-and-forget and then immediately read `GetSpotBalance`, which for binance/bitget-class split-account donors returned `0` before the internal futures→spot settled. The subsequent `netAmount = spot - fee < 0` guard silently skipped the outbound withdraw, leaving recipients (e.g. bingx) unfunded. Observed 2026-04-23 02:35 UTC binance→bingx for SIGNUSDT. Fix:
+- **Rebalance transfer timing for split-account donors** — `executeRebalanceFundingPlan` called `TransferToSpot` as fire-and-forget and then immediately read `GetSpotBalance`, which for binance/bitget-class split-account donors returned stale balance before the internal futures→spot settled. The subsequent `netAmount = spot - fee < 0` guard silently skipped the outbound withdraw, leaving recipients (e.g. bingx) unfunded. Observed 2026-04-23 02:35 UTC binance→bingx for SIGNUSDT. Fix:
   - Added `*Engine.waitForSpotBalance(donor, required, timeout)` helper that polls `GetSpotBalance` every 1s until `Available >= required` or the 10s timeout elapses (`internal/engine/allocator.go`).
-  - Inserted `waitForSpotBalance(bestDonor, movedToSpot, 10*time.Second)` call between `TransferToSpot` (line 1914) and the spot-balance read (line 1923). On timeout the donor is dropped with the same skip semantics as the existing `netAmount <= 0` guard.
-  - Regression tests covering eventual success, timeout, and unknown-donor cases (`internal/engine/wait_spot_balance_test.go`).
-  - Codex independent audit (dispatch task `b1f1og3j7`, gpt-5.4 xhigh) confirmed the root cause before fix.
+  - Captured pre-transfer spot balance (`preTransferSpot`) before `TransferToSpot` and wait for `preTransferSpot + movedToSpot` using the *parsed* submitted transfer amount (`parsedMove` from `moveStr`), so neither pre-existing spot nor %.4f float rounding can cause a false success/timeout.
+  - Inserted the wait between `TransferToSpot` (line 1914) and the spot-balance read (line 1923). On timeout the donor is dropped with the same skip semantics as the existing `netAmount <= 0` guard.
+  - Regression tests covering eventual success, transient `GetSpotBalance` error, pre-existing spot below target, timeout, and unknown donor cases (`internal/engine/wait_spot_balance_test.go`).
+  - Codex independent audits (local companion tasks `b1f1og3j7`, `bqvv15ukz`, `bqtfw2xow`, gpt-5.4 xhigh) confirmed root cause and iterated the plan.
 ```
 
 - [ ] **Step 3: Commit**
@@ -493,6 +519,10 @@ git commit -m "chore: bump v0.33.3 for wait-spot-balance fix"
   - [MEDIUM] `newTestEngineWithPass1Harness` does not exist; use minimal `&Engine{exchanges, log}` fixture via `newWaitTestEngine`. Fixed.
   - [LOW] Hand-rolled `contains/indexOf` replaced with `strings.Contains`. Fixed.
   - [LOW] Missing edge-case tests (transient error, pre-existing spot below target). Fixed: added `TestWaitForSpotBalance_TransientError` and `TestWaitForSpotBalance_PreExistingSpotBelowTarget`.
+- v3 2026-04-23: codex (local companion `bqtfw2xow`) — NEEDS-REVISION with 3 findings:
+  - [MEDIUM] `movedToSpot = moveAmt` uses raw float but actual send is `moveStr` (%.4f rounded); up to 0.00005 drift could cause false timeout. Fixed: use `parsedMove := strconv.ParseFloat(moveStr)` for `movedToSpot`.
+  - [LOW] `PreExistingSpotBelowTarget` test didn't actually model pre-existing non-zero balance. Fixed: added `preSettle` field to stub; test now uses preSettle=100, target=200.
+  - [LOW] CHANGELOG wording referenced outdated `movedToSpot` target semantics. Fixed: updated Task 5 entry to mention pre-transfer-spot + parsed-move.
 
 ---
 
