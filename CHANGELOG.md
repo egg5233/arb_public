@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.34.7] - 2026-04-24
+
+### Fixed
+
+- **Gate.io adapter rejected pricegap `closeLegMarket` with `market order without IOC or FOK`.** Gate.io futures rejects market orders (price "0") unless `tif` is `ioc` or `fok`, but the adapter unconditionally defaulted `tif="gtc"` when `req.Force` was empty. pricegap's `closeLegMarket` submits `OrderType="market"` without setting `Force` (by design per §Pitfall 4), so every defensive unwind / monitor-exit market close via Gate.io was instantly rejected with `label=INVALID_ARGUMENT`. Surfaced on SOONUSDT and HOLOUSDT unwind-to-match during Phase 9 live tests. Fix: `pkg/exchange/gateio/adapter.go` defaults `tif="ioc"` when `req.OrderType == "market"`; explicit caller `Force` (including `fok`) still wins. Regression tests in `pkg/exchange/gateio/place_order_market_test.go` pin both the new default and the "explicit Force still wins" guarantee.
+
+### Observations (not fixed — turned out to be same-root symptoms)
+
+- Bybit `code=10001 "The number of contracts exceeds minimum limit allowed"` and BingX `code=109400 "parameter quantity or quoteOrderQty is must"` on SIGNUSDT openPair were downstream symptoms of the 0.34.6 BingX BBO bug — polluted mid price caused `sizeBase = notional / mid ≈ 0.01` which rounded to 0, and both exchanges legitimately rejected a zero-size order. Gone after 0.34.6. No adapter change needed.
+
 ## [0.34.6] - 2026-04-24
 
 ### Fixed

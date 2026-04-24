@@ -168,7 +168,13 @@ func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 		size = int64(math.Abs(float64(size)))
 	}
 
+	// Gate.io rejects market orders (price "0") unless tif is "ioc" or "fok".
+	// Default tif="ioc" for market, tif="gtc" for limit. Explicit req.Force
+	// always wins so callers can still pick "fok" or override as needed.
 	tif := "gtc"
+	if strings.EqualFold(req.OrderType, "market") {
+		tif = "ioc"
+	}
 	if req.Force != "" {
 		tif = strings.ToLower(req.Force)
 	}
