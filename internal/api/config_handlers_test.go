@@ -118,6 +118,12 @@ func TestHandleConfig_SpotFuturesAutoDryRunRoundTrip(t *testing.T) {
 	s.cfg.SpotFuturesEnabled = true
 	s.cfg.SpotFuturesDryRun = true
 
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(configPath, []byte("{}"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("CONFIG_FILE", configPath)
+
 	getReq := httptest.NewRequest(http.MethodGet, "/api/config", nil)
 	getW := httptest.NewRecorder()
 	s.handleGetConfig(getW, getReq)
@@ -494,6 +500,12 @@ func TestHandleConfig_WithdrawMinIntervalMs(t *testing.T) {
 
 	// Seed config with documented default.
 	s.cfg.WithdrawMinIntervalMs = 11000
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(configPath, []byte("{}"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("CONFIG_FILE", configPath)
 
 	// GET returns 11000.
 	getReq := httptest.NewRequest(http.MethodGet, "/api/config", nil)

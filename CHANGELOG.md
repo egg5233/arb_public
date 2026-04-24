@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.34.4] - 2026-04-24
+
+### Fixed
+
+- **Test isolation: two `internal/api/config_handlers_test.go` tests were writing to the live `/var/solana/data/arb/config.json` on every `go test ./internal/api/...` run.** `TestHandleConfig_SpotFuturesAutoDryRunRoundTrip` and `TestHandleConfig_WithdrawMinIntervalMs` called `s.handlePostConfig`, which invokes `s.cfg.SaveJSON()`. `SaveJSON` honors `CONFIG_FILE` env var first and falls through to `["config.json", "/var/solana/data/arb/config.json"]` otherwise. Both tests set up a Server but never seeded a TempDir config + `t.Setenv("CONFIG_FILE", …)`, so SaveJSON hit the production config file. Fixed by adding the standard `t.TempDir()` + `t.Setenv("CONFIG_FILE", …)` pattern used by the other eight tests in the file. Verified: tests still pass; `config.json` inode/size/mtime unchanged after both runs. Root cause of the 2026-04-24 02:33 UTC / 05:45 UTC stray writes to live config.
+
 ## [0.34.3] - 2026-04-24
 
 ### Fixed
