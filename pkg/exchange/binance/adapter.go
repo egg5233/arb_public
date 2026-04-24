@@ -1162,13 +1162,16 @@ func (b *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 	}
 
 	// Return a single aggregated record (no side info available from income API).
+	// CloseSize cannot be derived from the income API — flag it unknown so
+	// reconcile callers skip size-gating on this record.
 	return []exchange.ClosePnL{{
-		PricePnL:  pricePnL,
-		Fees:      fees,
-		Funding:   funding,
-		NetPnL:    pricePnL + fees + funding,
-		Side:      "", // Binance income API doesn't provide position side
-		CloseTime: time.Now().UTC(),
+		PricePnL:         pricePnL,
+		Fees:             fees,
+		Funding:          funding,
+		NetPnL:           pricePnL + fees + funding,
+		Side:             "", // Binance income API doesn't provide position side
+		CloseSizeUnknown: true,
+		CloseTime:        time.Now().UTC(),
 	}}, nil
 }
 

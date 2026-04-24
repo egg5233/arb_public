@@ -1170,7 +1170,9 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 	if useTier1 {
 		longExpected := pos.LongCloseSize + sumSiblingCloseSize(longSiblings, "long")
 		shortExpected := pos.ShortCloseSize + sumSiblingCloseSize(shortSiblings, "short")
-		if longAgg.CloseSize < longExpected-sizeEpsilon || shortAgg.CloseSize < shortExpected-sizeEpsilon {
+		longShort := !longAgg.CloseSizeUnknown && longAgg.CloseSize < longExpected-sizeEpsilon
+		shortShort := !shortAgg.CloseSizeUnknown && shortAgg.CloseSize < shortExpected-sizeEpsilon
+		if longShort || shortShort {
 			e.log.Warn("reconcile %s [attempt %d]: incomplete close data (longRawClose=%.6f/%.6f shortRawClose=%.6f/%.6f), retrying",
 				pos.ID, attempt, longAgg.CloseSize, longExpected, shortAgg.CloseSize, shortExpected)
 			return false
@@ -1386,6 +1388,9 @@ func aggregateClosePnLBySide(records []exchange.ClosePnL, side string) (exchange
 			agg.PricePnL += r.PricePnL
 			agg.Fees += r.Fees
 			agg.CloseSize += r.CloseSize
+			if r.CloseSizeUnknown {
+				agg.CloseSizeUnknown = true
+			}
 			// Take funding and net PnL only from the first match to avoid
 			// double-counting when exchanges attach the same symbol-wide
 			// funding total to every record (e.g. Bybit).

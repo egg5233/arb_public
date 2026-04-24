@@ -225,9 +225,12 @@ type ClosePnL struct {
 	NetPnL     float64 // All-inclusive net PnL
 	EntryPrice float64
 	ExitPrice  float64
-	CloseSize  float64
-	Side       string // normalized: "long" or "short"
-	CloseTime  time.Time
+	// CloseSize is in base-asset (token) units. When an adapter cannot derive
+	// this, CloseSizeUnknown=true and callers must not size-gate on this record.
+	CloseSize        float64
+	CloseSizeUnknown bool   `json:"close_size_unknown,omitempty"`
+	Side             string // normalized: "long" or "short"
+	CloseTime        time.Time
 }
 
 // StopLossParams contains parameters for placing a stop-loss (conditional) order.
