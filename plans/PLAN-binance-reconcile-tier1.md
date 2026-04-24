@@ -1,10 +1,25 @@
 # PLAN: Per-Leg Tier 1 Skip for Exchanges Without CloseSize
 
-Version: v3
+Version: v4
 Date: 2026-04-24
 Status: DRAFT
 
 ## Changelog
+- **v4** (2026-04-24): Codex review round 3 — NEEDS-REVISION 1 item. Fixed:
+  - #2 (still open): the empty-aggregate guard rejects only fully-zero
+    snapshots. Codex pointed out that Binance `GetClosePnL` makes three
+    separate `/fapi/v1/income` queries (`REALIZED_PNL`, `COMMISSION`,
+    `FUNDING_FEE` at `adapter.go:1128-1162`) and always synthesises one
+    `ClosePnL` record even when only one income type has appeared — a
+    commission-only snapshot would pass the empty-aggregate guard and
+    suppress the retry chain. The docs do not guarantee ordering between
+    income types. Mitigation: promote the formerly-optional **attempt-count
+    gate** into the plan. Tier 1 partial fallback now rejects on attempt 1
+    regardless of the empty-aggregate check, forcing at least one 5s retry
+    delay so `/income` has a chance to finalize across all three income
+    types. The 2s pre-attempt-1 sleep (`reconcilePnL:1105`) + 5s attempt-1
+    retry delay + 15s + 30s together give 52s of budget before all attempts
+    exhaust — matches pre-v3 behavior for Binance-settlement timing.
 - **v3** (2026-04-24): Codex review round 2 — NEEDS-REVISION 2 items. Fixed:
   - #1 test coverage: added real `tryReconcilePnL` integration tests using the
     existing miniredis + Engine harness (pattern from `engine_stage2_salvage_test.go:75-135`).
@@ -280,11 +295,28 @@ if !useTier1 {
     }
 } else if !longTier1Enforced || !shortTier1Enforced {
     // Tier 1 partial — at least one leg was skipped in Tier 1 because the
-    // exchange did not expose CloseSize. Apply a notional guard using
-    // pos.LongEntry*pos.LongCloseSize (rather than LIVE pos.LongSize, which
-    // is zeroed after depth-exit close). This is strictly stronger than what
-    // the unreached Tier 3 longOK-shortOK fallback would provide for this
-    // close shape.
+    // exchange did not expose CloseSize. Apply two guards:
+    //
+    // (1) Attempt-count gate: reject on attempt 1 (sync, immediate). Binance
+    //     GetClosePnL makes three separate /fapi/v1/income queries
+    //     (REALIZED_PNL, COMMISSION, FUNDING_FEE) with no documented
+    //     atomicity between them — a commission-only or realized-PnL-only
+    //     snapshot would satisfy the notional bound below and be accepted
+    //     as terminal success, defeating the 5s/15s/30s retry chain. Force
+    //     at least one retry delay (+5s beyond the existing 2s pre-attempt-1
+    //     sleep at reconcilePnL:1105) so all three income types have a
+    //     chance to post.
+    //
+    // (2) Notional guard: |diff| must not exceed the larger close-notional
+    //     (pos.LongEntry*pos.LongCloseSize or pos.ShortEntry*pos.ShortCloseSize).
+    //     Live pos.LongSize/ShortSize are zeroed post-close, so we use the
+    //     preserved CloseSize fields (see position.go:58-63).
+    if attempt < 2 {
+        e.log.Info("reconcile %s [attempt %d]: Tier 1 partial path — deferring acceptance until attempt 2 so /income has time to finalize (longEnforced=%v shortEnforced=%v)",
+            pos.ID, attempt, longTier1Enforced, shortTier1Enforced)
+        return false
+    }
+
     longNotional := pos.LongEntry * pos.LongCloseSize
     shortNotional := pos.ShortEntry * pos.ShortCloseSize
     notional := math.Max(longNotional, shortNotional)
@@ -366,8 +398,10 @@ return value + post-call state from `e.db.GetHistory` / `e.db.GetPosition`):
 | F | `TestTryReconcile_BinanceLong_PartialExceedsNotional`  | `[{Side:"", CloseSize:0, PricePnL:999999, Fees:-0.4, Funding:0}]`   | `[{Side:"short", CloseSize:100, PricePnL:-2, ...}]` | `false` | Tier 1 partial notional guard trips; retries |
 | G | `TestTryReconcile_BinanceLong_PartialWithinNotional`   | `[{Side:"", CloseSize:0, PricePnL:-55, Fees:-0.4, Funding:1.2}]`    | `[{Side:"short", CloseSize:100, PricePnL:55, ...}]` | `true`          | Tier 1 partial guard does not trip; reconcile accepts |
 | H | `TestTryReconcile_BinanceLong_CloseSizeMismatchOnShort`| `[{Side:"", CloseSize:0, PricePnL:-55, ...}]`                       | `[{Side:"short", CloseSize:80, ...}]`        | `false`         | short leg still enforced; returns false despite Binance being "settled" |
-| I | `TestTryReconcile_SiblingAware_BinanceLong`            | shared long exchange, `pos.LongCloseSize=100`, sibling `LongCloseSize=100`, longExpected=200, Binance records return `[{Side:"", CloseSize:0, PricePnL:-55, ...}]` | short has real size | `true`          | proves the Binance leg's skip does not cause the sibling-sum logic to malfunction for the sibling's own reconcile |
+| I | `TestTryReconcile_SiblingAware_BinanceLong`            | shared long exchange, `pos.LongCloseSize=100`, sibling `LongCloseSize=100`, longExpected=200, Binance records return `[{Side:"", CloseSize:0, PricePnL:-55, ...}]` | short has real size | `true` (on attempt≥2) | proves the Binance leg's skip does not cause the sibling-sum logic to malfunction for the sibling's own reconcile |
 | J | `TestTryReconcile_PreMigration_BinanceLong`            | same as C but `pos.LongCloseSize=0, pos.ShortCloseSize=0` (pre-migration) | ... | flows to existing Tier 2/3 | proves `!useTier1` branch still works; v3 changes do not affect pre-migration path |
+| K | `TestTryReconcile_BinanceLong_AttemptGate` (new in v4) | `[{Side:"", CloseSize:0, PricePnL:-55, Fees:-0.4, Funding:1.2}]` (settled)  | `[{Side:"short", CloseSize:100, ...}]` (settled) | `false` at attempt 1, `true` at attempt 2 | proves attempt-count gate defers acceptance to attempt ≥ 2 even when data looks settled; protects against Binance /income partial-snapshot scenarios that the empty-aggregate guard cannot detect |
+| L | `TestTryReconcile_BinanceLong_CommissionOnlySnapshot` (new in v4) | `[{Side:"", CloseSize:0, PricePnL:0, Fees:-0.4, Funding:0}]` (mid-settlement: only COMMISSION posted)  | settled | `false` at any attempt | proves the attempt-count gate + later empty-aggregate re-evaluation together reject commission-only snapshots. (Note: the empty-aggregate guard alone would accept this because Fees is non-zero — this test demonstrates why the attempt gate is needed.) At attempt 2, if the snapshot is still commission-only, the notional guard may accept if |diff| fits; test should pin expected behavior and link a clear log message so VPS observation can catch regressions. |
 
 Each integration test asserts:
 1. `tryReconcilePnL` return value matches expectation
@@ -474,26 +508,37 @@ branches when both legs report `CloseSize > 0`.
     **Deliberate trade-off** — today's behavior is "retry all 4 attempts,
     fail, keep local PnL, breakdown never populated" for every Binance-leg
     position, strictly worse than v3's weaker-but-functional check.
-  - **Retry-short-circuit hazard (addressed)**: Codex flagged that a partial
-    `/fapi/v1/income` snapshot with the `|diff|` bound satisfied could be
-    accepted as terminal success, suppressing the 5s/15s/30s retries whose
-    purpose is to wait for finalization (see `exit.go:1162-1186` comment:
-    "exchange may not have finalized the position yet"). v3 mitigates via
-    the Phase 1 empty-aggregate guard: any `CloseSize==0` leg with
-    `PricePnL==0 && Fees==0 && Funding==0` returns `false` to retry. The
-    mitigation is partial — mid-settlement snapshots with non-zero but
-    incomplete values can still be accepted. In practice, COMMISSION records
-    post first because they accompany every fill (docs
-    `EXCHANGEAPI_BINANCE.md` user-trades section), so "non-zero Fees but
-    zero PnL+Funding" is a realistic mid-settlement shape that would pass
-    the empty guard. This is the residual hazard.
-  - **Residual retry-short-circuit mitigation (optional follow-up)**: if
-    production observations show mid-settlement acceptance, a follow-up
-    could add an attempt-count gate (require attempt ≥ 2 for partial
-    fallback) or a stability check (require aggregate unchanged between
-    attempts 1 and 2). Not in this plan to keep scope minimal; recorded here
-    as a known mitigation path if the empty-aggregate guard proves
-    insufficient.
+  - **Retry-short-circuit hazard (addressed in v4)**: Codex flagged that a
+    partial `/fapi/v1/income` snapshot with the `|diff|` bound satisfied
+    could be accepted as terminal success, suppressing the 5s/15s/30s retries
+    whose purpose is to wait for finalization (see `exit.go:1162-1186`:
+    "exchange may not have finalized the position yet"). v4 addresses this
+    with two complementary guards:
+    1. **Empty-aggregate guard (Phase 1)**: rejects any `CloseSize==0` leg
+       whose `PricePnL`, `Fees`, and `Funding` are all zero. Catches the
+       pre-settlement case where `/income` has returned no records yet.
+    2. **Attempt-count gate (Phase 3 partial fallback)**: rejects the Tier 1
+       partial path on attempt 1 regardless of how complete the aggregate
+       looks. Binance `GetClosePnL` makes three separate `/income` queries
+       with no documented atomicity (`adapter.go:1128-1162`), so a
+       commission-only snapshot (fees posted, PnL+funding still pending)
+       would pass the empty-aggregate guard. The attempt gate forces at
+       least one 5s retry delay (plus the 2s pre-attempt-1 sleep at
+       `reconcilePnL:1105`) before acceptance, giving all three income
+       types a chance to post.
+    3. **Retry budget**: pre-sleep 2s + attempt 1 rejection + 5s +
+       attempt 2 (now eligible) + 15s + attempt 3 + 30s + attempt 4 = 52s
+       total before all attempts exhaust. Matches Binance's typical
+       /income latency (observed <10s post-fill in practice; spec does not
+       guarantee).
+    4. **Residual hazard**: if at attempt 2 the snapshot is still partial
+       (e.g., commission-only) AND `|diff|` fits within the notional bound,
+       it will be accepted. The integration test matrix (cases K, L) pins
+       the expected behavior and emits a labelled log so VPS observation
+       can detect this mode if it occurs. A further tightening
+       (stability check: require aggregate unchanged between attempts 1 and
+       2) is available as a follow-up if the attempt gate proves
+       insufficient under production load.
   - SIRENUSDT protection preservation: verified — the SIRENUSDT bug (H1:
     synthetic retrySecondLeg price + H2: reconcile guard + H3: SL/TP
     detection) fired on a non-Binance pair (SIRENUSDT was bybit↔bingx).
