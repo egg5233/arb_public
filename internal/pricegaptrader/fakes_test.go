@@ -43,6 +43,11 @@ type stubExchange struct {
 	positions  map[string][]exchange.Position
 	contracts  map[string]exchange.ContractInfo
 	priceStore sync.Map
+
+	// Plan 09-10 (Gap #2): SubscribeSymbol call tracking. subs counts per-symbol
+	// calls; subscribeFn, if non-nil, overrides the default `return true`.
+	subs         map[string]int
+	subscribeFn  func(symbol string) bool
 }
 
 // Compile-time check — if pkg/exchange adds a method, this line breaks the build
@@ -57,6 +62,7 @@ func newStubExchange(name string) *stubExchange {
 		orderIDFill: make(map[string]fillScript),
 		positions:   make(map[string][]exchange.Position),
 		contracts:   make(map[string]exchange.ContractInfo),
+		subs:        make(map[string]int),
 	}
 }
 
@@ -194,7 +200,21 @@ func (s *stubExchange) GetOrderbook(symbol string, depth int) (*exchange.Orderbo
 	return nil, nil
 }
 func (s *stubExchange) StartPriceStream(symbols []string)    {}
-func (s *stubExchange) SubscribeSymbol(symbol string) bool   { return true }
+func (s *stubExchange) SubscribeSymbol(symbol string) bool {
+	s.mu.Lock()
+	s.subs[symbol]++
+	fn := s.subscribeFn
+	s.mu.Unlock()
+	if fn != nil {
+		return fn(symbol)
+	}
+	return true
+}
+func (s *stubExchange) subscribeCount(symbol string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.subs[symbol]
+}
 func (s *stubExchange) GetPriceStore() *sync.Map             { return &s.priceStore }
 func (s *stubExchange) SubscribeDepth(symbol string) bool    { return true }
 func (s *stubExchange) UnsubscribeDepth(symbol string) bool  { return true }

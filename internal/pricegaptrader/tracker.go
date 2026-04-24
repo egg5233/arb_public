@@ -210,18 +210,108 @@ func (t *Tracker) maybeBroadcastPositions() {
 	t.broadcaster.BroadcastPriceGapPositions(active)
 }
 
+// subscribeCandidates fans out SubscribeSymbol across both leg exchanges for
+// every configured candidate (Phase 9 gap-closure Gap #2 / Plan 09-10).
+//
+// Fail-soft per engine.go:4675-4676 precedent — a missing exchange key or a
+// false return emits a WARN and the loop continues. SubscribeSymbol is
+// idempotent at the adapter layer, so re-invocation on restart is safe.
+//
+// Must be called BEFORE rehydrate() + tickLoop spawn so restored-position
+// monitors and the first detection tick both see a live BBO stream. Without
+// this, any candidate outside the perp-perp funding-rate scanner's
+// subscription set (e.g. VICUSDT) silently produces no BBO and detectOnce
+// returns sample_error.
+func (t *Tracker) subscribeCandidates() {
+	for _, cand := range t.cfg.PriceGapCandidates {
+		t.subscribeOneLeg(cand.LongExch, cand.Symbol, "long")
+		t.subscribeOneLeg(cand.ShortExch, cand.Symbol, "short")
+	}
+}
+
+// subscribeOneLeg invokes SubscribeSymbol for a single (exchange, symbol, leg)
+// tuple with fail-soft logging. WARN on missing exchange key or false return;
+// INFO on success. Broken out from subscribeCandidates for unit-test coverage
+// and log-branch clarity.
+func (t *Tracker) subscribeOneLeg(exchName, symbol, legLabel string) {
+	ex, ok := t.exchanges[exchName]
+	if !ok {
+		t.log.Warn("pricegap: subscribe skipped — unknown exchange %q for %s leg of %s",
+			exchName, legLabel, symbol)
+		return
+	}
+	if !ex.SubscribeSymbol(symbol) {
+		t.log.Warn("pricegap: subscribe returned false for %s@%s (%s leg) — BBO may be unavailable",
+			symbol, exchName, legLabel)
+		return
+	}
+	t.log.Info("pricegap: subscribed %s@%s (%s leg)", symbol, exchName, legLabel)
+}
+
+// priceGapBBOAssertionGrace — after Start(), the tracker waits this long then
+// verifies every candidate leg has produced a live BBO. Any leg that hasn't
+// is WARN-logged once, giving operators a fail-loud signal that the
+// subscription silently failed even though SubscribeSymbol returned true.
+// Phase 9 gap-closure Gap #2 / Plan 09-10.
+const priceGapBBOAssertionGrace = 15 * time.Second
+
 // Start spawns the tick goroutine + rehydrates active positions.
 // Wired from cmd/main.go conditional on cfg.PriceGapEnabled (Plan 07).
 //
-// Order (Plan 07): rehydrate() runs BEFORE the tick goroutine spawns so any
-// restored positions are already enrolled in monitors; otherwise the first
-// tick could race rehydration and see an empty active set for budget gating.
+// Order (Plan 07 + 09-10):
+//  1. subscribeCandidates() — fan out BBO subscriptions BEFORE anything reads
+//     BBO so rehydrate-spawned monitors + the first tick both see live data.
+//  2. rehydrate() — re-enroll active positions before the first tick so the
+//     budget gate sees up-to-date concurrency.
+//  3. tickLoop goroutine — begins the detect→gate→enter dispatch cycle.
+//  4. assertBBOLiveness goroutine — after a grace window, emits a fail-loud
+//     WARN naming any (exchange, symbol) that has no live BBO yet.
 func (t *Tracker) Start() {
 	t.log.Info("Price-gap tracker starting (candidates=%d, budget=$%.0f, enabled=%v)",
 		len(t.cfg.PriceGapCandidates), t.cfg.PriceGapBudget, t.cfg.PriceGapEnabled)
+	t.subscribeCandidates()
 	t.rehydrate()
 	t.wg.Add(1)
 	go t.tickLoop()
+	t.wg.Add(1)
+	go t.assertBBOLiveness()
+}
+
+// assertBBOLiveness runs once ~priceGapBBOAssertionGrace after Start(). For
+// each candidate leg, it calls GetBBO; any leg returning ok=false (or a zero
+// BBO) is WARN-logged with the exact (exchange, symbol) so operators can
+// diagnose silent subscription failures. Diagnostic beacon only — does not
+// retry or abort the tracker. Respects stopCh so Stop() during the grace
+// window shuts it down cleanly.
+func (t *Tracker) assertBBOLiveness() {
+	defer t.wg.Done()
+	select {
+	case <-time.After(priceGapBBOAssertionGrace):
+	case <-t.stopCh:
+		return
+	}
+	for _, cand := range t.cfg.PriceGapCandidates {
+		t.checkOneLegBBO(cand.LongExch, cand.Symbol, "long")
+		t.checkOneLegBBO(cand.ShortExch, cand.Symbol, "short")
+	}
+}
+
+// checkOneLegBBO tests a single (exchange, symbol, leg) tuple for a live BBO.
+// Missing exchanges were already WARNed by subscribeOneLeg and are silently
+// skipped here. Any ok=false or zero-price BBO emits the fail-loud WARN.
+func (t *Tracker) checkOneLegBBO(exchName, symbol, legLabel string) {
+	ex, ok := t.exchanges[exchName]
+	if !ok {
+		return // already WARNed in subscribeOneLeg
+	}
+	bbo, ok := ex.GetBBO(symbol)
+	if !ok || bbo.Bid == 0 || bbo.Ask == 0 {
+		t.log.Warn("pricegap: BBO NOT LIVE after %s — %s@%s (%s leg). Check subscription / WS health.",
+			priceGapBBOAssertionGrace, symbol, exchName, legLabel)
+		return
+	}
+	t.log.Info("pricegap: BBO live %s@%s (%s leg) bid=%g ask=%g",
+		symbol, exchName, legLabel, bbo.Bid, bbo.Ask)
 }
 
 // Stop signals goroutines to exit and waits; graceful shutdown per D-03.
