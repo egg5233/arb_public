@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.34.6] - 2026-04-24
+
+### Fixed
+
+- **BingX public WS bookTicker: bid/ask quantity was being stored as price (case-insensitive JSON overwrite).** Surfaced by Phase 9 Gap #2 (09-10) once `assertBBOLiveness` started actually reading BingX BBO and logged nonsense values like `SOON@bingx bid=24565 ask=28345` when real SOON is ~$0.18. Root cause: BingX's payload carries both `b` (bid price) and `B` (bid qty), and likewise `a`/`A`. The handler struct tagged only `"b"` and `"a"`. Go's `encoding/json` matches keys case-insensitively, and when a lowercase tag matches both lowercase and uppercase JSON keys the later-emitted key wins — so `B` overwrote `b` and `A` overwrote `a`. Live WS probe confirmed BingX itself emits correct prices; the bug was wholly on our side. Fix: claim the uppercase fields as explicit `BidQty` / `AskQty` slots so every JSON key has exactly one exact-tag match. Regression test: `pkg/exchange/bingx/ws_booktick_test.go` feeds a real BingX payload and asserts stored `Bid=0.18140, Ask=0.18160`. Fails on pre-fix struct, passes after.
+
 ## [0.34.5] - 2026-04-24
 
 ### Merged

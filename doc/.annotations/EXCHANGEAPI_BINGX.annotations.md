@@ -53,3 +53,11 @@ type: correction
 ---
 GET /openApi/swap/v1/trade/positionHistory: The `netProfit` field ALREADY INCLUDES `realisedProfit + positionCommission + totalFunding`. Do NOT add `totalFunding` again. Verified from live data: netProfit=-3.4920 = realisedProfit(-0.9360) + commission(-0.1001) + totalFunding(-2.4559).
 
+
+---
+date: 2026-04-24
+type: gotcha
+---
+**WS public bookTicker: case-insensitive JSON decode overwrites bid/ask price with quantity.**
+BingX payload carries both `b` (bid price) and `B` (bid qty), and `a`/`A` likewise.
+Go's `encoding/json` matches struct tags case-insensitively — a field tagged `json:"b"` ALSO matches JSON key `B`. When both keys are present the later-emitted one wins, so `B` clobbers `b`. Handler must claim the uppercase slots as separate fields (e.g. `BidQty string json:"B"`) so each JSON key has exactly one exact-tag match and the price field retains its real value. File: `pkg/exchange/bingx/ws.go` — `handleBookTickerMessage`. Applies to any BingX WS channel with mixed-case key pairs.

@@ -218,11 +218,18 @@ func (ws *PublicWS) handleMessage(msg []byte) {
 
 func (ws *PublicWS) handleBookTickerMessage(msg []byte, dataType string) {
 	// dataType: "BTC-USDT@bookTicker"
+	// BingX payload has both b (bid price) and B (bid qty), and a / A likewise.
+	// Go's encoding/json matches keys case-insensitively, so a tag of just "b"
+	// also matches "B"; the later-emitted uppercase qty field then overwrites
+	// the lowercase price. Claim the uppercase slots as separate fields so
+	// each JSON key has an exact-tag match and cannot fall back.
 	var tickerMsg struct {
 		Data struct {
 			Symbol   string `json:"s"`
 			BidPrice string `json:"b"`
+			BidQty   string `json:"B"`
 			AskPrice string `json:"a"`
+			AskQty   string `json:"A"`
 		} `json:"data"`
 	}
 	if json.Unmarshal(msg, &tickerMsg) != nil {
