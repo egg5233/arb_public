@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.34.9] - 2026-04-25
+
+### Fixed
+
+- **VPS binary lineage — rebuild v0.34.8 to actually include e59be3d4 reconcile fix.** Observed: VPS v0.34.8 binary (built 2026-04-24 14:08 UTC) had VERSION=0.34.8 but did NOT contain `CloseSizeUnknown` or the Gate.io `getContractMult()` conversion in `GetClosePnL`. UPUSDT gateio↔okx closed 2026-04-24 16:02 UTC failed reconcile 4× with `longRawClose=10.000000/100.000000` — identical symptom to the PORTALUSDT binance↔bingx case, but via the Gate.io multiplier side of the same root cause. Root cause on VPS: the 0.34.8 artifact was built from a branch state that predates commit `e59be3d4` in its ancestry. No code change in v0.34.9 — just a clean rebuild from main HEAD (which does include e59be3d4 via merge `b737f958`) + republish + VPS redeploy so the on-disk binary actually contains both `ClosePnL.CloseSizeUnknown` and the gateio quanto_multiplier conversion. Verification: `strings arb | grep CloseSizeUnknown` post-deploy must return ≥1 match (v0.34.8 returned 0).
+
 ## [0.34.8] - 2026-04-24
 
 ### Fixed
