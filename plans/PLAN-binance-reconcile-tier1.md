@@ -1,10 +1,28 @@
 # PLAN: Per-Leg Tier 1 Skip for Exchanges Without CloseSize
 
-Version: v5
+Version: v6
 Date: 2026-04-24
 Status: DRAFT
 
 ## Changelog
+- **v6** (2026-04-24): Codex review round 5 — NEEDS-REVISION 1 item (test/design
+  consistency). Fixed:
+  - Cases C, E, G in the Layer 1 integration test table listed `true` as the
+    expected return while the prose above the table said each case calls
+    `tryReconcilePnL(pos, 1)`. The v5 design rejects the Tier 1 partial path
+    on attempt 1 for every Binance-leg case, so the stated attempt-1
+    expectation contradicted the control flow. v6 makes every
+    Binance-leg-acceptance case **explicitly attempt-aware**: the expected
+    behavior is now "`false` at attempt 1 then `true` at attempt 2" for
+    each Binance-leg acceptance case (C, E, G), plus case I ("true (on
+    attempt≥2)" was already qualified — updated for clarity and table
+    uniformity). Non-Binance cases (A, B) remain attempt-1 tests. Cases F
+    and H remain `false` at all attempts (notional mismatch / other-leg
+    CloseSize mismatch). Cases J (pre-migration), K (attempt gate
+    dedicated), L (residual hazard) are already attempt-aware. Also
+    updated the table header and prose wording to say "each case invokes
+    tryReconcilePnL at both attempt 1 and attempt 2 and pins expected
+    behavior at each; Binance-leg cases require attempt 2 to accept."
 - **v5** (2026-04-24): Codex review round 4 — NEEDS-REVISION 1 item (internal
   consistency). Fixed:
   - Case L ("commission-only snapshot") previously claimed `false at any
@@ -415,29 +433,38 @@ func buildReconcileEngine(t *testing.T, longClose, shortClose []exchange.ClosePn
     posOpts ...func(*models.ArbitragePosition)) (*Engine, *models.ArbitragePosition) { ... }
 ```
 
-Integration test cases (each calls `e.tryReconcilePnL(pos, 1)` and asserts
-return value + post-call state from `e.db.GetHistory` / `e.db.GetPosition`):
+Integration test cases. Non-Binance cases invoke `tryReconcilePnL(pos, 1)` and
+assert the attempt-1 result. Binance-leg cases (any row with a `CloseSize:0,
+Side:""` record) invoke `tryReconcilePnL(pos, 1)` then `tryReconcilePnL(pos, 2)`
+and assert **both** results; the v5 attempt-count gate rejects every Binance-leg
+acceptance on attempt 1 by design. Each test asserts return values and post-call
+state from `e.db.GetHistory` / `e.db.GetPosition`.
 
-| # | Name                                                   | long exchange records                         | short exchange records                       | Expected return | Expected state after call |
-|---|--------------------------------------------------------|-----------------------------------------------|----------------------------------------------|-----------------|---------------------------|
-| A | `TestTryReconcile_NonBinancePair_Complete`             | `[{Side:"long", CloseSize:100, PricePnL:-5, Fees:-0.1, Funding:0}]`  | `[{Side:"short", CloseSize:100, PricePnL:5, Fees:-0.1, Funding:0}]`  | `true`          | HasReconciled=true, LongTotalFees/ShortTotalFees/LongClosePnL/ShortClosePnL populated, UpdateHistoryEntry called |
-| B | `TestTryReconcile_NonBinancePair_LongSizeShort`        | `[{Side:"long", CloseSize:80, ...}]`          | `[{Side:"short", CloseSize:100, ...}]`       | `false`         | fields unchanged |
-| C | `TestTryReconcile_BinanceLong_Settled`                 | `[{Side:"", CloseSize:0, PricePnL:-57, Fees:-0.4, Funding:1.3}]`    | `[{Side:"short", CloseSize:100, ...}]`       | `true`          | breakdown populated — proves the v3 fix unblocks PORTALUSDT-shape closes |
-| D | `TestTryReconcile_BinanceLong_Unfinalized`             | `[{Side:"", CloseSize:0, PricePnL:0, Fees:0, Funding:0}]`           | `[{Side:"short", CloseSize:100, ...}]`       | `false`         | empty-aggregate guard trips; retries |
-| E | `TestTryReconcile_BinanceShort_Settled`                | `[{Side:"long", CloseSize:100, ...}]`         | `[{Side:"", CloseSize:0, PricePnL:2, ...}]`  | `true`          | short-leg Binance path works symmetrically |
-| F | `TestTryReconcile_BinanceLong_PartialExceedsNotional`  | `[{Side:"", CloseSize:0, PricePnL:999999, Fees:-0.4, Funding:0}]`   | `[{Side:"short", CloseSize:100, PricePnL:-2, ...}]` | `false` | Tier 1 partial notional guard trips; retries |
-| G | `TestTryReconcile_BinanceLong_PartialWithinNotional`   | `[{Side:"", CloseSize:0, PricePnL:-55, Fees:-0.4, Funding:1.2}]`    | `[{Side:"short", CloseSize:100, PricePnL:55, ...}]` | `true`          | Tier 1 partial guard does not trip; reconcile accepts |
-| H | `TestTryReconcile_BinanceLong_CloseSizeMismatchOnShort`| `[{Side:"", CloseSize:0, PricePnL:-55, ...}]`                       | `[{Side:"short", CloseSize:80, ...}]`        | `false`         | short leg still enforced; returns false despite Binance being "settled" |
-| I | `TestTryReconcile_SiblingAware_BinanceLong`            | shared long exchange, `pos.LongCloseSize=100`, sibling `LongCloseSize=100`, longExpected=200, Binance records return `[{Side:"", CloseSize:0, PricePnL:-55, ...}]` | short has real size | `true` (on attempt≥2) | proves the Binance leg's skip does not cause the sibling-sum logic to malfunction for the sibling's own reconcile |
-| J | `TestTryReconcile_PreMigration_BinanceLong`            | same as C but `pos.LongCloseSize=0, pos.ShortCloseSize=0` (pre-migration) | ... | flows to existing Tier 2/3 | proves `!useTier1` branch still works; v3 changes do not affect pre-migration path |
-| K | `TestTryReconcile_BinanceLong_AttemptGate` (new in v4) | `[{Side:"", CloseSize:0, PricePnL:-55, Fees:-0.4, Funding:1.2}]` (settled)  | `[{Side:"short", CloseSize:100, ...}]` (settled) | `false` at attempt 1, `true` at attempt 2 | proves attempt-count gate defers acceptance to attempt ≥ 2 even when data looks settled; protects against Binance /income partial-snapshot scenarios that the empty-aggregate guard cannot detect |
-| L | `TestTryReconcile_BinanceLong_CommissionOnlySnapshot_ResidualHazard` (v5) | `[{Side:"", CloseSize:0, PricePnL:0, Fees:-0.4, Funding:0}]` (mid-settlement: only COMMISSION posted, persists across attempts)  | settled | `false` at attempt 1 (attempt gate), **acceptance expected at attempt ≥ 2** if `|diff| <= max(close-notional)` | **Pins the residual hazard explicitly.** The test documents the known design gap: the empty-aggregate guard passes (Fees non-zero), the attempt gate rejects attempt 1, and attempts 2-4 will accept if `|diff|` fits notional. Test asserts the Phase 3 partial-fallback log message (`Tier 1 partial path — deferring acceptance`) at attempt 1 AND the final acceptance at attempt ≥ 2. VPS monitoring hook: the log line at attempt ≥ 2 should be labelled `Tier 1 partial accepted (longEnforced=... shortEnforced=...)` so ops can grep for mid-settlement acceptances. If production shows this mode firing on actually-unsettled data, the follow-up stability-check mitigation (documented in Risk) is promoted. |
+| # | Name                                                   | long exchange records                         | short exchange records                       | Expected attempt-1 | Expected attempt-2 | Expected state after acceptance |
+|---|--------------------------------------------------------|-----------------------------------------------|----------------------------------------------|--------------------|--------------------|-----|
+| A | `TestTryReconcile_NonBinancePair_Complete`             | `[{Side:"long", CloseSize:100, PricePnL:-5, Fees:-0.1, Funding:0}]`  | `[{Side:"short", CloseSize:100, PricePnL:5, Fees:-0.1, Funding:0}]`  | `true`             | (not tested — already accepted) | HasReconciled=true, LongTotalFees/ShortTotalFees/LongClosePnL/ShortClosePnL populated, UpdateHistoryEntry called |
+| B | `TestTryReconcile_NonBinancePair_LongSizeShort`        | `[{Side:"long", CloseSize:80, ...}]`          | `[{Side:"short", CloseSize:100, ...}]`       | `false`            | `false`            | fields unchanged (attempt-1 test is sufficient; attempt-2 asserted for belt-and-braces) |
+| C | `TestTryReconcile_BinanceLong_Settled`                 | `[{Side:"", CloseSize:0, PricePnL:-57, Fees:-0.4, Funding:1.3}]`    | `[{Side:"short", CloseSize:100, ...}]`       | `false` (attempt gate) | `true`             | breakdown populated on attempt 2 — proves the fix unblocks PORTALUSDT-shape closes |
+| D | `TestTryReconcile_BinanceLong_Unfinalized`             | `[{Side:"", CloseSize:0, PricePnL:0, Fees:0, Funding:0}]`           | `[{Side:"short", CloseSize:100, ...}]`       | `false` (empty-aggregate guard trips) | `false` (empty-aggregate guard still trips — Phase 1 runs before Phase 3 attempt gate, so this case never reaches attempt-gate path) | unchanged |
+| E | `TestTryReconcile_BinanceShort_Settled`                | `[{Side:"long", CloseSize:100, ...}]`         | `[{Side:"", CloseSize:0, PricePnL:2, ...}]`  | `false` (attempt gate) | `true`             | short-leg Binance path works symmetrically |
+| F | `TestTryReconcile_BinanceLong_PartialExceedsNotional`  | `[{Side:"", CloseSize:0, PricePnL:999999, Fees:-0.4, Funding:0}]`   | `[{Side:"short", CloseSize:100, PricePnL:-2, ...}]` | `false` (attempt gate) | `false` (notional guard trips) | unchanged |
+| G | `TestTryReconcile_BinanceLong_PartialWithinNotional`   | `[{Side:"", CloseSize:0, PricePnL:-55, Fees:-0.4, Funding:1.2}]`    | `[{Side:"short", CloseSize:100, PricePnL:55, ...}]` | `false` (attempt gate) | `true`             | Tier 1 partial notional guard does not trip on attempt 2; breakdown populated |
+| H | `TestTryReconcile_BinanceLong_CloseSizeMismatchOnShort`| `[{Side:"", CloseSize:0, PricePnL:-55, ...}]`                       | `[{Side:"short", CloseSize:80, ...}]`        | `false` (short-leg Phase 1 incomplete) | `false` (Phase 1 short incomplete still trips before Phase 3; attempt gate never reached) | unchanged |
+| I | `TestTryReconcile_SiblingAware_BinanceLong`            | shared long exchange, `pos.LongCloseSize=100`, sibling `LongCloseSize=100`, longExpected=200, Binance records return `[{Side:"", CloseSize:0, PricePnL:-55, ...}]` | short has real size | `false` (attempt gate)                  | `true`             | proves the Binance leg's skip does not cause the sibling-sum logic to malfunction; `longExpected` is still computed as 200 but long-leg Tier 1 is skipped, so sibling sum matters only for the non-skipped leg's check |
+| J | `TestTryReconcile_PreMigration_BinanceLong`            | same records as C but `pos.LongCloseSize=0, pos.ShortCloseSize=0` (pre-migration) | ... | `true` on attempt 1 (flows to existing Tier 2/3; `!useTier1` path unaffected by attempt gate) | (not tested) | proves `!useTier1` branch still works; this change does not affect pre-migration path |
+| K | `TestTryReconcile_BinanceLong_AttemptGate` (v4)        | `[{Side:"", CloseSize:0, PricePnL:-55, Fees:-0.4, Funding:1.2}]` (settled)  | `[{Side:"short", CloseSize:100, ...}]` (settled) | `false`           | `true`             | dedicated attempt-gate regression — the gate is the reason C/E/G/I must not accept on attempt 1 |
+| L | `TestTryReconcile_BinanceLong_CommissionOnlySnapshot_ResidualHazard` (v5) | `[{Side:"", CloseSize:0, PricePnL:0, Fees:-0.4, Funding:0}]` (mid-settlement: COMMISSION-only, persists across attempts)  | settled | `false` (attempt gate) | `true` if `|diff| <= max(close-notional)` (residual hazard path); test parameterizes the notional and diff so that the accept path is deterministic | **Pins the residual hazard explicitly.** The test documents the known design gap: empty-aggregate guard passes (Fees non-zero), attempt gate rejects attempt 1, attempt 2 accepts if `|diff|` fits notional. Asserts log lines: `Tier 1 partial path — deferring acceptance` at attempt 1 AND `Tier 1 partial accepted` at attempt 2. VPS ops can grep for the latter to monitor mid-settlement acceptances; if production shows this mode firing on actually-unsettled data, the follow-up stability-check mitigation (documented in Risk) is promoted. |
 
 Each integration test asserts:
-1. `tryReconcilePnL` return value matches expectation
+1. `tryReconcilePnL` return value matches expectation at attempt 1 (always) and
+   attempt 2 (for Binance-leg cases and anywhere the table specifies an
+   attempt-2 expectation).
 2. On `true` return: history entry has non-zero per-leg breakdown fields and
-   `HasReconciled=true`
-3. On `false` return: history entry retains prior (empty) breakdown fields
+   `HasReconciled=true`.
+3. On `false` return: history entry retains prior (empty) breakdown fields.
+4. For cases C, E, G, I, K, L: after the attempt-1 call, `HasReconciled` must
+   remain `false` (attempt gate or Phase 1 guard rejected) — proving the
+   attempt-1 rejection does not leak partial state into history.
 
 **Layer 2 — Inline logic tests (fast-path, for decision-matrix completeness)**
 
