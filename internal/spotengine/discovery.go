@@ -173,7 +173,8 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 			e.log.Info("native discovery: shutdown requested, aborting scan early")
 			return opps
 		}
-		symbol := strings.ToUpper(baseSym) + "USDT"
+		upper := strings.ToUpper(baseSym)
+		symbol := upper + "USDT"
 
 		for exchName, smExch := range e.spotMargin {
 			if e.stopping() {

@@ -357,6 +357,7 @@ func (h *HealthMonitor) getLegPnL(exch exchange.Exchange, pos *models.ArbitrageP
 
 	positions, err := exch.GetPosition(pos.Symbol)
 	if err != nil {
+		h.log.Warn("getLegPnL: GetPosition(%s) on %s failed: %v - counting as 0", pos.Symbol, exchName, err)
 		return 0
 	}
 

@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import type { Position, Opportunity, Stats, ExchangeInfo, TransferRecord, LogEntry, RejectedOpportunity, FundingEvent, SpotPosition, SpotStats, SpotOpportunity, PriceGapResult, PnLSnapshot, StrategySummary, ExchangeMetric } from '../types.ts';
+import type { Position, Opportunity, Stats, ExchangeInfo, TransferRecord, LogEntry, RejectedOpportunity, FundingEvent, FundingHistoryResult, SpotPosition, SpotStats, SpotOpportunity, PriceGapResult, PnLSnapshot, StrategySummary, ExchangeMetric } from '../types.ts';
 
 const TOKEN_KEY = 'arb_token';
 
@@ -158,8 +158,31 @@ export function useApi() {
     return request<LogEntry[]>(`/api/logs?limit=${limit}`);
   }, []);
 
-  const getPositionFunding = useCallback((positionId: string) => {
-    return request<FundingEvent[]>(`/api/positions/${positionId}/funding`);
+  const getPositionFunding = useCallback(async (positionId: string): Promise<FundingHistoryResult> => {
+    const token = getToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const res = await fetch(`/api/positions/${positionId}/funding`, { headers });
+    if (res.status === 401) {
+      clearToken();
+      window.location.reload();
+      throw new Error('Unauthorized');
+    }
+    if (!res.ok) {
+      const body = await res.json().catch(() => null) as { error?: string } | null;
+      throw new Error(body?.error || `Funding history failed (${res.status})`);
+    }
+
+    const partialLegs = (res.headers.get('X-Partial-Legs') || '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    const body = await res.json() as ApiResponse<FundingEvent[]>;
+    if (!body.ok) throw new Error(body.error || 'Funding history failed');
+
+    return { events: body.data ?? [], partialLegs };
   }, []);
 
   const getRejections = useCallback(() => {

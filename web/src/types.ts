@@ -74,6 +74,11 @@ export interface FundingEvent {
   time: string;
 }
 
+export interface FundingHistoryResult {
+  events: FundingEvent[];
+  partialLegs: string[];
+}
+
 export interface Stats {
   total_pnl: string;
   win_count: string;

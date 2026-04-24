@@ -205,7 +205,10 @@ func TestRetrySecondLegUsesGetOrderUpdateAvgPrice(t *testing.T) {
 	e := newMinimalEngine()
 	e.exchanges["bingx"] = exch
 
-	filled, avg := e.retrySecondLeg(exch, "bingx", "SIRENUSDT", exchange.SideBuy, 189.0, refPrice)
+	filled, avg, err := e.retrySecondLeg(exch, "bingx", "SIRENUSDT", exchange.SideBuy, 189.0, refPrice)
+	if err != nil {
+		t.Fatalf("unexpected retrySecondLeg error: %v", err)
+	}
 
 	if filled <= 0 {
 		t.Fatalf("expected filled > 0, got %.6f", filled)
@@ -246,7 +249,10 @@ func TestRetrySecondLegFallbackWhenAvgPriceZero(t *testing.T) {
 	e := newMinimalEngine()
 	e.exchanges["bingx"] = exch
 
-	filled, avg := e.retrySecondLeg(exch, "bingx", "SIRENUSDT", exchange.SideBuy, 100.0, refPrice)
+	filled, avg, err := e.retrySecondLeg(exch, "bingx", "SIRENUSDT", exchange.SideBuy, 100.0, refPrice)
+	if err != nil {
+		t.Fatalf("unexpected retrySecondLeg error: %v", err)
+	}
 
 	if filled <= 0 {
 		t.Fatalf("expected filled > 0, got %.6f", filled)
@@ -286,7 +292,10 @@ func TestRetrySecondLegBBOSanityFallback(t *testing.T) {
 	e := newMinimalEngine()
 	e.exchanges["bingx"] = exch
 
-	filled, avg := e.retrySecondLeg(exch, "bingx", "SIRENUSDT", exchange.SideBuy, 50.0, refPrice)
+	filled, avg, err := e.retrySecondLeg(exch, "bingx", "SIRENUSDT", exchange.SideBuy, 50.0, refPrice)
+	if err != nil {
+		t.Fatalf("unexpected retrySecondLeg error: %v", err)
+	}
 
 	if filled <= 0 {
 		t.Fatalf("expected filled > 0, got %.6f", filled)

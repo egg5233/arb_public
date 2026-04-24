@@ -43,3 +43,4 @@ graphify-out/memory/*
 graphify-publish/
 .mcp.json
 CLAUDE.local.md
+.worktrees/

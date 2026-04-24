@@ -142,6 +142,7 @@ const zhTW: Record<TranslationKey, string> = {
   'pos.longPnl': '多方損益',
   'pos.shortPnl': '空方損益',
   'pos.fundingHistory': '資金費率歷史',
+  'pos.fundingPartial': '資金費率歷史不完整 — 無法取得：{legs}',
   'pos.rotationHistory': '輪換歷史',
   'pos.openTime': '開倉時間',
   'pos.from': '從',
@@ -262,6 +263,7 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.system': '系統',
   'cfg.systemDesc': '運行模式',
   'cfg.section.poolAllocator': '池分配器',
+  'cfg.section.rebalanceTuning': '再平衡調參',
   'cfg.section.scanMinutes': '掃描分鐘',
 
   // Config fields
@@ -698,6 +700,10 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.desc.enablePoolAllocator': '啟用再平衡資金池配置器。它會為每個幣保留多組交易所配對候選，並挑選可實際轉帳落地的組合。預設關閉，方便分階段上線。',
   'cfg.desc.topPairsPerSymbol': '每個幣最多保留幾組排序後的交易所配對候選供再平衡配置器選擇。設為 1 時，行為最接近舊版單一配對邏輯。',
   'cfg.desc.allocatorTimeoutMs': '資金池配置器 branch-and-bound 搜尋的軟性時間預算，單位為毫秒。實際總耗時仍可能主要由即時風控模擬 API 呼叫決定。',
+  'cfg.field.rebalanceMinNetPnLUSDT': '再平衡最低淨 PnL',
+  'cfg.field.rebalanceDonorFloorPct': '再平衡捐助者下限',
+  'cfg.desc.rebalanceMinNetPnLUSDT': '資金拯救轉帳所需的最低淨 PnL（預估資金費率收益 − 轉帳手續費，USDT）。低於此值的 rescue 會被判為不夠划算而拒絕。',
+  'cfg.desc.rebalanceDonorFloorPct': '若任一捐助者轉出後，剩餘毛額低於其初始毛額的此比例，就拒絕該轉帳。避免把單一捐助者抽光。設為 0 則停用。',
 
   // Navigation - Analytics
   'nav.analytics': '分析',

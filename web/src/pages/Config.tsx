@@ -672,6 +672,24 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
           onChange={(v) => handleChange(['strategy', 'allocator_timeout_ms'], v)}
         />
 
+        {/* Rebalance tuning */}
+        <div className="sm:col-span-2 border-t border-gray-800 pt-4 mt-2">
+          <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">{t('cfg.section.rebalanceTuning')}</h4>
+        </div>
+        <NumberField
+          label={t('cfg.field.rebalanceMinNetPnLUSDT')}
+          desc={t('cfg.desc.rebalanceMinNetPnLUSDT')}
+          value={getByPath(config, ['strategy', 'rebalance_min_net_pnl_usdt'])}
+          unit="USDT"
+          onChange={(v) => handleChange(['strategy', 'rebalance_min_net_pnl_usdt'], v)}
+        />
+        <NumberField
+          label={t('cfg.field.rebalanceDonorFloorPct')}
+          desc={t('cfg.desc.rebalanceDonorFloorPct')}
+          value={getByPath(config, ['strategy', 'rebalance_donor_floor_pct'])}
+          onChange={(v) => handleChange(['strategy', 'rebalance_donor_floor_pct'], v)}
+        />
+
         {/* Scan Minutes */}
         <div className="sm:col-span-2 border-t border-gray-800 pt-4 mt-2">
           <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">{t('cfg.section.scanMinutes')}</h4>

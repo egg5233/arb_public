@@ -140,6 +140,7 @@ const en = {
   'pos.longPnl': 'Long PnL',
   'pos.shortPnl': 'Short PnL',
   'pos.fundingHistory': 'Funding History',
+  'pos.fundingPartial': 'Funding history incomplete — unavailable for: {legs}',
   'pos.rotationHistory': 'Rotation History',
   'pos.openTime': 'Opened',
   'pos.from': 'From',
@@ -260,6 +261,7 @@ const en = {
   'cfg.system': 'System',
   'cfg.systemDesc': 'Operational mode',
   'cfg.section.poolAllocator': 'Pool Allocator',
+  'cfg.section.rebalanceTuning': 'Rebalance Tuning',
   'cfg.section.scanMinutes': 'Scan Minutes',
 
   // Config fields
@@ -308,6 +310,8 @@ const en = {
   'cfg.field.reservationTTLSec': 'Reservation TTL',
   'cfg.field.topPairsPerSymbol': 'Top Pairs Per Symbol',
   'cfg.field.allocatorTimeoutMs': 'Allocator Timeout',
+  'cfg.field.rebalanceMinNetPnLUSDT': 'Rebalance Min Net PnL',
+  'cfg.field.rebalanceDonorFloorPct': 'Rebalance Donor Floor',
   'cfg.field.enableSpreadStabilityGate': 'Enable Spread Stability Gate',
   'cfg.field.spreadVolatilityMaxCV': 'Spread Volatility Max CV',
   'cfg.field.spreadVolatilityMinSamples': 'Volatility Min Samples',
@@ -417,6 +421,8 @@ const en = {
   'cfg.desc.reservationTTLSec': 'How long a pending capital reservation stays live before auto-expiring if the trade never commits.',
   'cfg.desc.topPairsPerSymbol': 'How many ranked exchange-pair candidates to keep per symbol for the rebalance allocator. 1 preserves the legacy single-pair behavior.',
   'cfg.desc.allocatorTimeoutMs': 'Soft search budget for the pool allocator branch-and-bound solver in milliseconds. The live approval calls still dominate total runtime.',
+  'cfg.desc.rebalanceMinNetPnLUSDT': 'Minimum net PnL (expected funding minus transfer fees, USDT) for a capital-rescue transfer to proceed. Rescues below this are rejected as unprofitable.',
+  'cfg.desc.rebalanceDonorFloorPct': 'Reject any transfer that would leave a donor with less than this fraction of its initial gross capacity. Prevents draining a single donor dry. 0 disables the floor.',
   'cfg.desc.dryRun': 'When enabled, the bot logs all actions but does not execute any real trades',
 
   // Config - Safety

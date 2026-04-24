@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"strconv"
 	"strings"
@@ -318,6 +319,8 @@ func (a *Adapter) populateBitgetFeeDeducted(order *exchange.SpotMarginOrderStatu
 				}
 			}
 		}
+	} else {
+		log.Printf("[bitget] populateBitgetFeeDeducted spot fills failed order=%s symbol=%s: %v", orderID, symbol, err)
 	}
 
 	// Try margin fills if spot fills returned nothing.
@@ -332,6 +335,8 @@ func (a *Adapter) populateBitgetFeeDeducted(order *exchange.SpotMarginOrderStatu
 					}
 				}
 			}
+		} else {
+			log.Printf("[bitget] populateBitgetFeeDeducted margin fills failed order=%s symbol=%s: %v", orderID, symbol, err)
 		}
 	}
 

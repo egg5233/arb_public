@@ -54,6 +54,7 @@ const Sidebar: FC<SidebarProps> = ({ page, onNavigate, connected, onLogout, mobi
             }`}
           />
           {connected ? t('sidebar.connected') : t('sidebar.disconnected')}
+          <span className="ml-auto text-xs text-gray-500">v{__APP_VERSION__}</span>
         </div>
       </div>
       <nav className="flex-1 p-2">
@@ -121,6 +122,7 @@ const Sidebar: FC<SidebarProps> = ({ page, onNavigate, connected, onLogout, mobi
           <span className={connected ? 'text-[#0ecb81]' : 'text-[#f6465d]'}>
             {connected ? t('sidebar.connected') : t('sidebar.disconnected')}
           </span>
+          <span className="ml-auto text-[10px] text-gray-500 normal-case tracking-normal">v{__APP_VERSION__}</span>
         </div>
       </div>
 

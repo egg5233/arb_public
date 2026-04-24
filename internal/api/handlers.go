@@ -176,6 +176,7 @@ func (s *Server) handleGetPositionFunding(w http.ResponseWriter, r *http.Request
 	}
 
 	var events []fundingEvent
+	var partialLegs []string
 
 	// Build time-bounded leg windows so we only include funding payments
 	// that occurred while THIS position held each leg. Without this,
@@ -223,6 +224,8 @@ func (s *Server) handleGetPositionFunding(w http.ResponseWriter, r *http.Request
 		}
 		fees, err := exch.GetFundingFees(pos.Symbol, leg.start)
 		if err != nil {
+			s.log.Warn("handleGetPositionFunding: GetFundingFees(%s) on %s failed: %v", pos.Symbol, leg.name, err)
+			partialLegs = append(partialLegs, leg.name)
 			continue
 		}
 		for _, f := range fees {
@@ -250,8 +253,10 @@ func (s *Server) handleGetPositionFunding(w http.ResponseWriter, r *http.Request
 	})
 
 	if events == nil {
-		writeJSON(w, http.StatusOK, Response{OK: true, Data: []interface{}{}})
-		return
+		events = []fundingEvent{}
+	}
+	if len(partialLegs) > 0 {
+		w.Header().Set("X-Partial-Legs", strings.Join(partialLegs, ","))
 	}
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: events})
 }
@@ -396,6 +401,10 @@ type configStrategyResponse struct {
 	EnablePoolAllocator bool                    `json:"enable_pool_allocator"`
 	TopPairsPerSymbol   int                     `json:"top_pairs_per_symbol"`
 	AllocatorTimeoutMs  int                     `json:"allocator_timeout_ms"`
+
+	RebalanceMinNetPnLUSDT float64 `json:"rebalance_min_net_pnl_usdt"`
+	RebalanceDonorFloorPct float64 `json:"rebalance_donor_floor_pct"`
+
 	Discovery           configDiscoveryResponse `json:"discovery"`
 	Entry               configEntryResponse     `json:"entry"`
 	Exit                configExitResponse      `json:"exit"`
@@ -534,6 +543,10 @@ func (s *Server) buildConfigResponse() configResponse {
 			EnablePoolAllocator: s.cfg.EnablePoolAllocator,
 			TopPairsPerSymbol:   s.cfg.TopPairsPerSymbol,
 			AllocatorTimeoutMs:  s.cfg.AllocatorTimeoutMs,
+
+			RebalanceMinNetPnLUSDT: s.cfg.RebalanceMinNetPnLUSDT,
+			RebalanceDonorFloorPct: s.cfg.RebalanceDonorFloorPct,
+
 			Discovery: configDiscoveryResponse{
 				MinHoldTimeHours:        int(s.cfg.MinHoldTime.Hours()),
 				MaxCostRatio:            s.cfg.MaxCostRatio,
@@ -865,6 +878,10 @@ type strategyUpdate struct {
 	EnablePoolAllocator *bool            `json:"enable_pool_allocator"`
 	TopPairsPerSymbol   *int             `json:"top_pairs_per_symbol"`
 	AllocatorTimeoutMs  *int             `json:"allocator_timeout_ms"`
+
+	RebalanceMinNetPnLUSDT *float64 `json:"rebalance_min_net_pnl_usdt"`
+	RebalanceDonorFloorPct *float64 `json:"rebalance_donor_floor_pct"`
+
 	Discovery           *discoveryUpdate `json:"discovery"`
 	Entry               *entryUpdate     `json:"entry"`
 	Exit                *exitUpdate      `json:"exit"`
@@ -1000,6 +1017,12 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if st.AllocatorTimeoutMs != nil && *st.AllocatorTimeoutMs > 0 {
 			s.cfg.AllocatorTimeoutMs = *st.AllocatorTimeoutMs
+		}
+		if st.RebalanceMinNetPnLUSDT != nil && *st.RebalanceMinNetPnLUSDT >= 0 {
+			s.cfg.RebalanceMinNetPnLUSDT = *st.RebalanceMinNetPnLUSDT
+		}
+		if st.RebalanceDonorFloorPct != nil && *st.RebalanceDonorFloorPct >= 0 {
+			s.cfg.RebalanceDonorFloorPct = *st.RebalanceDonorFloorPct
 		}
 		if st.TopOpportunities != nil && *st.TopOpportunities > 0 {
 			s.cfg.TopOpportunities = *st.TopOpportunities
@@ -1591,6 +1614,8 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"enable_pool_allocator":               strconv.FormatBool(snapshot.Strategy.EnablePoolAllocator),
 		"top_pairs_per_symbol":                strconv.Itoa(snapshot.Strategy.TopPairsPerSymbol),
 		"allocator_timeout_ms":                strconv.Itoa(snapshot.Strategy.AllocatorTimeoutMs),
+		"rebalance_min_net_pnl_usdt":          strconv.FormatFloat(snapshot.Strategy.RebalanceMinNetPnLUSDT, 'f', -1, 64),
+		"rebalance_donor_floor_pct":           strconv.FormatFloat(snapshot.Strategy.RebalanceDonorFloorPct, 'f', -1, 64),
 		"top_opportunities":                   strconv.Itoa(snapshot.Strategy.TopOpportunities),
 		"entry_scan_minute":                   strconv.Itoa(snapshot.Strategy.EntryScanMinute),
 		"exit_scan_minute":                    strconv.Itoa(snapshot.Strategy.ExitScanMinute),

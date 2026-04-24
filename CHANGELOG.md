@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.34.5] - 2026-04-24
+
+### Merged
+
+- Merged `origin/main` (collaborator's 0.33.x series through 0.33.3) into local v2.0 Phase 9 line. VERSION resolved as merge bump above the higher side. CHANGELOG interleaved semver-descending; both sides of the existing `[0.32.40]` `### Added` block preserved.
+
 ## [0.34.4] - 2026-04-24
 
 ### Fixed
@@ -146,10 +152,95 @@ All notable changes to this project will be documented in this file.
   - **Test coverage** — 14 new tests across `monitor_test.go` (6), `slippage_test.go` (5), `rehydrate_test.go` (3). All 44 pricegaptrader tests green under `-race -count=5`.
   - Still off by default (`PriceGapEnabled=false`). Phase 9 (dashboard) will expose `/api/pricegap/positions` and the enable toggle; Plan 07 wires `rehydrate()` into `Start()`.
 
+## [0.33.3] - 2026-04-23
+
+### Fixed
+- **Rebalance transfer timing for split-account donors** — `executeRebalanceFundingPlan` called `TransferToSpot` as fire-and-forget and then immediately read `GetSpotBalance`, which for binance/bitget-class split-account donors returned stale balance before the internal futures→spot settled. The subsequent `netAmount = spot - fee < 0` guard silently skipped the outbound withdraw, leaving recipients (e.g. bingx) unfunded. Observed 2026-04-23 02:35 UTC binance→bingx for SIGNUSDT. Fix:
+  - Added `*Engine.waitForSpotBalance(donor, required, timeout)` helper returning `(*exchange.Balance, error)` that polls `GetSpotBalance` every 1s until `Available >= required` or the 10s timeout elapses (`internal/engine/allocator.go`). Stop-aware via `select` on `e.stopCh`.
+  - Added `*Engine.captureSpotBalanceForTransfer(donor, snapshotSpot)` helper that reads the donor's current spot balance BEFORE `TransferToSpot`. On read failure it returns an error and the caller skips the donor — no snapshot fallback because an earlier-in-cycle donor prep could have credited spot above the snapshot, making the post-transfer wait target too low.
+  - Captured pre-transfer spot balance before `TransferToSpot`, waited for `preTransferSpot + movedToSpot` using the parsed submitted transfer amount (`parsedMove` from `moveStr`), and reused the returned `*Balance` for the split-account `donorSpotBal` read — avoiding a redundant `GetSpotBalance` that could hit stale cache after a successful wait.
+  - On wait timeout: pessimistically debit donor `futures`/`futuresTotal` by `movedToSpot` and credit `spot` so subsequent iterations don't over-commit the donor (funds are in spot but we can't observe them in time).
+  - Regression tests covering eventual success, transient `GetSpotBalance` error, pre-existing spot below target, timeout, unknown donor, stop-aware shutdown, and captureSpotBalanceForTransfer success/read-error/unknown-donor cases (`internal/engine/wait_spot_balance_test.go`, 9 tests).
+  - Codex independent audits (local companion tasks `b1f1og3j7`, `bqvv15ukz`, `bqtfw2xow`, `ba6l7l0eg`, `brshav1ag`, `bam03kjb5`, `bjz5cvnu5`, `bdz321szb`, `bfiv2sy20`, `buac3qov4`, gpt-5.4 xhigh) confirmed root cause and iterated the plan to v9 PASS with 8/10 production-readiness.
+
+## [0.33.2] - 2026-04-23
+
+### Added
+- **Dashboard version display** — sidebar now shows `v<version>` next to the connection indicator so deploy status is visible at a glance. Version is injected at build time from the repo `VERSION` file via Vite `define` (`web/vite.config.ts`, `web/src/components/Sidebar.tsx`).
+
+## [0.33.1] - 2026-04-22
+
+### Fixed
+- **Rebalance top-up routing bug** — simulator's cross-exchange top-up inflated `pair.bal.Available` to pass margin/L4 checks, but the resulting `approval.Approved=true` was routed into Pass-1 case (a) which schedules NO transfer. Subsequent entry-scan executor rejected on real (unrestocked) balance. 2026-04-22 METUSDT gateio/bitget incident: 11:35 rebalance reserved 199.93/199.71, 11:45 entry rejected with post-trade margin ratio 0.87 on gateio (>L4 0.80). Fix:
+  - Added `RiskApproval.TopUpApplied map[string]float64` recording per-exchange simulator borrows (`internal/models/interfaces.go`).
+  - `approveInternal` populates the field only when `dryRun=true` (`internal/risk/manager.go`).
+  - Pass-1 switch at `internal/engine/rebalance.go:210` routes `Approved && len(TopUpApplied) > 0` into the case-(b) rescue-candidate path, unifying with existing `RejectionKindCapital` handling so a real transfer is planned and the post-transfer replay re-validates against `TransferablePerExchange=nil`.
+  - Regression tests in `internal/risk/manager_topup_test.go` and `internal/engine/rebalance_topup_test.go`.
+  - Independent review via dispatch-mcp (task `baa9d706`) confirmed the bug before fix.
+
+## [0.33.0] - 2026-04-22
+
+### Fixed
+- **Bitget error swallowing + non-ASCII symbol support (plan `plans/PLAN-bitget-error-handling.md` v22 ALL PASS — approved by remote dispatch-mcp codex review task 58772305)** — bitget client's `doRequest` previously returned `(body, nil)` regardless of HTTP status or response `code`, masking every transient API failure as "no data". Concrete symptom: position `龙虾usdt-1776800704405` `funding_collected=-0.069` tracked only binance long leg, missing bitget short leg's +0.914 USDT funding (verified via no-symbol-filter bitget API). Root cause: non-ASCII symbol (`龙虾USDT`) in signed GET query fails bitget HMAC with 40009, client swallowed the error. Four coordinated phases across 5 parallel worktrees:
+  - **Phase A — bitget adapter strict errors + non-ASCII fallbacks**: `doRequest` checks HTTP status AND `envelope.Code` with pass-through map for idempotent codes (40872, 43011, 43025); `isRetryable` inspects `*APIError` via `errors.As` + 5xx class retry. Non-ASCII fallback endpoints added: `GetFundingFees`, `GetFundingRate`, `GetPosition`, `GetUserTrades`, `GetClosePnL`, `GetOrderFilledQty`. `CheckPermissions` migrated to `errors.As` with class branching (40009→PermDenied, retryable/5xx→PermUnknown, other→PermGranted). `CancelAllOrders` surfaces both errors via `errors.Join`. `populateBitgetFeeDeducted` logs both spot-fills and margin-fills errors.
+  - **Phase B — engine caller safety**: `retrySecondLeg` signature adds `error` return; 4 callers (engine.go:3688/3727/3932/3971) persist `StatusPartial` + `FailureReason="second_leg_fill_unknown"` on unknown-state error to prevent duplicate orders (2× exposure risk). `confirmFill` adds error propagation; all callers in `exit.go` + `consolidate.go` audited. `consolidate.go` logs silent continue on `GetClosePnL` failure.
+  - **Phase C — spotengine pending-futures recovery**: new `pendingFuturesEntryError` struct + `PendingFuturesEntryOrderID` field + `reconcilePendingFuturesEntry` monitor method. `confirmFuturesFill` returns error on unknown REST state; Dir A (borrow_sell_long) persists `spotFilled*spotAvg` gross, Dir B (buy_spot_short) persists `spotNetReceived*spotAvg` net to match HEAD final state after outer ManualOpen overwrite at line 402. Defensive gate in `reconcilePendingEntry` routes pending-futures to its own reconciler.
+  - **Phase D — revert v0.32.42 ASCII guards + frontend partial-legs UI**: removed `IsValidBaseQuoteSymbol` guards from discovery/ranker, discovery/scanner, spotengine/discovery, spotengine/engine, api/spot_handlers (v0.32.42 blocked non-ASCII at source — wrong approach; exchanges list these symbols, so blocking loses real arbitrage opportunities). Deleted `pkg/utils/symbol.go` (`containsNonASCII` moved to `pkg/exchange/bitget/util.go`). Backend `handleGetPositionFunding` logs failed legs + sets `X-Partial-Legs` header. Frontend `getPositionFunding` bypass preserves 401 handling, exposes header; `Positions.tsx` renders warning banner; new `pos.fundingPartial` i18n key (EN + zh-TW).
+- **`cmd/peertest/` (#11)** — read-only CLI empirically tests Bybit/OKX/Gate/BingX/Binance for same HMAC issue using dynamically discovered non-ASCII symbols via `LoadAllContracts`.
+
+## [0.32.42] - 2026-04-22
+
+### Fixed
+- **ASCII symbol guard across discovery pipeline + spot API handlers (plan `plans/PLAN-ascii-symbol-guard.md` v4 ALL PASS on Codex normal + independent review + post-implementation review)** — Loris API returns non-ASCII symbols (e.g. `龙虾`, `币安人生`) that previously entered the ranker, passed `hasContract()` on some exchanges, passed 22/23 verification checks, and could reach entry scan causing one-legged positions, wasted API calls, and infinite retry loops. Added `utils.IsValidBaseSymbol(^[A-Z0-9]+$)` guard at 9 entry points: Loris/CoinGlass ranker (silent skip, fires every cycle), `InjectTestOpportunity` (WARN log), `loadCachedOpps` startup filter, and 4 API handlers (`/spot/manual-open`, `/spot/test-inject`, `/spot/test-lifecycle`, `/spot/backtest`) return HTTP 400 with "expected ASCII USDT symbol" error.
+- **Pool Allocator double-rebalance fix** — when `EnablePoolAllocator=true`, `rebalanceFunds()` previously ran twice per cycle (at RebalanceScan :10/:20 AND RotateScan :35), causing ~15-25-min-apart double transfers, wasted fees (e.g. gateio→okx $1), and suboptimal fund distribution. RebalanceScan handler now skips when allocator enabled (symmetric with existing RotateScan guard). Both guards also check `RotateScanMinute != RebalanceScanMinute` to handle same-minute misconfiguration — if user sets both minutes equal, scanner's else-if dispatch picks RebalanceScan and RotateScan never fires, so skipping would strand rebalancing entirely.
+
+### Added
+- **`pkg/utils/symbol.go`** — shared `IsValidBaseSymbol` helper with compiled regex (zero-alloc per match). Used by `internal/discovery`, `internal/spotengine`, and `internal/api`.
+- **`pkg/utils/symbol_test.go`** — unit test covering 7 valid symbols (BTC, 1000SATS, 1MBABYDOGE, 0G, 1INCH, 10000000AIDOGE, etc.) and 7 invalid (Chinese chars, slashes, underscores, empty, whitespace, accented chars).
+
+## [0.32.41] - 2026-04-21
+
+### Fixed
+- **Stage 2 DB-failure fund stranding (codex independent review `d1ac2563` Finding #1 HIGH)** — when `db.GetActivePositions()` failed transiently between Stage 1 and Stage 2, `applyAllocatorOverrides` had already drained `e.allocOverrides` but Stage 2 bailed without executing, and the existing salvage block excluded in-scan symbols via `inScan[sym]`, stranding rebalance-funded capital until the next cycle. Plan `plans/PLAN-stage2-db-failure-salvage.md` v6 ALL PASS on normal + independent Codex review. Two complementary fixes:
+  - **Retry helper** (`getActivePositionsWithRetry`, 2 attempts / 300ms backoff) — survives transient Redis blips at the two critical Stage 2 + salvage call sites.
+  - **Replaced `inScan[sym]` salvage exclusion with `stage2Attempted[sym]` tracking** — salvage now correctly rescans symbols Stage 2 never got to attempt (in-scan AND out-of-scan), instead of assuming Stage 2 always had a chance.
+
+### Added
+- **`activePositionsGetter` interface + `Engine.activePosSource` field** (`internal/engine/engine.go`) — minimal injection seam routing the two Stage 2 + salvage `GetActivePositions` reads through the retry helper. Wired to `e.db` in `NewEngine`; other 14+ `e.db.GetActivePositions` call sites unchanged (zero-blast-radius scope).
+- **`runStage2AndSalvage` method** (`internal/engine/engine.go`) — extracted the Stage 2 + salvage block from the inline run loop into a testable method; caller-site unchanged in behavior.
+- **9 regression tests** (`internal/engine/engine_stage2_salvage_test.go`) — T1 happy path, T2a/T2b retry/fallback variants (proves `calls==3` with shared-seam accounting), T3 out-of-scan salvage, T4 both-DB-fail clean skip, T5 duplicate-skip, T6 all-stale, T7 multi-symbol partial, T8 mixed validity. `failingActivePosGetter` total-call budget stub; retry timing verified (T2b 0.31s, T4 0.61s).
+
+### Safety (salvage guardrails)
+- **Stage 2 DB failure falls through to salvage** instead of early-returning — if the retry still fails, salvage can still recover in-scan override symbols via `RescanSymbols`.
+- **`stage2Attempted` populated BEFORE the `openedS1` duplicate check** — symbols filtered as already-open still count as attempted, so salvage does not re-open them.
+- **Salvage's own `GetActivePositions` read also goes through retry helper** — symmetric protection.
+
 ## [0.32.40] - 2026-04-21
 
 ### Added
 - **Price-gap tracker — simultaneous IOC entry path with unwind-to-match (Phase 08 Plan 05 Task 1)** (`internal/pricegaptrader/execution.go`). Implements the live-trading-critical `openPair` function for Strategy 4: concurrent IOC market orders on both legs, D-10 unwind-to-match partial-fill reconciliation via MARKET (not IOC) orders, zero-fill-on-one-leg → immediate market-close of the other leg, 5-consecutive-failures circuit breaker, per-symbol Redis lock via `AcquirePriceGapLock`, and D-15 position-ID format (`pg_{symbol}_{longExch}_{shortExch}_{unixNano}`). Fill price stamping uses the mid-at-decision from `DetectionResult` because the adapter's `GetOrderFilledQty(orderID, symbol) (float64, error)` returns only qty — realized slippage is computed at exit in Plan 06. Off by default (depends on `PriceGapEnabled=false` in Plan 01 + Plan 04 preEntry gate + this plan's circuit breaker). Tests in follow-up tasks.
+- **Enumerate-and-argmax rebalance (feature-flagged `EnableArgmaxRebalance`, default OFF)** — plan `plans/PLAN-enumerate-argmax-rebalance.md` v8 ALL PASS on normal + independent Codex review. `rebalanceFunds()` dispatches to `rebalanceFundsArgmax` that enumerates feasible subsets of approved AND capital-rescue candidates, scores by net PnL = sum(baseValue) − dryRun.TotalFee, picks the globally best. Fixes the 2026-04-20 15:45 bug where 288 USDT donor pool sat idle because tail-prune dropped the BingX-constrained opp before enumeration.
+- **Post-transfer replay helper (`replayArgmaxApprovalAfterFunding`)** — re-runs approval with projected post-transfer balances; admits rescue only when replay approves, uses post-transfer Size/Price for scoring. Closes both "size resize upward" and "non-capital gates bypass" risks.
+- **`pricedCapitalRejection` helper (`internal/risk/manager.go`)** — all 4 `RejectionKindCapital` sites populate Size/Price/RequiredMargin/Long/ShortMarginNeeded. `ManualOpen(force=true)` rejects rejected approvals explicitly.
+- **Argmax dashboard controls** — 4 new fields (`enable_argmax_rebalance`, `rebalance_min_net_pnl_usdt`=0.50, `rebalance_donor_floor_pct`=0.05, `rebalance_subset_size_cap`=0) wired through config/API/Redis/frontend/i18n + env vars.
+
+### Changed
+- **Rebalance wrapper** — dispatches to `rebalanceFundsArgmax` or `rebalanceFundsLegacy`; clears stale `allocOverrides` before argmax to prevent early-return leakage.
+- **Rotate-scan gate (`engine.go:1471`)** — fires when either `EnablePoolAllocator` or `EnableArgmaxRebalance` is on.
+- **Force Open button removed (`Opportunities.tsx`)** — backend now always rejects force on rejected approvals; button was dead.
+
+### Safety (argmax guardrails)
+- **Reserved-aware combo re-validation** — `reservedValidateArgmaxCombo` replays `SimulateApprovalForPair` sequentially over the chosen combo with accumulating reserved-margin map; picks that fail when earlier picks reserve capital on the same exchange are dropped, and the subset re-runs `dryRunTransferPlan` + netPnL scoring. Mirrors the legacy allocator guard at `allocator.go:393-426`. Fixes the race where two individually-approved picks share a constrained exchange and the second one fails at `executeArbitrage` time after donor capital was already moved.
+- **Feature-flag emergency brake** — re-read `EnableArgmaxRebalance` under `capacityMu` twice (pre-execute, pre-publish) with the final check inside `allocOverrideMu`. `POST /api/config` invokes `Engine.ClearAllocOverrides()` on flag true→false transition.
+- **Loss-limiter gate** — argmax calls `lossLimiter.CheckLimits()` at top mirroring `runPoolAllocator`, including dashboard broadcast + Telegram.
+- **Post-execute capacity recheck** — if `ManualOpen` consumed slot during transfer window, drop the overrides (no publish).
+- **Spot-futures occupancy gate** — `filterArgmaxOpps` excludes `exchange:symbol` occupied by the spot-futures engine, mirroring `ppCrossEngineBlocked`. Per-attempt re-check inside `buildArgmaxCandidates` covers alternative pairs too.
+- **Deterministic tie-break** — netPnL desc → step-count asc → `comboSymbolsKey` lex asc; candidate sort uses `sort.SliceStable` + 3-level symbol/long/short lex tie-break.
+- **Streaming best combo** — `*scoredCombo` tracker instead of `[]scoredCombo` slice; O(1) memory regardless of feasible subset count.
+
+### Tests
+- `rebalance_argmax_test.go` — pure helpers, `buildArgmaxCandidates` rescue admission, end-to-end smoke (override publish, no-opps clear, capacity-at-max early-return, capital-rescue replay with bitget→bingx step), targeted replay tests (`PromotesRescue` + `RejectsWhenStillInfeasible`).
+- `manager_capital_rejection_test.go` — pins priced rejection fields non-zero at all 4 sites.
 
 ## [0.32.39] - 2026-04-21
 

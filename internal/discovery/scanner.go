@@ -409,7 +409,8 @@ func (s *Scanner) coinGlassToOpportunities(cg *models.CoinGlassResponse) []model
 			continue
 		}
 
-		symbol := strings.ToUpper(item.Pair) + "USDT"
+		base := strings.ToUpper(item.Pair)
+		symbol := base + "USDT"
 
 		// Skip if symbol doesn't exist on both paired exchanges
 		if !s.hasContract(longEx, symbol) || !s.hasContract(shortEx, symbol) {

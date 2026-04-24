@@ -59,6 +59,16 @@ func (e *SpotEngine) monitorTick() {
 			if pos.ExitReason == spotEntryManualRecoveryReason {
 				continue
 			}
+			// Pending-futures-entry takes precedence: spot leg is already
+			// confirmed and only the futures fill state needs recovery.
+			// reconcilePendingEntry also has a defensive early-return when
+			// PendingFuturesEntryOrderID is set, but routing here first keeps
+			// the responsibility explicit and lets both fields be cleared in
+			// sequence if reconciliation succeeds.
+			if pos.PendingFuturesEntryOrderID != "" {
+				e.reconcilePendingFuturesEntry(pos)
+				continue
+			}
 			e.reconcilePendingEntry(pos)
 			continue
 		}
@@ -559,4 +569,85 @@ func (e *SpotEngine) lookupCurrentOpp(symbol, exchName, direction string) (SpotA
 		}
 	}
 	return SpotArbOpportunity{}, false
+}
+
+// reconcilePendingFuturesEntry resumes recovery for a position whose spot leg
+// was confirmed during entry but whose futures fill state was UNKNOWN (e.g.
+// bitget REST error on GetOrderFilledQty). Mirrors reconcilePendingEntry's
+// lock + exchange-lookup pattern, but calls confirmFuturesFill on the futures
+// order ID stashed in PendingFuturesEntryOrderID instead of confirmSpotFill.
+//
+// On confirmed fill: promote position to Active and clear the pending field.
+// On confirmed zero fill: the spot leg already succeeded, so this is the rare
+// "spot confirmed + futures truly zero" case. Log and surface for manual
+// intervention rather than silently rolling back spot — rollback at this point
+// is unsafe because the position is already persisted and visible.
+// On still-unknown fill: leave the pending field set so the next monitor tick
+// retries (bitget error may be transient).
+func (e *SpotEngine) reconcilePendingFuturesEntry(pos *models.SpotFuturesPosition) {
+	lock, acquired, err := e.db.AcquireOwnedLock(spotEntryLockKey, spotEntryLockTTL)
+	if err != nil {
+		e.log.Error("pending futures entry %s: acquire lock: %v", pos.ID, err)
+		return
+	}
+	if !acquired {
+		return
+	}
+	defer func() {
+		if err := lock.Release(); err != nil {
+			e.log.Warn("pending futures entry %s: release lock: %v", pos.ID, err)
+		}
+	}()
+
+	futExch, ok := e.exchanges[pos.Exchange]
+	if !ok {
+		e.log.Error("pending futures entry %s: no futures exchange for %s", pos.ID, pos.Exchange)
+		return
+	}
+
+	orderID := pos.PendingFuturesEntryOrderID
+	if orderID == "" {
+		// Nothing to reconcile — defensive guard in case the caller routed us
+		// here despite the field being cleared between read and dispatch.
+		return
+	}
+
+	futFilled, futAvg, cfErr := e.confirmFuturesFill(futExch, orderID, pos.Symbol)
+	if cfErr != nil {
+		// Still unknown — retry on next monitor tick. Do NOT clear the pending
+		// field; do NOT place another order (would risk double-hedge).
+		e.log.Warn("pending futures entry %s: fill state still unknown for %s, retrying next cycle: %v",
+			pos.ID, orderID, cfErr)
+		return
+	}
+
+	if futFilled <= 0 {
+		// Confirmed zero fill. The spot leg is already persisted and exposed
+		// to the operator; rolling back here is too late. Surface for manual
+		// intervention and leave the position in pending state.
+		e.log.Error("pending futures entry %s: futures order %s confirmed 0 fill after spot-confirmed entry — manual intervention required",
+			pos.ID, orderID)
+		return
+	}
+
+	// Confirmed fill — promote to active.
+	pos.FuturesSize = futFilled
+	pos.FuturesEntry = futAvg
+	pos.PendingFuturesEntryOrderID = ""
+	pos.Status = models.SpotStatusActive
+	takerFee := spotFees[pos.Exchange]
+	if takerFee == 0 {
+		takerFee = 0.0005
+	}
+	pos.EntryFees = (pos.SpotSize * pos.SpotEntryPrice * takerFee) + (futFilled * futAvg * takerFee)
+	pos.UpdatedAt = time.Now().UTC()
+	if err := e.db.SaveSpotPosition(pos); err != nil {
+		e.log.Error("pending futures entry %s: failed to promote active: %v", pos.ID, err)
+		return
+	}
+	if e.api != nil {
+		e.api.BroadcastSpotPositionUpdate(pos)
+	}
+	e.log.Info("pending futures entry %s recovered: %s on %s is now active (futures fill=%.6f@%.6f)",
+		pos.ID, pos.Symbol, pos.Exchange, futFilled, futAvg)
 }

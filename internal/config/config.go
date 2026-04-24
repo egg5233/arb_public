@@ -132,6 +132,10 @@ type Config struct {
 	TopPairsPerSymbol   int
 	AllocatorTimeoutMs  int
 
+	// Rebalance tuning (used by Pass 1 rank-first + Pool Allocator Pass 2)
+	RebalanceMinNetPnLUSDT float64
+	RebalanceDonorFloorPct float64
+
 	// Leg rotation parameters
 	RotationThresholdBPS float64 // min spread improvement to trigger rotation (default: 20)
 	RotationCooldownMin  int     // cooldown after rotation before next allowed (default: 30)
@@ -439,6 +443,9 @@ type jsonStrategy struct {
 	EnablePoolAllocator *bool          `json:"enable_pool_allocator"`
 	TopPairsPerSymbol   *int           `json:"top_pairs_per_symbol"`
 	AllocatorTimeoutMs  *int           `json:"allocator_timeout_ms"`
+
+	RebalanceMinNetPnLUSDT *float64 `json:"rebalance_min_net_pnl_usdt"`
+	RebalanceDonorFloorPct *float64 `json:"rebalance_donor_floor_pct"`
 	Discovery           *jsonDiscovery `json:"discovery"`
 	Entry               *jsonEntry     `json:"entry"`
 	Exit                *jsonExit      `json:"exit"`
@@ -569,6 +576,8 @@ func Load() *Config {
 		EnablePoolAllocator:              false,
 		TopPairsPerSymbol:                10,
 		AllocatorTimeoutMs:               30000,
+		RebalanceMinNetPnLUSDT:           0.50,
+		RebalanceDonorFloorPct:           0.05,
 		TopOpportunities:                 25,
 		PriceGapFreeBPS:                  40,
 		MaxPriceGapBPS:                   200,
@@ -825,6 +834,12 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		}
 		if s.AllocatorTimeoutMs != nil && *s.AllocatorTimeoutMs > 0 {
 			c.AllocatorTimeoutMs = *s.AllocatorTimeoutMs
+		}
+		if s.RebalanceMinNetPnLUSDT != nil && *s.RebalanceMinNetPnLUSDT >= 0 {
+			c.RebalanceMinNetPnLUSDT = *s.RebalanceMinNetPnLUSDT
+		}
+		if s.RebalanceDonorFloorPct != nil && *s.RebalanceDonorFloorPct >= 0 {
+			c.RebalanceDonorFloorPct = *s.RebalanceDonorFloorPct
 		}
 
 		// Discovery
@@ -1537,6 +1552,8 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	strategy["enable_pool_allocator"] = c.EnablePoolAllocator
 	strategy["top_pairs_per_symbol"] = c.TopPairsPerSymbol
 	strategy["allocator_timeout_ms"] = c.AllocatorTimeoutMs
+	strategy["rebalance_min_net_pnl_usdt"] = c.RebalanceMinNetPnLUSDT
+	strategy["rebalance_donor_floor_pct"] = c.RebalanceDonorFloorPct
 
 	disc := getMap(strategy, "discovery")
 	disc["min_hold_time_hours"] = int(c.MinHoldTime.Hours())
@@ -1802,6 +1819,16 @@ func (c *Config) loadEnvOverrides() {
 	if v := os.Getenv("SLIPPAGE_LIMIT_BPS"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			c.SlippageBPS = f
+		}
+	}
+	if v := os.Getenv("REBALANCE_MIN_NET_PNL_USDT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+			c.RebalanceMinNetPnLUSDT = f
+		}
+	}
+	if v := os.Getenv("REBALANCE_DONOR_FLOOR_PCT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+			c.RebalanceDonorFloorPct = f
 		}
 	}
 	if v := os.Getenv("REBALANCE_SCAN_MINUTE"); v != "" {

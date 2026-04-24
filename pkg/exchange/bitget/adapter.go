@@ -2,6 +2,7 @@ package bitget
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -68,17 +69,31 @@ func (a *Adapter) SetOrderMetricsCallback(fn exchange.OrderMetricsCallback) {
 
 func (a *Adapter) CheckPermissions() exchange.PermissionResult {
 	r := exchange.PermissionResult{Method: "inferred"}
-	// Bitget client returns raw JSON string without checking code.
-	// Must parse response body for code "40009" (permission denied).
-	checkBitget := func(resp string, err error) exchange.PermStatus {
+	// After #1 (doRequest strict errors), bitget client returns *APIError on
+	// non-2xx HTTP or logical failure instead of raw body. Branch on error class:
+	//   - 40009                       -> PermDenied
+	//   - retryableCodes (transient)  -> PermUnknown
+	//   - 5xx HTTP status             -> PermUnknown
+	//   - other *APIError             -> PermGranted (endpoint reached, rejected for
+	//                                    another reason — matches legacy semantic)
+	//   - other non-API error         -> PermUnknown (network/transport)
+	//   - nil error                   -> PermGranted
+	checkBitget := func(_ string, err error) exchange.PermStatus {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) {
+			if apiErr.Code == "40009" {
+				return exchange.PermDenied
+			}
+			if retryableCodes[apiErr.Code] {
+				return exchange.PermUnknown
+			}
+			if n, convErr := strconv.Atoi(apiErr.Code); convErr == nil && n >= 500 && n <= 599 {
+				return exchange.PermUnknown
+			}
+			return exchange.PermGranted
+		}
 		if err != nil {
 			return exchange.PermUnknown
-		}
-		var body struct {
-			Code string `json:"code"`
-		}
-		if json.Unmarshal([]byte(resp), &body) == nil && body.Code == "40009" {
-			return exchange.PermDenied
 		}
 		return exchange.PermGranted
 	}
@@ -229,6 +244,13 @@ func (a *Adapter) GetPendingOrders(symbol string) ([]exchange.Order, error) {
 }
 
 func (a *Adapter) GetOrderFilledQty(orderID, symbol string) (float64, error) {
+	// /api/v2/mix/order/detail requires symbol in the signed query, which fails
+	// bitget HMAC validation for non-ASCII symbols (e.g. 龙虾USDT). Fall back to
+	// /api/v2/mix/order/fills with orderId filter (no symbol required).
+	if containsNonASCII(symbol) {
+		return a.getOrderFilledQtyViaFills(orderID)
+	}
+
 	params := map[string]string{
 		"symbol":      symbol,
 		"orderId":     orderID,
@@ -242,12 +264,16 @@ func (a *Adapter) GetOrderFilledQty(orderID, symbol string) (float64, error) {
 
 	var resp struct {
 		Code string `json:"code"`
+		Msg  string `json:"msg"`
 		Data struct {
 			BaseVolume string `json:"baseVolume"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
 		return 0, err
+	}
+	if resp.Code != "" && resp.Code != "00000" {
+		return 0, &APIError{Code: resp.Code, Msg: resp.Msg}
 	}
 	if resp.Data.BaseVolume == "" {
 		return 0, nil
@@ -264,9 +290,74 @@ func (a *Adapter) GetOrderFilledQty(orderID, symbol string) (float64, error) {
 	return qty, err
 }
 
+// getOrderFilledQtyViaFills is the non-ASCII fallback for GetOrderFilledQty.
+// /api/v2/mix/order/fills accepts orderId without symbol, so the signed query
+// stays ASCII-clean even for symbols like 龙虾USDT. Sums baseVolume across all
+// fills matching orderID.
+func (a *Adapter) getOrderFilledQtyViaFills(orderID string) (float64, error) {
+	params := map[string]string{
+		"productType": productTypeUSDTFutures,
+		"orderId":     orderID,
+	}
+	raw, err := a.client.Get("/api/v2/mix/order/fills", params)
+	if err != nil {
+		return 0, fmt.Errorf("GetOrderFilledQty (fills): %w", err)
+	}
+	var resp struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			FillList []struct {
+				OrderID    string `json:"orderId"`
+				BaseVolume string `json:"baseVolume"`
+			} `json:"fillList"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		return 0, err
+	}
+	if resp.Code != "" && resp.Code != "00000" {
+		return 0, &APIError{Code: resp.Code, Msg: resp.Msg}
+	}
+	var total float64
+	for _, f := range resp.Data.FillList {
+		if f.OrderID != orderID {
+			continue
+		}
+		v, _ := strconv.ParseFloat(f.BaseVolume, 64)
+		total += v
+	}
+	if total > 0 && a.orderMetricsCallback != nil {
+		a.orderMetricsCallback(exchange.OrderMetricEvent{
+			Type:      exchange.OrderMetricFilled,
+			OrderID:   orderID,
+			FilledQty: total,
+			Timestamp: time.Now(),
+		})
+	}
+	return total, nil
+}
+
 // ==================== Positions ====================
 
 func (a *Adapter) GetPosition(symbol string) ([]exchange.Position, error) {
+	// /api/v2/mix/position/single-position requires symbol in the signed query,
+	// which fails bitget HMAC validation for non-ASCII symbols. Fall back to
+	// GetAllPositions (symbol-less endpoint) and filter locally.
+	if containsNonASCII(symbol) {
+		all, err := a.GetAllPositions()
+		if err != nil {
+			return nil, err
+		}
+		filtered := make([]exchange.Position, 0, len(all))
+		for _, p := range all {
+			if strings.EqualFold(p.Symbol, symbol) {
+				filtered = append(filtered, p)
+			}
+		}
+		return filtered, nil
+	}
+
 	params := map[string]string{
 		"symbol":      symbol,
 		"marginCoin":  marginCoinUSDT,
@@ -552,9 +643,12 @@ func (a *Adapter) GetMaintenanceRate(symbol string, notionalUSDT float64) (float
 // ==================== Funding Rate ====================
 
 func (a *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
+	noFilter := containsNonASCII(symbol)
 	params := map[string]string{
-		"symbol":      symbol,
 		"productType": productTypeUSDTFutures,
+	}
+	if !noFilter {
+		params["symbol"] = symbol
 	}
 
 	raw, err := a.client.Get("/api/v2/mix/market/current-fund-rate", params)
@@ -579,15 +673,32 @@ func (a *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
 	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
 		return nil, fmt.Errorf("unmarshal funding rate: %w", err)
 	}
-	if resp.Code != "00000" {
-		return nil, fmt.Errorf("GetFundingRate failed: code=%s msg=%s", resp.Code, resp.Msg)
+	if resp.Code != "" && resp.Code != "00000" {
+		return nil, &APIError{Code: resp.Code, Msg: resp.Msg}
 	}
 	if len(resp.Data) == 0 {
 		return nil, fmt.Errorf("GetFundingRate: no data for %s", symbol)
 	}
 
-	d := resp.Data[0]
-	rate, _ := strconv.ParseFloat(d.FundingRate, 64)
+	idx := 0
+	if noFilter {
+		idx = -1
+		for i := range resp.Data {
+			if strings.EqualFold(resp.Data[i].Symbol, symbol) {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			return nil, fmt.Errorf("GetFundingRate: symbol %s not found in no-filter response", symbol)
+		}
+	}
+
+	d := resp.Data[idx]
+	rate, err := strconv.ParseFloat(d.FundingRate, 64)
+	if err != nil {
+		return nil, fmt.Errorf("GetFundingRate parse %q: %w", d.FundingRate, err)
+	}
 	nextRate, _ := strconv.ParseFloat(d.NextFundRate, 64)
 
 	var nextFunding time.Time
@@ -603,11 +714,15 @@ func (a *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
 	var interval time.Duration
 	if h, err := strconv.Atoi(d.FundingRateInterval); err == nil && h > 0 {
 		interval = time.Duration(h) * time.Hour
-	} else {
+	} else if !noFilter {
 		interval, err = a.GetFundingInterval(symbol)
 		if err != nil || interval <= 0 {
 			interval = 8 * time.Hour
 		}
+	} else {
+		// Skip GetFundingInterval for non-ASCII symbols; that endpoint likely
+		// has the same HMAC issue. Use default 8h interval instead.
+		interval = 8 * time.Hour
 	}
 
 	fr := &exchange.FundingRate{
@@ -616,6 +731,9 @@ func (a *Adapter) GetFundingRate(symbol string) (*exchange.FundingRate, error) {
 		NextRate:    nextRate,
 		Interval:    interval,
 		NextFunding: nextFunding,
+	}
+	if fr.Symbol == "" {
+		fr.Symbol = symbol
 	}
 	if v, err := strconv.ParseFloat(d.MaxFundingRate, 64); err == nil {
 		fr.MaxRate = &v
@@ -1099,16 +1217,22 @@ var _ exchange.Exchange = (*Adapter)(nil)
 var _ exchange.TradingFeeProvider = (*Adapter)(nil)
 
 // GetUserTrades returns filled trades for a symbol since startTime.
-// Bitget endpoint: GET /api/v2/mix/order/fill-history
+// Bitget endpoint: GET /api/v2/mix/order/fills (symbol optional per docs).
+// For non-ASCII symbols the signed query omits `symbol` and filters locally
+// after response.
 func (b *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) ([]exchange.Trade, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 100 // Bitget max is 100
 	}
+	nonASCII := containsNonASCII(symbol)
 	params := map[string]string{
-		"symbol":      symbol,
 		"productType": "USDT-FUTURES",
 		"startTime":   strconv.FormatInt(startTime.UnixMilli(), 10),
+		"endTime":     strconv.FormatInt(time.Now().UnixMilli(), 10),
 		"limit":       strconv.Itoa(limit),
+	}
+	if !nonASCII {
+		params["symbol"] = symbol
 	}
 	body, err := b.client.Get("/api/v2/mix/order/fills", params)
 	if err != nil {
@@ -1117,6 +1241,7 @@ func (b *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 
 	var resp struct {
 		Code string `json:"code"`
+		Msg  string `json:"msg"`
 		Data struct {
 			FillList []struct {
 				TradeID    string `json:"tradeId"`
@@ -1136,9 +1261,15 @@ func (b *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 	if err := json.Unmarshal([]byte(body), &resp); err != nil {
 		return nil, fmt.Errorf("GetUserTrades unmarshal: %w", err)
 	}
+	if resp.Code != "" && resp.Code != "00000" {
+		return nil, &APIError{Code: resp.Code, Msg: resp.Msg}
+	}
 
 	trades := make([]exchange.Trade, 0, len(resp.Data.FillList))
 	for _, t := range resp.Data.FillList {
+		if nonASCII && !strings.EqualFold(t.Symbol, symbol) {
+			continue
+		}
 		price, _ := strconv.ParseFloat(t.Price, 64)
 		qty, _ := strconv.ParseFloat(t.BaseVolume, 64)
 		var fee float64
@@ -1169,7 +1300,13 @@ func (b *Adapter) GetUserTrades(symbol string, startTime time.Time, limit int) (
 }
 
 // GetFundingFees returns funding fee history for a symbol since the given time.
+// For non-ASCII symbols, falls back to the no-filter /account/bill endpoint and
+// paginates via the endId cursor (symbol in signed query would fail bitget HMAC).
 func (a *Adapter) GetFundingFees(symbol string, since time.Time) ([]exchange.FundingPayment, error) {
+	if containsNonASCII(symbol) {
+		return a.getFundingFeesViaNoFilter(symbol, since)
+	}
+
 	params := map[string]string{
 		"symbol":       symbol,
 		"productType":  "USDT-FUTURES",
@@ -1184,6 +1321,7 @@ func (a *Adapter) GetFundingFees(symbol string, since time.Time) ([]exchange.Fun
 
 	var resp struct {
 		Code string `json:"code"`
+		Msg  string `json:"msg"`
 		Data struct {
 			Bills []struct {
 				Amount string `json:"amount"`
@@ -1194,6 +1332,9 @@ func (a *Adapter) GetFundingFees(symbol string, since time.Time) ([]exchange.Fun
 	}
 	if err := json.Unmarshal([]byte(body), &resp); err != nil {
 		return nil, fmt.Errorf("GetFundingFees unmarshal: %w", err)
+	}
+	if resp.Code != "" && resp.Code != "00000" {
+		return nil, &APIError{Code: resp.Code, Msg: resp.Msg}
 	}
 
 	out := make([]exchange.FundingPayment, 0, len(resp.Data.Bills))
@@ -1212,13 +1353,99 @@ func (a *Adapter) GetFundingFees(symbol string, since time.Time) ([]exchange.Fun
 	return out, nil
 }
 
+// getFundingFeesViaNoFilter is the non-ASCII fallback for GetFundingFees.
+// Pages through /api/v2/mix/account/bill with the endId cursor because the
+// 100-row page limit would otherwise lose data on busy accounts.
+func (a *Adapter) getFundingFeesViaNoFilter(symbol string, since time.Time) ([]exchange.FundingPayment, error) {
+	out := make([]exchange.FundingPayment, 0)
+	var idLessThan string
+	endTime := time.Now().UnixMilli()
+	startTime := since.UnixMilli()
+	for {
+		params := map[string]string{
+			"productType":  "USDT-FUTURES",
+			"businessType": "contract_settle_fee",
+			"startTime":    strconv.FormatInt(startTime, 10),
+			"endTime":      strconv.FormatInt(endTime, 10),
+			"limit":        "100",
+		}
+		if idLessThan != "" {
+			params["idLessThan"] = idLessThan
+		}
+		body, err := a.client.Get("/api/v2/mix/account/bill", params)
+		if err != nil {
+			return nil, fmt.Errorf("GetFundingFees (no-filter page): %w", err)
+		}
+		var resp struct {
+			Code string `json:"code"`
+			Msg  string `json:"msg"`
+			Data struct {
+				EndID string `json:"endId"`
+				Bills []struct {
+					BillID string `json:"billId"`
+					Amount string `json:"amount"`
+					CTime  string `json:"cTime"`
+					Symbol string `json:"symbol"`
+				} `json:"bills"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(body), &resp); err != nil {
+			return nil, fmt.Errorf("GetFundingFees (no-filter) unmarshal: %w", err)
+		}
+		if resp.Code != "" && resp.Code != "00000" {
+			return nil, &APIError{Code: resp.Code, Msg: resp.Msg}
+		}
+		if len(resp.Data.Bills) == 0 {
+			break
+		}
+		var oldestCTime int64
+		for _, b := range resp.Data.Bills {
+			if !strings.EqualFold(b.Symbol, symbol) {
+				if ct, _ := strconv.ParseInt(b.CTime, 10, 64); ct < oldestCTime || oldestCTime == 0 {
+					oldestCTime = ct
+				}
+				continue
+			}
+			amt, _ := strconv.ParseFloat(b.Amount, 64)
+			ms, _ := strconv.ParseInt(b.CTime, 10, 64)
+			out = append(out, exchange.FundingPayment{Amount: amt, Time: time.UnixMilli(ms)})
+			if ms < oldestCTime || oldestCTime == 0 {
+				oldestCTime = ms
+			}
+		}
+		// Stop paginating once oldest returned bill is older than our since window.
+		if oldestCTime != 0 && oldestCTime < startTime {
+			break
+		}
+		if len(resp.Data.Bills) < 100 {
+			break
+		}
+		// Per bitget docs, use data.endId as next-page cursor. Fall back to last
+		// row's billId if endId is empty. Detect cursor deadlock.
+		nextCursor := strings.TrimSpace(resp.Data.EndID)
+		if nextCursor == "" {
+			nextCursor = strings.TrimSpace(resp.Data.Bills[len(resp.Data.Bills)-1].BillID)
+		}
+		if nextCursor == "" || nextCursor == idLessThan {
+			return nil, fmt.Errorf("GetFundingFees no-filter pagination stalled: cursor=%q rows=%d", idLessThan, len(resp.Data.Bills))
+		}
+		idLessThan = nextCursor
+	}
+	return out, nil
+}
+
 // GetClosePnL returns exchange-reported position-level PnL for recently closed positions.
+// Bitget /api/v2/mix/position/history-position accepts symbol optionally; for
+// non-ASCII symbols the signed query omits `symbol` and filters locally.
 func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.ClosePnL, error) {
+	nonASCII := containsNonASCII(symbol)
 	params := map[string]string{
-		"symbol":      symbol,
 		"productType": "USDT-FUTURES",
 		"startTime":   strconv.FormatInt(since.UnixMilli(), 10),
 		"limit":       "20",
+	}
+	if !nonASCII {
+		params["symbol"] = symbol
 	}
 	body, err := a.client.Get("/api/v2/mix/position/history-position", params)
 	if err != nil {
@@ -1227,8 +1454,10 @@ func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 
 	var resp struct {
 		Code string `json:"code"`
+		Msg  string `json:"msg"`
 		Data struct {
 			List []struct {
+				Symbol        string `json:"symbol"`
 				NetProfit     string `json:"netProfit"`
 				Pnl           string `json:"pnl"`
 				TotalFunding  string `json:"totalFunding"`
@@ -1245,9 +1474,15 @@ func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 	if err := json.Unmarshal([]byte(body), &resp); err != nil {
 		return nil, fmt.Errorf("GetClosePnL unmarshal: %w", err)
 	}
+	if resp.Code != "" && resp.Code != "00000" {
+		return nil, &APIError{Code: resp.Code, Msg: resp.Msg}
+	}
 
 	out := make([]exchange.ClosePnL, 0, len(resp.Data.List))
 	for _, r := range resp.Data.List {
+		if nonASCII && !strings.EqualFold(r.Symbol, symbol) {
+			continue
+		}
 		pricePnL, _ := strconv.ParseFloat(r.Pnl, 64)
 		openFee, _ := strconv.ParseFloat(r.OpenFee, 64)
 		closeFee, _ := strconv.ParseFloat(r.CloseFee, 64)
@@ -1380,14 +1615,21 @@ func (a *Adapter) CancelStopLoss(symbol, orderID string) error {
 }
 
 // CancelAllOrders cancels all open orders (regular + conditional/algo) for a symbol.
+// Surfaces both cancel errors joined via errors.Join so callers can log which
+// subset failed; previous HEAD silently discarded both errors.
 func (a *Adapter) CancelAllOrders(symbol string) error {
-	a.client.Post("/api/v2/mix/order/cancel-plan-order", map[string]string{
+	var errs []error
+	if _, err := a.client.Post("/api/v2/mix/order/cancel-plan-order", map[string]string{
 		"symbol": symbol, "productType": "USDT-FUTURES",
-	})
-	a.client.Post("/api/v2/mix/order/batch-cancel-orders", map[string]string{
+	}); err != nil {
+		errs = append(errs, fmt.Errorf("cancel plan orders: %w", err))
+	}
+	if _, err := a.client.Post("/api/v2/mix/order/batch-cancel-orders", map[string]string{
 		"symbol": symbol, "productType": "USDT-FUTURES",
-	})
-	return nil
+	}); err != nil {
+		errs = append(errs, fmt.Errorf("batch cancel orders: %w", err))
+	}
+	return errors.Join(errs...)
 }
 
 // EnsureOneWayMode sets the account to one-way position mode.

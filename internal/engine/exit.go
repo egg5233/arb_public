@@ -583,7 +583,12 @@ exitLoop:
 				continue
 			}
 			longConsecFails = 0
-			firstFilled, firstAvg = e.confirmFill(longExch, oid, pos.Symbol)
+			var firstCFErr error
+			firstFilled, firstAvg, firstCFErr = e.confirmFill(longExch, oid, pos.Symbol)
+			if firstCFErr != nil {
+				e.log.Warn("depth exit %s: first-leg (long sell) confirmFill unknown: %v — retrying next tick", pos.ID, firstCFErr)
+				continue
+			}
 			if firstFilled <= 0 {
 				continue
 			}
@@ -627,8 +632,11 @@ exitLoop:
 							ReduceOnly: true,
 						})
 						if topUpErr == nil {
-							topUpFilled, topUpAvg := e.confirmFill(longExch, topUpOID, pos.Symbol)
-							if topUpFilled > 0 {
+							topUpFilled, topUpAvg, topUpCFErr := e.confirmFill(longExch, topUpOID, pos.Symbol)
+							if topUpCFErr != nil {
+								e.log.Warn("depth exit %s: top-up confirmFill unknown on %s: %v",
+									pos.ID, pos.LongExchange, topUpCFErr)
+							} else if topUpFilled > 0 {
 								if topUpAvg > 0 {
 									longVWAPSum += topUpAvg * topUpFilled
 								}
@@ -668,7 +676,12 @@ exitLoop:
 				continue
 			}
 			shortConsecFails = 0
-			secondFilled, secondAvg = e.confirmFill(shortExch, oid2, pos.Symbol)
+			var secondCFErr error
+			secondFilled, secondAvg, secondCFErr = e.confirmFill(shortExch, oid2, pos.Symbol)
+			if secondCFErr != nil {
+				e.log.Warn("depth exit %s: second-leg (short buy) confirmFill unknown: %v — consolidator will reconcile",
+					pos.ID, secondCFErr)
+			}
 
 			closedShort += secondFilled
 			if secondFilled > 0 {
@@ -703,7 +716,12 @@ exitLoop:
 				continue
 			}
 			shortConsecFails = 0
-			firstFilled, firstAvg = e.confirmFill(shortExch, oid, pos.Symbol)
+			var firstCFErr error
+			firstFilled, firstAvg, firstCFErr = e.confirmFill(shortExch, oid, pos.Symbol)
+			if firstCFErr != nil {
+				e.log.Warn("depth exit %s: first-leg (short buy) confirmFill unknown: %v — retrying next tick", pos.ID, firstCFErr)
+				continue
+			}
 			if firstFilled <= 0 {
 				continue
 			}
@@ -747,8 +765,11 @@ exitLoop:
 							ReduceOnly: true,
 						})
 						if topUpErr == nil {
-							topUpFilled, topUpAvg := e.confirmFill(shortExch, topUpOID, pos.Symbol)
-							if topUpFilled > 0 {
+							topUpFilled, topUpAvg, topUpCFErr := e.confirmFill(shortExch, topUpOID, pos.Symbol)
+							if topUpCFErr != nil {
+								e.log.Warn("depth exit %s: top-up confirmFill unknown on %s: %v",
+									pos.ID, pos.ShortExchange, topUpCFErr)
+							} else if topUpFilled > 0 {
 								if topUpAvg > 0 {
 									shortVWAPSum += topUpAvg * topUpFilled
 								}
@@ -788,7 +809,12 @@ exitLoop:
 				continue
 			}
 			longConsecFails = 0
-			secondFilled, secondAvg = e.confirmFill(longExch, oid2, pos.Symbol)
+			var secondCFErr error
+			secondFilled, secondAvg, secondCFErr = e.confirmFill(longExch, oid2, pos.Symbol)
+			if secondCFErr != nil {
+				e.log.Warn("depth exit %s: second-leg (long sell) confirmFill unknown: %v — consolidator will reconcile",
+					pos.ID, secondCFErr)
+			}
 
 			closedLong += secondFilled
 			if secondFilled > 0 {
@@ -954,8 +980,12 @@ marketFallback:
 	if fullyFlat {
 		// Cancel orphan TP/SL/algo orders BEFORE marking closed — prevents race
 		// where a new entry re-uses the symbol and the async cancel wipes its orders.
-		longExch.CancelAllOrders(pos.Symbol)
-		shortExch.CancelAllOrders(pos.Symbol)
+		if err := longExch.CancelAllOrders(pos.Symbol); err != nil {
+			e.log.Warn("CancelAllOrders %s/%s (pos %s, fully-flat) failed: %v", longExch.Name(), pos.Symbol, pos.ID, err)
+		}
+		if err := shortExch.CancelAllOrders(pos.Symbol); err != nil {
+			e.log.Warn("CancelAllOrders %s/%s (pos %s, fully-flat) failed: %v", shortExch.Name(), pos.Symbol, pos.ID, err)
+		}
 
 		if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
 			fresh.RealizedPnL = realizedPnL
@@ -2088,8 +2118,12 @@ func (e *Engine) closePositionWithMode(pos *models.ArbitragePosition, emergency 
 	// Cancel orphan TP/SL/algo orders BEFORE phase-2 SavePosition — prevents
 	// race where a new entry re-uses the symbol and the async cancel wipes
 	// its orders. Order MUST stay before the predicate save.
-	longExch.CancelAllOrders(pos.Symbol)
-	shortExch.CancelAllOrders(pos.Symbol)
+	if err := longExch.CancelAllOrders(pos.Symbol); err != nil {
+		e.log.Warn("CancelAllOrders %s/%s (pos %s, pre-phase2-save) failed: %v", longExch.Name(), pos.Symbol, pos.ID, err)
+	}
+	if err := shortExch.CancelAllOrders(pos.Symbol); err != nil {
+		e.log.Warn("CancelAllOrders %s/%s (pos %s, pre-phase2-save) failed: %v", shortExch.Name(), pos.Symbol, pos.ID, err)
+	}
 
 	// Phase 2: persist Closed via predicate (Fix F). Reject if another path
 	// (consolidator) already closed it. Strict mirror of the previous
@@ -2296,10 +2330,20 @@ func (e *Engine) executeSmartClose(pos *models.ArbitragePosition, longExch, shor
 	// Confirm fills (WS + REST, 5s timeout).
 	var longFilled, longAvg, shortFilled, shortAvg float64
 	if longRes.orderID != "" {
-		longFilled, longAvg = e.confirmFill(longExch, longRes.orderID, pos.Symbol)
+		var lcfErr error
+		longFilled, longAvg, lcfErr = e.confirmFill(longExch, longRes.orderID, pos.Symbol)
+		if lcfErr != nil {
+			e.log.Warn("IOC close: long confirmFill %s unknown: %v — consolidator will reconcile",
+				longRes.orderID, lcfErr)
+		}
 	}
 	if shortRes.orderID != "" {
-		shortFilled, shortAvg = e.confirmFill(shortExch, shortRes.orderID, pos.Symbol)
+		var scfErr error
+		shortFilled, shortAvg, scfErr = e.confirmFill(shortExch, shortRes.orderID, pos.Symbol)
+		if scfErr != nil {
+			e.log.Warn("IOC close: short confirmFill %s unknown: %v — consolidator will reconcile",
+				shortRes.orderID, scfErr)
+		}
 	}
 
 	e.log.Info("IOC close fills for %s: long=%.6f@%.6f short=%.6f@%.6f",
@@ -2816,7 +2860,12 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 		return
 	}
 
-	openFilled, openAvg := e.confirmFill(newExch, openOID, pos.Symbol)
+	openFilled, openAvg, openCFErr := e.confirmFill(newExch, openOID, pos.Symbol)
+	if openCFErr != nil {
+		e.log.Error("rotation: open confirmFill %s unknown on %s: %v — aborting, consolidator will reconcile",
+			openOID, newExchName, openCFErr)
+		return
+	}
 	e.log.Info("rotation: open filled %.6f@%.6f on %s", openFilled, openAvg, newExchName)
 
 	if openFilled <= 0 {
@@ -2881,7 +2930,11 @@ func (e *Engine) rotateLeg(pos *models.ArbitragePosition, opp models.Opportunity
 	}
 
 	// Cancel orphan TP/SL/algo orders on old exchange after rotation close
-	go oldExch.CancelAllOrders(pos.Symbol)
+	go func() {
+		if err := oldExch.CancelAllOrders(pos.Symbol); err != nil {
+			e.log.Warn("CancelAllOrders %s/%s (pos %s, post-rotation) failed: %v", oldExch.Name(), pos.Symbol, pos.ID, err)
+		}
+	}()
 
 	// Verify old leg is actually flat before updating position record.
 	time.Sleep(500 * time.Millisecond)
@@ -3449,7 +3502,12 @@ func (e *Engine) closeFullyWithRetryPriced(ctx context.Context, exch exchange.Ex
 		}
 		e.ownOrders.Store(exch.Name()+":"+oid, struct{}{})
 
-		filled, avg := e.confirmFill(exch, oid, symbol)
+		filled, avg, cfErr := e.confirmFill(exch, oid, symbol)
+		if cfErr != nil {
+			e.log.Warn("closeFullyWithRetry %s %s attempt %d: confirmFill unknown: %v — retrying next attempt",
+				exch.Name(), symbol, attempt+1, cfErr)
+			continue
+		}
 		remaining -= filled
 		totalFilled += filled
 		if avg > 0 {

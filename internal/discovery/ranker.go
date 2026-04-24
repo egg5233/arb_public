@@ -64,7 +64,8 @@ func (s *Scanner) RankOpportunities(loris *models.LorisResponse) []models.Opport
 
 	for _, baseSym := range loris.Symbols {
 		// Loris uses bare symbols (e.g. "BTC"); exchange contracts use "BTCUSDT".
-		symbol := strings.ToUpper(baseSym) + "USDT"
+		upper := strings.ToUpper(baseSym)
+		symbol := upper + "USDT"
 
 		// Step 1: Collect and normalize rates to bps-per-hour for supported exchanges.
 		var rates []exRate

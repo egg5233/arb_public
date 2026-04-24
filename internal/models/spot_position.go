@@ -59,6 +59,7 @@ type SpotFuturesPosition struct {
 	PeakPriceMovePct       float64    `json:"peak_price_move_pct"`
 	MarginUtilizationPct   float64    `json:"margin_utilization_pct"`
 	PendingEntryOrderID    string     `json:"pending_entry_order_id,omitempty"`     // accepted spot entry order awaiting confirmation / hedge completion
+	PendingFuturesEntryOrderID string `json:"pending_futures_entry_order_id,omitempty"` // accepted futures entry order awaiting confirmation after spot leg already confirmed (e.g. bitget client error on fill query)
 	SpotExitFilledQty      float64    `json:"spot_exit_filled_qty,omitempty"`       // cumulative confirmed spot exit quantity across retries / partial IOC fills
 	SpotExitFilled         bool       `json:"spot_exit_filled,omitempty"`           // true once the entire spot exit quantity is confirmed flat
 	PendingSpotExitOrderID string     `json:"pending_spot_exit_order_id,omitempty"` // accepted spot exit order being reconciled; prevents duplicate close orders on retry
