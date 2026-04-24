@@ -276,6 +276,7 @@ type Config struct {
 	PriceGapKlineStalenessSec    int                        // D-22 default 90 (PG-RISK-02)
 	PriceGapPollIntervalSec      int                        // D-22 default 30 (D-05)
 	PriceGapCandidates           []models.PriceGapCandidate // D-22, PG-05
+	PriceGapDebugLog             bool                       // D-09-gap1 default false; gates non-fire reason logging in tracker.runTick (Phase 9 gap-closure Gap #1)
 }
 
 // ---------- Nested JSON config structs ----------
@@ -314,6 +315,7 @@ type jsonPriceGap struct {
 	KlineStalenessSec    *int                       `json:"kline_staleness_sec,omitempty"`
 	PollIntervalSec      *int                       `json:"poll_interval_sec,omitempty"`
 	Candidates           []models.PriceGapCandidate `json:"candidates,omitempty"`
+	DebugLog             *bool                      `json:"debug_log,omitempty"` // D-09-gap1: gates non-fire reason logging in tracker.runTick
 }
 
 type jsonAnalytics struct {
@@ -1338,6 +1340,9 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if len(pg.Candidates) > 0 {
 			c.PriceGapCandidates = pg.Candidates
 		}
+		if pg.DebugLog != nil {
+			c.PriceGapDebugLog = *pg.DebugLog
+		}
 	}
 
 	// Telegram
@@ -1752,6 +1757,7 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	priceGap := getMap(raw, "price_gap")
 	priceGap["enabled"] = c.PriceGapEnabled
 	priceGap["paper_mode"] = c.PriceGapPaperMode
+	priceGap["debug_log"] = c.PriceGapDebugLog // D-09-gap1 (Phase 9 gap-closure Gap #1)
 
 	out, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {

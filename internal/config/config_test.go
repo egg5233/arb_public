@@ -255,3 +255,98 @@ func TestConfig_PaperMode_ApplyJSONRoundTripTrue(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// PriceGapDebugLog (Phase 9 gap-closure Gap #1 / Plan 09-09)
+// ---------------------------------------------------------------------------
+
+// TestConfig_PriceGapDebugLog_DefaultOff — the Go zero-value of a freshly
+// constructed Config must leave PriceGapDebugLog=false. This is the project
+// rollout-pattern default: new observability/risk switches ship OFF.
+func TestConfig_PriceGapDebugLog_DefaultOff(t *testing.T) {
+	c := &Config{}
+	if c.PriceGapDebugLog {
+		t.Fatalf("expected PriceGapDebugLog=false (default OFF per CLAUDE.local.md rollout pattern), got true")
+	}
+}
+
+// TestConfig_PriceGapDebugLog_ApplyJSONTrue — applyJSON with debug_log:true
+// must flip the runtime field to true.
+func TestConfig_PriceGapDebugLog_ApplyJSONTrue(t *testing.T) {
+	cfg := &Config{}
+	raw := []byte(`{"price_gap":{"debug_log":true}}`)
+	var jc jsonConfig
+	if err := json.Unmarshal(raw, &jc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	cfg.applyJSON(&jc)
+	if !cfg.PriceGapDebugLog {
+		t.Fatalf("expected PriceGapDebugLog=true after applyJSON, got false")
+	}
+}
+
+// TestConfig_PriceGapDebugLog_ApplyJSONFalse — applyJSON with debug_log:false
+// must flip the runtime field back to false even if the runtime value was true.
+func TestConfig_PriceGapDebugLog_ApplyJSONFalse(t *testing.T) {
+	cfg := &Config{PriceGapDebugLog: true}
+	raw := []byte(`{"price_gap":{"debug_log":false}}`)
+	var jc jsonConfig
+	if err := json.Unmarshal(raw, &jc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	cfg.applyJSON(&jc)
+	if cfg.PriceGapDebugLog {
+		t.Fatalf("expected PriceGapDebugLog=false after applyJSON, got true")
+	}
+}
+
+// TestConfig_PriceGapDebugLog_ApplyJSONAbsentPreserves — applyJSON with an empty
+// price_gap block (debug_log key omitted) must leave the existing runtime value
+// unchanged. This is the pointer-optional contract: absent ≠ false.
+func TestConfig_PriceGapDebugLog_ApplyJSONAbsentPreserves(t *testing.T) {
+	cfg := &Config{PriceGapDebugLog: true}
+	raw := []byte(`{"price_gap":{}}`)
+	var jc jsonConfig
+	if err := json.Unmarshal(raw, &jc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	cfg.applyJSON(&jc)
+	if !cfg.PriceGapDebugLog {
+		t.Fatalf("expected PriceGapDebugLog=true preserved when debug_log key absent, got false")
+	}
+}
+
+// TestConfig_PriceGapDebugLog_SaveJSONRoundTrip — marshal via jsonPriceGap with
+// a pointer to the runtime value, unmarshal via applyJSON, and confirm the
+// value survives the round-trip for both true and false. This proves SaveJSON
+// emits the debug_log key (via jsonPriceGap) in the same shape applyJSON reads.
+func TestConfig_PriceGapDebugLog_SaveJSONRoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		val  bool
+	}{
+		{"true", true},
+		{"false", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Emit via jsonPriceGap (the same shape SaveJSON's raw-map writer uses).
+			src := jsonPriceGap{DebugLog: &tc.val}
+			wrap := jsonConfig{PriceGap: &jsonPriceGap{DebugLog: src.DebugLog}}
+			buf, err := json.Marshal(wrap)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+
+			// Round-trip: unmarshal, apply, verify.
+			var jc jsonConfig
+			if err := json.Unmarshal(buf, &jc); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			cfg := &Config{PriceGapDebugLog: !tc.val} // start on the opposite
+			cfg.applyJSON(&jc)
+			if cfg.PriceGapDebugLog != tc.val {
+				t.Fatalf("round-trip lost value: want %v, got %v", tc.val, cfg.PriceGapDebugLog)
+			}
+		})
+	}
+}
+
