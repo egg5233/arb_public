@@ -1,10 +1,58 @@
 # PLAN: Per-Leg Tier 1 Skip for Exchanges Without CloseSize
 
-Version: v6
+Version: v7
 Date: 2026-04-24
 Status: DRAFT
 
 ## Changelog
+- **v7** (2026-04-24): Independent Codex review — NEEDS-REVISION 3 items (found
+  what the normal review loop missed). Fixed:
+  - **Blocker #1 — `reconcileRotationPnL` silently broken by attempt gate**:
+    `reconcileRotationPnL` (`exit.go:3246`) calls `tryReconcilePnL(fresh, 1)`
+    exactly once with `attempt=1` and no retry wrapper. v6's Phase 3
+    attempt gate rejects every Binance-leg partial path on attempt 1, so
+    every rotated position whose current leg uses Binance would fail to
+    refresh `RealizedPnL` / history when rotation PnL arrives. v7 fixes by
+    having `reconcileRotationPnL` pass `attempt=2` (rotation reconciliation
+    already happens after an extended delay — rotation itself takes seconds,
+    and this call runs after mutex release + GetPosition re-read, so by
+    wall-clock time the Binance `/income` has had ample time to finalize
+    across all three income types). Plan now lists `reconcileRotationPnL`
+    as **modified** rather than unchanged.
+  - **Blocker #2 — Tier 1 bypass scoped too broadly**: v6 keyed per-leg
+    enforcement off the runtime signal `longAgg.CloseSize > 0`. Codex
+    pointed out that Binance is currently the only adapter that omits
+    `CloseSize` (`adapter.go:1165-1172`); all others populate it
+    (bybit/gateio/okx/bitget/bingx). A future non-Binance parse bug that
+    zeros `CloseSize` would silently downgrade that leg out of Tier 1
+    protection, contradicting the "pure non-Binance pairs: zero risk"
+    claim. v7 mitigates by **explicit exchange-capability check**: skip
+    Tier 1 enforcement on a leg only when the exchange is known to not
+    expose CloseSize (currently hardcoded set `{"binance"}`, easy to extend
+    when adapter semantics change). Any non-Binance leg with
+    `CloseSize == 0` is treated as incomplete exchange data (existing
+    behavior) — returns false to retry, with an elevated `ERROR`-level log
+    so the anomaly is visible to ops. Adds a new exported helper
+    `exposesCloseSize(exchName string) bool` in `exit.go` near the
+    aggregator.
+  - **Blocker #3 — Test coverage missing wrapper + rotation paths**:
+    v6 tests only drove `tryReconcilePnL` at attempts 1 and 2 directly. The
+    safety argument for the attempt gate depends on the wrapper
+    `reconcilePnL`'s real retry timing (2s presleep + 5s/15s/30s delays,
+    `exit.go:1099-1123`) and the rotation follow-up path. v7 adds two
+    wrapper-level tests (M, N) using a deterministic time-mock or
+    patched delay-override so tests don't actually sleep 52s:
+    - `TestReconcilePnL_Wrapper_BinanceLong_RetryChainConverges` (M): feeds
+      a Binance-leg position through `reconcilePnL`, asserts that attempt
+      1 fails (attempt gate), attempt 2 succeeds, final history has
+      breakdown populated, 5s/15s/30s retry scaffolding invoked (verified
+      via override on the retry delays).
+    - `TestReconcileRotationPnL_BinanceLeg_CompletesAfterRotation` (N):
+      builds a rotated closed position with a Binance current leg, calls
+      `reconcileRotationPnL`, asserts `tryReconcilePnL(fresh, 2)` is
+      actually invoked (the v7 attempt-parameter fix) and that the
+      history entry has the rotation PnL plus post-rotation per-leg
+      breakdown.
 - **v6** (2026-04-24): Codex review round 5 — NEEDS-REVISION 1 item (test/design
   consistency). Fixed:
   - Cases C, E, G in the Layer 1 integration test table listed `true` as the
@@ -265,15 +313,41 @@ useTier1 := pos.LongCloseSize > 0 && pos.ShortCloseSize > 0 &&
 longTier1Enforced := false
 shortTier1Enforced := false
 
+// exposesCloseSize declares which exchanges populate CloseSize in their
+// GetClosePnL response. Binance is the only current adapter that omits it
+// (/fapi/v1/income has no qty field). When an exchange NOT in this deny-list
+// returns CloseSize=0, that is treated as exchange/parse anomaly — retry and
+// log at ERROR level so ops can investigate.
+exposesCloseSize := func(name string) bool {
+    // Only Binance is exempt. Kept as an inline closure near the gate so the
+    // reviewer sees the scope at the same place as the gate logic.
+    return name != "binance"
+}
+
 if useTier1 {
     longExpected := pos.LongCloseSize + sumSiblingCloseSize(longSiblings, "long")
     shortExpected := pos.ShortCloseSize + sumSiblingCloseSize(shortSiblings, "short")
 
-    // Per-leg enforcement: only enforce where the aggregate reports size.
-    // CloseSize=0 from the aggregate means the exchange's close-PnL endpoint
-    // does not expose per-close size (Binance /fapi/v1/income).
-    longTier1Enforced = longAgg.CloseSize > 0
-    shortTier1Enforced = shortAgg.CloseSize > 0
+    // Detect non-Binance leg with CloseSize==0 (exchange anomaly).
+    // Handled as incomplete data regardless of aggregate contents; retry.
+    if exposesCloseSize(pos.LongExchange) && longAgg.CloseSize == 0 {
+        e.log.Error("reconcile %s [attempt %d]: long exchange %s expected to expose CloseSize but got 0 — retrying as incomplete (longAgg=%+v)",
+            pos.ID, attempt, pos.LongExchange, longAgg)
+        return false
+    }
+    if exposesCloseSize(pos.ShortExchange) && shortAgg.CloseSize == 0 {
+        e.log.Error("reconcile %s [attempt %d]: short exchange %s expected to expose CloseSize but got 0 — retrying as incomplete (shortAgg=%+v)",
+            pos.ID, attempt, pos.ShortExchange, shortAgg)
+        return false
+    }
+
+    // Per-leg enforcement: enforce where either the aggregate reports size OR
+    // the exchange is known to expose CloseSize (i.e. runtime zero is an
+    // anomaly already handled above — so here, if exposesCloseSize=true, we
+    // must have CloseSize>0). Skip enforcement only when the exchange is in
+    // the exempt deny-list (currently Binance).
+    longTier1Enforced = exposesCloseSize(pos.LongExchange)
+    shortTier1Enforced = exposesCloseSize(pos.ShortExchange)
 
     longIncomplete := longTier1Enforced && longAgg.CloseSize < longExpected-sizeEpsilon
     shortIncomplete := shortTier1Enforced && shortAgg.CloseSize < shortExpected-sizeEpsilon
@@ -394,8 +468,17 @@ if !useTier1 {
 - Consolidator path (`consolidate.go`) unchanged — it does not use the Tier 1
   gate and was already writing breakdown fields correctly for its own close
   path.
-- `reconcileRotationPnL` (`exit.go:3167-3185` per Codex review) unchanged — it
-  already accepts empty-Side records without a Tier 1 size gate.
+
+**Also modified (v7):**
+- `reconcileRotationPnL` at `exit.go:3246`: change the single
+  `tryReconcilePnL(fresh, 1)` call to `tryReconcilePnL(fresh, 2)`. Rationale:
+  rotation PnL reconciliation runs after rotation execution completes and
+  after a mutex round-trip — by wall-clock time, all three Binance `/income`
+  income types have had ample time to post. Passing attempt=2 bypasses the
+  Phase 3 attempt gate while preserving all other guards (empty-aggregate,
+  notional). Without this change, every rotated Binance-leg position would
+  fail rotation reconcile silently under v7.
+- One-line change with a comment explaining why attempt=2 is safe here.
 
 ### Change 2: Regression tests
 
@@ -454,6 +537,8 @@ state from `e.db.GetHistory` / `e.db.GetPosition`.
 | J | `TestTryReconcile_PreMigration_BinanceLong`            | same records as C but `pos.LongCloseSize=0, pos.ShortCloseSize=0` (pre-migration) | ... | `true` on attempt 1 (flows to existing Tier 2/3; `!useTier1` path unaffected by attempt gate) | (not tested) | proves `!useTier1` branch still works; this change does not affect pre-migration path |
 | K | `TestTryReconcile_BinanceLong_AttemptGate` (v4)        | `[{Side:"", CloseSize:0, PricePnL:-55, Fees:-0.4, Funding:1.2}]` (settled)  | `[{Side:"short", CloseSize:100, ...}]` (settled) | `false`           | `true`             | dedicated attempt-gate regression — the gate is the reason C/E/G/I must not accept on attempt 1 |
 | L | `TestTryReconcile_BinanceLong_CommissionOnlySnapshot_ResidualHazard` (v5) | `[{Side:"", CloseSize:0, PricePnL:0, Fees:-0.4, Funding:0}]` (mid-settlement: COMMISSION-only, persists across attempts)  | settled | `false` (attempt gate) | `true` if `|diff| <= max(close-notional)` (residual hazard path); test parameterizes the notional and diff so that the accept path is deterministic | **Pins the residual hazard explicitly.** The test documents the known design gap: empty-aggregate guard passes (Fees non-zero), attempt gate rejects attempt 1, attempt 2 accepts if `|diff|` fits notional. Asserts log lines: `Tier 1 partial path — deferring acceptance` at attempt 1 AND `Tier 1 partial accepted` at attempt 2. VPS ops can grep for the latter to monitor mid-settlement acceptances; if production shows this mode firing on actually-unsettled data, the follow-up stability-check mitigation (documented in Risk) is promoted. |
+| M | `TestReconcilePnL_Wrapper_BinanceLong_RetryChainConverges` (v7)            | Binance-leg position, settled `/income` data returned at every attempt | settled                                            | (wrapper-level test; asserts end-state, not per-attempt return) | After `reconcilePnL(pos)` completes, history entry has per-leg breakdown populated and `HasReconciled=true`. Test patches the async retry delays (via internal `reconcilePnLDelays` override or similar) to 1ms so the test doesn't actually sleep 52s. Asserts `tryReconcilePnL` was invoked at least twice (attempt 1 rejected by gate, attempt 2 accepted). Proves the wrapper's retry chain works end-to-end, not just the inner function. |
+| N | `TestReconcileRotationPnL_BinanceLeg_CompletesAfterRotation` (v7)          | Binance-leg closed rotated position with non-empty `RotationHistory` and nil `RotationRecord.PnL` on one entry | settled                                | (wrapper-level test; asserts end-state) | After `reconcileRotationPnL` completes, `RotationHistory[i].PnL` is set AND the subsequent `tryReconcilePnL(fresh, 2)` call (per v7 fix at exit.go:3246) succeeds and updates history breakdown. Asserts the attempt parameter passed is 2 (mock or spy on `tryReconcilePnL` call). Proves the v7 rotation fix unblocks Binance-leg rotated positions. |
 
 Each integration test asserts:
 1. `tryReconcilePnL` return value matches expectation at attempt 1 (always) and
