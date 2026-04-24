@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Multi-Strategy Expansion
-status: verifying
-stopped_at: Completed 09-08 with UAT gap findings; verifier expected to return gaps_found
-last_updated: "2026-04-23T00:55:49.185Z"
-last_activity: 2026-04-23
+status: executing
+stopped_at: Completed 09-09 gap-closure (VERSION 0.34.2)
+last_updated: "2026-04-24T05:47:24.522Z"
+last_activity: 2026-04-24
 progress:
   total_phases: 2
-  completed_phases: 2
-  total_plans: 16
-  completed_plans: 16
-  percent: 100
+  completed_phases: 1
+  total_plans: 19
+  completed_plans: 17
+  percent: 89
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-04-21 after v1.0 shipped)
 ## Current Position
 
 Phase: 09 (price-gap-dashboard-paper-live-operations) — EXECUTING
-Plan: 8 of 8
-Status: Phase complete — ready for verification
-Last activity: 2026-04-23
+Plan: 2 of 11
+Status: Ready to execute
+Last activity: 2026-04-24
 
 v1.0 shipped: 7 phases, 21 plans, 381 commits over 30 days (2026-03-23 → 2026-04-21). Audit: tech_debt — documentation/verification gaps carried forward as v2.0 backlog (DEBT-01..03, deferred).
 
@@ -88,6 +88,7 @@ Progress (v2.0): [          ] 0%
 | Phase 09 P06 | ~40 min | 2 tasks | 10 files |
 | Phase 09 P07 | ~35min | 2 tasks | 5 files |
 | Phase 09 P08 | 30min | 3 tasks | 5 files |
+| Phase 09 P09-09 | 25min | 3 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -164,6 +165,7 @@ v1.0 decisions below (retained for reference):
 - [Phase 09]: PG-VAL-02 rolling metrics aggregator is a PURE function with caller-supplied clock; cumulative 24h/7d/30d windows; handler (not library) pads zero-activity rows from cfg.PriceGapCandidates
 - [Phase 09]: D-24 simplification confirmed: pg:history alone suffices for metrics — no pg:slippage:* read path introduced (Plan 09-01 D-23 bridge stamped Modeled/RealizedSlipBps onto every history row)
 - [Phase 09]: Plan 06 aligned risk_gate.go Reason strings with Plan 04 Telegram allowlist; per_position_cap gate gets no Telegram alert by design
+- [Phase 09]: Gap-closure #1: rate-limited non-fire reason logger surfaces detector.Reason under cfg.PriceGapDebugLog (default OFF); 60s cooldown per (symbol, reason); .Info level for journalctl visibility
 
 ### Pending Todos
 
@@ -188,7 +190,7 @@ None yet. Next action: `/gsd-plan-phase 8` to decompose Phase 8 into executable 
 
 ## Session Continuity
 
-Last session: 2026-04-23T00:55:40.807Z
-Stopped at: Completed 09-08 with UAT gap findings; verifier expected to return gaps_found
+Last session: 2026-04-24T05:47:18.649Z
+Stopped at: Completed 09-09 gap-closure (VERSION 0.34.2)
 Resume file: None
 Next command: `/gsd-plan-phase 8`
