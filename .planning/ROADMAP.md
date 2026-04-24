@@ -81,7 +81,7 @@ Seed input: `/tmp/phase0-pricegap/STRATEGY_DESIGN.md` (§3.5 candidate shortlist
   - [x] 09-07-PLAN.md — PriceGap.tsx page + App.tsx nav + i18n lockstep per 09-UI-SPEC.md (PG-OPS-01, -02, -03, PG-VAL-02)
   - [x] 09-08-PLAN.md — Paper→live cutover integration test + UAT checklist + VERSION/CHANGELOG bump (all PG-OPS-0X, PG-VAL-0X)
   - [x] 09-09-PLAN.md — Gap-closure #1: PriceGapDebugLog flag + rate-limited non-fire reason logger + dashboard toggle (PG-OPS-01, -02, -03, -05, PG-VAL-01, -02)
-  - [ ] 09-10-PLAN.md — Gap-closure #2: Tracker.Start() subscribes candidates on both legs + 15s BBO liveness assertion (PG-OPS-02, -03, -04, -05, PG-VAL-01, -02)
+  - [x] 09-10-PLAN.md — Gap-closure #2: Tracker.Start() subscribes candidates on both legs + 15s BBO liveness assertion (PG-OPS-02, -03, -04, -05, PG-VAL-01, -02)
   - [ ] 09-11-PLAN.md — Post-fix UAT re-walk checkpoints (14 rows + PG-OPS-01 Redis parity + a11y) (PG-OPS-01, -02, -03, -05, PG-VAL-01, -02)
 **UI hint**: yes
 

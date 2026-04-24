@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.34.3] - 2026-04-24
+
+### Fixed
+
+- **Phase 9 Verification Gap #2 closed** — `Tracker.Start()` now fans out `SubscribeSymbol` on both leg exchanges for every `cfg.PriceGapCandidates` entry before `rehydrate()` and the first detection tick (`internal/pricegaptrader/tracker.go`). Previously `pkg/exchange.SubscribeSymbol` had zero callers in `internal/pricegaptrader/` or `cmd/main.go`, so pricegap candidates only received BBO when they coincidentally overlapped the perp-perp funding-rate scanner's subscription universe. Any candidate outside that overlap (e.g. VICUSDT) silently produced no BBO and `detectOnce` returned `sample_error` — which Gap #1 previously hid entirely. Fail-soft per `engine.go:4675-4676`: missing exchange key or `SubscribeSymbol` returning false emits a WARN and the loop continues.
+
+### Added
+
+- **Startup BBO-liveness assertion (fail-loud diagnostic)** — `assertBBOLiveness()` goroutine launched from `Start()`. 15s after startup, every configured candidate leg is probed via `GetBBO`; any `ok=false` or zero-price BBO emits a `pricegap: BBO NOT LIVE` WARN naming `(symbol, exchange, leg)`. Diagnostic beacon only — does not retry or abort. Respects `stopCh` so shutdown during the grace window is clean. Tracked via `wg` so `Stop()` blocks until it exits.
+- **Unit tests** — `internal/pricegaptrader/tracker_subscribe_test.go` (10 tests). Task 1 fan-out: exact per-(leg, symbol) call counts, unknown-exchange fail-soft, SubscribeSymbol-false fail-soft, empty-candidate no-op, restart idempotency, same-exchange-both-legs edge case, WARN-message content asserted via `utils.Subscribe()` log capture. Task 2 BBO liveness: all-live silence, dead-leg WARN content, Stop-before-grace wg.Wait completes within 2s (goroutine leak guard under `-race`). Extends `stubExchange` in `fakes_test.go` with `subs map[string]int` counter + optional `subscribeFn` override.
+
+### Boundary
+
+- Option A clean boundary preserved (09-VERIFICATION.md) — subscription lifecycle lives inside `Tracker`; `cmd/main.go` unchanged. `internal/engine` and `internal/spotengine` not imported.
+
 ## [0.34.2] - 2026-04-24
 
 ### Fixed
