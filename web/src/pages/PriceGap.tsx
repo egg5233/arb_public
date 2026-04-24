@@ -58,6 +58,7 @@ interface CandidateMetrics {
 interface PriceGapState {
   enabled: boolean;
   paper_mode: boolean;
+  debug_log: boolean; // Phase 9 gap-closure Gap #1 (Plan 09-09): rate-limited non-fire logger gate
   budget: number;
   candidates: PriceGapCandidate[];
   active_positions: PriceGapPosition[] | null;
@@ -213,6 +214,7 @@ const PriceGap: FC = () => {
   const [seedError, setSeedError] = useState<string | null>(null);
   const [enabled, setEnabled] = useState(false);
   const [paperMode, setPaperMode] = useState(false);
+  const [debugLog, setDebugLog] = useState(false); // Phase 9 gap-closure Gap #1 (Plan 09-09)
   const [budget, setBudget] = useState(0);
   const [candidates, setCandidates] = useState<PriceGapCandidate[]>([]);
   const [activePositions, setActivePositions] = useState<PriceGapPosition[]>([]);
@@ -246,6 +248,7 @@ const PriceGap: FC = () => {
       const d = body.data;
       setEnabled(d.enabled);
       setPaperMode(d.paper_mode);
+      setDebugLog(d.debug_log || false);
       setBudget(d.budget || 0);
       setCandidates(d.candidates || []);
       setActivePositions(d.active_positions || []);
@@ -348,6 +351,24 @@ const PriceGap: FC = () => {
       }));
     }
   }, [paperMode, postConfig, t]);
+
+  // Phase 9 gap-closure Gap #1 (Plan 09-09): debug-log toggle.
+  // POSTs the nested price_gap.debug_log form — the flat shortcut used for
+  // paper_mode is intentionally not introduced here; debug_log is the only
+  // price-gap flag added post-Phase-9 that the handler accepts nested only.
+  const toggleDebugLog = useCallback(async () => {
+    const next = !debugLog;
+    setDebugLog(next);
+    setToggleError(null);
+    try {
+      await postConfig({ price_gap: { debug_log: next } });
+    } catch (err) {
+      setDebugLog(!next);
+      setToggleError(replaceTokens(t('pricegap.err.toggleFailed'), {
+        error: err instanceof Error ? err.message : String(err),
+      }));
+    }
+  }, [debugLog, postConfig, t]);
 
   // ── Candidate disable/enable ────────────────────────────────────────────
 
@@ -559,6 +580,23 @@ const PriceGap: FC = () => {
               >
                 {paperMode ? t('pricegap.paperOn') : t('pricegap.liveOn')}
               </span>
+            </label>
+            {/* Phase 9 gap-closure Gap #1 (Plan 09-09) — debug-log toggle.
+                Amber tint when ON signals "diagnostic logging active". */}
+            <label
+              className={`flex items-center gap-2 text-xs cursor-pointer px-2 py-1 rounded ${
+                debugLog ? 'bg-amber-500/15 text-amber-400' : 'text-gray-300'
+              }`}
+              title={t('pricegap.debugLogTooltip')}
+            >
+              <input
+                type="checkbox"
+                checked={debugLog}
+                onChange={toggleDebugLog}
+                aria-label={t('pricegap.debugLog')}
+                className="h-3 w-3"
+              />
+              <span className="font-bold">{t('pricegap.debugLog')}</span>
             </label>
           </div>
         </div>

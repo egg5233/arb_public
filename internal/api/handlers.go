@@ -765,9 +765,12 @@ type configUpdate struct {
 
 // priceGapUpdate mirrors the "price_gap" block of /api/config POST bodies.
 // Phase 9 D-12: PaperMode is the dashboard-writable live/paper toggle.
+// Phase 9 gap-closure (Plan 09-09): DebugLog gates the rate-limited
+// non-fire reason logger in tracker.runTick.
 type priceGapUpdate struct {
 	Enabled   *bool `json:"enabled"`
 	PaperMode *bool `json:"paper_mode"`
+	DebugLog  *bool `json:"debug_log"`
 }
 
 type allocationUpdate struct {
@@ -1566,6 +1569,9 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if pg.PaperMode != nil {
 			s.cfg.PriceGapPaperMode = *pg.PaperMode
+		}
+		if pg.DebugLog != nil {
+			s.cfg.PriceGapDebugLog = *pg.DebugLog
 		}
 	}
 	if upd.PriceGapPaperMode != nil && (upd.PriceGap == nil || upd.PriceGap.PaperMode == nil) {

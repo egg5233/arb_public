@@ -47,6 +47,7 @@ type priceGapCandidateView struct {
 type priceGapStateResponse struct {
 	Enabled         bool                              `json:"enabled"`
 	PaperMode       bool                              `json:"paper_mode"`
+	DebugLog        bool                              `json:"debug_log"` // Phase 9 gap-closure Gap #1 (Plan 09-09)
 	Budget          float64                           `json:"budget"`
 	Candidates      []priceGapCandidateView           `json:"candidates"`
 	ActivePositions []*models.PriceGapPosition        `json:"active_positions"`
@@ -114,6 +115,7 @@ func (s *Server) handlePriceGapState(w http.ResponseWriter, r *http.Request) {
 	resp := priceGapStateResponse{
 		Enabled:         s.cfg.PriceGapEnabled,
 		PaperMode:       s.cfg.PriceGapPaperMode,
+		DebugLog:        s.cfg.PriceGapDebugLog,
 		Budget:          s.cfg.PriceGapBudget,
 		Candidates:      candidates,
 		ActivePositions: active,

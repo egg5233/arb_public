@@ -766,6 +766,8 @@ const zhTW: Record<TranslationKey, string> = {
   'pricegap.paperModeTooltip': '啟用時，新開倉為模擬交易。現有持倉保留原始模式。',
   'pricegap.paperOn': '模擬',
   'pricegap.liveOn': '實盤',
+  'pricegap.debugLog': '偵錯記錄',
+  'pricegap.debugLogTooltip': '開啟後，追蹤器會記錄每個候選未觸發的原因 (sample_error、insufficient_persistence、stale_bbo)。每個（候選, 原因）每 60 秒最多一筆。會保存到 config.json。',
   'pricegap.budgetStat': '預算：已用 ${used} / ${total}',
   'pricegap.openCount': '持倉：{n}',
 

@@ -764,6 +764,8 @@ const en = {
   'pricegap.paperModeTooltip': 'When ON, new entries are simulated. Existing open positions keep their original mode.',
   'pricegap.paperOn': 'PAPER',
   'pricegap.liveOn': 'LIVE',
+  'pricegap.debugLog': 'Debug log',
+  'pricegap.debugLogTooltip': 'When ON, the tracker logs the reason every candidate did not fire (sample_error, insufficient_persistence, stale_bbo). Rate-limited to one line per (candidate, reason) per 60s. Persists to config.json.',
   'pricegap.budgetStat': 'Budget: ${used} / ${total} used',
   'pricegap.openCount': 'Open: {n}',
 

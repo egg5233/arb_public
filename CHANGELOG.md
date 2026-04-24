@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.34.2] - 2026-04-24
+
+### Fixed
+
+- **Phase 9 Verification Gap #1 closed** — detector non-fire reasons now surface in logs when `price_gap.debug_log` is ON (`internal/pricegaptrader/tracker.go:287-296`). Previously the bare `if !det.Fired { continue }` discarded `det.Reason` values (`sample_error: ...`, `insufficient_persistence`, `stale_bbo`), making the detector a black box in production and blocking the 14 live-detection UAT rows (PG-OPS-02/03/05, PG-VAL-01/02). Rate-limited per-(symbol, reason) at a 60s cooldown so steady-state logging cannot flood journalctl (4 candidates × 3 reasons × 2/min = up to 24 dupe lines/min without the throttle).
+
+### Added
+
+- **`PriceGapDebugLog` config field** — `internal/config/config.go`. JSON key `price_gap.debug_log` with applyJSON + SaveJSON round-trip. Default OFF per the project new-feature rollout pattern (CLAUDE.local.md). Flat shortcut intentionally not introduced — nested form only.
+- **Dashboard toggle** — `web/src/pages/PriceGap.tsx` header next to the Paper/Live pill. Amber tint when ON signals "diagnostic logging active". POSTs `{ price_gap: { debug_log: newValue } }` via the existing `postConfig` helper. Reflected on next seed.
+- **i18n lockstep** — `pricegap.debugLog` + `pricegap.debugLogTooltip` added to `en.ts` and `zh-TW.ts`; `scripts/check-i18n-sync.sh` green at 758 keys.
+- **Unit tests** — `internal/pricegaptrader/tracker_debug_log_test.go` (10 tests): empty-reason rejected, first-emit, cooldown suppression, cooldown-boundary refill, reason-independence, symbol-independence, flood-guard (1-of-100), flag-OFF zero-map-growth, flag-ON one-entry. `internal/config/config_test.go` gains 5 tests: default OFF, applyJSON true/false, absent-preserves, SaveJSON round-trip.
+
 ## [0.34.1] - 2026-04-24
 
 ### Fixed
