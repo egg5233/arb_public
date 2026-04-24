@@ -1,10 +1,24 @@
 # PLAN: Per-Leg Tier 1 Skip for Exchanges Without CloseSize
 
-Version: v2
+Version: v3
 Date: 2026-04-24
 Status: DRAFT
 
 ## Changelog
+- **v3** (2026-04-24): Codex review round 2 — NEEDS-REVISION 2 items. Fixed:
+  - #1 test coverage: added real `tryReconcilePnL` integration tests using the
+    existing miniredis + Engine harness (pattern from `engine_stage2_salvage_test.go:75-135`).
+    New stub exchange `reconcileStubExchange` returns controlled `GetClosePnL`
+    records per test case. The inline logic tests are kept as fast-path
+    coverage but no longer the sole coverage — the decision matrix the
+    runtime executes is now exercised end-to-end.
+  - #2 retry short-circuit hazard: added an **empty-aggregate guard** in Phase 1.
+    When a leg reports `CloseSize==0`, require at least one of
+    `PricePnL/Fees/Funding` to be non-zero. If all four values are zero on a
+    `CloseSize==0` leg, treat the exchange data as unfinalized and return
+    `false` to trigger the 5s/15s/30s retry chain — preserving the
+    finalization semantics at `exit.go:1162-1186`. Risk section now explicitly
+    calls out this hazard and the mitigation.
 - **v2** (2026-04-24): Codex review round 1 — NEEDS-REVISION 4 items. Fixed:
   - #1 control-flow bug (my v1 skipped Tier 1 on Binance leg but Tier 2 sits in
     `if !useTier1` — Binance leg got NO completeness check at all). Added Phase 3
@@ -218,6 +232,24 @@ if useTier1 {
         return false
     }
 
+    // Empty-aggregate guard (anti retry-short-circuit):
+    // When a leg has CloseSize==0 (exchange doesn't expose size), we cannot
+    // use size to detect "exchange data not finalized yet". Instead, require
+    // that at least one of (PricePnL, Fees, Funding) is non-zero on that leg —
+    // a fully-zero aggregate on a CloseSize==0 leg almost certainly means
+    // /fapi/v1/income hasn't settled the close yet. Return false to trigger
+    // the 5s/15s/30s retry chain (matches the finalization semantics at
+    // exit.go:1162-1186). Genuinely zero-PnL closes are extremely rare — at
+    // typical fee rates, a completed close always generates a non-zero
+    // COMMISSION record.
+    longUnsettled := !longTier1Enforced && longAgg.PricePnL == 0 && longAgg.Fees == 0 && longAgg.Funding == 0
+    shortUnsettled := !shortTier1Enforced && shortAgg.PricePnL == 0 && shortAgg.Fees == 0 && shortAgg.Funding == 0
+    if longUnsettled || shortUnsettled {
+        e.log.Warn("reconcile %s [attempt %d]: leg aggregate looks unfinalized (longUnsettled=%v shortUnsettled=%v longAgg=%+v shortAgg=%+v), retrying",
+            pos.ID, attempt, longUnsettled, shortUnsettled, longAgg, shortAgg)
+        return false
+    }
+
     if !longTier1Enforced || !shortTier1Enforced {
         e.log.Info("reconcile %s [attempt %d]: Tier 1 partial (longEnforced=%v shortEnforced=%v) — Tier 1 partial notional guard will apply post-split",
             pos.ID, attempt, longTier1Enforced, shortTier1Enforced)
@@ -287,60 +319,79 @@ if !useTier1 {
 
 ### Change 2: Regression tests
 
-Add new file `internal/engine/reconcile_tier1_per_leg_test.go`. Keeps
-`sirenusdt_fixes_test.go` focused on its original fix and follows the
-established "inline logic test, no DB scaffolding" pattern used by e.g.
-`TestReconcileRetriesWhenCloseSizePartial` (`sirenusdt_fixes_test.go:391-411`).
+Two layers:
 
-Testable surfaces (inline):
+**Layer 1 — Integration tests against real `tryReconcilePnL`**
 
+New file `internal/engine/reconcile_tier1_per_leg_integration_test.go`. Follows
+the pattern established by `internal/engine/engine_stage2_salvage_test.go:75-135`
+(`newMiniredisDB` + `buildStage2SalvageEngine`).
+
+Helpers:
 ```go
-// Tier 1 per-leg decision logic (replicates the Phase 1 block):
-//   longTier1Enforced := longAgg.CloseSize > 0
-//   shortTier1Enforced := shortAgg.CloseSize > 0
-//   longIncomplete := longTier1Enforced && longAgg.CloseSize < longExpected-sizeEpsilon
-//   shortIncomplete := shortTier1Enforced && shortAgg.CloseSize < shortExpected-sizeEpsilon
-//   incomplete := longIncomplete || shortIncomplete
+// newReconcileStubExchange returns a fullStubExchange (or adapted shape)
+// whose GetClosePnL returns a caller-controlled []exchange.ClosePnL. Set
+// records = nil to simulate an empty response; set records to a Binance-shape
+// single record with Side="" to simulate Binance; set records to a per-side
+// slice to simulate bybit/bingx/gate/okx/bitget.
+type reconcileStubExchange struct {
+    fullStubExchange
+    closePnLFn func(symbol string, since time.Time) ([]exchange.ClosePnL, error)
+}
 
-// Tier 1 partial fallback decision (replicates Phase 3 else-if):
-//   anyLegSkipped := !longTier1Enforced || !shortTier1Enforced
-//   longNotional := pos.LongEntry * pos.LongCloseSize
-//   shortNotional := pos.ShortEntry * pos.ShortCloseSize
-//   notional := math.Max(longNotional, shortNotional)
-//   trips := notional > 0 && math.Abs(diff) > notional
+func (s *reconcileStubExchange) GetClosePnL(symbol string, since time.Time) ([]exchange.ClosePnL, error) {
+    if s.closePnLFn != nil {
+        return s.closePnLFn(symbol, since)
+    }
+    return nil, nil
+}
+
+// buildReconcileEngine wires an Engine with miniredis DB + two stub exchanges
+// (long, short). Injects a pre-closed position into history + active store
+// with the given fields. Returns the Engine and the position.
+func buildReconcileEngine(t *testing.T, longClose, shortClose []exchange.ClosePnL,
+    posOpts ...func(*models.ArbitragePosition)) (*Engine, *models.ArbitragePosition) { ... }
 ```
 
-Table-driven test cases:
+Integration test cases (each calls `e.tryReconcilePnL(pos, 1)` and asserts
+return value + post-call state from `e.db.GetHistory` / `e.db.GetPosition`):
 
-| # | Name                                          | long agg CloseSize | short agg CloseSize | longExpected | shortExpected | Tier 1 result |
-|---|-----------------------------------------------|--------------------|---------------------|--------------|---------------|----------------|
-| A | `BothSizedComplete`                           | 100                | 100                 | 100          | 100           | pass           |
-| B | `LongSizedShort`                              | 80                 | 100                 | 100          | 100           | retry          |
-| C | `ShortSizedShort`                             | 100                | 80                  | 100          | 100           | retry          |
-| D | `LongUnreportedShortComplete` (Binance long)  | 0                  | 100                 | 100          | 100           | pass, long skipped  |
-| E | `LongUnreportedShortShort` (Binance long)     | 0                  | 80                  | 100          | 100           | retry (short still enforced) |
-| F | `ShortUnreportedLongComplete` (Binance short) | 100                | 0                   | 100          | 100           | pass, short skipped |
-| G | `BothUnreported` (hypothetical only)          | 0                  | 0                   | 100          | 100           | pass, both skipped  |
+| # | Name                                                   | long exchange records                         | short exchange records                       | Expected return | Expected state after call |
+|---|--------------------------------------------------------|-----------------------------------------------|----------------------------------------------|-----------------|---------------------------|
+| A | `TestTryReconcile_NonBinancePair_Complete`             | `[{Side:"long", CloseSize:100, PricePnL:-5, Fees:-0.1, Funding:0}]`  | `[{Side:"short", CloseSize:100, PricePnL:5, Fees:-0.1, Funding:0}]`  | `true`          | HasReconciled=true, LongTotalFees/ShortTotalFees/LongClosePnL/ShortClosePnL populated, UpdateHistoryEntry called |
+| B | `TestTryReconcile_NonBinancePair_LongSizeShort`        | `[{Side:"long", CloseSize:80, ...}]`          | `[{Side:"short", CloseSize:100, ...}]`       | `false`         | fields unchanged |
+| C | `TestTryReconcile_BinanceLong_Settled`                 | `[{Side:"", CloseSize:0, PricePnL:-57, Fees:-0.4, Funding:1.3}]`    | `[{Side:"short", CloseSize:100, ...}]`       | `true`          | breakdown populated — proves the v3 fix unblocks PORTALUSDT-shape closes |
+| D | `TestTryReconcile_BinanceLong_Unfinalized`             | `[{Side:"", CloseSize:0, PricePnL:0, Fees:0, Funding:0}]`           | `[{Side:"short", CloseSize:100, ...}]`       | `false`         | empty-aggregate guard trips; retries |
+| E | `TestTryReconcile_BinanceShort_Settled`                | `[{Side:"long", CloseSize:100, ...}]`         | `[{Side:"", CloseSize:0, PricePnL:2, ...}]`  | `true`          | short-leg Binance path works symmetrically |
+| F | `TestTryReconcile_BinanceLong_PartialExceedsNotional`  | `[{Side:"", CloseSize:0, PricePnL:999999, Fees:-0.4, Funding:0}]`   | `[{Side:"short", CloseSize:100, PricePnL:-2, ...}]` | `false` | Tier 1 partial notional guard trips; retries |
+| G | `TestTryReconcile_BinanceLong_PartialWithinNotional`   | `[{Side:"", CloseSize:0, PricePnL:-55, Fees:-0.4, Funding:1.2}]`    | `[{Side:"short", CloseSize:100, PricePnL:55, ...}]` | `true`          | Tier 1 partial guard does not trip; reconcile accepts |
+| H | `TestTryReconcile_BinanceLong_CloseSizeMismatchOnShort`| `[{Side:"", CloseSize:0, PricePnL:-55, ...}]`                       | `[{Side:"short", CloseSize:80, ...}]`        | `false`         | short leg still enforced; returns false despite Binance being "settled" |
+| I | `TestTryReconcile_SiblingAware_BinanceLong`            | shared long exchange, `pos.LongCloseSize=100`, sibling `LongCloseSize=100`, longExpected=200, Binance records return `[{Side:"", CloseSize:0, PricePnL:-55, ...}]` | short has real size | `true`          | proves the Binance leg's skip does not cause the sibling-sum logic to malfunction for the sibling's own reconcile |
+| J | `TestTryReconcile_PreMigration_BinanceLong`            | same as C but `pos.LongCloseSize=0, pos.ShortCloseSize=0` (pre-migration) | ... | flows to existing Tier 2/3 | proves `!useTier1` branch still works; v3 changes do not affect pre-migration path |
 
-Tier 1 partial fallback cases (only fire when ≥1 leg skipped):
+Each integration test asserts:
+1. `tryReconcilePnL` return value matches expectation
+2. On `true` return: history entry has non-zero per-leg breakdown fields and
+   `HasReconciled=true`
+3. On `false` return: history entry retains prior (empty) breakdown fields
 
-| #  | Name                                     | skipped leg(s) | diff | long close-notional | short close-notional | result |
-|----|------------------------------------------|----------------|------|---------------------|----------------------|--------|
-| H  | `PartialWithinNotional`                  | long only      | 1.23 | 240                 | 240                  | pass   |
-| I  | `PartialExceedsNotional`                 | long only      | 999  | 240                 | 240                  | retry  |
-| J  | `PartialZeroNotional`                    | long only      | 5.0  | 0                   | 0                    | pass (notional gate doesn't fire when notional==0 — matches existing Tier 2) |
+**Layer 2 — Inline logic tests (fast-path, for decision-matrix completeness)**
 
-Sibling-aware mixed-leg cases:
+Keep a smaller `reconcile_tier1_per_leg_inline_test.go` that exercises the
+decision math without DB scaffolding. Useful to catch off-by-one / boolean-
+logic regressions without the full harness cost. Cases mirror the matrix in
+the runtime:
 
-| #  | Name                                       | Coverage |
-|----|--------------------------------------------|----------|
-| K  | `MixedLegWithSibling`                      | pos.LongCloseSize=100, sibling long CloseSize=100 → longExpected=200; longAgg.CloseSize=0 (Binance) → skipped; sibling logic still flows through `sumSiblingCloseSize` correctly because its result is used in computing longExpected but not in the skip decision. |
-
-Rotation case:
-
-| #  | Name                                       | Coverage |
-|----|--------------------------------------------|----------|
-| L  | `RotationNoopOnTier1PerLeg`                | Build a position with non-empty `RotationHistory`. Confirm `since` derivation (`exit.go:1141-1144`) still keys off `RotationHistory[last].Timestamp-1m`. Note in the test comment: `LastRotatedFrom` is used elsewhere for event-routing but `tryReconcilePnL` does NOT read it; `reconcileRotationPnL` (`exit.go:3167-3185`) is a separate method. |
+| # | Decision                          | Input                                              | Expected |
+|---|-----------------------------------|----------------------------------------------------|----------|
+| 1 | `longTier1Enforced`               | `longAgg.CloseSize=100`                            | true     |
+| 2 | `longTier1Enforced`               | `longAgg.CloseSize=0`                              | false    |
+| 3 | `longIncomplete`                  | `longTier1Enforced=true, longAgg.CloseSize=80, longExpected=100` | true |
+| 4 | `longIncomplete`                  | `longTier1Enforced=false, longAgg.CloseSize=0, longExpected=100` | false |
+| 5 | `longUnsettled`                   | `longTier1Enforced=false, PricePnL=0, Fees=0, Funding=0`        | true |
+| 6 | `longUnsettled`                   | `longTier1Enforced=false, PricePnL=-5, Fees=0, Funding=0`       | false |
+| 7 | Partial fallback notional bound   | `diff=999, pos.LongEntry*pos.LongCloseSize=240, pos.ShortEntry*pos.ShortCloseSize=240` | retries |
+| 8 | Partial fallback within bound     | `diff=1.5, notional=240`                                        | passes |
 
 Existing tests MUST continue to pass:
 - `TestAllSiblingsHaveCloseSizeTrueWhenAllPopulated` (`sirenusdt_fixes_test.go:333`)
@@ -406,33 +457,56 @@ branches when both legs report `CloseSize > 0`.
 
 ## Risk assessment (honest)
 
-- **Blast radius**: small. Single function, ~30 net added lines in `exit.go`,
-  no schema change, no persistent-state migration. New test file only.
+- **Blast radius**: small. Single function, ~45 net added lines in `exit.go`
+  (Phase 1 per-leg + empty-aggregate guard, Phase 3 partial fallback), no
+  schema change, no persistent-state migration. Two new test files.
 - **Rollback**: revert commit. No persistent state touched.
-- **Correctness risk (honest)**: 
+- **Correctness risk (honest)**:
   - Pure non-Binance pairs: zero risk. Same code path as today.
   - Binance-leg pairs: Tier 1 protection on the Binance leg is replaced by
-    Tier 1 partial notional guard (`|diff| <= max(pos.LongEntry*pos.LongCloseSize,
-    pos.ShortEntry*pos.ShortCloseSize)`). This is **weaker** than per-leg
-    CloseSize match: a Binance-side corruption that kept the cross-leg diff
-    within one leg's close-notional would slip through. In practice the
-    notional bound is large (hundreds of USDT at typical sizes), so only gross
-    corruption is caught. **This is a deliberate trade-off**: today's behavior
-    on every Binance-leg position is "retry all 4 attempts, fail, keep local
-    PnL, breakdown never populated" — strictly worse. The v2 fallback at least
-    catches gross errors and unblocks the UI.
+    (a) empty-aggregate guard (Phase 1) + (b) Tier 1 partial notional guard
+    (Phase 3, `|diff| <= max(pos.LongEntry*pos.LongCloseSize,
+    pos.ShortEntry*pos.ShortCloseSize)`). Combined, this is **weaker** than
+    per-leg CloseSize match. A Binance-side corruption with non-zero
+    aggregate values but wrong magnitudes that keeps the cross-leg diff
+    within one leg's close-notional slips through. At typical sizes the
+    notional bound is hundreds of USDT, so only gross corruption is caught.
+    **Deliberate trade-off** — today's behavior is "retry all 4 attempts,
+    fail, keep local PnL, breakdown never populated" for every Binance-leg
+    position, strictly worse than v3's weaker-but-functional check.
+  - **Retry-short-circuit hazard (addressed)**: Codex flagged that a partial
+    `/fapi/v1/income` snapshot with the `|diff|` bound satisfied could be
+    accepted as terminal success, suppressing the 5s/15s/30s retries whose
+    purpose is to wait for finalization (see `exit.go:1162-1186` comment:
+    "exchange may not have finalized the position yet"). v3 mitigates via
+    the Phase 1 empty-aggregate guard: any `CloseSize==0` leg with
+    `PricePnL==0 && Fees==0 && Funding==0` returns `false` to retry. The
+    mitigation is partial — mid-settlement snapshots with non-zero but
+    incomplete values can still be accepted. In practice, COMMISSION records
+    post first because they accompany every fill (docs
+    `EXCHANGEAPI_BINANCE.md` user-trades section), so "non-zero Fees but
+    zero PnL+Funding" is a realistic mid-settlement shape that would pass
+    the empty guard. This is the residual hazard.
+  - **Residual retry-short-circuit mitigation (optional follow-up)**: if
+    production observations show mid-settlement acceptance, a follow-up
+    could add an attempt-count gate (require attempt ≥ 2 for partial
+    fallback) or a stability check (require aggregate unchanged between
+    attempts 1 and 2). Not in this plan to keep scope minimal; recorded here
+    as a known mitigation path if the empty-aggregate guard proves
+    insufficient.
   - SIRENUSDT protection preservation: verified — the SIRENUSDT bug (H1:
-    synthetic retrySecondLeg price + H2: reconcile guard + H3: SL/TP detection)
-    fires on a non-Binance pair (SIRENUSDT was bybit↔bingx). Pure non-Binance
-    pairs still hit full Tier 1 in v2.
+    synthetic retrySecondLeg price + H2: reconcile guard + H3: SL/TP
+    detection) fired on a non-Binance pair (SIRENUSDT was bybit↔bingx).
+    Pure non-Binance pairs still hit full Tier 1 in v3.
 - **Review-acknowledged weaknesses**:
   - When both legs are Binance-shape (CloseSize=0), Tier 1 partial notional
-    guard is the only completeness check. The bot does not produce such pairs
-    (see behavior matrix for Binance×Binance entry), so this is hypothetical.
+    guard is the only completeness check. The bot does not produce such
+    pairs (see behavior matrix for Binance×Binance entry), so this is
+    hypothetical.
   - `pos.LongCloseSize` is used as the notional basis. For pre-migration
-    positions (`useTier1==false`), this branch does not fire — existing Tier 2
-    / Tier 3 runs unchanged. So this introduces no regression for positions
-    that predate CloseSize tracking.
+    positions (`useTier1==false`), this branch does not fire — existing
+    Tier 2 / Tier 3 runs unchanged. So this introduces no regression for
+    positions that predate CloseSize tracking.
 
 ## Acceptance
 
