@@ -1,10 +1,27 @@
 # PLAN: Per-Leg Tier 1 Skip for Exchanges Without CloseSize
 
-Version: v9
+Version: v10
 Date: 2026-04-24
 Status: DRAFT
 
 ## Changelog
+- **v10** (2026-04-24): Independent Codex review round 4 — NEEDS-REVISION 1
+  blocker (test determinism, inline success path). Fixed:
+  - v9's `testReconcilePnLDone` seam only fired in the async retry
+    goroutine. Test M was only safe when attempt 1 was guaranteed to
+    fail at the attempt gate, which requires `useTier1=true` (i.e.
+    `LongCloseSize > 0 && ShortCloseSize > 0`). The plan did not pin
+    that constraint in Test M, and case J (pre-migration) documents a
+    Binance-leg setup with `LongCloseSize=0` that succeeds inline.
+    Two fixes in v10:
+    1. **Seam coverage**: make `testReconcilePnLDone` send in BOTH
+       paths — inline success (before `return` in the attempt-1 OK
+       branch) AND async goroutine (via existing deferred send). Test
+       M doesn't need to know which path was taken.
+    2. **Test M pin**: explicitly require `LongCloseSize > 0 &&
+       ShortCloseSize > 0` in Test M's position setup so `useTier1=true`
+       and the gate path is the intended path under test. Document in
+       the case description.
 - **v9** (2026-04-24): Independent Codex review round 3 — NEEDS-REVISION 1
   blocker (test determinism). Fixed:
   - **Test M race on async retry goroutine**: `reconcilePnL` runs attempt 1
@@ -642,7 +659,7 @@ state from `e.db.GetHistory` / `e.db.GetPosition`.
 | J | `TestTryReconcile_PreMigration_BinanceLong`            | same records as C but `pos.LongCloseSize=0, pos.ShortCloseSize=0` (pre-migration) | ... | `true` on attempt 1 (flows to existing Tier 2/3; `!useTier1` path unaffected by attempt gate) | (not tested) | proves `!useTier1` branch still works; this change does not affect pre-migration path |
 | K | `TestTryReconcile_BinanceLong_AttemptGate` (v4)        | `[{Side:"", CloseSize:0, PricePnL:-55, Fees:-0.4, Funding:1.2}]` (settled)  | `[{Side:"short", CloseSize:100, ...}]` (settled) | `false`           | `true`             | dedicated attempt-gate regression — the gate is the reason C/E/G/I must not accept on attempt 1 |
 | L | `TestTryReconcile_BinanceLong_CommissionOnlySnapshot_ResidualHazard` (v5) | `[{Side:"", CloseSize:0, PricePnL:0, Fees:-0.4, Funding:0}]` (mid-settlement: COMMISSION-only, persists across attempts)  | settled | `false` (attempt gate) | `true` if `|diff| <= max(close-notional)` (residual hazard path); test parameterizes the notional and diff so that the accept path is deterministic | **Pins the residual hazard explicitly.** The test documents the known design gap: empty-aggregate guard passes (Fees non-zero), attempt gate rejects attempt 1, attempt 2 accepts if `|diff|` fits notional. Asserts log lines: `Tier 1 partial path — deferring acceptance` at attempt 1 AND `Tier 1 partial accepted` at attempt 2. VPS ops can grep for the latter to monitor mid-settlement acceptances; if production shows this mode firing on actually-unsettled data, the follow-up stability-check mitigation (documented in Risk) is promoted. |
-| M | `TestReconcilePnL_Wrapper_BinanceLong_RetryChainConverges` (v7, impl via v8/v9 seams) | Binance-leg position, settled `/income` data returned at every attempt | settled                                            | (wrapper-level test; asserts end-state, not per-attempt return) | **Setup**: Change 4 seams — set `e.testReconcileInitialSleep = &oneMs`, `e.testReconcileRetryDelays = []time.Duration{1ms, 1ms, 1ms}`, install `testTryReconcileObserver` capturing (posID, attempt) pairs, **set `e.testReconcilePnLDone = make(chan struct{}, 1)`** (v9). Use Change 5: pass `e.api = nil`. **Flow**: call `reconcilePnL(pos)`, then `<-e.testReconcilePnLDone` with a 5s timeout to block until the async retry goroutine finishes (Binance-leg cases always go async because attempt 1 fails at the gate). Then assert: history entry has per-leg breakdown populated and `HasReconciled=true`; observer slice contains `(posID, 1)` and `(posID, 2)` — proves attempt 1 rejected by gate, attempt 2 accepted. The channel select with timeout also catches regressions where the async goroutine hangs or panics. |
+| M | `TestReconcilePnL_Wrapper_BinanceLong_RetryChainConverges` (v7, impl via v8/v9/v10 seams) | Binance-leg position with **`LongCloseSize > 0 && ShortCloseSize > 0`** (v10 pin — ensures `useTier1=true` and attempt gate triggers), settled `/income` data | settled                                            | (wrapper-level test; asserts end-state, not per-attempt return) | **Setup**: Change 4 seams — set `e.testReconcileInitialSleep = &oneMs`, `e.testReconcileRetryDelays = []time.Duration{1ms, 1ms, 1ms}`, install `testTryReconcileObserver` capturing (posID, attempt) pairs, set `e.testReconcilePnLDone = make(chan struct{}, 2)` (buffered 2 so both inline-send and async-send slots are free; v10 makes the seam fire from whichever path runs). Use Change 5: pass `e.api = nil`. **Position setup**: post-migration position with `LongCloseSize=100, ShortCloseSize=100, LongEntry=2, ShortEntry=2`. Guarantees `useTier1=true` → attempt-1 gate fires → async goroutine runs. **Flow**: call `reconcilePnL(pos)`, then `<-e.testReconcilePnLDone` with a 5s timeout to block until completion (inline OR async path). Then assert: history entry has per-leg breakdown populated and `HasReconciled=true`; observer slice contains `(posID, 1)` and `(posID, 2)` — proves attempt 1 rejected by gate, attempt 2 accepted. The timeout also catches hangs. |
 | N | `TestReconcileRotationPnL_BinanceLeg_CompletesAfterRotation` (v7, impl via v8 seams) | Binance-leg closed rotated position with non-empty `RotationHistory` and nil `RotationRecord.PnL` on one entry | settled                                | (wrapper-level test; asserts end-state) | **Setup**: uses Change 4 observer seam + Change 5 nil-safe broadcast. After `reconcileRotationPnL` completes, `RotationHistory[i].PnL` is set AND the subsequent `tryReconcilePnL(fresh, 2)` call (per v7 rotation fix at exit.go:3246) succeeds and updates history breakdown. Observer captures exactly one `(posID, 2)` entry — proves the attempt=2 bump took effect. Also pin v8 anti-stale behavior: mutate DB `pos.RotationPnL` between tryReconcile observer call and UpdatePositionFields predicate firing (use an override in the DB wrapper or second-observer pattern); assert final `RealizedPnL` uses the POST-mutation RotationPnL, not the pre-mutation posCopy value. |
 
 Each integration test asserts:
@@ -745,15 +762,30 @@ if e.testTryReconcileObserver != nil {
     e.testTryReconcileObserver(pos.ID, attempt)
 }
 
-// reconcilePnL async goroutine — completion signal
-// Inside the `go func() { ... }` block at exit.go:1118-1133:
-defer func() {
+// reconcilePnL completion signal — fires on BOTH paths (v10).
+// Helper for the non-blocking send:
+sendDoneSignal := func() {
     if e.testReconcilePnLDone != nil {
         select {
         case e.testReconcilePnLDone <- struct{}{}:
-        default: // non-blocking; test is responsible for drain
+        default: // non-blocking; test uses buffered channel + drains
         }
     }
+}
+
+// Inline success (attempt 1 OK) — before the existing `return` at exit.go:1113:
+if ok {
+    mu.Unlock()
+    e.pnlLocks.Delete(pos.ID)
+    sendDoneSignal() // v10: cover inline-success path too
+    return
+}
+
+// Async goroutine — defer the send so it fires on both the mid-loop
+// success `return` and the all-attempts-failed fall-through:
+go func() {
+    defer sendDoneSignal() // v10: guaranteed to fire once per invocation
+    // ... existing retry loop
 }()
 ```
 
