@@ -1,10 +1,49 @@
 # PLAN: Per-Leg Tier 1 Skip for Exchanges Without CloseSize
 
-Version: v11
+Version: v12
 Date: 2026-04-24
 Status: DRAFT
 
 ## Changelog
+- **v12** (2026-04-24): Independent Codex review round 6 — NEEDS-REVISION 3
+  blockers. Fixed:
+  - **Blocker #1 (runtime correctness)**: v8's Phase 3.5 only fixed
+    `fresh.RealizedPnL` inside the `UpdatePositionFields` predicate, but
+    the surrounding logic (`needsPnLUpdate` decision at exit.go:1265,
+    `statsDiff = reconciledPnL - oldPnL` at exit.go:1353, win/loss
+    adjustment at exit.go:1362-1368) all still keyed off the stale
+    outer `reconciledPnL` variable. Race outcomes:
+    - If stale `diff < 0.01` (needsPnLUpdate=false) but fresh
+      RotationPnL-aware diff would be >= 0.01 → the predicate's other
+      branches might not fire AND we skip the needsPnLUpdate path
+      entirely → stats drift from reality.
+    - If stale `diff >= 0.01` → predicate writes fresh RealizedPnL
+      correctly, but then `AdjustPnL(statsDiff)` adjusts stats by the
+      STALE delta → stats row and position row diverge.
+    v12 fix has two parts:
+    (a) Re-read `pos.RotationPnL` via `GetPosition(pos.ID)` at the top
+        of `tryReconcilePnL`, right after `longSiblings/shortSiblings`
+        but before `reconciledPnL` computation. Use the fresh value for
+        all decisions (`needsPnLUpdate`, `diff`, Tier 1 partial notional
+        guard check). This closes the decision-side window.
+    (b) Predicate still uses `fresh.RotationPnL` for the final
+        `RealizedPnL` write (defense-in-depth against a late rotation
+        update that lands between the outer GetPosition and the
+        predicate). The predicate exports back `appliedPnL` via a
+        pointer captured from the outer scope; `statsDiff` is computed
+        using `appliedPnL - oldPnL` so stats adjustments match the row
+        actually written.
+  - **Blocker #2 (VERSION mismatch)**: HEAD VERSION is `0.34.8`, not
+    `0.33.3`. Plan changed `0.33.3 → 0.33.4` → now `0.34.8 → 0.34.9`.
+    CHANGELOG entry updated to `## [0.34.9] - 2026-04-24`. The date
+    label matches what is on the plan now; actual merge date may push
+    it forward, adjusted at implementation time if needed.
+  - **Blocker #3 (Layer 2 test inconsistency)**: inline test table still
+    keyed `longTier1Enforced` off `longAgg.CloseSize > 0` (pre-v7
+    semantic) while runtime code keys off exchange capability. v12
+    rewrites the table rows to use exchange name (e.g. `longExchange
+    = "binance"` vs `"bybit"`), matching the `exposesCloseSize` inline
+    closure in the runtime.
 - **v11** (2026-04-24): Independent Codex review round 5 — NEEDS-REVISION 1
   blocker (Go type error). Fixed:
   - `testReconcilePnLDone` declared as `chan<- struct{}` (send-only)
@@ -555,29 +594,57 @@ if !useTier1 {
         diff, notional)
 }
 
-// Phase 3.5 (v8, new) — final write inside the existing
-// UpdatePositionFields predicate uses fresh.RotationPnL (from the
-// predicate snapshot) rather than the outer pos.RotationPnL. Avoids a
-// stale-posCopy race with reconcileRotationPnL.
-//
-// Modification to the existing UpdatePositionFields predicate at
-// exit.go:1310-1342 (only the RealizedPnL write is changed):
+// v12 — two-stage fresh RotationPnL handling.
+
+// Stage 1 (decision side): re-read pos.RotationPnL from DB at the top
+// of tryReconcilePnL so needsPnLUpdate / diff / Tier 1 partial notional
+// guard all use a fresh value. Place this AFTER the existing
+// longSiblings/shortSiblings setup and BEFORE the reconciledPnL
+// computation at exit.go:1224.
+if freshRead, err := e.db.GetPosition(pos.ID); err == nil && freshRead != nil {
+    if freshRead.RotationPnL != pos.RotationPnL {
+        e.log.Info("reconcile %s [attempt %d]: refreshed RotationPnL %.4f -> %.4f (stale posCopy detected pre-decision)",
+            pos.ID, attempt, pos.RotationPnL, freshRead.RotationPnL)
+        pos.RotationPnL = freshRead.RotationPnL
+    }
+}
+
+// ... existing Phase 2 splitSharedPnL, then:
+reconciledPnL := longAgg.NetPnL + shortAgg.NetPnL + pos.RotationPnL
+diff := reconciledPnL - oldPnL
+// ... Tier 1 partial notional guard uses this diff, unchanged
+
+// Stage 2 (write side): defense-in-depth — predicate recomputes using
+// fresh.RotationPnL to cover the microsecond window between the
+// Stage 1 GetPosition and the predicate read-modify-write. Export the
+// applied PnL back via a pointer so statsDiff at exit.go:1353 uses
+// the value ACTUALLY WRITTEN, not the pre-predicate estimate.
+var appliedReconciledPnL float64
 if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
     if needsPnLUpdate {
-        // v8 change: recompute reconciledPnL here using the predicate's
-        // fresh snapshot of RotationPnL so a late rotation update does
-        // not get overwritten by a stale close-path posCopy view.
         freshReconciledPnL := longAgg.NetPnL + shortAgg.NetPnL + fresh.RotationPnL
         fresh.RealizedPnL = freshReconciledPnL
+        appliedReconciledPnL = freshReconciledPnL
         if freshReconciledPnL != reconciledPnL {
-            e.log.Info("reconcile %s [attempt %d]: stale-posCopy corrected (caller.RotationPnL=%.4f fresh.RotationPnL=%.4f delta=%.4f)",
+            e.log.Info("reconcile %s [attempt %d]: predicate re-corrected (pre-predicate RotationPnL=%.4f fresh.RotationPnL=%.4f delta=%.4f)",
                 pos.ID, attempt, pos.RotationPnL, fresh.RotationPnL, freshReconciledPnL-reconciledPnL)
         }
+    } else {
+        // When predicate does not write RealizedPnL, statsDiff is 0.
+        appliedReconciledPnL = oldPnL
     }
     // (all other predicate fields — funding, per-leg breakdown,
-    // HasReconciled — unchanged in v8)
+    // HasReconciled — unchanged)
     return true
 }); err != nil { /* ... existing error handling ... */ }
+
+// v12: stats adjustment uses appliedReconciledPnL (what the predicate
+// actually wrote), not the stale reconciledPnL.
+if needsPnLUpdate {
+    statsDiff := appliedReconciledPnL - oldPnL
+    _ = e.db.AdjustPnL(statsDiff)
+    // win/loss AdjustWinLoss if PartialReconcile also uses appliedReconciledPnL
+}
 ```
 
 **Behavior matrix (summarized in the test table below):**
@@ -688,16 +755,21 @@ decision math without DB scaffolding. Useful to catch off-by-one / boolean-
 logic regressions without the full harness cost. Cases mirror the matrix in
 the runtime:
 
+Tests key off exchange NAME (via the `exposesCloseSize` inline closure
+copied into the test file to match runtime semantics), not `CloseSize`
+directly. Corrected in v12.
+
 | # | Decision                          | Input                                              | Expected |
 |---|-----------------------------------|----------------------------------------------------|----------|
-| 1 | `longTier1Enforced`               | `longAgg.CloseSize=100`                            | true     |
-| 2 | `longTier1Enforced`               | `longAgg.CloseSize=0`                              | false    |
-| 3 | `longIncomplete`                  | `longTier1Enforced=true, longAgg.CloseSize=80, longExpected=100` | true |
-| 4 | `longIncomplete`                  | `longTier1Enforced=false, longAgg.CloseSize=0, longExpected=100` | false |
-| 5 | `longUnsettled`                   | `longTier1Enforced=false, PricePnL=0, Fees=0, Funding=0`        | true |
-| 6 | `longUnsettled`                   | `longTier1Enforced=false, PricePnL=-5, Fees=0, Funding=0`       | false |
+| 1 | `longTier1Enforced`               | `longExchange="bybit"` (capability=exposes size)   | true     |
+| 2 | `longTier1Enforced`               | `longExchange="binance"` (capability=deny-listed)  | false    |
+| 3 | `longIncomplete`                  | `longExchange="bybit", longAgg.CloseSize=80, longExpected=100` | true |
+| 4 | `longIncomplete`                  | `longExchange="binance", longAgg.CloseSize=0, longExpected=100` | false (check skipped via longTier1Enforced=false) |
+| 5 | `longUnsettled`                   | `longExchange="binance", PricePnL=0, Fees=0, Funding=0`        | true |
+| 6 | `longUnsettled`                   | `longExchange="binance", PricePnL=-5, Fees=0, Funding=0`       | false |
 | 7 | Partial fallback notional bound   | `diff=999, pos.LongEntry*pos.LongCloseSize=240, pos.ShortEntry*pos.ShortCloseSize=240` | retries |
 | 8 | Partial fallback within bound     | `diff=1.5, notional=240`                                        | passes |
+| 9 (v12) | Non-Binance anomaly guard    | `longExchange="bybit", longAgg.CloseSize=0` (anomaly)           | retries (new ERROR-log path from Phase 1 pre-check) |
 
 Existing tests MUST continue to pass:
 - `TestAllSiblingsHaveCloseSizeTrueWhenAllPopulated` (`sirenusdt_fixes_test.go:333`)
@@ -824,10 +896,10 @@ Pick Option A.
 
 ### Change 3: VERSION + CHANGELOG
 
-- `VERSION`: `0.33.3` → `0.33.4`.
+- `VERSION`: `0.34.8` → `0.34.9` (v12: HEAD is 0.34.8, not 0.33.3).
 - `CHANGELOG.md` (match repo format, see `CHANGELOG.md:5-14`):
   ```
-  ## [0.33.4] - 2026-04-24
+  ## [0.34.9] - 2026-04-24
 
   ### Fixed
   - **Reconcile Tier 1 gate no longer blocks Binance-leg positions** —
