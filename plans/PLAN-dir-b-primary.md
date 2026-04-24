@@ -1,10 +1,68 @@
 # PLAN: Dir B Primary Strategy (Feature-Toggle Pivot)
 
-Version: v2
+Version: v3
 Date: 2026-04-24
 Status: DRAFT (meta-plan — coordinates sub-plans)
 
 ## Changelog
+- **v3** (2026-04-24): Codex review round 2 — NEEDS-REVISION 5 blockers. Fixed:
+  - **#1 EV formula dimensional error**: v2 formulas multiplied `funding_bps_h *
+    (1 - fee_bps/10000)` which is nonsensical (bps/h × dimensionless fraction
+    ≈ funding with 0.02% haircut, understates fees 10000×). And fee
+    amortization `/ (10000 * hours)` produces decimal/hour not bps/h. v3
+    rewrites as additive bps/h throughout: `EV_bps_h = funding_bps_h -
+    total_fees_bps / hold_hours - borrow_bps_h - rotation_bps_h`. All terms
+    in bps/hour. Complete rewrite of formulas for Dir B, Dir A, perp-perp.
+  - **#2 StrategyEpoch snapshot not race-safe**: v2 kept `*config.Config.
+    StrategyPriority` and `Coordinator.epoch` as separate atomics. Config
+    POST handler mutates `*cfg` first (handlers.go:983), then notifies
+    (handlers.go:1755), and subscribers (notifier.go:30) can observe
+    `new_mode + old_epoch` or `old_mode + new_epoch`. v3 moves the mode
+    value INTO the Coordinator behind a single atomic.Value holding
+    `struct{mode StrategyPriority; epoch uint64; capAllocOn bool}`. Engines
+    always snapshot via `Coordinator.Snapshot()` which returns the bundled
+    struct atomically. Config handler calls `Coordinator.UpdatePriority
+    (newMode, capAllocOn)` which does a single atomic.Value.Store. `cfg.
+    StrategyPriority` is still written to config.json for persistence but
+    runtime reads ALWAYS go through the coordinator.
+  - **#3 Cycle protocol undefined**: v2 Step 4b referenced `IsCycleDone`
+    / "PP's cycle for this minute" without Step 4a defining them; the two
+    engines run on separate tickers with no shared minute boundary. v3
+    replaces the "wait for the other engine" pattern with a
+    **reservation-based protocol**. Coordinator API:
+    - `TryReserve(exchSymbol string, strategy string, ev_bps_h float64)
+      (granted bool, reason string)` — compares against existing
+      reservations; mode + EV + strategy determine priority.
+    - `ReleaseReservation(exchSymbol, strategy, orderID string)` — called
+      when entry completes or fails.
+    - Reservations have TTL (5 minutes default) auto-expiring if caller
+      crashes.
+    - Reservations are per-exchange:symbol. No shared cycle ID needed.
+    - Priority rule: when mode=`dir_b_first` AND strategy=`dir_b`,
+      incoming reservation can bump an existing PP or Dir A reservation
+      (PP/DirA entry not yet placed). When mode=`perp_perp_first`, PP
+      bumps SF. No bumping once order placed (tracked via `BindOrder`).
+    - Engines no longer block on each other; they just query
+      reservations + compare priority.
+  - **#4 Dependency ordering contradiction**: v2 had Step 2 as Step 3b
+    prereq in intro but omitted from Step 3b's own dependency list, and
+    rollout said "toggle meaningful after 4b" while Step 3b already
+    gates. v3 reconciles:
+    - Step 3b depends on Step 1 + Step 2 + Step 3a + Step 4a
+      (coordinator exists; EV computed; Capital Maximizer lands so
+      allocator state is consistent).
+    - Rollout: toggle becomes **meaningful at entry-gate level** after
+      Step 3b (EV-based admission respects mode). Step 4b adds
+      **scan-scheduling order** on top but is NOT required for mode
+      effect on entries. Rollout summary updated.
+  - **#5 Signal 7 not deterministic**: v2 said "1-hour live log diff
+    byte-for-byte identical" — market state changes, impossible. v3
+    replaces with a **unit-test equivalence check**: fixed-input test
+    cases (captured candidate sets from a real scan snapshot) run
+    through the pre-coordinator code path and post-coordinator code
+    path with `mode=perp_perp_first`. Candidate ordering + EV values
+    + winner selection outputs must match byte-for-byte. This is a
+    compile-time property, not a live-market property.
 - **v2** (2026-04-24): Codex review round 1 — NEEDS-REVISION 9 blockers. Fixed:
   - **#1 Dir A vs Dir B not distinguished**: spot engine discovers BOTH
     `borrow_sell_long` (Dir A) and `buy_spot_short` (Dir B). v1's toggle
@@ -192,50 +250,78 @@ type Config struct {
 - Adds per-candidate `EstimatedEV` field to opportunity models (PP +
   SF). Computation:
 
-  **Dir B (buy_spot_short) EV per USDT per hour:**
-  ```
-  EV_dirB = funding_rate_bps_per_hour * (1 - 2 * taker_fee_bps_futures / 10000)
-         - (taker_fee_bps_spot_open + taker_fee_bps_spot_close) / (10000 * expected_hold_hours)
-         - (taker_fee_bps_futures_open + taker_fee_bps_futures_close) / (10000 * expected_hold_hours)
-  ```
-  Notes:
-  - Spot buy has no borrow cost (own USDT).
-  - Spot leg fees amortized over `expected_hold_hours` (new config; default
-    24h per recent Dir B holds).
-  - Futures-side funding payment is bps/hour; spot leg has no funding.
-  - Returned in bps per hour (same units as funding).
+  **All formulas output bps/hour. All inputs in bps. Fees are amortized
+  over expected hold time. No multiplicative fee factors — fees are a
+  separate subtraction term.**
 
-  **Dir A (borrow_sell_long) EV per USDT per hour:**
+  **Dir B (buy_spot_short) EV_bps_h:**
   ```
-  EV_dirA = funding_rate_bps_per_hour * (1 - 2 * taker_fee_bps_futures / 10000)
-         - borrow_rate_apr_bps / (365 * 24)
-         - spot/futures amortized fees (same shape as Dir B)
-  ```
-  Notes:
-  - Borrow APR from `MarginInterestRate` API divided by 365*24 to get
-    bps/hour.
+  total_fees_bps = taker_fee_bps_spot_open      // spot market BUY taker
+                 + taker_fee_bps_spot_close     // spot market SELL taker
+                 + taker_fee_bps_futures_open   // futures SHORT open
+                 + taker_fee_bps_futures_close  // futures SHORT close
 
-  **Perp-perp EV per USDT per hour:**
+  EV_dirB_bps_h = funding_rate_bps_h               // earned on short futures
+                - total_fees_bps / expected_hold_hours  // amortized fees
   ```
-  spread_bps_h = short_funding_rate_bps_per_hour - long_funding_rate_bps_per_hour
-  EV_pp = spread_bps_h * (1 - fee_asymmetry_factor)
-       - (fee_bps_short_leg_open + fee_bps_short_leg_close) / (10000 * expected_hold_hours)
-       - (fee_bps_long_leg_open + fee_bps_long_leg_close) / (10000 * expected_hold_hours)
-       - rotation_cost_bps_per_hour_estimate  // amortized historical rotation fees per hour
+  Rationale:
+  - Spot buy uses own USDT — zero borrow cost.
+  - Funding earned only on the futures leg (spot has no funding).
+  - All four taker fees paid once each over the position lifetime; dividing
+    total by hold hours gives the hourly cost rate in bps/h.
+
+  **Dir A (borrow_sell_long) EV_bps_h:**
   ```
-  Notes:
-  - `rotation_cost_bps_per_hour_estimate` read from a new Redis rolling
-    window (`arb:pp:rotation_cost_7d`) populated by existing rotation
-    PnL writes.
-  - `fee_asymmetry_factor` is zero if both exchanges have same taker
-    fee, otherwise `(fee_short - fee_long) / (fee_short + fee_long)`.
+  total_fees_bps = taker_fee_bps_spot_open      // spot margin SELL
+                 + taker_fee_bps_spot_close     // spot margin BUY (repay)
+                 + taker_fee_bps_futures_open   // futures LONG open
+                 + taker_fee_bps_futures_close  // futures LONG close
+
+  borrow_cost_bps_h = borrow_apr_bps_per_year / (365 * 24)
+
+  EV_dirA_bps_h = funding_rate_bps_h               // earned on long futures
+                - total_fees_bps / expected_hold_hours
+                - borrow_cost_bps_h               // charged continuously
+  ```
+  Rationale:
+  - Spot SELL is a borrow-sell — continuous borrow interest accrues.
+  - `borrow_apr_bps_per_year` pulled from `GetMarginInterestRate(asset)`
+    per exchange.
+
+  **Perp-perp EV_bps_h:**
+  ```
+  spread_bps_h = short_funding_bps_h - long_funding_bps_h  // net per-hour income
+
+  total_fees_bps = taker_fee_bps_short_open
+                 + taker_fee_bps_short_close
+                 + taker_fee_bps_long_open
+                 + taker_fee_bps_long_close
+
+  rotation_bps_h = rotation_7d_total_bps / (7 * 24)  // amortized rotation cost
+
+  EV_pp_bps_h = spread_bps_h
+              - total_fees_bps / expected_hold_hours
+              - rotation_bps_h
+  ```
+  Rationale:
+  - `rotation_7d_total_bps` from rolling 7-day Redis key `arb:pp:rotation_
+    cost_7d` summing rotation fees in bps of notional over past 7d.
+  - No fee-asymmetry multiplicative factor — fees are simply summed per
+    leg.
+
+  **`expected_hold_hours` value:**
+  - New config field `ExpectedHoldHours float64`, default `24`.
+  - One value shared across Dir B / Dir A / PP for consistency.
+  - Future improvement: per-strategy observed median hold hours from
+    history; deferred as data-driven tuning.
 
 - Logged at scan time: `[ev] candidate=<sym> strategy=<dirB|dirA|pp>
-  funding=<...> ev_net=<...> bps/h expected_hold_h=<h>`.
+  funding_bps_h=<...> fees_bps_h=<...> borrow_bps_h=<...>
+  rotation_bps_h=<...> ev_net_bps_h=<...>`.
 - **No gating decision is made**; Step 3b adds that.
-- Acceptance: EV values appear in logs for every candidate; on a
-  known reference day (captured test vector), values match expected to
-  0.01 bps/h.
+- Acceptance: EV values appear in logs for every candidate; fixed-input
+  test vector with captured funding/fee values produces expected
+  `ev_net_bps_h` to ±0.01 bps/h tolerance.
 - Depends on: Step 1.
 
 ### Step 3b — EV-based gating (Coordinator-driven)
@@ -253,10 +339,11 @@ type Config struct {
   3. Dir A candidates treated identically to PP in ordering (earn slot
      vs marginal Dir B) but ranked against PP on EV.
 - When `StrategyPriority=perp_perp_first`: mirror.
-- Coordinator emits `[coordinator] cycle=<n> chose=<dirB|dirA|pp>
-  symbol=<sym> ev_net=<...> bps/h reason=<admitted|blocked:<why>>` per
-  candidate.
-- Depends on: Step 1, Step 3a, Step 4a.
+- Coordinator emits `[coordinator] symbol=<sym> chose=<strategy>
+  ev_net=<...> bps/h reason=<admitted|bumped:<prior>|blocked:<why>>`
+  per candidate.
+- Depends on: Step 1 (toggle field), Step 2 (Capital Maximizer — allocator
+  state consistent), Step 3a (EV values), Step 4a (Coordinator exists).
 
 ### Step 4a — Coordinator seam
 
@@ -264,47 +351,132 @@ type Config struct {
 - New type `strategy.Coordinator` in `internal/strategy/coordinator.go`:
 
   ```go
-  type Coordinator struct {
-      mu       sync.RWMutex
-      epoch    atomic.Uint64
-      cfg      *config.Config
-      reservations map[string]*Reservation // exchange:symbol -> strategy
-      cycleLog     []CycleRecord
+  // snapshot bundles all coordinator mode state atomically.
+  type snapshot struct {
+      mode                  StrategyPriority
+      epoch                 uint64
+      capitalAllocatorOn    bool
   }
-  func (c *Coordinator) Snapshot() (StrategyPriority, uint64)
-  func (c *Coordinator) AdvanceEpoch()
-  func (c *Coordinator) Reserve(cycle uint64, strategy string, exchangeSymbol string) (ok bool)
-  func (c *Coordinator) Release(exchangeSymbol string)
-  func (c *Coordinator) StartCycle(strategy string) uint64  // returns cycle ID
+
+  type Reservation struct {
+      ExchSymbol string
+      Strategy   string   // "dir_b" | "dir_a" | "pp"
+      EVbpsH     float64
+      Priority   uint8    // computed from mode + strategy
+      OrderID    string   // empty until BindOrder()
+      ExpiresAt  time.Time
+  }
+
+  type Coordinator struct {
+      mu            sync.Mutex
+      state         atomic.Value  // holds snapshot (replaces separate mode/epoch fields)
+      reservations  map[string]*Reservation  // exchSymbol -> latest winner
+      reservationTTL time.Duration  // default 5min
+      log           *utils.Logger
+  }
+
+  // Snapshot returns the current mode + epoch atomically as a bundle.
+  // Engines call this at tick start and hold the returned value for
+  // the full tick.
+  func (c *Coordinator) Snapshot() snapshot
+
+  // UpdatePriority stores a new mode + bumps epoch + capAllocOn in a
+  // single atomic.Value.Store. Called by the config handler AFTER it
+  // writes config.json, BEFORE Notify() fans out. Race-safe.
+  func (c *Coordinator) UpdatePriority(mode StrategyPriority, capAllocOn bool)
+
+  // TryReserve attempts to claim exchSymbol for `strategy` with the given
+  // EV. Returns granted=true if accepted; false with reason if rejected.
+  // Accept/reject rules:
+  //   1. If no prior reservation → accept.
+  //   2. If prior reservation has OrderID bound (entry in-flight) → reject.
+  //   3. Else compute priority of incoming vs existing from current mode:
+  //        - mode=dir_b_first: dir_b=1, dir_a=2, pp=2
+  //        - mode=perp_perp_first: pp=1, dir_b=2, dir_a=2
+  //        - mode=dir_b_only: dir_b=1, others=DENY (reject outright)
+  //        - mode=perp_perp_only: pp=1, others=DENY
+  //      Lower priority number wins. If incoming priority < existing →
+  //      bump existing (release); accept incoming.
+  //   4. Same priority → tiebreak by EV (higher wins).
+  //   5. Existing wins otherwise → reject incoming.
+  func (c *Coordinator) TryReserve(exchSymbol, strategy string, ev float64) (granted bool, reason string)
+
+  // BindOrder promotes a pending reservation to an order-bound state.
+  // Reservations bound to orders cannot be bumped.
+  func (c *Coordinator) BindOrder(exchSymbol, strategy, orderID string) error
+
+  // Release drops a reservation (on order completion OR on order failure).
+  func (c *Coordinator) Release(exchSymbol, strategy string)
+
+  // gcExpired walks reservations older than TTL and releases them. Called
+  // by Snapshot() or a background ticker.
+  func (c *Coordinator) gcExpired()
   ```
 
-- Both engines (`engine/engine.go` and `spotengine/engine.go`) accept a
-  `*strategy.Coordinator` via constructor. Each engine at tick start
-  calls `c.StartCycle(strategyName)` and `c.Snapshot()` to freeze the
-  per-cycle view.
-- Coordinator is INJECTED, not a global. Allows unit tests to stub.
-- On config reload at `cmd/main.go`, call
-  `coordinator.AdvanceEpoch()` to bump.
-- Log line: `[coordinator] epoch advanced <old>->=<new>
-  (strategy_priority=<mode> capital_allocator=<on|off>)`.
-- Acceptance: two engines both use the same coordinator instance;
-  racing `AdvanceEpoch()` against `Snapshot()` is exercised in a
-  unit test with 100 iterations.
+- **Race-safety pattern**: mode + epoch + capAllocOn live inside a
+  single `atomic.Value` snapshot struct. The config handler calls
+  `Coordinator.UpdatePriority()` which does ONE `atomic.Value.Store`.
+  Engines call `Snapshot()` which does ONE `atomic.Value.Load`. No
+  subscriber-ordering race possible: whatever the engine reads, it
+  reads all three fields together.
+- **Wiring order in handler**: the dashboard config POST handler MUST
+  call `Coordinator.UpdatePriority()` **before** `Notify()` fans out.
+  This ensures any engine that reacts to the notifier immediately sees
+  the new mode via the snapshot.
+- Coordinator is INJECTED via constructor to both engines and to the
+  config handler. Not a global. Unit-testable.
+- Log line: `[coordinator] state updated mode=<m> epoch=<n>
+  capital_allocator=<on|off>`.
+
+**Acceptance**:
+- Unit test racing `UpdatePriority()` vs `Snapshot()` × 1000 iterations
+  shows the returned snapshot always has a consistent triple (no
+  torn reads).
+- Unit test `TryReserve` with both modes demonstrates correct
+  priority-bump behavior and order-bound immunity.
+- Integration test: two goroutines simulate both engines reserving
+  the same exchSymbol; the expected strategy wins under each mode.
+
 - Depends on: nothing.
 
-### Step 4b — Engine dispatch order uses Coordinator snapshot
+### Step 4b — Engine entry paths use Coordinator reservations
 
 - File: `plans/PLAN-engine-dispatch-coordinator.md` (new).
-- Each engine's scan loop uses `Coordinator.Snapshot()` at tick start
-  and routes its entry logic accordingly:
-  - `spotengine/engine.go discoveryLoop` at `:168`: when snapshot =
-    `dir_b_first` or `dir_b_only`, runs immediately without deferring
-    to PP. When snapshot = `perp_perp_first` or `perp_perp_only`, does
-    NOT open new positions until PP's cycle for this minute has
-    released its reservations (polls `Coordinator.IsCycleDone(cycle)`).
-  - `engine/engine.go` scan handlers at `:1003+`: mirror for PP.
-- This does NOT move handlers into a shared tick; each engine keeps
-  its own ticker, only the **decision ordering** is coordinated.
+- Replaces v2's "wait for the other engine to finish its cycle"
+  design (not workable across separate tickers) with the
+  **reservation-based flow**:
+
+  For each engine at entry time (after candidate ranking but before
+  placing order):
+  1. Snapshot mode via `Coordinator.Snapshot()`.
+  2. For each ranked candidate:
+     a. Call `TryReserve(exchSymbol, strategy, ev_bps_h)`.
+     b. If `granted=true`: proceed to `BindOrder()` after placing the
+        order. Then place the order. On success, bind OrderID. On
+        failure, call `Release()`.
+     c. If `granted=false`: skip candidate, log `[coordinator]
+        reserve-denied strategy=<s> symbol=<x> reason=<r>
+        conflict_ev=<...>`. Move to next candidate.
+
+- No engine waits on the other. The reservation table itself provides
+  serialization and priority. Both engines run their tickers
+  independently.
+- Out-of-order ticking is handled: if SF ticks first and reserves,
+  PP ticks later and finds slot taken (by higher-priority reservation
+  if mode=dir_b_first). Or if PP ticks first and reserves with lower
+  priority (mode=dir_b_first), SF's later reservation BUMPS PP's (only
+  if PP hasn't yet bound an order — if it has, SF yields).
+- Existing cross-engine hard blocks (`filterArgmaxOpps` etc.) remain
+  as post-open safety guards. Coordinator is the pre-entry layer.
+
+**Acceptance (Step 4b-specific)**:
+- Unit test: two mock engines race to `TryReserve` same exchSymbol;
+  under each mode, the correct winner holds the reservation.
+- Integration test: SF reserves first (mode=dir_b_first), PP later
+  tries, gets denied with reason=`dir_b_has_higher_priority`.
+- Log signal: every denied reservation emits `[coordinator] reserve-
+  denied` with ev values for before/after diff.
+
 - Depends on: Step 4a.
 
 ### Step 5 — BingX Dir B spot leg (new SpotExchange interface)
@@ -395,7 +567,7 @@ serialization layer; existing hard-blocks remain as the backstop.
 | 2 | Capital Maximizer | Now (parallel) | Allocator more efficient |
 | 3a | EV logging | After 1 | EV values in logs |
 | 4a | Coordinator seam | Now (parallel) | `[coordinator]` log lines |
-| 3b | EV gating | After 3a + 4a | Winner-selection logs |
+| 3b | EV gating | After 1 + 2 + 3a + 4a | Winner-selection logs |
 | 4b | Engine dispatch via Coordinator | After 4a | Dir B runs first when `dir_b_first` |
 | 5 | BingX Dir B spot leg | After 4b (or parallel) | BingX in Dir B opp list |
 | 6 | 1h exit redesign | Any time | 1h positions exit cleanly |
@@ -403,8 +575,11 @@ serialization layer; existing hard-blocks remain as the backstop.
 | 8 | Reconcile stats race | Any time | Stats matches row |
 | 9 | Dashboard strategy view | After 1 + 3a | Strategy-aware UI |
 
-Toggle flip from `perp_perp_first` → `dir_b_first` becomes meaningful
-**after Step 4b**. Before that, the toggle is scaffolding.
+Toggle mode affects **entry admission via EV gate** after Step 3b ships
+(reservations respect priority). Step 4b is not strictly required for
+toggle meaningfulness — it's a refinement; without it both engines still
+run their own tickers, but the reservation protocol prevents conflicts
+and enforces priority.
 
 ## Rollout (v2)
 
@@ -461,10 +636,13 @@ Toggle flip from `perp_perp_first` → `dir_b_first` becomes meaningful
   `arb:dirb:slo_breach_count` increments when PP opens a position with
   EV lower than a concurrent Dir B candidate's EV (post-Step 3b).
   Zero expected on happy path; non-zero triggers rollback.
-- **Signal 7 — Pre-vs-post equivalence under toggle=OFF**: before and
-  after Step 4b, run a 1-hour scan with toggle locked to
-  `perp_perp_first`; candidate ordering logs must be byte-for-byte
-  identical (via `diff` on captured logs).
+- **Signal 7 — Pre-vs-post equivalence under toggle=OFF (unit test, v3)**:
+  a fixed-input test suite `TestOffModeEquivalence` feeds a captured
+  candidate set (JSON of 20 real scan candidates) through (a) the
+  pre-coordinator code path and (b) the post-coordinator code path
+  with `mode=perp_perp_first`. Assertions: same ordering, same EV
+  values to 0.01 bps/h, same winner per symbol. Deterministic —
+  market-state independent. Runs in CI + pre-deploy.
 
 ## Out of scope (final, v2)
 
