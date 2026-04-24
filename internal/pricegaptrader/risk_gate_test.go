@@ -390,3 +390,59 @@ func TestRiskGate_OrderingInvariant(t *testing.T) {
 		t.Fatalf("D-17 ordering violated: got %v, want ErrPriceGapCandidateDisabled (gate 1 first)", res.Err)
 	}
 }
+
+// TestRiskGate_DuplicateCandidate_Blocks — regression test for the
+// 2026-04-24 UAT incident where SOONUSDT opened at 21:25:04 and again at
+// 21:25:34 under the same (symbol, long_exch, short_exch) tuple. Gate 0
+// (duplicate-candidate re-entry) must block a second entry while the
+// first is still active, independent of MaxConcurrent or Budget.
+func TestRiskGate_DuplicateCandidate_Blocks(t *testing.T) {
+	store := newFakeStore()
+	tr := newGateTestTracker(t, store, newFakeDelistChecker(), defaultGateConfig())
+
+	cand := binanceBybitCand() // Symbol="SOON", long=binance, short=bybit
+	active := []*models.PriceGapPosition{{
+		ID:            "pg_SOON_binance_bybit_1",
+		Symbol:        cand.Symbol,
+		LongExchange:  cand.LongExch,
+		ShortExchange: cand.ShortExch,
+		NotionalUSDT:  1000,
+		Status:        models.PriceGapStatusOpen,
+	}}
+
+	res := tr.preEntry(cand, 1000, freshDetection(), active)
+	if res.Approved {
+		t.Fatalf("duplicate candidate must be blocked")
+	}
+	if !errors.Is(res.Err, ErrPriceGapDuplicateCandidate) {
+		t.Fatalf("err=%v, want ErrPriceGapDuplicateCandidate", res.Err)
+	}
+	if res.Reason != "duplicate_candidate" {
+		t.Fatalf("reason=%q, want duplicate_candidate", res.Reason)
+	}
+}
+
+// TestRiskGate_DuplicateCandidate_DifferentSymbol_Passes — an active
+// position with the same exchange pair but a different symbol must NOT
+// trigger Gate 0. Uniqueness is on the full (symbol, long_exch, short_exch)
+// tuple, not just the exchange pair.
+func TestRiskGate_DuplicateCandidate_DifferentSymbol_Passes(t *testing.T) {
+	store := newFakeStore()
+	tr := newGateTestTracker(t, store, newFakeDelistChecker(), defaultGateConfig())
+
+	cand := binanceBybitCand() // Symbol="SOON"
+	// Active position on same exchanges but different symbol.
+	active := []*models.PriceGapPosition{{
+		ID:            "pg_OTHER_binance_bybit_1",
+		Symbol:        "OTHER",
+		LongExchange:  cand.LongExch,
+		ShortExchange: cand.ShortExch,
+		NotionalUSDT:  1000,
+		Status:        models.PriceGapStatusOpen,
+	}}
+
+	res := tr.preEntry(cand, 1000, freshDetection(), active)
+	if !res.Approved {
+		t.Fatalf("different-symbol same-exchange-pair must pass gate 0; err=%v reason=%s", res.Err, res.Reason)
+	}
+}

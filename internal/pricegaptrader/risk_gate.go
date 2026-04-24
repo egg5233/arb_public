@@ -47,6 +47,22 @@ func (t *Tracker) preEntry(
 	activePositions []*models.PriceGapPosition,
 ) GateDecision {
 
+	// Gate 0: per-candidate re-entry lockout. A PriceGapCandidate is a slot
+	// defined by (symbol, long_exch, short_exch) — one active position per
+	// slot. Without this gate, the detector re-fires on the same candidate
+	// every tick while a prior position is still open, double-counting
+	// budget and compounding capital exposure. Observed in the 2026-04-24
+	// UAT attempt: SOONUSDT opened at 21:25:04 then again at 21:25:34.
+	// No Telegram alert — this fires on sustained market signal, not an
+	// operational event worth paging.
+	for _, p := range activePositions {
+		if p.Symbol == cand.Symbol &&
+			p.LongExchange == cand.LongExch &&
+			p.ShortExchange == cand.ShortExch {
+			return GateDecision{Err: ErrPriceGapDuplicateCandidate, Reason: "duplicate_candidate"}
+		}
+	}
+
 	// Gate 1: exec-quality disabled
 	disabled, reason, _, err := t.db.IsCandidateDisabled(cand.Symbol)
 	if err != nil {

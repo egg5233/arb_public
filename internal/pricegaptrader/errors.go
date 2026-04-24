@@ -15,4 +15,5 @@ var (
 	ErrPriceGapDelistedLeg          = errors.New("pricegap: leg delisted or halted")
 	ErrPriceGapStaleBBO             = errors.New("pricegap: BBO staler than threshold")
 	ErrPriceGapCircuitBreaker       = errors.New("pricegap: circuit breaker open")
+	ErrPriceGapDuplicateCandidate   = errors.New("pricegap: candidate already has an active position")
 )

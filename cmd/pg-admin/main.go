@@ -6,6 +6,10 @@
 //	pg-admin enable <symbol>         — clears pg:candidate:disabled:<symbol>
 //	pg-admin disable <symbol> [why]  — sets pg:candidate:disabled:<symbol>=[why|"manual"]
 //	pg-admin positions list          — lists all active positions (table)
+//	pg-admin positions purge <id>    — removes id from pg:positions:active
+//	                                    (does NOT close the exchange position — use
+//	                                    only for ghosts that never reached the wire,
+//	                                    e.g. synth positions orphaned by a bug)
 //
 // All operations work directly on Redis — config.json is NEVER written
 // (CLAUDE.local.md rule; D-20). Phase 9 will replace this CLI with a
@@ -57,10 +61,20 @@ func main() {
 		}
 		cmdDisable(db, strings.ToUpper(os.Args[2]), reason)
 	case "positions":
-		if len(os.Args) < 3 || os.Args[2] != "list" {
-			fatal("positions requires 'list'")
+		if len(os.Args) < 3 {
+			fatal("positions requires 'list' or 'purge <id>'")
 		}
-		cmdPositionsList(db)
+		switch os.Args[2] {
+		case "list":
+			cmdPositionsList(db)
+		case "purge":
+			if len(os.Args) < 4 {
+				fatal("positions purge requires <id>")
+			}
+			cmdPositionsPurge(db, os.Args[3])
+		default:
+			fatal("positions: unknown subcommand %q (want 'list' or 'purge')", os.Args[2])
+		}
 	case "-h", "--help", "help":
 		usage()
 		os.Exit(0)
@@ -121,6 +135,13 @@ func cmdDisable(db *database.Client, symbol, reason string) {
 	fmt.Printf("Candidate %s disabled. Reason: %s\n", symbol, reason)
 }
 
+func cmdPositionsPurge(db *database.Client, id string) {
+	if err := db.RemoveActivePriceGapPosition(id); err != nil {
+		fatal("RemoveActivePriceGapPosition: %v", err)
+	}
+	fmt.Printf("Purged %s from pg:positions:active. (Position record stays in pg:positions for analytics.)\n", id)
+}
+
 func cmdPositionsList(db *database.Client) {
 	active, err := db.GetActivePriceGapPositions()
 	if err != nil {
@@ -146,6 +167,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  pg-admin enable <symbol>")
 	fmt.Fprintln(os.Stderr, "  pg-admin disable <symbol> [reason...]")
 	fmt.Fprintln(os.Stderr, "  pg-admin positions list")
+	fmt.Fprintln(os.Stderr, "  pg-admin positions purge <id>")
 }
 
 func fatal(format string, args ...interface{}) {

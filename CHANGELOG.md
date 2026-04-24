@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.34.8] - 2026-04-24
+
+### Fixed
+
+- **Paper-mode boundary leak in `closeLegMarket` (high-severity).** `placeLeg` correctly synthesized fills when `PriceGapPaperMode=true`, but `openPair`'s unwind-to-match and defensive-close paths called `closeLegMarket`, which unconditionally invoked `ex.PlaceOrder` — sending real `reduceOnly=true` market orders against positions that only existed in our synth state. Observed during the 2026-04-24 UAT attempt: two SOONUSDT "opens" each preceded by `bingx API error code=101290 "Reduce Only order can only decrease position, not open"`. Reduce-only semantics saved us from opening unintended positions, but the tracker accumulated ghost Redis rows every 30s while live. Fix: single-line paper-mode guard at the top of `closeLegMarket` — restores D-12 / Pitfall 2 "paper mode is a single chokepoint at `ex.PlaceOrder`" invariant. Regression: `paper_close_leg_test.go` (paper: zero PlaceOrder calls; live: one PlaceOrder call with expected params).
+- **Missing per-candidate re-entry gate (high-severity).** `preEntry` had 6 gates (exec-quality, max-concurrent, per-position cap, budget, gate-concentration, delist/staleness) but never checked "does this exact `(symbol, long_exch, short_exch)` slot already have an active position?". Observed during 2026-04-24 UAT: SOONUSDT opened at 21:25:04 and fired again at 21:25:34 under the same candidate tuple — capital exposure could have compounded in live mode. Fix: new Gate 0 at the top of `preEntry` that matches active positions on the full tuple and blocks with `ErrPriceGapDuplicateCandidate` / reason `duplicate_candidate`. No Telegram alert (this is sustained market signal, not an operational event). Regression tests: `TestRiskGate_DuplicateCandidate_Blocks` and `TestRiskGate_DuplicateCandidate_DifferentSymbol_Passes` in `risk_gate_test.go`.
+
+### Added
+
+- **`pg-admin positions purge <id>`** — operator CLI for dropping an entry from `pg:positions:active` without touching the exchange. Intended use: clean up synth/ghost positions orphaned by bugs or crashes. Position record stays in `pg:positions` hash for analytics. Not needed for tonight's two ghosts — Plan 08's startup rehydrate already orphaned them via the "zero real exchange position" check (Pitfall 3), confirming the self-healing path works for this failure mode.
+
+### Provenance
+
+- Failure surface emerged during controlled 09-11 UAT walkthrough after temporarily lowering SOONUSDT's `threshold_bps` to 10 to force a fire. Threshold reverted to 20 before any of these fixes landed; no live orders held capital.
+
 ## [0.34.7] - 2026-04-24
 
 ### Fixed

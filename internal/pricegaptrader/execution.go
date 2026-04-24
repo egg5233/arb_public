@@ -220,8 +220,21 @@ func (t *Tracker) placeLeg(
 
 // closeLegMarket submits a MARKET order (no IOC) with ReduceOnly for exit/unwind.
 // Returns best-effort; errors are logged and bump the failure counter.
+//
+// Paper-mode chokepoint (Plan 09-03 Pattern 2 / D-12): when PriceGapPaperMode
+// is true the live ex.PlaceOrder call is skipped. placeLeg synthesizes fills
+// without touching the exchange, so there is no real position to reduce;
+// hitting the wire here would always be wrong (and was observed to fire
+// reduceOnly market orders against non-existent bingx positions in the
+// 2026-04-24 UAT attempt). Every caller of closeLegMarket originates from
+// paths that already assume best-effort — openPair's defensive-close and
+// unwind-to-match — so a silent skip preserves the invariant that paper
+// mode makes zero PlaceOrder calls.
 func (t *Tracker) closeLegMarket(ex exchange.Exchange, symbol string, side exchange.Side, size float64, decimals int) {
 	if size <= 0 {
+		return
+	}
+	if t.cfg.PriceGapPaperMode {
 		return
 	}
 	_, err := ex.PlaceOrder(exchange.PlaceOrderParams{
