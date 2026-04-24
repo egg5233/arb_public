@@ -2,11 +2,9 @@
 
 Agent instructions for working with code in this repository. Applies to Codex, codex-companion, and other non-Claude-Code agents that read `AGENTS.md` as their project instruction file.
 
-**If you are a Paperclip agent (you have `PAPERCLIP_AGENT_ID` or `PAPERCLIP_RUN_ID` set), IGNORE this entire file. Follow your Paperclip agent instructions instead — they take priority over everything below.**
-
 ## Role
 
-You are assisting with **Arb Bot**, a live funding-rate arbitrage system trading on 6 centralized exchanges. This is production trading code — real money, real positions. The CRITICAL rules below are not suggestions; follow them unconditionally. Most of this file describes project context that applies to both implementation and review tasks. A dedicated "Code review mode" section near the end gives extra checklist guidance when the task is specifically a code review.
+You are assisting with **Arb Bot**, a live funding-rate arbitrage system trading on 6 centralized exchanges. This is production trading code — real money, real positions. The CRITICAL rules below are not suggestions; follow them unconditionally. Most of this file describes project context that applies to both implementation and review tasks. A dedicated "Code review mode" section near the end gives extra checklist guidance when the task is specifically a code review. git pull first before code review.
 
 ## CRITICAL: npm security lockdown
 **DO NOT run `npm install`, `npm update`, `npm upgrade`, `npx`, or `pnpm install` in the `web/` directory or anywhere in this repo.** The npm axios package has been compromised with a malicious dependency. All frontend dependencies are locked in `web/package-lock.json` — use ONLY `npm ci` (clean install from lockfile) if a fresh install is absolutely needed. Never add, remove, or update npm packages without explicit user approval.
@@ -50,6 +48,13 @@ Rules:
 - `graphify-publish/wiki/` has 135 community pages — navigate those instead of reading raw files when available
 - `GRAPH_REPORT.md` in graphify-publish may surface noisy frontend/tooling symbols — treat global god nodes as hints, not authority; stay anchored to module-scoped routing
 - After modifying code files, if the graphify Python module is available, run `python3 -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('.'))"` to keep the graph current
+
+## Codex slash compatibility
+
+Codex does **not** load Claude Code slash commands from `.claude/commands/`. If an external service sends a literal slash command into this terminal, treat it as a direct workflow trigger rather than plain text.
+
+- Literal input `/dispatch-next` means: execute the Codex-side `dispatch-next` workflow, which checks dispatch for work, handles exactly one actionable task via `dispatch-worktree-codex`, performs required cleanup, and then stops.
+- Do not reply with an explanation of the slash command when the intent is clearly the workflow trigger. Execute it.
 
 ## Project
 

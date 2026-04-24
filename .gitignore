@@ -44,3 +44,8 @@ graphify-publish/
 .mcp.json
 CLAUDE.local.md
 .worktrees/
+scripts/dispatch_mcp_stdio_bridge.py
+AGENTS.md
+scripts/dispatch_presence_heartbeat.py
+scripts/__pycache__/dispatch_mcp_stdio_bridge.cpython-312.pyc
+scripts/__pycache__/dispatch_presence_heartbeat.cpython-312.pyc
