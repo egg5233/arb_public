@@ -1,10 +1,18 @@
 # PLAN: Per-Leg Tier 1 Skip for Exchanges Without CloseSize
 
-Version: v10
+Version: v11
 Date: 2026-04-24
 Status: DRAFT
 
 ## Changelog
+- **v11** (2026-04-24): Independent Codex review round 5 — NEEDS-REVISION 1
+  blocker (Go type error). Fixed:
+  - `testReconcilePnLDone` declared as `chan<- struct{}` (send-only)
+    cannot be read via `<-e.testReconcilePnLDone` from the test — that
+    won't compile. Changed the field type to plain `chan struct{}`
+    (bidirectional) so the engine can send and the test can receive on
+    the same field. The engine-side send continues to use the
+    non-blocking `select` pattern; buffered capacity 2 as before.
 - **v10** (2026-04-24): Independent Codex review round 4 — NEEDS-REVISION 1
   blocker (test determinism, inline success path). Fixed:
   - v9's `testReconcilePnLDone` seam only fired in the async retry
@@ -732,13 +740,13 @@ testReconcileRetryDelays []time.Duration
 // (e.g., verify rotation wrapper passes attempt=2, not 1).
 testTryReconcileObserver func(posID string, attempt int)
 
-// testReconcilePnLDone, if non-nil, is sent on by reconcilePnL's async
-// retry goroutine just before it returns. Lets tests block on completion
-// of the full retry chain so post-state assertions are deterministic.
-// Only used by the async branch; when attempt 1 succeeds inline, no send
-// occurs and the channel is unused. Test code uses a buffered channel
-// and a timeout to cover both cases.
-testReconcilePnLDone chan<- struct{}
+// testReconcilePnLDone, if non-nil, is sent on by reconcilePnL just
+// before it returns (both inline-success and async-goroutine paths —
+// see v10). Lets tests block on completion of the full retry chain so
+// post-state assertions are deterministic. Declared bidirectional
+// `chan struct{}` (not `chan<-`) so the test can both construct the
+// channel and receive on it while sharing the same field value — v11.
+testReconcilePnLDone chan struct{}
 ```
 
 And wire at the three call sites:
