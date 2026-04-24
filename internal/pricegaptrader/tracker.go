@@ -85,6 +85,13 @@ type Tracker struct {
 	// broadcast itself happens outside the critical section.
 	positionsBroadcastMu   sync.Mutex
 	lastPositionsBroadcast time.Time
+
+	// Debug-log rate limiter (Phase 9 gap-closure Gap #1 / Plan 09-09).
+	// Key format: "symbol|reason". Value = last emit time. Prevents steady-
+	// state log flooding of per-tick × per-candidate × per-reason non-fire
+	// lines. Only consulted when cfg.PriceGapDebugLog is ON (caller gates).
+	debugLogMu       sync.Mutex
+	lastNoFireLogged map[string]time.Time
 }
 
 // NewTracker constructs a Tracker with injected dependencies. The store and
@@ -97,18 +104,19 @@ func NewTracker(
 	cfg *config.Config,
 ) *Tracker {
 	return &Tracker{
-		exchanges:     exchanges,
-		db:            db,
-		delist:        delist,
-		cfg:           cfg,
-		log:           utils.NewLogger("pg-tracker"),
-		stopCh:        make(chan struct{}),
-		bars:           make(map[string]*candidateBars),
-		monitors:       make(map[string]context.CancelFunc),
-		monitorHandles: make(map[string]monitorHandle),
-		entryInFlight:  make(map[string]bool),
-		broadcaster:    NoopBroadcaster{},
-		notifier:       NoopNotifier{},
+		exchanges:        exchanges,
+		db:               db,
+		delist:           delist,
+		cfg:              cfg,
+		log:              utils.NewLogger("pg-tracker"),
+		stopCh:           make(chan struct{}),
+		bars:             make(map[string]*candidateBars),
+		monitors:         make(map[string]context.CancelFunc),
+		monitorHandles:   make(map[string]monitorHandle),
+		entryInFlight:    make(map[string]bool),
+		broadcaster:      NoopBroadcaster{},
+		notifier:         NoopNotifier{},
+		lastNoFireLogged: make(map[string]time.Time),
 	}
 }
 
@@ -140,6 +148,36 @@ func (t *Tracker) SetNotifier(n PriceGapNotifier) {
 // BroadcastPriceGapEvent is unthrottled — event rate is bounded by trading
 // cadence, not noise.
 const priceGapPositionsMinInterval = 2 * time.Second
+
+// priceGapNoFireLogCooldown — minimum interval between two identical
+// (symbol, reason) non-fire log lines when cfg.PriceGapDebugLog is ON.
+// Prevents steady-state log flooding: without this gate, every tick × every
+// candidate × every non-fire reason would produce a line (potentially
+// 4 candidates × 3 reasons × 2/min = 24 lines/min of the same message).
+// 60s keeps operators informed without drowning journalctl.
+// Phase 9 gap-closure Gap #1 / Plan 09-09.
+const priceGapNoFireLogCooldown = 60 * time.Second
+
+// shouldLogNoFire returns true when the caller MUST emit a non-fire log line
+// for (symbol, reason), and updates the per-key last-emit time. False when
+// the same (symbol, reason) was logged less than priceGapNoFireLogCooldown
+// ago, or when reason is empty (defensive no-op).
+//
+// Flag check is the caller's responsibility: the helper has no knowledge of
+// cfg.PriceGapDebugLog. See runTick for the gating pattern.
+func (t *Tracker) shouldLogNoFire(symbol, reason string, now time.Time) bool {
+	if reason == "" {
+		return false
+	}
+	key := symbol + "|" + reason
+	t.debugLogMu.Lock()
+	defer t.debugLogMu.Unlock()
+	if last, ok := t.lastNoFireLogged[key]; ok && now.Sub(last) < priceGapNoFireLogCooldown {
+		return false
+	}
+	t.lastNoFireLogged[key] = now
+	return true
+}
 
 // maybeBroadcastPositions emits the full active-positions list to the
 // dashboard WS hub, but at most once per priceGapPositionsMinInterval.
@@ -285,6 +323,15 @@ func (t *Tracker) runTick(now time.Time) {
 	for _, cand := range t.cfg.PriceGapCandidates {
 		det := t.detectOnce(cand, now)
 		if !det.Fired {
+			// Phase 9 gap-closure Gap #1 (Plan 09-09): surface the detector's
+			// non-fire reason under a flag, rate-limited per-(symbol, reason)
+			// to prevent log spam. Use .Info (not .Debug) so the line is
+			// visible in default journalctl output — the cooldown is the
+			// spam gate, not the log level.
+			if t.cfg.PriceGapDebugLog && t.shouldLogNoFire(cand.Symbol, det.Reason, now) {
+				t.log.Info("pricegap: no-fire %s reason=%s spread_bps=%.2f staleness_sec=%.1f",
+					cand.Symbol, det.Reason, det.SpreadBps, det.StalenessSec)
+			}
 			continue
 		}
 
