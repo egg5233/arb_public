@@ -1,10 +1,69 @@
 # PLAN: Per-Leg Tier 1 Skip for Exchanges Without CloseSize
 
-Version: v7
+Version: v8
 Date: 2026-04-24
 Status: DRAFT
 
 ## Changelog
+- **v8** (2026-04-24): Independent Codex review round 2 — NEEDS-REVISION 3
+  blockers. Fixed:
+  - **Blocker #1 — rotation/close race with stale `posCopy`**: the v7 one-line
+    `attempt=2` bump does not fully fix the rotation follow-up path.
+    `closePositionWithMode` spawns `go e.reconcilePnL(&posCopy)` from a
+    stale `posCopy` (`exit.go:1064`). Later, `reconcileRotationPnL` updates
+    `pos.RotationPnL` in DB and calls `tryReconcilePnL(fresh, 2)`. The
+    close-path retry chain (running with its stale `posCopy.RotationPnL=0`)
+    can still execute attempts 2/3/4 AFTER the rotation update, and
+    overwrite the correct rotation-aware reconciled PnL with a stale
+    view. v8 fixes by making `tryReconcilePnL` **always re-read
+    `pos.RotationPnL` from DB** at the top of the function (single
+    `GetPosition` call) and substituting that value into the
+    `reconciledPnL = longAgg.NetPnL + shortAgg.NetPnL + <freshRotationPnL>`
+    computation. The stale-copy caller still passes its `pos` for
+    addressing (ID, exchanges, expected sizes) but the rotation accumulator
+    always reflects the latest DB state. Also keeps v7's rotation
+    `tryReconcilePnL(fresh, 2)` bump for the attempt-gate bypass.
+    Timing race: if rotation reconcile and close reconcile run
+    interleaved, both now agree on the same fresh `RotationPnL` value.
+    Rotation might still land *between* the GetPosition and the
+    UpdatePositionFields callback, but that window is microseconds and
+    UpdatePositionFields uses predicate read-modify-write so the callback
+    operates on a fresh snapshot — the `fresh.RotationPnL` read inside the
+    callback is the correct source of truth for the final write. Plan now
+    updates `tryReconcilePnL` to use the callback's `fresh.RotationPnL`
+    instead of the outer `pos.RotationPnL` for the write.
+  - **Blocker #2 — exposesCloseSize internal inconsistency**: v7 changelog
+    said "new exported helper" but the target snippet was an inline
+    closure, and the Layer 2 test table still keyed enforcement off
+    `longAgg.CloseSize` instead of the exchange-capability check. v8
+    resolves: (a) changelog corrected to say "inline closure near the
+    gate — local scope is appropriate" (package-level helper was
+    over-specified); (b) Layer 2 inline test table entry #1 `longTier1Enforced`
+    rewritten to key off exchange name via the same `exposesCloseSize`
+    closure (copy-pasted or imported into the test file to match runtime
+    semantics exactly).
+  - **Blocker #3 — tests M/N need code seams that don't exist**: live code
+    has hardcoded `time.Sleep(2 * time.Second)` at `exit.go:1105` and
+    rotation sleeps at `:3170`, and no `reconcilePnL` delay override
+    exists. `tryReconcilePnL` is a concrete method (not mockable without
+    interface extraction). Accepted-path reconcile unconditionally calls
+    `e.api.BroadcastPositionUpdate` (`exit.go:1395`) which requires a
+    non-nil API server. v8 extends the plan's Change set:
+    - **Change 4 (new)**: add a package-private hook slot
+      `testReconcileDelays func(reconcileAttempt int) time.Duration` on
+      `*Engine`. When non-nil, `reconcilePnL` uses this to derive both the
+      initial 2s sleep (attempt 0) and the retry delays (attempts 2/3/4).
+      Rotation wrapper uses a simpler `testRotationReconcileSleep
+      time.Duration`. Both default nil in production. Same pattern as the
+      existing `testExecuteArbitrageHook` / `testRescanHook` already in
+      the codebase.
+    - **Change 5 (new)**: add a spy slot
+      `testTryReconcileObserver func(posID string, attempt int)` called
+      at the entry of `tryReconcilePnL`. Test N asserts the observer
+      captured `attempt=2` for the rotation call.
+    - Tests M/N now specify using these hooks + a minimal `api.Server`
+      stub (or nil-safe `BroadcastPositionUpdate`). Harness setup
+      described in the test plan explicitly.
 - **v7** (2026-04-24): Independent Codex review — NEEDS-REVISION 3 items (found
   what the normal review loop missed). Fixed:
   - **Blocker #1 — `reconcileRotationPnL` silently broken by attempt gate**:
@@ -383,8 +442,17 @@ if useTier1 {
     }
 }
 
-// Phase 2 (unchanged) — splitSharedPnL, compute reconciledPnL, diff
-...
+// Phase 2 — splitSharedPnL (unchanged), then compute reconciledPnL using
+// the CALLER-PROVIDED pos.RotationPnL for gate decisions (diff threshold).
+// The FINAL write inside UpdatePositionFields re-computes using the fresh
+// pos snapshot read inside the predicate callback, to avoid a stale
+// posCopy race between closePositionWithMode's reconcilePnL(&posCopy)
+// spawn (exit.go:1064) and reconcileRotationPnL's DB update to
+// RotationPnL. See Phase 3.5 below.
+//
+// Gate-time computation (used only for diff/retry decisions, not final
+// write):
+reconciledPnL := longAgg.NetPnL + shortAgg.NetPnL + pos.RotationPnL
 diff := reconciledPnL - oldPnL
 
 // Phase 3 — Tier 2/Tier 3 when !useTier1, OR Tier 1 partial fallback when at
@@ -448,6 +516,30 @@ if !useTier1 {
         shortAgg.Fees, shortAgg.Funding, shortAgg.PricePnL,
         diff, notional)
 }
+
+// Phase 3.5 (v8, new) — final write inside the existing
+// UpdatePositionFields predicate uses fresh.RotationPnL (from the
+// predicate snapshot) rather than the outer pos.RotationPnL. Avoids a
+// stale-posCopy race with reconcileRotationPnL.
+//
+// Modification to the existing UpdatePositionFields predicate at
+// exit.go:1310-1342 (only the RealizedPnL write is changed):
+if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
+    if needsPnLUpdate {
+        // v8 change: recompute reconciledPnL here using the predicate's
+        // fresh snapshot of RotationPnL so a late rotation update does
+        // not get overwritten by a stale close-path posCopy view.
+        freshReconciledPnL := longAgg.NetPnL + shortAgg.NetPnL + fresh.RotationPnL
+        fresh.RealizedPnL = freshReconciledPnL
+        if freshReconciledPnL != reconciledPnL {
+            e.log.Info("reconcile %s [attempt %d]: stale-posCopy corrected (caller.RotationPnL=%.4f fresh.RotationPnL=%.4f delta=%.4f)",
+                pos.ID, attempt, pos.RotationPnL, fresh.RotationPnL, freshReconciledPnL-reconciledPnL)
+        }
+    }
+    // (all other predicate fields — funding, per-leg breakdown,
+    // HasReconciled — unchanged in v8)
+    return true
+}); err != nil { /* ... existing error handling ... */ }
 ```
 
 **Behavior matrix (summarized in the test table below):**
@@ -537,8 +629,8 @@ state from `e.db.GetHistory` / `e.db.GetPosition`.
 | J | `TestTryReconcile_PreMigration_BinanceLong`            | same records as C but `pos.LongCloseSize=0, pos.ShortCloseSize=0` (pre-migration) | ... | `true` on attempt 1 (flows to existing Tier 2/3; `!useTier1` path unaffected by attempt gate) | (not tested) | proves `!useTier1` branch still works; this change does not affect pre-migration path |
 | K | `TestTryReconcile_BinanceLong_AttemptGate` (v4)        | `[{Side:"", CloseSize:0, PricePnL:-55, Fees:-0.4, Funding:1.2}]` (settled)  | `[{Side:"short", CloseSize:100, ...}]` (settled) | `false`           | `true`             | dedicated attempt-gate regression — the gate is the reason C/E/G/I must not accept on attempt 1 |
 | L | `TestTryReconcile_BinanceLong_CommissionOnlySnapshot_ResidualHazard` (v5) | `[{Side:"", CloseSize:0, PricePnL:0, Fees:-0.4, Funding:0}]` (mid-settlement: COMMISSION-only, persists across attempts)  | settled | `false` (attempt gate) | `true` if `|diff| <= max(close-notional)` (residual hazard path); test parameterizes the notional and diff so that the accept path is deterministic | **Pins the residual hazard explicitly.** The test documents the known design gap: empty-aggregate guard passes (Fees non-zero), attempt gate rejects attempt 1, attempt 2 accepts if `|diff|` fits notional. Asserts log lines: `Tier 1 partial path — deferring acceptance` at attempt 1 AND `Tier 1 partial accepted` at attempt 2. VPS ops can grep for the latter to monitor mid-settlement acceptances; if production shows this mode firing on actually-unsettled data, the follow-up stability-check mitigation (documented in Risk) is promoted. |
-| M | `TestReconcilePnL_Wrapper_BinanceLong_RetryChainConverges` (v7)            | Binance-leg position, settled `/income` data returned at every attempt | settled                                            | (wrapper-level test; asserts end-state, not per-attempt return) | After `reconcilePnL(pos)` completes, history entry has per-leg breakdown populated and `HasReconciled=true`. Test patches the async retry delays (via internal `reconcilePnLDelays` override or similar) to 1ms so the test doesn't actually sleep 52s. Asserts `tryReconcilePnL` was invoked at least twice (attempt 1 rejected by gate, attempt 2 accepted). Proves the wrapper's retry chain works end-to-end, not just the inner function. |
-| N | `TestReconcileRotationPnL_BinanceLeg_CompletesAfterRotation` (v7)          | Binance-leg closed rotated position with non-empty `RotationHistory` and nil `RotationRecord.PnL` on one entry | settled                                | (wrapper-level test; asserts end-state) | After `reconcileRotationPnL` completes, `RotationHistory[i].PnL` is set AND the subsequent `tryReconcilePnL(fresh, 2)` call (per v7 fix at exit.go:3246) succeeds and updates history breakdown. Asserts the attempt parameter passed is 2 (mock or spy on `tryReconcilePnL` call). Proves the v7 rotation fix unblocks Binance-leg rotated positions. |
+| M | `TestReconcilePnL_Wrapper_BinanceLong_RetryChainConverges` (v7, impl via v8 seams) | Binance-leg position, settled `/income` data returned at every attempt | settled                                            | (wrapper-level test; asserts end-state, not per-attempt return) | **Setup**: uses Change 4 seams — set `e.testReconcileInitialSleep = &oneMs` and `e.testReconcileRetryDelays = []time.Duration{1ms, 1ms, 1ms}`, install `testTryReconcileObserver` capturing (posID, attempt) pairs. Use Change 5: pass `e.api = nil` (nil-safe broadcast). After `reconcilePnL(pos)` returns, history entry has per-leg breakdown populated and `HasReconciled=true`. Observer slice contains `(posID, 1)` and `(posID, 2)` — proves attempt 1 rejected by gate, attempt 2 accepted. |
+| N | `TestReconcileRotationPnL_BinanceLeg_CompletesAfterRotation` (v7, impl via v8 seams) | Binance-leg closed rotated position with non-empty `RotationHistory` and nil `RotationRecord.PnL` on one entry | settled                                | (wrapper-level test; asserts end-state) | **Setup**: uses Change 4 observer seam + Change 5 nil-safe broadcast. After `reconcileRotationPnL` completes, `RotationHistory[i].PnL` is set AND the subsequent `tryReconcilePnL(fresh, 2)` call (per v7 rotation fix at exit.go:3246) succeeds and updates history breakdown. Observer captures exactly one `(posID, 2)` entry — proves the attempt=2 bump took effect. Also pin v8 anti-stale behavior: mutate DB `pos.RotationPnL` between tryReconcile observer call and UpdatePositionFields predicate firing (use an override in the DB wrapper or second-observer pattern); assert final `RealizedPnL` uses the POST-mutation RotationPnL, not the pre-mutation posCopy value. |
 
 Each integration test asserts:
 1. `tryReconcilePnL` return value matches expectation at attempt 1 (always) and
@@ -585,6 +677,78 @@ Existing tests MUST continue to pass:
 These cover the original Tier 1/Tier 2/Tier 3 contract; the v2 change is additive
 (new per-leg decision + new partial fallback) and does not alter the existing
 branches when both legs report `CloseSize > 0`.
+
+### Change 4 (v8): Test seams on `*Engine`
+
+Add three package-private hooks to `*Engine` (same pattern as existing
+`testExecuteArbitrageHook`, `testRescanHook`). All default `nil` in
+production; overridden only in tests.
+
+```go
+// In internal/engine/engine.go struct Engine { ... }
+
+// testReconcileInitialSleep overrides the 2s presleep in reconcilePnL
+// (exit.go:1105). Default 2s in production when nil.
+testReconcileInitialSleep *time.Duration
+
+// testReconcileRetryDelays overrides the []time.Duration{5s, 15s, 30s}
+// used by the async retry loop at exit.go:1119. Default in production
+// when nil. Tests set to []time.Duration{time.Millisecond, time.Millisecond,
+// time.Millisecond} to make the retry chain converge quickly.
+testReconcileRetryDelays []time.Duration
+
+// testTryReconcileObserver is called at the top of tryReconcilePnL with
+// the position ID and attempt number. Lets tests spy on attempt parameters
+// (e.g., verify rotation wrapper passes attempt=2, not 1).
+testTryReconcileObserver func(posID string, attempt int)
+```
+
+And wire at the three call sites:
+
+```go
+// reconcilePnL — initial sleep
+initialSleep := 2 * time.Second
+if e.testReconcileInitialSleep != nil {
+    initialSleep = *e.testReconcileInitialSleep
+}
+time.Sleep(initialSleep)
+
+// reconcilePnL — retry delays
+delays := []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second}
+if e.testReconcileRetryDelays != nil {
+    delays = e.testReconcileRetryDelays
+}
+
+// tryReconcilePnL — observer
+if e.testTryReconcileObserver != nil {
+    e.testTryReconcileObserver(pos.ID, attempt)
+}
+```
+
+Rationale: the test hook pattern already exists in the codebase. Adding
+three nil-defaulted fields does not affect production behavior; the wire-up
+is a few lines per site.
+
+### Change 5 (v8): Nil-safe API broadcast for test harness
+
+`e.api.BroadcastPositionUpdate(pos)` at `exit.go:1395` would nil-deref if
+`e.api == nil`. Engine tests that want to exercise the success path either:
+
+Option A (preferred — minimal): wrap the call site in a nil check:
+```go
+if e.api != nil {
+    e.api.BroadcastPositionUpdate(updated)
+}
+```
+Pattern already used at `engine.go:2303-2304`. Plan applies the same guard
+to the relevant call sites in the reconcile path (`exit.go:1395` and any
+other `e.api.BroadcastPositionUpdate` in the tryReconcile path).
+
+Option B (alternative): pass a real test server. Rejected — higher test
+setup cost and `BroadcastPositionUpdate` hub-internal state is not test-
+relevant.
+
+Pick Option A.
 
 ### Change 3: VERSION + CHANGELOG
 
