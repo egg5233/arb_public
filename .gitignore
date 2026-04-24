@@ -1,4 +1,5 @@
 config.json
+config_snapshots/*
 !.planning/config.json
 arb
 *.log
@@ -44,3 +45,4 @@ graphify-publish/
 .mcp.json
 CLAUDE.local.md
 .worktrees/
+scripts/config_watchdog.sh
