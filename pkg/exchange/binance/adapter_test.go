@@ -5,7 +5,52 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
+
+// TestGetClosePnL_Binance_CloseSizeUnknown verifies that Binance's income-API-
+// based close-PnL aggregation flags CloseSizeUnknown=true. The Binance income
+// endpoint does not expose trade size, so callers must not size-gate on the
+// returned record.
+func TestGetClosePnL_Binance_CloseSizeUnknown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/fapi/v1/income" {
+			http.NotFound(w, r)
+			return
+		}
+		switch r.URL.Query().Get("incomeType") {
+		case "REALIZED_PNL":
+			json.NewEncoder(w).Encode([]map[string]interface{}{{"income": "12.34"}})
+		case "COMMISSION":
+			json.NewEncoder(w).Encode([]map[string]interface{}{{"income": "-0.50"}})
+		case "FUNDING_FEE":
+			json.NewEncoder(w).Encode([]map[string]interface{}{{"income": "0.25"}})
+		default:
+			json.NewEncoder(w).Encode([]map[string]interface{}{})
+		}
+	}))
+	defer srv.Close()
+
+	adapter := &Adapter{
+		client:    NewClient("testkey", "testsecret").WithBaseURL(srv.URL),
+		apiKey:    "testkey",
+		secretKey: "testsecret",
+	}
+
+	pnls, err := adapter.GetClosePnL("BTCUSDT", time.Unix(0, 0))
+	if err != nil {
+		t.Fatalf("GetClosePnL: %v", err)
+	}
+	if len(pnls) != 1 {
+		t.Fatalf("expected 1 aggregated record, got %d", len(pnls))
+	}
+	if !pnls[0].CloseSizeUnknown {
+		t.Errorf("CloseSizeUnknown = false, want true (Binance income API has no size)")
+	}
+	if pnls[0].CloseSize != 0 {
+		t.Errorf("CloseSize = %.4f, want 0 (not derivable)", pnls[0].CloseSize)
+	}
+}
 
 // TestMaintenanceRateNormalization_Binance verifies that Binance maintMarginRatio
 // is used directly (already decimal: 0.0065 = 0.65%).

@@ -1360,6 +1360,7 @@ func (a *Adapter) GetClosePnL(symbol string, since time.Time) ([]exchange.CloseP
 		funding, _ := strconv.ParseFloat(r.PnlFund, 64)
 		fees, _ := strconv.ParseFloat(r.PnlFee, 64)
 		closeSize, _ := strconv.ParseFloat(r.AccumSize, 64)
+		closeSize *= a.getContractMult(contract)
 
 		var entryPrice, exitPrice float64
 		if r.Side == "long" {

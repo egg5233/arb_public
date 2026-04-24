@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.34.1] - 2026-04-24
+
+### Fixed
+
+- **`realized_pnl` over-reported on Binance+Gate.io closes.** Reconcile's Tier-1 completeness gate (`internal/engine/exit.go:1170-1178`) compared raw `ClosePnL.CloseSize` across adapters as if all were in token units. Binance's aggregated income record returned `CloseSize=0` (no per-close volume in that API) and Gate.io returned `AccumSize` in contract units (e.g. `2681 = 268.1 × quanto_multiplier`), so the gate rejected the authoritative exchange-PnL on every retry and persisted a stale depth-exit estimate. Example: `promusdt-1776743108692` closed at `+19.62` vs actual `+6.16` (overstatement ≈ `$13.45`, driven by a bad long-leg VWAP in the market-fallback close path). Fix: Gate.io adapter applies `getContractMult()` to `CloseSize` (mirrors OKX `getCtVal()` pattern); Binance adapter sets new `ClosePnL.CloseSizeUnknown=true` flag; reconcile gate and `aggregateClosePnLBySide` skip size-comparison for unknown-size legs. `pkg/exchange/types.go`, `pkg/exchange/gateio/adapter.go`, `pkg/exchange/binance/adapter.go`, `internal/engine/exit.go`.
+
 ## [0.34.0] - 2026-04-22
 
 ### Added (Phase 09 — Price-Gap Dashboard & Paper→Live Operations, v2.0 milestone)

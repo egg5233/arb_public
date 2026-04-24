@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"arb/pkg/exchange"
 )
@@ -358,6 +359,73 @@ func TestGetMaintenanceRate_GateIO_TierMatching(t *testing.T) {
 	}
 	if rate0 != 0.005 {
 		t.Errorf("notional=0 rate = %v, want 0.005 (tier 1)", rate0)
+	}
+}
+
+// TestGetClosePnL_GateIO_QuantoMultiplierAppliedToCloseSize verifies that
+// Gate.io's accum_size (raw contract count) is converted to base-asset units
+// using the per-symbol quanto_multiplier before being returned in ClosePnL.
+// This mirrors the OKX ctVal handling and is required so the reconcile
+// Tier-1 completeness gate sees apples-to-apples (token) sizes.
+func TestGetClosePnL_GateIO_QuantoMultiplierAppliedToCloseSize(t *testing.T) {
+	const (
+		quantoMult  = 10.0
+		symbol      = "IR_USDT"
+		internalSym = "IRUSDT"
+		// Exchange reports raw contracts; adapter must multiply by 10 → 880.
+		rawContracts = 88
+		baseUnits    = float64(rawContracts) * quantoMult
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v4/futures/usdt/contracts":
+			json.NewEncoder(w).Encode([]map[string]interface{}{{
+				"name":              symbol,
+				"quanto_multiplier": strconv.FormatFloat(quantoMult, 'f', -1, 64),
+				"order_size_min":    1,
+				"order_size_max":    1000000,
+				"order_price_round": "0.0001",
+			}})
+		case "/api/v4/futures/usdt/position_close":
+			json.NewEncoder(w).Encode([]map[string]interface{}{{
+				"pnl":         "1.2345",
+				"pnl_pnl":     "1.0",
+				"pnl_fund":    "0.3",
+				"pnl_fee":     "-0.0655",
+				"side":        "long",
+				"long_price":  "0.0400",
+				"short_price": "0.0410",
+				"accum_size":  strconv.Itoa(rawContracts),
+				"time":        1700000000.0,
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	adapter := &Adapter{
+		client:    NewClientWithBase(srv.URL + "/api/v4"),
+		priceSyms: make(map[string]bool),
+	}
+	if _, err := adapter.LoadAllContracts(); err != nil {
+		t.Fatalf("LoadAllContracts: %v", err)
+	}
+
+	pnls, err := adapter.GetClosePnL(internalSym, time.Unix(0, 0))
+	if err != nil {
+		t.Fatalf("GetClosePnL: %v", err)
+	}
+	if len(pnls) != 1 {
+		t.Fatalf("expected 1 ClosePnL record, got %d", len(pnls))
+	}
+	if pnls[0].CloseSize != baseUnits {
+		t.Errorf("CloseSize = %.4f, want %.4f (raw %d × quanto %v)",
+			pnls[0].CloseSize, baseUnits, rawContracts, quantoMult)
+	}
+	if pnls[0].CloseSizeUnknown {
+		t.Errorf("CloseSizeUnknown = true, want false (size was derivable)")
 	}
 }
 

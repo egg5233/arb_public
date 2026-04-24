@@ -789,3 +789,97 @@ func TestAttachAdapterCallbacksRegistersAlgoRemap(t *testing.T) {
 		t.Error("expected slIndex alias binance:real-222 after AttachAdapterCallbacks + algo fire")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Tier-1 reconcile gate: CloseSizeUnknown handling.
+// ---------------------------------------------------------------------------
+
+// TestAggregateClosePnLBySide_PropagatesCloseSizeUnknown verifies that when any
+// matching-side input record has CloseSizeUnknown=true, the aggregate propagates
+// the flag so the Tier-1 gate can skip size comparison.
+func TestAggregateClosePnLBySide_PropagatesCloseSizeUnknown(t *testing.T) {
+	records := []exchange.ClosePnL{
+		{Side: "long", NetPnL: 1.0, CloseSize: 0, CloseSizeUnknown: true},
+	}
+	agg, ok := aggregateClosePnLBySide(records, "long")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if !agg.CloseSizeUnknown {
+		t.Error("CloseSizeUnknown = false, want true (propagated from input)")
+	}
+
+	// Multi-record mix: one known + one unknown → aggregate marked unknown.
+	records = []exchange.ClosePnL{
+		{Side: "long", NetPnL: 1.0, CloseSize: 100},
+		{Side: "long", NetPnL: 0.5, CloseSize: 0, CloseSizeUnknown: true},
+	}
+	agg, ok = aggregateClosePnLBySide(records, "long")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if !agg.CloseSizeUnknown {
+		t.Error("CloseSizeUnknown = false, want true (any match with unknown → aggregate unknown)")
+	}
+
+	// All-known records → aggregate stays known.
+	records = []exchange.ClosePnL{
+		{Side: "long", NetPnL: 1.0, CloseSize: 100},
+		{Side: "long", NetPnL: 0.5, CloseSize: 50},
+	}
+	agg, _ = aggregateClosePnLBySide(records, "long")
+	if agg.CloseSizeUnknown {
+		t.Error("CloseSizeUnknown = true, want false (all inputs known)")
+	}
+	if agg.CloseSize != 150 {
+		t.Errorf("CloseSize = %.0f, want 150 (sum)", agg.CloseSize)
+	}
+}
+
+// TestReconcileTier1AcceptsUnknownLongSize mirrors the Tier-1 gate logic for
+// the case where the long leg's adapter cannot derive CloseSize (e.g. Binance):
+// longAgg.CloseSizeUnknown=true should cause the gate to skip the long
+// comparison, and if the short leg matches expected, the gate passes.
+func TestReconcileTier1AcceptsUnknownLongSize(t *testing.T) {
+	const sizeEpsilon = 1e-6
+	pos := makeTestPos("pos-mixed", 100, 100, 0, 0)
+	var siblings []*models.ArbitragePosition
+
+	longExpected := pos.LongCloseSize + sumSiblingCloseSize(siblings, "long")   // 100
+	shortExpected := pos.ShortCloseSize + sumSiblingCloseSize(siblings, "short") // 100
+
+	longAgg := exchange.ClosePnL{CloseSize: 0, CloseSizeUnknown: true}
+	shortAgg := exchange.ClosePnL{CloseSize: 100}
+
+	longShort := !longAgg.CloseSizeUnknown && longAgg.CloseSize < longExpected-sizeEpsilon
+	shortShort := !shortAgg.CloseSizeUnknown && shortAgg.CloseSize < shortExpected-sizeEpsilon
+	if longShort || shortShort {
+		t.Errorf("gate should PASS: longShort=%v shortShort=%v (long unknown must be skipped, short exact match)",
+			longShort, shortShort)
+	}
+}
+
+// TestReconcileTier1RejectsKnownShortShortfall verifies that even when the long
+// leg is unknown-size (Binance), a known-but-short short leg still trips the
+// gate — i.e. we only skip the comparison for the leg flagged unknown.
+func TestReconcileTier1RejectsKnownShortShortfall(t *testing.T) {
+	const sizeEpsilon = 1e-6
+	pos := makeTestPos("pos-mixed", 100, 100, 0, 0)
+	var siblings []*models.ArbitragePosition
+
+	longExpected := pos.LongCloseSize + sumSiblingCloseSize(siblings, "long")   // 100
+	shortExpected := pos.ShortCloseSize + sumSiblingCloseSize(siblings, "short") // 100
+
+	longAgg := exchange.ClosePnL{CloseSize: 0, CloseSizeUnknown: true}
+	shortAgg := exchange.ClosePnL{CloseSize: 50} // partial — known but short
+
+	longShort := !longAgg.CloseSizeUnknown && longAgg.CloseSize < longExpected-sizeEpsilon
+	shortShort := !shortAgg.CloseSizeUnknown && shortAgg.CloseSize < shortExpected-sizeEpsilon
+	if !shortShort {
+		t.Errorf("expected gate to fire on known-short-shortfall: shortAgg.CloseSize=%.0f < expected=%.0f",
+			shortAgg.CloseSize, shortExpected)
+	}
+	if longShort {
+		t.Errorf("long-unknown leg must not trip the gate (longShort=true)")
+	}
+}
