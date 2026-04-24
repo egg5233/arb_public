@@ -1,10 +1,30 @@
 # PLAN: Per-Leg Tier 1 Skip for Exchanges Without CloseSize
 
-Version: v4
+Version: v5
 Date: 2026-04-24
 Status: DRAFT
 
 ## Changelog
+- **v5** (2026-04-24): Codex review round 4 — NEEDS-REVISION 1 item (internal
+  consistency). Fixed:
+  - Case L ("commission-only snapshot") previously claimed `false at any
+    attempt` but the v4 design only rejects on attempt 1. On attempt 2+ a
+    commission-only Binance snapshot with `|diff|` inside the notional bound
+    would be accepted. v5 makes a choice: **keep the two-layer design (empty
+    guard + attempt gate + notional guard) without adding a third "strict
+    non-empty on all three fields" guard**, and **rewrite case L** to match
+    the actual behavior: `false` at attempt 1 (attempt gate), accept at
+    attempt ≥ 2 if `|diff|` fits notional. Case L is now explicitly labeled
+    as exercising the **residual hazard** that the plan accepts as
+    documented risk. Rationale: adding a strict "all three income types
+    non-zero" gate would false-reject genuinely-zero PnL closes (rare but
+    legitimate), and would not fully defeat a pathological /income ordering
+    where REALIZED_PNL or FUNDING_FEE is delayed indefinitely (`attempt 2+`
+    still exhausts retries). The attempt gate + notional guard is the
+    chosen trade-off: it catches the common pre-T+5s partial snapshots,
+    accepts the rare mid-settlement-at-T+7s+ case as a known
+    residual hazard to be monitored via logged metrics, and avoids over-
+    rejecting legitimate zero-PnL closes.
 - **v4** (2026-04-24): Codex review round 3 — NEEDS-REVISION 1 item. Fixed:
   - #2 (still open): the empty-aggregate guard rejects only fully-zero
     snapshots. Codex pointed out that Binance `GetClosePnL` makes three
@@ -325,6 +345,16 @@ if !useTier1 {
             pos.ID, attempt, diff, notional, longTier1Enforced, shortTier1Enforced)
         return false
     }
+
+    // Acceptance log line for VPS monitoring of residual hazard
+    // (commission-only or other mid-settlement snapshots that slip past
+    // the empty guard + attempt gate but fit within the notional bound).
+    // Grep-able label: "Tier 1 partial accepted".
+    e.log.Info("reconcile %s [attempt %d]: Tier 1 partial accepted (longEnforced=%v shortEnforced=%v longAgg={Fees=%.4f Funding=%.4f PricePnL=%.4f} shortAgg={Fees=%.4f Funding=%.4f PricePnL=%.4f} diff=%.4f notional=%.4f)",
+        pos.ID, attempt, longTier1Enforced, shortTier1Enforced,
+        longAgg.Fees, longAgg.Funding, longAgg.PricePnL,
+        shortAgg.Fees, shortAgg.Funding, shortAgg.PricePnL,
+        diff, notional)
 }
 ```
 
@@ -401,7 +431,7 @@ return value + post-call state from `e.db.GetHistory` / `e.db.GetPosition`):
 | I | `TestTryReconcile_SiblingAware_BinanceLong`            | shared long exchange, `pos.LongCloseSize=100`, sibling `LongCloseSize=100`, longExpected=200, Binance records return `[{Side:"", CloseSize:0, PricePnL:-55, ...}]` | short has real size | `true` (on attempt≥2) | proves the Binance leg's skip does not cause the sibling-sum logic to malfunction for the sibling's own reconcile |
 | J | `TestTryReconcile_PreMigration_BinanceLong`            | same as C but `pos.LongCloseSize=0, pos.ShortCloseSize=0` (pre-migration) | ... | flows to existing Tier 2/3 | proves `!useTier1` branch still works; v3 changes do not affect pre-migration path |
 | K | `TestTryReconcile_BinanceLong_AttemptGate` (new in v4) | `[{Side:"", CloseSize:0, PricePnL:-55, Fees:-0.4, Funding:1.2}]` (settled)  | `[{Side:"short", CloseSize:100, ...}]` (settled) | `false` at attempt 1, `true` at attempt 2 | proves attempt-count gate defers acceptance to attempt ≥ 2 even when data looks settled; protects against Binance /income partial-snapshot scenarios that the empty-aggregate guard cannot detect |
-| L | `TestTryReconcile_BinanceLong_CommissionOnlySnapshot` (new in v4) | `[{Side:"", CloseSize:0, PricePnL:0, Fees:-0.4, Funding:0}]` (mid-settlement: only COMMISSION posted)  | settled | `false` at any attempt | proves the attempt-count gate + later empty-aggregate re-evaluation together reject commission-only snapshots. (Note: the empty-aggregate guard alone would accept this because Fees is non-zero — this test demonstrates why the attempt gate is needed.) At attempt 2, if the snapshot is still commission-only, the notional guard may accept if |diff| fits; test should pin expected behavior and link a clear log message so VPS observation can catch regressions. |
+| L | `TestTryReconcile_BinanceLong_CommissionOnlySnapshot_ResidualHazard` (v5) | `[{Side:"", CloseSize:0, PricePnL:0, Fees:-0.4, Funding:0}]` (mid-settlement: only COMMISSION posted, persists across attempts)  | settled | `false` at attempt 1 (attempt gate), **acceptance expected at attempt ≥ 2** if `|diff| <= max(close-notional)` | **Pins the residual hazard explicitly.** The test documents the known design gap: the empty-aggregate guard passes (Fees non-zero), the attempt gate rejects attempt 1, and attempts 2-4 will accept if `|diff|` fits notional. Test asserts the Phase 3 partial-fallback log message (`Tier 1 partial path — deferring acceptance`) at attempt 1 AND the final acceptance at attempt ≥ 2. VPS monitoring hook: the log line at attempt ≥ 2 should be labelled `Tier 1 partial accepted (longEnforced=... shortEnforced=...)` so ops can grep for mid-settlement acceptances. If production shows this mode firing on actually-unsettled data, the follow-up stability-check mitigation (documented in Risk) is promoted. |
 
 Each integration test asserts:
 1. `tryReconcilePnL` return value matches expectation
