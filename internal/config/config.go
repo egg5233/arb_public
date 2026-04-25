@@ -1493,10 +1493,22 @@ func (c *Config) SaveJSON() error {
 // SaveJSONWithExchangeSecretOverrides writes the current runtime config back to
 // config.json and applies only the explicitly supplied exchange secret updates.
 func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]ExchangeSecretOverride) error {
-	// Find the config file path
-	paths := []string{"config.json", "/var/solana/data/arb/config.json"}
+	// Find the config file path.
+	//
+	// SAFETY (post-incident 2026-04-25): the previous absolute-path fallback
+	// `/var/solana/data/arb/config.json` allowed any process whose cwd lacked a
+	// local `config.json` (notably `go test` in subpackages with cwd=internal/api/)
+	// to silently overwrite the live production config with whatever was in
+	// `c` — including all-zero defaults from `&config.Config{}` test fixtures.
+	// We now require an explicit CONFIG_FILE env var OR a `config.json` in the
+	// caller's cwd. No absolute fallback. Production sets WorkingDirectory in
+	// systemd, so the relative path resolves correctly. Tests must set
+	// CONFIG_FILE to a sandbox path.
+	var paths []string
 	if p := os.Getenv("CONFIG_FILE"); p != "" {
 		paths = []string{p}
+	} else {
+		paths = []string{"config.json"}
 	}
 	var filePath string
 	var originalData []byte
@@ -1511,7 +1523,7 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 		}
 	}
 	if filePath == "" {
-		return fmt.Errorf("config.json not found")
+		return fmt.Errorf("config.json not found in cwd; set CONFIG_FILE env to write to a different location")
 	}
 	if raw == nil {
 		raw = make(map[string]interface{})

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -22,8 +24,21 @@ import (
 // newPriceGapTestServer wires a *Server with miniredis, a populated auth store,
 // a PriceGap config, and a running WS hub so Broadcast* calls don't deadlock.
 // Returns (server, miniredis, bearerToken, teardown).
+//
+// SAFETY (post-incident 2026-04-25): we MUST sandbox CONFIG_FILE to a temp
+// path before the test triggers any /api/config POST handler, otherwise the
+// handler's SaveJSON path would (used to) overwrite the live production
+// config.json. SaveJSON now refuses to fall back to absolute paths, but we
+// belt-and-suspenders set CONFIG_FILE here so the round-trip exercises a
+// real on-disk file the test fully controls.
 func newPriceGapTestServer(t *testing.T) (*Server, *miniredis.Miniredis, string, func()) {
 	t.Helper()
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(cfgPath, []byte("{}"), 0644); err != nil {
+		t.Fatalf("seed sandbox config: %v", err)
+	}
+	t.Setenv("CONFIG_FILE", cfgPath)
 
 	mr, err := miniredis.Run()
 	if err != nil {
