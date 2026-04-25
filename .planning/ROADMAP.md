@@ -3,7 +3,7 @@
 ## Milestones
 
 - ✅ **v1.0 Unified Arb Platform** — Phases 1–7 (shipped 2026-04-21). See `milestones/v1.0-ROADMAP.md`
-- 🚧 **v2.0 Multi-Strategy Expansion** — Strategy 4 (price-gap arb) MVP + live validation (planning)
+- ✅ **v2.0 Multi-Strategy Expansion** — Phases 8–9 (shipped 2026-04-25). See `milestones/v2.0-ROADMAP.md`
 
 ## Phases
 
@@ -26,64 +26,25 @@ Audit: `.planning/milestones/v1.0-MILESTONE-AUDIT.md`
 
 </details>
 
-### 🚧 v2.0 Multi-Strategy Expansion (Planning)
+<details>
+<summary>✅ v2.0 Multi-Strategy Expansion (Phases 8–9) — SHIPPED 2026-04-25</summary>
 
-Primary goal: ship Strategy 4 (cross-exchange price-gap arbitrage) as a minimal live tracker (Option C — MVP-first), validate live edge for 4–8 weeks, and defer full Gated Discovery (Option D) until v2.1 gated on live validation.
+- [x] Phase 8: Price-Gap Tracker Core (8/8 plans) — PG-01..05, PG-RISK-01..05, PG-OPS-06
+- [x] Phase 9: Price-Gap Dashboard & Paper→Live Operations (11/11 plans, 8 core + 2 gap-closure + 1 UAT rewalk) — PG-OPS-01..05, PG-VAL-01..02
 
-**Phase Numbering:**
-- Integer phases continue from v1.0 → v2.0 starts at **Phase 8**
-- Decimal phases (e.g., 8.1) reserved for urgent post-plan insertions
+Live-fire UAT signed off 2026-04-25 against pg_SOONUSDT_gateio_bingx position with paper-mode chokepoint and Gate 0 duplicate-candidate gate validated end-to-end. Three known issues deferred to v2.1 backlog:
+1. `realized_slippage_bps` machine-zero in paper mode (calc bug — formula computes delta vs modeled)
+2. Dashboard auto-POST on page load flipped `paper_mode=false` once (source unknown; needs DevTools Network capture)
+3. `cmd/bingxprobe/` debug utility (committed; consider promoting to `make probe-bingx` target)
 
-Seed input: `/tmp/phase0-pricegap/STRATEGY_DESIGN.md` (§3.5 candidate shortlist, §8 MVP rollout)
+Full detail: `.planning/milestones/v2.0-ROADMAP.md`
+Requirements: `.planning/milestones/v2.0-REQUIREMENTS.md`
 
-- [ ] **Phase 8: Price-Gap Tracker Core** — New `internal/pricegaptrader/` module: event detection, delta-neutral IOC entry/exit, Redis persistence, config switch, core risk gates (PG-01..05, PG-RISK-01..05, PG-OPS-06)
-- [ ] **Phase 9: Price-Gap Dashboard & Paper→Live Operations** — Dashboard tab, Telegram alerts, paper mode toggle, slippage instrumentation, rolling candidate metrics (PG-OPS-01..05, PG-VAL-01..02)
+</details>
 
-## Phase Details
+### 📋 Next Milestone (Planning)
 
-### Phase 8: Price-Gap Tracker Core
-**Goal**: A new isolated tracker subsystem detects cross-exchange price-gap events on a static candidate list and opens/closes delta-neutral positions under hard risk gates — gated behind a dashboard-off default switch
-**Depends on**: Nothing (v1.0 complete; new module strictly isolated from `internal/engine/` and `internal/spotengine/`)
-**Requirements**: PG-01, PG-02, PG-03, PG-04, PG-05, PG-RISK-01, PG-RISK-02, PG-RISK-03, PG-RISK-04, PG-RISK-05, PG-OPS-06
-**Success Criteria** (what must be TRUE):
-  1. Operator can enable `PriceGapEnabled` in `config.json` (or via dashboard API) and the tracker starts reading the static candidate list from config; with the flag OFF (default), no tracker code paths run and existing perp-perp / spot-futures engines are byte-for-byte unaffected
-  2. When a spread on a configured candidate crosses its threshold `T` and persists ≥4 consecutive 1m bars with fresh kline data (<90s), the tracker places simultaneous IOC market orders on both legs via existing exchange adapters and records the position to Redis under `pg:pos:{id}`
-  3. Open positions auto-close when |spread| reverts to ≤ T/2 OR a 4h max-hold timer elapses; closed positions persist with realized PnL and exit reason; all positions survive a process restart via Redis rehydration
-  4. Pre-entry risk gates deterministically block entries that would violate: Gate concentration >50% of `PriceGapBudget`, max concurrent positions (3), per-candidate notional cap, any delist/halt flag on either leg, or stale kline data (>90s)
-  5. After 10 closed trades on a candidate, if mean realized slippage exceeds 2× modeled slippage, the tracker auto-disables that candidate and refuses further entries until a human re-enables it
-**Plans**: 8 plans
-  - [x] 08-01-PLAN.md — Config surface + models + PriceGapStore interface (PG-05, PG-OPS-06)
-  - [x] 08-02-PLAN.md — Redis persistence under pg:* namespace (PG-04, PG-RISK-03)
-  - [x] 08-03-PLAN.md — Tracker skeleton + detector (BBO-sampled 1m bars, 4-bar persistence) (PG-01)
-  - [x] 08-04-PLAN.md — 5-check pre-entry risk gate + typed errors (PG-RISK-01, -02, -04, -05)
-  - [x] 08-05-PLAN.md — Simultaneous IOC entry + unwind-to-match + circuit breaker (PG-02)
-  - [x] 08-06-PLAN.md — Per-position monitor + exit + exec-quality auto-disable + rehydrate (PG-03, PG-04, PG-RISK-03)
-  - [x] 08-07-PLAN.md — tickLoop wiring + cmd/main.go conditional startup/shutdown (PG-02, PG-03, PG-OPS-06)
-  - [x] 08-08-PLAN.md — cmd/pg-admin CLI + CHANGELOG + VERSION bump (PG-RISK-03)
-
-### Phase 9: Price-Gap Dashboard & Paper→Live Operations
-**Goal**: Operators can observe, control, and validate the price-gap tracker from the dashboard — including a paper-mode dry run, live position/PnL views, Telegram alerts, and per-candidate rolling performance metrics
-**Depends on**: Phase 8 (tracker module must exist and be wired into startup)
-**Requirements**: PG-OPS-01, PG-OPS-02, PG-OPS-03, PG-OPS-04, PG-OPS-05, PG-VAL-01, PG-VAL-02
-**Success Criteria** (what must be TRUE):
-  1. A new "Price-Gap" dashboard tab (8th tab) renders the configured candidate list with per-candidate enable/disable toggles that round-trip through `/api/config` and persist to `config.json`; both `en` and `zh-TW` locale files include all new keys
-  2. Operator can flip a paper-mode toggle (persisted to config) that runs the full detection and entry logic but suppresses real order placement; paper-mode entries and exits appear in the dashboard tagged as paper, with modeled fills so edge can be measured without capital at risk
-  3. Live price-gap positions panel shows entry spread, current spread, hold time, and current PnL in real time via WebSocket; closed positions log shows realized-vs-modeled edge comparison for each trade
-  4. Telegram notifications fire via the existing notifier on: price-gap entry, price-gap exit, and risk-gate blocks — cooldowns and toggles respect existing notifier config; no change to perp-perp or spot-futures notification paths
-  5. Dashboard shows per-candidate rolling 7d and 30d net bps/day computed from logged realized-slippage data, giving the operator the evidence needed to promote/demote candidates manually
-**Plans**: 11 plans (8 core + 3 gap-closure)
-  - [x] 09-01-PLAN.md — Phase 8 bridge: Position.Mode, PriceGapPaperMode, GetPriceGapHistory, Broadcaster DI, i18n sync gate (PG-OPS-02, -04, -05, PG-VAL-02)
-  - [x] 09-02-PLAN.md — REST handlers for /api/pricegap/* + Broadcaster impl on *Server + paper_mode /api/config round-trip (PG-OPS-01, -02, -03, -04, PG-VAL-02)
-  - [x] 09-03-PLAN.md — Paper-mode branch in openPair + placeLeg/placeCloseLegIOC with mid±(modeled/2) synth (PG-OPS-04, PG-VAL-01)
-  - [x] 09-04-PLAN.md — Telegram NotifyPriceGapEntry/Exit/RiskBlock + regression fixtures for existing notify paths (PG-OPS-05)
-  - [x] 09-05-PLAN.md — On-demand ComputeCandidateMetrics aggregator + /api/pricegap/metrics wiring (PG-OPS-05, PG-VAL-01, PG-VAL-02)
-  - [x] 09-06-PLAN.md — Tracker hook invocations at 5 call sites + cmd/main.go DI wiring (PG-OPS-02, -03, -05)
-  - [x] 09-07-PLAN.md — PriceGap.tsx page + App.tsx nav + i18n lockstep per 09-UI-SPEC.md (PG-OPS-01, -02, -03, PG-VAL-02)
-  - [x] 09-08-PLAN.md — Paper→live cutover integration test + UAT checklist + VERSION/CHANGELOG bump (all PG-OPS-0X, PG-VAL-0X)
-  - [x] 09-09-PLAN.md — Gap-closure #1: PriceGapDebugLog flag + rate-limited non-fire reason logger + dashboard toggle (PG-OPS-01, -02, -03, -05, PG-VAL-01, -02)
-  - [x] 09-10-PLAN.md — Gap-closure #2: Tracker.Start() subscribes candidates on both legs + 15s BBO liveness assertion (PG-OPS-02, -03, -04, -05, PG-VAL-01, -02)
-  - [x] 09-11-PLAN.md — Post-fix UAT re-walk checkpoints (14 rows + PG-OPS-01 Redis parity + a11y) (PG-OPS-01, -02, -03, -05, PG-VAL-01, -02)
-**UI hint**: yes
+Run `/gsd-new-milestone` to define the next milestone scope.
 
 ## Progress
 
@@ -97,4 +58,4 @@ Seed input: `/tmp/phase0-pricegap/STRATEGY_DESIGN.md` (§3.5 candidate shortlist
 | 6. Spot-Futures Risk Hardening | v1.0 | 4/4 | Complete | 2026-04-05 |
 | 7. Milestone Polish | v1.0 | 1/1 | Complete | 2026-04-06 |
 | 8. Price-Gap Tracker Core | v2.0 | 8/8 | Complete | 2026-04-22 |
-| 9. Price-Gap Dashboard & Paper→Live Operations | v2.0 | 8/11 | Gap-closure (09-09..11 pending) | — |
+| 9. Price-Gap Dashboard & Paper→Live Operations | v2.0 | 11/11 | Complete | 2026-04-25 |

@@ -1,5 +1,30 @@
 # Milestones
 
+## v2.0 Multi-Strategy Expansion (Shipped: 2026-04-25)
+
+**Phases completed:** 2 phases, 19 plans, 35 tasks
+
+**Key accomplishments:**
+
+- [Rule 1 — Fix] Plan sample code used `err.Error() == "redis: nil"` for missing-key detection.
+- Wave-3 core: internal/pricegaptrader package established with Tracker lifecycle + 4-bar persistence detector. PG-01 event detection fires only when four consecutive same-sign 1m bars exceed the per-candidate threshold and BBO samples are fresh. Module boundary (D-02) enforced; no imports of internal/engine or internal/spotengine.
+- Wave-4 gatekeeper between detector and execution: 6 deterministic gates composed in D-17 order, returning the first failure as a typed GateDecision. This is the sole authorization check Plan 05 will call before any adapter PlaceOrder.
+- Wave-5 live-trading-critical path: concurrent IOC market orders on both legs, D-10 unwind-to-match partial-fill reconciliation via MARKET (not IOC), zero-fill-on-one-leg → immediate ReduceOnly close of the other, 5-consecutive-failure circuit breaker, per-symbol Redis lock, and D-15 position-ID format. 8 tests cover every failure mode the threat model enumerates.
+- Wave-6 completes Strategy-4 MVP lifecycle: per-position exit monitor (PG-03 D-11/D-12), exec-quality auto-disable rolling window (PG-RISK-03 D-19), and startup rehydration with orphan detection (PG-04). Exit fires on |spread| ≤ T×reversionFactor or now−OpenedAt ≥ maxHold; both legs closed via simultaneous IOC ReduceOnly with MARKET ReduceOnly remainder retry. Realized PnL + slippage persisted per D-21. After 10 closed trades, if mean realized > 2× mean modeled the candidate auto-disables via SetCandidateDisabled. Startup rehydrate orphans zero-leg positions and re-enrolls survivors; idempotent via atomic seq token so double-rehydrate is safe under -race.
+- None.
+- 1. [Rule 3 — Blocking signature mismatch] config/database constructor signatures differ from plan sketch
+- One-liner:
+- One-liner:
+- One-liner:
+- One-liner:
+- One-liner:
+- One-liner:
+- 1. [Rule 2 — Security/Correctness] Wired `DebugLog` through API layer
+- 1. [Process deviation — documented]
+- PASS — Phase 9 UAT signed off 2026-04-25.
+
+---
+
 ## v1.0 Unified Arb Platform (Shipped: 2026-04-21)
 
 **Phases completed:** 7 phases, 21 plans, 38 tasks
