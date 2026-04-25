@@ -51,7 +51,7 @@ Requirements: `.planning/milestones/v2.0-REQUIREMENTS.md`
 - [x] **Phase 10: Dashboard Candidate CRUD** — Add/Edit/Delete modal in Price-Gap tab; round-trip via `/api/config` + i18n EN/zh-TW lockstep (PG-OPS-07) (completed 2026-04-25)
 - [ ] **Phase 11: Auto-discovery Scanner** — Periodic scan across 6 exchanges; score by spread persistence + book depth + retreat depth; write to `pg:discovered:*` Redis keys (PG-DISC-01, PG-DISC-03)
 - [ ] **Phase 12: Auto-promotion** — Discovered candidates above `PriceGapAutoPromoteScore` threshold append to `cfg.PriceGapCandidates`; respect `PriceGapMaxCandidates` cap; Telegram + WS broadcast on promotion (PG-DISC-02)
-- [ ] **Phase 13: v2.0 Deferred Closure + Config Load/Save Symmetry Hotfix** — Fix `realized_slippage_bps` calc; **fix Config.Load↔SaveJSON asymmetry** (root cause of PG-OPS-08 — every SaveJSON drops fields: bool=false omitempty + numeric resets to 0/1; identified live during 10-05 UAT 2026-04-25 11:56 UTC, see `.planning/phases/10-dashboard-candidate-crud/10-05-SUMMARY.md` §"Ambient bug"); promote `-w /file -p wa` audit rule (path-watch by inode; current `-F path=` rule misses arb's relative-path opens); decide `cmd/bingxprobe/` fate (PG-VAL-03, PG-OPS-08, PG-DEBT-01)
+- [ ] **Phase 13: v2.0 Deferred Closure** — Fix `realized_slippage_bps` calc (PG-VAL-03); decide `cmd/bingxprobe/` fate (PG-DEBT-01). _PG-OPS-08 (config-wipe mystery) closed in v0.34.10 — root cause was `go test` writing the live config via SaveJSON's absolute-path fallback, not a dashboard auto-POST; see CHANGELOG and commits `d4cb5b3` + `bbe2b64`._
 
 Requirements: `.planning/REQUIREMENTS.md`
 
