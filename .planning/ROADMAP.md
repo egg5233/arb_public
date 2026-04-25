@@ -48,10 +48,10 @@ Requirements: `.planning/milestones/v2.0-REQUIREMENTS.md`
 
 **Constraints (locked):** paper-only, 6 existing exchanges, score-threshold auto-promotion (no review gate).
 
-- [ ] **Phase 10: Dashboard Candidate CRUD** — Add/Edit/Delete modal in Price-Gap tab; round-trip via `/api/config` + i18n EN/zh-TW lockstep (PG-OPS-07)
+- [x] **Phase 10: Dashboard Candidate CRUD** — Add/Edit/Delete modal in Price-Gap tab; round-trip via `/api/config` + i18n EN/zh-TW lockstep (PG-OPS-07) (completed 2026-04-25)
 - [ ] **Phase 11: Auto-discovery Scanner** — Periodic scan across 6 exchanges; score by spread persistence + book depth + retreat depth; write to `pg:discovered:*` Redis keys (PG-DISC-01, PG-DISC-03)
 - [ ] **Phase 12: Auto-promotion** — Discovered candidates above `PriceGapAutoPromoteScore` threshold append to `cfg.PriceGapCandidates`; respect `PriceGapMaxCandidates` cap; Telegram + WS broadcast on promotion (PG-DISC-02)
-- [ ] **Phase 13: v2.0 Deferred Closure** — Fix `realized_slippage_bps` calc, audit dashboard auto-POST mystery, decide `cmd/bingxprobe/` fate (PG-VAL-03, PG-OPS-08, PG-DEBT-01)
+- [ ] **Phase 13: v2.0 Deferred Closure + Config Load/Save Symmetry Hotfix** — Fix `realized_slippage_bps` calc; **fix Config.Load↔SaveJSON asymmetry** (root cause of PG-OPS-08 — every SaveJSON drops fields: bool=false omitempty + numeric resets to 0/1; identified live during 10-05 UAT 2026-04-25 11:56 UTC, see `.planning/phases/10-dashboard-candidate-crud/10-05-SUMMARY.md` §"Ambient bug"); promote `-w /file -p wa` audit rule (path-watch by inode; current `-F path=` rule misses arb's relative-path opens); decide `cmd/bingxprobe/` fate (PG-VAL-03, PG-OPS-08, PG-DEBT-01)
 
 Requirements: `.planning/REQUIREMENTS.md`
 
@@ -78,14 +78,14 @@ Requirements: `.planning/REQUIREMENTS.md`
 
 **Requirements addressed:** PG-OPS-07
 
-**Plans:** 4/5 plans executed
+**Plans:** 5/5 plans complete
 
 Plans:
 - [x] 10-01-PLAN.md — Backend: extend priceGapUpdate struct + validation + active-position guard + Go unit tests
 - [x] 10-02-PLAN.md — i18n: add 23 pricegap.candidates.* keys to en.ts and zh-TW.ts in lockstep
 - [x] 10-03-PLAN.md — Frontend: Add/Edit modal + Delete confirm dialog + form state in PriceGap.tsx
 - [x] 10-04-PLAN.md — Tests: Vitest for modal/PG-OPS-08/i18n parity + Go test pinning tracker hot-reload
-- [ ] 10-05-PLAN.md — Build + manual UAT (16-step checkpoint with operator sign-off)
+- [x] 10-05-PLAN.md — Build + manual UAT (16-step checkpoint with operator sign-off)
 
 ## Progress
 
@@ -100,7 +100,7 @@ Plans:
 | 7. Milestone Polish | v1.0 | 1/1 | Complete | 2026-04-06 |
 | 8. Price-Gap Tracker Core | v2.0 | 8/8 | Complete | 2026-04-22 |
 | 9. Price-Gap Dashboard & Paper→Live Operations | v2.0 | 11/11 | Complete | 2026-04-25 |
-| 10. Dashboard Candidate CRUD | v2.1 | 4/5 | In Progress|  |
+| 10. Dashboard Candidate CRUD | v2.1 | 5/5 | Complete    | 2026-04-25 |
 | 11. Auto-discovery Scanner | v2.1 | 0/? | Not started | — |
 | 12. Auto-promotion | v2.1 | 0/? | Not started | — |
 | 13. v2.0 Deferred Closure | v2.1 | 0/? | Not started | — |
