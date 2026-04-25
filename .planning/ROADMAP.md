@@ -78,13 +78,13 @@ Requirements: `.planning/REQUIREMENTS.md`
 
 **Requirements addressed:** PG-OPS-07
 
-**Plans:** 3/5 plans executed
+**Plans:** 4/5 plans executed
 
 Plans:
 - [x] 10-01-PLAN.md — Backend: extend priceGapUpdate struct + validation + active-position guard + Go unit tests
 - [x] 10-02-PLAN.md — i18n: add 23 pricegap.candidates.* keys to en.ts and zh-TW.ts in lockstep
 - [x] 10-03-PLAN.md — Frontend: Add/Edit modal + Delete confirm dialog + form state in PriceGap.tsx
-- [ ] 10-04-PLAN.md — Tests: Vitest for modal/PG-OPS-08/i18n parity + Go test pinning tracker hot-reload
+- [x] 10-04-PLAN.md — Tests: Vitest for modal/PG-OPS-08/i18n parity + Go test pinning tracker hot-reload
 - [ ] 10-05-PLAN.md — Build + manual UAT (16-step checkpoint with operator sign-off)
 
 ## Progress
@@ -100,7 +100,7 @@ Plans:
 | 7. Milestone Polish | v1.0 | 1/1 | Complete | 2026-04-06 |
 | 8. Price-Gap Tracker Core | v2.0 | 8/8 | Complete | 2026-04-22 |
 | 9. Price-Gap Dashboard & Paper→Live Operations | v2.0 | 11/11 | Complete | 2026-04-25 |
-| 10. Dashboard Candidate CRUD | v2.1 | 3/5 | In Progress|  |
+| 10. Dashboard Candidate CRUD | v2.1 | 4/5 | In Progress|  |
 | 11. Auto-discovery Scanner | v2.1 | 0/? | Not started | — |
 | 12. Auto-promotion | v2.1 | 0/? | Not started | — |
 | 13. v2.0 Deferred Closure | v2.1 | 0/? | Not started | — |

@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.1
 milestone_name: Candidate Operations
 status: executing
-stopped_at: Completed 10-03-PLAN.md
-last_updated: "2026-04-25T07:43:08.124Z"
+stopped_at: Completed 10-04-PLAN.md
+last_updated: "2026-04-25T07:52:56.923Z"
 last_activity: 2026-04-25
 progress:
   total_phases: 1
   completed_phases: 0
   total_plans: 5
-  completed_plans: 3
-  percent: 60
+  completed_plans: 4
+  percent: 80
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-21 after v1.0 shipped)
 ## Current Position
 
 Phase: 10 (Dashboard Candidate CRUD) — EXECUTING
-Plan: 4 of 5
+Plan: 5 of 5
 Status: Ready to execute
 Last activity: 2026-04-25
 
@@ -94,6 +94,7 @@ Progress (v2.0): [          ] 0%
 | Phase 10 P01 | 5min | 2 tasks | 3 files |
 | Phase 10 P02 | 6min | 2 tasks | 2 files |
 | Phase 10 P03 | 7min | 2 tasks | 3 files |
+| Phase 10 P04 | 6min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -179,6 +180,9 @@ v1.0 decisions below (retained for reference):
 - [Phase 10]: Plan 10-03: adapted to real PriceGapCandidate TS shape (disabled/reason/disabled_at, not enabled/disabled_reason as plan assumed) — Save handler preserves these in in-memory mirror until WS confirms
 - [Phase 10]: Plan 10-03: added 2 new lockstep i18n keys (pricegap.candidates.row.{edit,delete}) for table-row buttons rather than splitting interpolated modal.edit.title — preserves Plan 02 lockstep convention and gives clean zh-TW labels
 - [Phase 10]: Plan 10-03: ESC handler EXTENDED in place (single useEffect with 4-state early-return) rather than added parallel — preserves 0-new-useEffect invariant that PG-OPS-08 acceptance grep depends on
+- [Phase 10]: Plan 10-04: Vitest unavailable per npm lockdown — used Node 22 native test runner (node --test --experimental-strip-types) as fallback per plan §<action> step 6; 17 tests pass, zero new deps
+- [Phase 10]: Plan 10-04: PG-OPS-08 invariant double-locked — 10-03 had one-shot AST scan; 10-04 adds continuous regression test (Tests 2-6) using brace-balanced JS-style scan re-run on every test invocation
+- [Phase 10]: Plan 10-04: Tracker hot-reload double-locked — static regex assertion on tracker.go struct fields catches future Pitfall-1 cache refactors; dynamic CandidateSnapshotForTest helper proves per-tick read-through
 
 ### Pending Todos
 
@@ -203,7 +207,7 @@ None yet. Next action: `/gsd-plan-phase 8` to decompose Phase 8 into executable 
 
 ## Session Continuity
 
-Last session: 2026-04-25T07:42:55.588Z
-Stopped at: Completed 10-03-PLAN.md
+Last session: 2026-04-25T07:52:50.043Z
+Stopped at: Completed 10-04-PLAN.md
 Resume file: None
 Next command: `/gsd-plan-phase 8`
