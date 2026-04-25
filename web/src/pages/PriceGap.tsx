@@ -509,6 +509,84 @@ const PriceGap: FC = () => {
     return () => window.removeEventListener('keydown', h);
   }, [disableTarget, reenableTarget, editorOpen, deleteTarget]);
 
+  // Save handler for Add/Edit modal — POSTs full replacement candidates array
+  // (D-16 last-write-wins). On 400/409, surfaces server error; on 409 active-position,
+  // maps to friendly i18n string per D-14.
+  const handleEditorSave = useCallback(async () => {
+    setModalBusy(true);
+    setModalError(null);
+    const errs = validateLocalForm();
+    setFormErrors(errs);
+    if (Object.keys(errs).length > 0) {
+      setModalBusy(false);
+      return;
+    }
+    const draft: PriceGapCandidate = {
+      symbol: formSymbol.trim().toUpperCase(),
+      long_exch: formLongExch,
+      short_exch: formShortExch,
+      threshold_bps: formThresholdBps,
+      max_position_usdt: formMaxPositionUSDT,
+      modeled_slippage_bps: formModeledSlippageBps,
+      // Phase-9 disable state lives in Redis keyed by symbol — preserve in-memory
+      // mirror so the table re-render shows correct status until WS confirms.
+      disabled: editorOpen?.target?.disabled ?? false,
+      reason: editorOpen?.target?.reason,
+      disabled_at: editorOpen?.target?.disabled_at,
+    };
+    const next: PriceGapCandidate[] = editorOpen?.mode === 'add'
+      ? [...candidates, draft]
+      : candidates.map((c) =>
+          editorOpen?.target &&
+          c.symbol === editorOpen.target.symbol &&
+          c.long_exch === editorOpen.target.long_exch &&
+          c.short_exch === editorOpen.target.short_exch
+            ? draft
+            : c,
+        );
+    try {
+      await postConfig({ price_gap: { candidates: next } });
+      await seed(); // re-fetch /api/pricegap/state for server-canonical view
+      setEditorOpen(null);
+      setFormErrors({});
+    } catch (err) {
+      setModalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setModalBusy(false);
+    }
+  }, [candidates, editorOpen, formSymbol, formLongExch, formShortExch, formThresholdBps, formMaxPositionUSDT, formModeledSlippageBps, postConfig, seed, validateLocalForm]);
+
+  // Delete handler — POSTs candidates filtered to exclude deleteTarget tuple.
+  // On 409 with "active position" wording, surface friendly D-14 copy.
+  const handleConfirmDelete = useCallback(async () => {
+    if (!deleteTarget) return;
+    setModalBusy(true);
+    setModalError(null);
+    const next = candidates.filter(
+      (c) =>
+        !(
+          c.symbol === deleteTarget.symbol &&
+          c.long_exch === deleteTarget.long_exch &&
+          c.short_exch === deleteTarget.short_exch
+        ),
+    );
+    try {
+      await postConfig({ price_gap: { candidates: next } });
+      await seed();
+      setDeleteTarget(null);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // D-14: backend returns 409 with "...has active position; close it first..." — map to friendly i18n.
+      if (msg.toLowerCase().includes('active position')) {
+        setModalError(t('pricegap.candidates.errors.activePositionBlocksDelete'));
+      } else {
+        setModalError(msg);
+      }
+    } finally {
+      setModalBusy(false);
+    }
+  }, [candidates, deleteTarget, postConfig, seed, t]);
+
   // ── Closed-log pagination ───────────────────────────────────────────────
 
   const loadMoreClosed = useCallback(async () => {
@@ -1181,6 +1259,228 @@ const PriceGap: FC = () => {
                 className="px-4 py-2 text-sm bg-gray-700 text-gray-300 rounded hover:bg-gray-600 disabled:opacity-50"
               >
                 {t('pricegap.modal.reEnable.keepDisabled')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Phase 10: Add/Edit modal (mirrors Phase-9 overlay pattern) */}
+      {editorOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+          onClick={() => {
+            if (!modalBusy) {
+              setEditorOpen(null);
+              setModalError(null);
+              setFormErrors({});
+            }
+          }}
+        >
+          <div
+            role="dialog"
+            aria-labelledby="pg-editor-title"
+            className="bg-gray-800 border border-gray-700 rounded-lg shadow-xl w-full max-w-md p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 id="pg-editor-title" className="text-lg font-semibold text-white mb-3">
+              {editorOpen.mode === 'add'
+                ? t('pricegap.candidates.modal.add.title')
+                : replaceTokens(t('pricegap.candidates.modal.edit.title'), {
+                    symbol: editorOpen.target?.symbol ?? '',
+                    long: editorOpen.target?.long_exch ?? '',
+                    short: editorOpen.target?.short_exch ?? '',
+                  })}
+            </h3>
+
+            {/* Symbol */}
+            <label className="block text-sm text-gray-300 mb-1">
+              {t('pricegap.candidates.modal.symbol.label')}
+            </label>
+            <input
+              type="text"
+              className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 mb-1 text-white font-mono"
+              value={formSymbol}
+              placeholder={t('pricegap.candidates.modal.symbol.placeholder')}
+              onChange={(e) => setFormSymbol(e.target.value.toUpperCase())}
+            />
+            {formErrors.symbol && (
+              <p className="text-red-400 text-xs mb-2">{formErrors.symbol}</p>
+            )}
+
+            {/* Long / Short exchange selects */}
+            <div className="grid grid-cols-2 gap-2 mb-1 mt-2">
+              <div>
+                <label className="block text-sm text-gray-300 mb-1">
+                  {t('pricegap.candidates.modal.longExch.label')}
+                </label>
+                <select
+                  className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-white"
+                  value={formLongExch}
+                  onChange={(e) => setFormLongExch(e.target.value)}
+                >
+                  {['binance', 'bybit', 'gateio', 'bitget', 'okx', 'bingx'].map((x) => (
+                    <option key={x} value={x}>
+                      {x}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm text-gray-300 mb-1">
+                  {t('pricegap.candidates.modal.shortExch.label')}
+                </label>
+                <select
+                  className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-white"
+                  value={formShortExch}
+                  onChange={(e) => setFormShortExch(e.target.value)}
+                >
+                  {['binance', 'bybit', 'gateio', 'bitget', 'okx', 'bingx'].map((x) => (
+                    <option key={x} value={x}>
+                      {x}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            {formErrors.exchanges && (
+              <p className="text-red-400 text-xs mb-2">{formErrors.exchanges}</p>
+            )}
+
+            {/* Numeric: threshold_bps */}
+            <label className="block text-sm text-gray-300 mb-1 mt-2">
+              {t('pricegap.candidates.modal.thresholdBps.label')}
+            </label>
+            <input
+              type="number"
+              min={50}
+              max={1000}
+              step={1}
+              className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 mb-1 text-white tabular-nums"
+              value={formThresholdBps}
+              onChange={(e) => setFormThresholdBps(Number(e.target.value))}
+            />
+            {formErrors.threshold && (
+              <p className="text-red-400 text-xs mb-2">{formErrors.threshold}</p>
+            )}
+
+            {/* Numeric: max_position_usdt */}
+            <label className="block text-sm text-gray-300 mb-1 mt-2">
+              {t('pricegap.candidates.modal.maxPositionUSDT.label')}
+            </label>
+            <input
+              type="number"
+              min={100}
+              max={50000}
+              step={100}
+              className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 mb-1 text-white tabular-nums"
+              value={formMaxPositionUSDT}
+              onChange={(e) => setFormMaxPositionUSDT(Number(e.target.value))}
+            />
+            {formErrors.maxPosition && (
+              <p className="text-red-400 text-xs mb-2">{formErrors.maxPosition}</p>
+            )}
+
+            {/* Numeric: modeled_slippage_bps */}
+            <label className="block text-sm text-gray-300 mb-1 mt-2">
+              {t('pricegap.candidates.modal.modeledSlippageBps.label')}
+            </label>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step={1}
+              className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 mb-1 text-white tabular-nums"
+              value={formModeledSlippageBps}
+              onChange={(e) => setFormModeledSlippageBps(Number(e.target.value))}
+            />
+            {formErrors.slippage && (
+              <p className="text-red-400 text-xs mb-2">{formErrors.slippage}</p>
+            )}
+
+            {formErrors.tuple && (
+              <p className="text-red-400 text-xs mb-2">{formErrors.tuple}</p>
+            )}
+            {modalError && <p className="text-red-400 text-sm mb-2">{modalError}</p>}
+
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                type="button"
+                disabled={modalBusy}
+                className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded text-sm disabled:opacity-50"
+                onClick={() => {
+                  if (!modalBusy) {
+                    setEditorOpen(null);
+                    setModalError(null);
+                    setFormErrors({});
+                  }
+                }}
+              >
+                {t('pricegap.candidates.modal.cancel')}
+              </button>
+              <button
+                type="button"
+                disabled={modalBusy}
+                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded text-sm disabled:opacity-50"
+                onClick={() => void handleEditorSave()}
+              >
+                {t('pricegap.candidates.modal.save')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Phase 10: Delete confirm dialog (D-15 single-step, full-detail) */}
+      {deleteTarget && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+          onClick={() => {
+            if (!modalBusy) {
+              setDeleteTarget(null);
+              setModalError(null);
+            }
+          }}
+        >
+          <div
+            role="dialog"
+            aria-labelledby="pg-delete-title"
+            className="bg-gray-800 border border-gray-700 rounded-lg shadow-xl w-full max-w-sm p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 id="pg-delete-title" className="text-lg font-semibold text-white mb-3">
+              {t('pricegap.candidates.confirmDelete.title')}
+            </h3>
+            <p className="text-sm text-gray-300 mb-3">
+              {replaceTokens(t('pricegap.candidates.confirmDelete.body'), {
+                symbol: deleteTarget.symbol,
+                long: deleteTarget.long_exch,
+                short: deleteTarget.short_exch,
+                bps: deleteTarget.threshold_bps.toFixed(0),
+              })}
+            </p>
+            {modalError && <p className="text-red-400 text-sm mb-2">{modalError}</p>}
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                disabled={modalBusy}
+                className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded text-sm disabled:opacity-50"
+                onClick={() => {
+                  if (!modalBusy) {
+                    setDeleteTarget(null);
+                    setModalError(null);
+                  }
+                }}
+              >
+                {t('pricegap.candidates.confirmDelete.cancel')}
+              </button>
+              <button
+                type="button"
+                disabled={modalBusy}
+                className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded text-sm disabled:opacity-50"
+                onClick={() => void handleConfirmDelete()}
+              >
+                {t('pricegap.candidates.confirmDelete.confirm')}
               </button>
             </div>
           </div>
