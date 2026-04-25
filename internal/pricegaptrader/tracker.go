@@ -120,6 +120,20 @@ func NewTracker(
 	}
 }
 
+// CandidateSnapshotForTest returns len(t.cfg.PriceGapCandidates) — a test
+// helper that exposes the per-tick read site against the same *Config
+// pointer the production tick loop uses (lines 226, 293, 413). Plan 10-04
+// Task 2 asserts this snapshot reflects mutations to cfg.PriceGapCandidates
+// without re-constructing the Tracker, locking the hot-reload invariant
+// (RESEARCH.md §"Pitfall 1" / Assumption A1) against future refactors.
+//
+// Production code MUST keep using t.cfg.PriceGapCandidates directly per
+// tick — this helper exists only to drive the test. If you find yourself
+// reaching for this in non-test code, you are doing something wrong.
+func (t *Tracker) CandidateSnapshotForTest() int {
+	return len(t.cfg.PriceGapCandidates)
+}
+
 // SetBroadcaster swaps the broadcaster (Phase 9 wiring; the main binary calls
 // this from cmd/main.go after api.Server is constructed). Passing nil reverts
 // to NoopBroadcaster so downstream code can always call methods safely.
