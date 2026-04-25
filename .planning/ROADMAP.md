@@ -51,7 +51,7 @@ Requirements: `.planning/milestones/v2.0-REQUIREMENTS.md`
 - [x] **Phase 10: Dashboard Candidate CRUD** — Add/Edit/Delete modal in Price-Gap tab; round-trip via `/api/config` + i18n EN/zh-TW lockstep (PG-OPS-07) (completed 2026-04-25)
 - [ ] **Phase 11: Auto-discovery Scanner** — Periodic scan across 6 exchanges; score by spread persistence + book depth + retreat depth; write to `pg:discovered:*` Redis keys (PG-DISC-01, PG-DISC-03)
 - [ ] **Phase 12: Auto-promotion** — Discovered candidates above `PriceGapAutoPromoteScore` threshold append to `cfg.PriceGapCandidates`; respect `PriceGapMaxCandidates` cap; Telegram + WS broadcast on promotion (PG-DISC-02)
-- [ ] **Phase 13: v2.0 Deferred Closure** — Fix `realized_slippage_bps` calc (PG-VAL-03); decide `cmd/bingxprobe/` fate (PG-DEBT-01). _PG-OPS-08 (config-wipe mystery) closed in v0.34.10 — root cause was `go test` writing the live config via SaveJSON's absolute-path fallback, not a dashboard auto-POST; see CHANGELOG and commits `d4cb5b3` + `bbe2b64`._
+- [x] **Phase 13: v2.0 Deferred Closure** — closed 2026-04-25 in v0.34.10/v0.34.11. PG-OPS-08 = `go test` writing live config via SaveJSON absolute-path fallback (fixed v0.34.10). PG-VAL-03 = paper-mode realized slip overrides to ModeledSlipBps (fixed v0.34.11). PG-DEBT-01 = `cmd/bingxprobe/` deleted (v0.34.11; case-insensitive JSON decode bug it diagnosed already fixed in v0.34.6).
 
 Requirements: `.planning/REQUIREMENTS.md`
 

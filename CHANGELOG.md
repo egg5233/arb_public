@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.34.11] - 2026-04-25
+
+### Fixed
+
+- **PG-VAL-03 (paper-mode realized_slippage_bps machine-zero):** in `internal/pricegaptrader/monitor.go` ClosePosition, paper synth fills are exactly `mid ± ModeledSlip/2` on both legs at both entry and exit. With no real price drift, entry slip (`+ModeledSlip`) and exit slip (`-ModeledSlip` because the formula references `LongMidAtDecision`/`ShortMidAtDecision` for both entry AND exit) cancel algebraically and `pos.RealizedSlipBps` collapsed to machine-zero — hiding what the operator modeled. Override added: when `pos.Mode == PriceGapModePaper`, set `pos.RealizedSlipBps = pos.ModeledSlipBps`. Live positions unaffected.
+
+### Removed
+
+- `cmd/bingxprobe/` debug utility (PG-DEBT-01) — purpose served when it diagnosed the case-insensitive JSON decode bug fixed in v0.34.6. 53-line one-shot, no callers, recoverable from git history if needed again.
+
+### Added
+
+- `cmd/shutdown_order_test.go` — Nyquist gap-fill for Phase 8: pins `pgTracker.Stop()` before `spotEng.Stop()` (D-03) and `pgTracker.Start()` only when `cfg.PriceGapEnabled` (PG-OPS-06). Static source-order tests so future refactors of `cmd/main.go` can't silently regress shutdown ordering.
+
+### Documentation
+
+- Phase 08 (price-gap tracker core) marked Nyquist-compliant after audit — VALIDATION.md frontmatter `nyquist_compliant: true`, all 28 task rows green. Phase 8 status: `Needs Review` → `Complete`.
+- Phase 13 (v2.0 deferred closure) tightened: PG-OPS-08 closed by v0.34.10 (real cause was test wipe, not auto-POST), PG-DEBT-01 closed by this release, PG-VAL-03 closed by this release. Phase 13 effectively complete; no remaining v2.0 deferred items.
+
 ## [0.34.10] - 2026-04-25
 
 ### Fixed
