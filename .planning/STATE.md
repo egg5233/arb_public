@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.1
 milestone_name: Candidate Operations
 status: executing
-stopped_at: Phase 10 context gathered (auto mode)
-last_updated: "2026-04-25T06:51:09.165Z"
+stopped_at: Completed 10-01-PLAN.md
+last_updated: "2026-04-25T07:27:34.175Z"
 last_activity: 2026-04-25
 progress:
-  total_phases: 3
-  completed_phases: 2
-  total_plans: 19
-  completed_plans: 19
-  percent: 100
+  total_phases: 1
+  completed_phases: 0
+  total_plans: 5
+  completed_plans: 1
+  percent: 20
 ---
 
 # Project State
@@ -21,12 +21,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-21 after v1.0 shipped)
 
 **Core value:** "I deposit USDT, select my risk preference, and the system automatically finds opportunities across multiple strategies, opens positions, collects yield, exits when profitable, and I can see exactly how much each position earned — with capital shifting between strategies as opportunities shift."
-**Current focus:** Phase 09 — price-gap-dashboard-paper-live-operations
+**Current focus:** Phase 10 — Dashboard Candidate CRUD
 
 ## Current Position
 
-Phase: 09
-Plan: Not started
+Phase: 10 (Dashboard Candidate CRUD) — EXECUTING
+Plan: 2 of 5
 Status: Ready to execute
 Last activity: 2026-04-25
 
@@ -91,6 +91,7 @@ Progress (v2.0): [          ] 0%
 | Phase 09 P08 | 30min | 3 tasks | 5 files |
 | Phase 09 P09-09 | 25min | 3 tasks | 10 files |
 | Phase 09 P09-10 | 30min | 2 tasks | 4 files |
+| Phase 10 P01 | 5min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -168,6 +169,9 @@ v1.0 decisions below (retained for reference):
 - [Phase 09]: D-24 simplification confirmed: pg:history alone suffices for metrics — no pg:slippage:* read path introduced (Plan 09-01 D-23 bridge stamped Modeled/RealizedSlipBps onto every history row)
 - [Phase 09]: Plan 06 aligned risk_gate.go Reason strings with Plan 04 Telegram allowlist; per_position_cap gate gets no Telegram alert by design
 - [Phase 09]: Gap-closure #1: rate-limited non-fire reason logger surfaces detector.Reason under cfg.PriceGapDebugLog (default OFF); 60s cooldown per (symbol, reason); .Info level for journalctl visibility
+- [Phase 10]: Plan 10-01: pointer-to-slice (*[]PriceGapCandidate) on priceGapUpdate so nil = untouched and [] = intentional delete-all (Pitfall 2)
+- [Phase 10]: Plan 10-01: D-13 disable-flag preservation requires no handler-side code — Redis state is keyed on Symbol alone (pg:candidate:disabled:<symbol>), survives any tuple-change edit by design
+- [Phase 10]: Plan 10-01: active-position guard returns HTTP 409 (not 400) — semantically a conflict with current world state; tuple-change edits guarded via prev∖next set difference (Pitfall 4 orphan path)
 
 ### Pending Todos
 
@@ -192,7 +196,7 @@ None yet. Next action: `/gsd-plan-phase 8` to decompose Phase 8 into executable 
 
 ## Session Continuity
 
-Last session: 2026-04-25T06:51:09.160Z
-Stopped at: Phase 10 context gathered (auto mode)
-Resume file: .planning/phases/10-dashboard-candidate-crud/10-CONTEXT.md
+Last session: 2026-04-25T07:27:34.169Z
+Stopped at: Completed 10-01-PLAN.md
+Resume file: None
 Next command: `/gsd-plan-phase 8`

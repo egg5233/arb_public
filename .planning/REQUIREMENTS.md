@@ -12,7 +12,7 @@ Strategy 4 candidate lifecycle: manual control via dashboard, algorithmic auto-d
 
 ### Dashboard CRUD (Phase 10)
 
-- [ ] **PG-OPS-07** — Price-Gap tab gains Add/Edit/Delete candidate modal. Fields: `symbol`, `long_exch`, `short_exch`, `threshold_bps`, `max_position_usdt`, `modeled_slippage_bps`. Posts to `/api/config` and persists to `config.json` via existing `SaveJSON` path. EN + zh-TW locale keys in lockstep. Existing Disable/Re-enable buttons unchanged.
+- [x] **PG-OPS-07** — Price-Gap tab gains Add/Edit/Delete candidate modal. Fields: `symbol`, `long_exch`, `short_exch`, `threshold_bps`, `max_position_usdt`, `modeled_slippage_bps`. Posts to `/api/config` and persists to `config.json` via existing `SaveJSON` path. EN + zh-TW locale keys in lockstep. Existing Disable/Re-enable buttons unchanged.
 
 ### Auto-discovery (Phase 11)
 
