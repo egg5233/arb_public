@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.1
 milestone_name: Candidate Operations
 status: executing
-stopped_at: Completed 10-01-PLAN.md
-last_updated: "2026-04-25T07:27:34.175Z"
+stopped_at: Completed 10-02-PLAN.md
+last_updated: "2026-04-25T07:33:40.362Z"
 last_activity: 2026-04-25
 progress:
   total_phases: 1
   completed_phases: 0
   total_plans: 5
-  completed_plans: 1
-  percent: 20
+  completed_plans: 2
+  percent: 40
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-21 after v1.0 shipped)
 ## Current Position
 
 Phase: 10 (Dashboard Candidate CRUD) — EXECUTING
-Plan: 2 of 5
+Plan: 3 of 5
 Status: Ready to execute
 Last activity: 2026-04-25
 
@@ -92,6 +92,7 @@ Progress (v2.0): [          ] 0%
 | Phase 09 P09-09 | 25min | 3 tasks | 10 files |
 | Phase 09 P09-10 | 30min | 2 tasks | 4 files |
 | Phase 10 P01 | 5min | 2 tasks | 3 files |
+| Phase 10 P02 | 6min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -172,6 +173,8 @@ v1.0 decisions below (retained for reference):
 - [Phase 10]: Plan 10-01: pointer-to-slice (*[]PriceGapCandidate) on priceGapUpdate so nil = untouched and [] = intentional delete-all (Pitfall 2)
 - [Phase 10]: Plan 10-01: D-13 disable-flag preservation requires no handler-side code — Redis state is keyed on Symbol alone (pg:candidate:disabled:<symbol>), survives any tuple-change edit by design
 - [Phase 10]: Plan 10-01: active-position guard returns HTTP 409 (not 400) — semantically a conflict with current world state; tuple-change edits guarded via prev∖next set difference (Pitfall 4 orphan path)
+- [Phase 10]: Plan 10-02: i18n flat-dotted keys (NOT nested objects) per RESEARCH Pitfall 5; structural lockstep via Record<TranslationKey,string> typing on zh-TW.ts is stronger than grep-diff (caught at typecheck not at lint)
+- [Phase 10]: Plan 10-02: zh-TW typography uses fullwidth ：，？ (U+FF1A/FF0C/FF1F) inside Chinese values per existing convention; ASCII punctuation in plan was Rule-1 fixed to match
 
 ### Pending Todos
 
@@ -196,7 +199,7 @@ None yet. Next action: `/gsd-plan-phase 8` to decompose Phase 8 into executable 
 
 ## Session Continuity
 
-Last session: 2026-04-25T07:27:34.169Z
-Stopped at: Completed 10-01-PLAN.md
+Last session: 2026-04-25T07:33:40.358Z
+Stopped at: Completed 10-02-PLAN.md
 Resume file: None
 Next command: `/gsd-plan-phase 8`
