@@ -55,6 +55,29 @@ Requirements: `.planning/milestones/v2.0-REQUIREMENTS.md`
 
 Requirements: `.planning/REQUIREMENTS.md`
 
+### Phase 10: Dashboard Candidate CRUD
+
+**Goal:** Operator can Add/Edit/Delete `PriceGapCandidate` entries from the Price-Gap dashboard tab, with changes persisting to `config.json` via the existing `POST /api/config` round-trip and surfacing in the running tracker on the next scan tick — no manual `config.json` editing required.
+
+**Scope (PG-OPS-07):**
+- New "Add candidate" button in `web/src/pages/PriceGap.tsx`
+- Shared Add/Edit modal with 6 fields: `symbol`, `long_exch`, `short_exch`, `threshold_bps`, `max_position_usdt`, `modeled_slippage_bps`
+- Delete confirmation dialog with active-position safety check
+- Frontend + backend validation (defense-in-depth)
+- EN + zh-TW i18n keys added in lockstep under `priceGap.candidates.*`
+- Reuse existing `POST /api/config` endpoint and `SaveJSON` `.bak` backup flow
+- Existing per-candidate Disable/Re-enable buttons unchanged
+
+**Out of scope:**
+- Auto-discovery (Phase 11), auto-promotion (Phase 12)
+- Live capital deployment (v2.2)
+- pg-admin CLI parity for add/edit/delete
+- WebSocket broadcast for multi-operator sync (v3.0)
+
+**Canonical refs:** see `.planning/phases/10-dashboard-candidate-crud/10-CONTEXT.md` `<canonical_refs>` section.
+
+**Requirements addressed:** PG-OPS-07
+
 ## Progress
 
 | Phase | Milestone | Plans | Status | Completed |
