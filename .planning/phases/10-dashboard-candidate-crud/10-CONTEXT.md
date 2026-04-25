@@ -33,9 +33,9 @@ Operator can Add, Edit, and Delete `PriceGapCandidate` entries from the Price-Ga
 ### Field Validation Rules
 - **D-05:** `symbol` — uppercase plain format `^[A-Z0-9]+USDT$` (matches internal symbol convention; per-exchange mapping happens inside adapters per `CLAUDE.local.md` exchange-adapter rules). Auto-uppercase on input. Required.
 - **D-06:** `long_exch` and `short_exch` — `<select>` dropdowns of exactly 6 values: `binance`, `bybit`, `gateio`, `bitget`, `okx`, `bingx`. Both required. **Must differ from each other** (validation error if equal — strategy is delta-neutral cross-exchange by definition).
-- **D-07:** `threshold_bps` — positive integer, range 50–1000, default 200 (matches Phase 8 D-08 `SOON` example). Required.
-- **D-08:** `max_position_usdt` — positive number, range 100–50000, default 5000 (matches `PriceGapBudget` MVP default). Step 100. Required.
-- **D-09:** `modeled_slippage_bps` — non-negative number, range 0–100, default 5. Step 1. Required.
+- **D-07:** `threshold_bps` — positive number, range `(0, 10000]`, default 200. Required. *(Loosened during 10-05 UAT — original `[50,1000]` rejected live SOONUSDT etc. at threshold_bps=20.)*
+- **D-08:** `max_position_usdt` — positive number, range `(0, 500000]`, default 5000. Step 100. Required. *(Loosened during 10-05 UAT — original `[100,50000]` rejected live candidates at max_position_usdt=50.)*
+- **D-09:** `modeled_slippage_bps` — non-negative number, range `[0, 1000]`, default 5. Step 1. Required. *(Loosened during 10-05 UAT for symmetry; allows up to 10% modeled slip.)*
 - **D-10:** Server-side re-validation in `internal/api/config_handlers*.go` with the same rules (defense in depth — never trust the dashboard alone). Returns standard `{ok: false, error: "..."}` envelope on failure.
 
 ### Identity & Edit Semantics
