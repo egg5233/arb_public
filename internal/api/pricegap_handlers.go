@@ -75,14 +75,14 @@ func validatePriceGapCandidates(cs []models.PriceGapCandidate) []string {
 		if c.LongExch == c.ShortExch {
 			errs = append(errs, prefix+": long_exch must differ from short_exch")
 		}
-		if c.ThresholdBps < 50 || c.ThresholdBps > 1000 {
-			errs = append(errs, prefix+": threshold_bps out of range [50,1000]")
+		if c.ThresholdBps <= 0 || c.ThresholdBps > 10000 {
+			errs = append(errs, prefix+": threshold_bps out of range (0,10000]")
 		}
-		if c.MaxPositionUSDT < 100 || c.MaxPositionUSDT > 50000 {
-			errs = append(errs, prefix+": max_position_usdt out of range [100,50000]")
+		if c.MaxPositionUSDT <= 0 || c.MaxPositionUSDT > 500000 {
+			errs = append(errs, prefix+": max_position_usdt out of range (0,500000]")
 		}
-		if c.ModeledSlippageBps < 0 || c.ModeledSlippageBps > 100 {
-			errs = append(errs, prefix+": modeled_slippage_bps out of range [0,100]")
+		if c.ModeledSlippageBps < 0 || c.ModeledSlippageBps > 1000 {
+			errs = append(errs, prefix+": modeled_slippage_bps out of range [0,1000]")
 		}
 		key := c.Symbol + "|" + c.LongExch + "|" + c.ShortExch
 		if _, dup := seen[key]; dup {

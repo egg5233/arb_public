@@ -186,7 +186,7 @@ func TestPostConfigPriceGapCandidates(t *testing.T) {
 
 		body := map[string]any{
 			"price_gap": map[string]any{
-				"candidates": []any{candidateMap(map[string]any{"threshold_bps": 10})},
+				"candidates": []any{candidateMap(map[string]any{"threshold_bps": 0})},
 			},
 		}
 		rr, env := postPriceGap(t, s, body)
@@ -205,7 +205,7 @@ func TestPostConfigPriceGapCandidates(t *testing.T) {
 
 		body := map[string]any{
 			"price_gap": map[string]any{
-				"candidates": []any{candidateMap(map[string]any{"max_position_usdt": 99})},
+				"candidates": []any{candidateMap(map[string]any{"max_position_usdt": 0})},
 			},
 		}
 		rr, env := postPriceGap(t, s, body)
@@ -224,7 +224,7 @@ func TestPostConfigPriceGapCandidates(t *testing.T) {
 
 		body := map[string]any{
 			"price_gap": map[string]any{
-				"candidates": []any{candidateMap(map[string]any{"modeled_slippage_bps": 200})},
+				"candidates": []any{candidateMap(map[string]any{"modeled_slippage_bps": 1001})},
 			},
 		}
 		rr, env := postPriceGap(t, s, body)

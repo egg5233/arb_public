@@ -475,9 +475,9 @@ const PriceGap: FC = () => {
     const sym = formSymbol.trim().toUpperCase();
     if (!/^[A-Z0-9]+USDT$/.test(sym)) errs.symbol = t('pricegap.candidates.errors.symbolFormat');
     if (formLongExch === formShortExch) errs.exchanges = t('pricegap.candidates.errors.exchangesEqual');
-    if (formThresholdBps < 50 || formThresholdBps > 1000) errs.threshold = t('pricegap.candidates.errors.thresholdRange');
-    if (formMaxPositionUSDT < 100 || formMaxPositionUSDT > 50000) errs.maxPosition = t('pricegap.candidates.errors.maxPositionRange');
-    if (formModeledSlippageBps < 0 || formModeledSlippageBps > 100) errs.slippage = t('pricegap.candidates.errors.slippageRange');
+    if (formThresholdBps <= 0 || formThresholdBps > 10000) errs.threshold = t('pricegap.candidates.errors.thresholdRange');
+    if (formMaxPositionUSDT <= 0 || formMaxPositionUSDT > 500000) errs.maxPosition = t('pricegap.candidates.errors.maxPositionRange');
+    if (formModeledSlippageBps < 0 || formModeledSlippageBps > 1000) errs.slippage = t('pricegap.candidates.errors.slippageRange');
     // Tuple collision (D-11): Add → reject any existing tuple match; Edit → reject if changed tuple matches a *different* row.
     const tuple = `${sym}|${formLongExch}|${formShortExch}`;
     const collides = candidates.some((c) => {

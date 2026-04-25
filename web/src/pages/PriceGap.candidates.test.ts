@@ -111,9 +111,9 @@ function validateLocalForm(
   const sym = state.formSymbol.trim().toUpperCase();
   if (!/^[A-Z0-9]+USDT$/.test(sym)) errs.symbol = 'pricegap.candidates.errors.symbolFormat';
   if (state.formLongExch === state.formShortExch) errs.exchanges = 'pricegap.candidates.errors.exchangesEqual';
-  if (state.formThresholdBps < 50 || state.formThresholdBps > 1000) errs.threshold = 'pricegap.candidates.errors.thresholdRange';
-  if (state.formMaxPositionUSDT < 100 || state.formMaxPositionUSDT > 50000) errs.maxPosition = 'pricegap.candidates.errors.maxPositionRange';
-  if (state.formModeledSlippageBps < 0 || state.formModeledSlippageBps > 100) errs.slippage = 'pricegap.candidates.errors.slippageRange';
+  if (state.formThresholdBps <= 0 || state.formThresholdBps > 10000) errs.threshold = 'pricegap.candidates.errors.thresholdRange';
+  if (state.formMaxPositionUSDT <= 0 || state.formMaxPositionUSDT > 500000) errs.maxPosition = 'pricegap.candidates.errors.maxPositionRange';
+  if (state.formModeledSlippageBps < 0 || state.formModeledSlippageBps > 1000) errs.slippage = 'pricegap.candidates.errors.slippageRange';
   const tuple = `${sym}|${state.formLongExch}|${state.formShortExch}`;
   const collides = candidates.some((c) => {
     const k = `${c.symbol}|${c.long_exch}|${c.short_exch}`;
@@ -399,13 +399,13 @@ describe('PriceGap candidates CRUD — Plan 10-04', () => {
   });
 
   // Test 9: Validation — threshold range.
-  it('Test 9: validation — threshold=10 (below 50) produces errs.threshold', () => {
+  it('Test 9: validation — threshold=0 (out of (0,10000]) produces errs.threshold', () => {
     const errs = validateLocalForm(
       {
         formSymbol: 'BTCUSDT',
         formLongExch: 'binance',
         formShortExch: 'bybit',
-        formThresholdBps: 10,
+        formThresholdBps: 0,
         formMaxPositionUSDT: 5000,
         formModeledSlippageBps: 5,
       },
