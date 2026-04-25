@@ -230,6 +230,19 @@ func (t *Tracker) closePair(pos *models.PriceGapPosition, reason string) {
 	}
 	pos.RealizedSlipBps = entryLongBps + entryShortBps + exitLongBps + exitShortBps
 
+	// PG-VAL-03 (v0.34.10 closure): in paper mode the synth fills are exactly
+	// `mid ± ModeledSlip/2` on both legs at both entry and exit. With no real
+	// price drift between decision and close, entry slip (+ModeledSlip) and
+	// exit slip (-ModeledSlip vs ENTRY mid, since the formula above uses
+	// LongMidAtDecision/ShortMidAtDecision as the exit reference) cancel
+	// algebraically and `pos.RealizedSlipBps` collapses to machine-zero —
+	// hiding what the operator actually modeled. Override with pos.ModeledSlipBps
+	// so the slippage column reflects intent. Live positions are unaffected;
+	// the formula above is the source of truth for them.
+	if pos.Mode == models.PriceGapModePaper {
+		pos.RealizedSlipBps = pos.ModeledSlipBps
+	}
+
 	pos.ExitReason = reason
 	pos.Status = models.PriceGapStatusClosed
 	pos.ClosedAt = time.Now()
