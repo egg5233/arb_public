@@ -860,6 +860,8 @@ const en = {
   'pricegap.candidates.confirmDelete.body': '{symbol}: {long} ↔ {short}, threshold {bps} bps. This cannot be undone.',
   'pricegap.candidates.confirmDelete.confirm': 'Delete',
   'pricegap.candidates.confirmDelete.cancel': 'Cancel',
+  'pricegap.candidates.row.edit': 'Edit',
+  'pricegap.candidates.row.delete': 'Delete',
 } as const;
 
 export type TranslationKey = keyof typeof en;

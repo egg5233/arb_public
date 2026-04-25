@@ -235,6 +235,19 @@ const PriceGap: FC = () => {
   const [modalBusy, setModalBusy] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
 
+  // Phase 10: Add/Edit modal + Delete confirm dialog state
+  // (Phase-9 disable/reenable state above is UNCHANGED — D-13 invariant)
+  type CandidateModalMode = 'add' | 'edit';
+  const [editorOpen, setEditorOpen] = useState<{ mode: CandidateModalMode; target?: PriceGapCandidate } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<PriceGapCandidate | null>(null);
+  const [formSymbol, setFormSymbol] = useState('');
+  const [formLongExch, setFormLongExch] = useState('binance');
+  const [formShortExch, setFormShortExch] = useState('bybit');
+  const [formThresholdBps, setFormThresholdBps] = useState(200);
+  const [formMaxPositionUSDT, setFormMaxPositionUSDT] = useState(5000);
+  const [formModeledSlippageBps, setFormModeledSlippageBps] = useState(5);
+  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+
   // Flash highlight IDs (newly-entered rows)
   const [flashIds, setFlashIds] = useState<Set<string>>(new Set());
 
@@ -433,19 +446,68 @@ const PriceGap: FC = () => {
     }
   }, [reenableTarget]);
 
-  // Close modal on Esc
+  // ── Phase 10: Add/Edit/Delete handlers ─────────────────────────────────
+
+  const openEditor = useCallback((mode: CandidateModalMode, target?: PriceGapCandidate) => {
+    setFormErrors({});
+    setModalError(null);
+    if (mode === 'edit' && target) {
+      setFormSymbol(target.symbol);
+      setFormLongExch(target.long_exch);
+      setFormShortExch(target.short_exch);
+      setFormThresholdBps(target.threshold_bps);
+      setFormMaxPositionUSDT(target.max_position_usdt);
+      setFormModeledSlippageBps(target.modeled_slippage_bps ?? 5);
+    } else {
+      setFormSymbol('');
+      setFormLongExch('binance');
+      setFormShortExch('bybit');
+      setFormThresholdBps(200);
+      setFormMaxPositionUSDT(5000);
+      setFormModeledSlippageBps(5);
+    }
+    setEditorOpen({ mode, target });
+  }, []);
+
+  // Local on-submit validation (D-03 + D-10 defense in depth — backend re-validates).
+  const validateLocalForm = useCallback((): Record<string, string> => {
+    const errs: Record<string, string> = {};
+    const sym = formSymbol.trim().toUpperCase();
+    if (!/^[A-Z0-9]+USDT$/.test(sym)) errs.symbol = t('pricegap.candidates.errors.symbolFormat');
+    if (formLongExch === formShortExch) errs.exchanges = t('pricegap.candidates.errors.exchangesEqual');
+    if (formThresholdBps < 50 || formThresholdBps > 1000) errs.threshold = t('pricegap.candidates.errors.thresholdRange');
+    if (formMaxPositionUSDT < 100 || formMaxPositionUSDT > 50000) errs.maxPosition = t('pricegap.candidates.errors.maxPositionRange');
+    if (formModeledSlippageBps < 0 || formModeledSlippageBps > 100) errs.slippage = t('pricegap.candidates.errors.slippageRange');
+    // Tuple collision (D-11): Add → reject any existing tuple match; Edit → reject if changed tuple matches a *different* row.
+    const tuple = `${sym}|${formLongExch}|${formShortExch}`;
+    const collides = candidates.some((c) => {
+      const k = `${c.symbol}|${c.long_exch}|${c.short_exch}`;
+      if (editorOpen?.mode === 'edit' && editorOpen.target) {
+        const oldKey = `${editorOpen.target.symbol}|${editorOpen.target.long_exch}|${editorOpen.target.short_exch}`;
+        return k === tuple && k !== oldKey;
+      }
+      return k === tuple;
+    });
+    if (collides) errs.tuple = t('pricegap.candidates.errors.tupleCollision');
+    return errs;
+  }, [formSymbol, formLongExch, formShortExch, formThresholdBps, formMaxPositionUSDT, formModeledSlippageBps, candidates, editorOpen, t]);
+
+  // Close modal on Esc — Phase 10 extends Phase-9 handler to cover editorOpen + deleteTarget
   useEffect(() => {
-    if (!disableTarget && !reenableTarget) return;
+    if (!disableTarget && !reenableTarget && !editorOpen && !deleteTarget) return;
     const h = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setDisableTarget(null);
         setReenableTarget(null);
+        setEditorOpen(null);
+        setDeleteTarget(null);
         setModalError(null);
+        setFormErrors({});
       }
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [disableTarget, reenableTarget]);
+  }, [disableTarget, reenableTarget, editorOpen, deleteTarget]);
 
   // ── Closed-log pagination ───────────────────────────────────────────────
 
@@ -607,7 +669,17 @@ const PriceGap: FC = () => {
 
       {/* Section 2: Candidates */}
       <div className={panelCls}>
-        <h3 className={sectionTitle}>{t('pricegap.section.candidates')}</h3>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className={sectionTitle}>{t('pricegap.section.candidates')}</h3>
+          {/* Phase 10 D-04: Add candidate button, right-aligned above table */}
+          <button
+            type="button"
+            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded text-sm"
+            onClick={() => openEditor('add')}
+          >
+            {t('pricegap.candidates.add.button')}
+          </button>
+        </div>
         {seedError ? (
           <div className="text-red-400 text-xs p-4">
             {replaceTokens(t('pricegap.err.seedFailed'), {
@@ -669,24 +741,41 @@ const PriceGap: FC = () => {
                           : '-'}
                       </td>
                       <td className="py-2 pr-4 text-right">
-                        {c.disabled ? (
+                        <div className="inline-flex gap-1">
+                          {c.disabled ? (
+                            <button
+                              onClick={() => setReenableTarget(c)}
+                              className="bg-yellow-600/20 text-yellow-400 hover:bg-yellow-600/40 px-2 py-1 text-xs rounded"
+                            >
+                              {t('pricegap.action.reenable')}
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => {
+                                setDisableReason('');
+                                setDisableTarget(c);
+                              }}
+                              className="bg-gray-700/40 text-gray-300 hover:bg-gray-700/60 text-xs rounded px-2 py-1"
+                            >
+                              {t('pricegap.action.disable')}
+                            </button>
+                          )}
+                          {/* Phase 10: Edit/Delete buttons (Phase-9 Disable/Re-enable above unchanged) */}
                           <button
-                            onClick={() => setReenableTarget(c)}
-                            className="bg-yellow-600/20 text-yellow-400 hover:bg-yellow-600/40 px-2 py-1 text-xs rounded"
+                            type="button"
+                            onClick={() => openEditor('edit', c)}
+                            className="bg-blue-600/20 text-blue-300 hover:bg-blue-600/40 px-2 py-1 text-xs rounded"
                           >
-                            {t('pricegap.action.reenable')}
+                            {t('pricegap.candidates.row.edit')}
                           </button>
-                        ) : (
                           <button
-                            onClick={() => {
-                              setDisableReason('');
-                              setDisableTarget(c);
-                            }}
-                            className="bg-gray-700/40 text-gray-300 hover:bg-gray-700/60 text-xs rounded px-2 py-1"
+                            type="button"
+                            onClick={() => setDeleteTarget(c)}
+                            className="bg-red-600/20 text-red-300 hover:bg-red-600/40 px-2 py-1 text-xs rounded"
                           >
-                            {t('pricegap.action.disable')}
+                            {t('pricegap.candidates.row.delete')}
                           </button>
-                        )}
+                        </div>
                       </td>
                     </tr>
                   ))}

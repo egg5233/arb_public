@@ -862,6 +862,8 @@ const zhTW: Record<TranslationKey, string> = {
   'pricegap.candidates.confirmDelete.body': '{symbol}：{long} ↔ {short}，閾值 {bps} bps。此操作無法復原。',
   'pricegap.candidates.confirmDelete.confirm': '刪除',
   'pricegap.candidates.confirmDelete.cancel': '取消',
+  'pricegap.candidates.row.edit': '編輯',
+  'pricegap.candidates.row.delete': '刪除',
 };
 
 export default zhTW;
