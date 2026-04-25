@@ -137,9 +137,31 @@ missing.
 All three tasks PASS → Phase 9 ready for `/gsd-verify-work` re-run which should
 return `verified` instead of `gaps_found`.
 
-**UAT re-walk completed:** <!-- YYYY-MM-DD by <operator> -->
+**UAT re-walk completed: 2026-04-25 by egg5233**
 
-**Blocking issues to file as new gaps (if any):**
+The UAT was unblocked by three rounds of in-session gap closure, then walked
+end-to-end against a live paper-mode fire on SOONUSDT (open 08:12:16, close
+08:12:47, spread 14.1bps, pnl −0.30, all under v0.34.8 protections).
 
-<!-- bullet list of failing rows + proposed gap-closure plan number, or "none" -->
+Verified live during the fire:
+- Paper-mode chokepoint held — zero `[bingx]/gateio/bybit/binance PlaceOrder`
+  calls in the 5-minute window around the fire
+- Gate 0 (duplicate-candidate) blocked the second tick at 08:12:45 with
+  `pricegap: SOONUSDT gate-blocked: duplicate_candidate`
+- Mode=paper stamped on the persisted record, immutable through close
+- Position lifecycle clean: open → close → no ghost in `pg:positions:active`
+
+**Known issues filed for follow-up (not blocking sign-off):**
+
+1. `realized_slippage_bps ≈ 1.78e-15` (machine zero) — Pitfall 7 calculation
+   bug. Synth fills DO apply 15bps adverse on each leg as designed, but the
+   persisted `realized_slippage_bps` field is computed as a delta vs modeled
+   that is bit-exact zero in paper. Fix candidate: store absolute slip, or
+   add noise to the synth so realized differs from modeled.
+2. `paper_mode=false` flipped on dashboard load at 2026-04-25 07:47 with no
+   user click. Source unknown — no React useEffect auto-POSTs were found in
+   audit. Needs DevTools Network capture next time.
+3. `cmd/bingxprobe/main.go` — diagnostic tool from the BingX BBO debugging
+   session. Untracked, useful for future BingX WS issues. Decide: commit as
+   `cmd/bingxprobe/` utility OR delete.
 

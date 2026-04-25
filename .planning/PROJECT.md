@@ -131,4 +131,4 @@ A multi-strategy arbitrage platform that monitors funding rate differentials and
 This document evolves at phase transitions and milestone boundaries.
 
 ---
-*Last updated: 2026-04-22 after Phase 8 (price-gap tracker core) shipped at v0.33.0*
+*Last updated: 2026-04-25 — v2.0 milestone complete (Phase 9 verified at v0.34.8). Three deferred items tracked in 09-VERIFICATION.md.*
