@@ -45,7 +45,7 @@ func main() {
 	fmt.Printf("  Borrowed: %.8f  Interest: %.8f  Available: %.8f\n\n", mb.Borrowed, mb.Interest, mb.Available)
 
 	if mb.Borrowed > 0 {
-		fmt.Println("*** Already have outstanding borrow — skipping borrow, going straight to FlashRepay ***\n")
+		fmt.Println("*** Already have outstanding borrow — skipping borrow, going straight to FlashRepay ***")
 	} else {
 		// Step 2: Borrow a tiny amount
 		borrowAmt := "0.00005"
