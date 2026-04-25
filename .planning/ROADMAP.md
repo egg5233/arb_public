@@ -42,9 +42,18 @@ Requirements: `.planning/milestones/v2.0-REQUIREMENTS.md`
 
 </details>
 
-### 📋 Next Milestone (Planning)
+### 🚧 v2.1 Candidate Operations (Planning)
 
-Run `/gsd-new-milestone` to define the next milestone scope.
+**Goal:** Operationalize Strategy 4's candidate lifecycle — Dashboard CRUD for manual control + algorithmic auto-discovery + score-threshold auto-promotion. **Paper-only for the entire milestone**; no live capital flip until v2.2.
+
+**Constraints (locked):** paper-only, 6 existing exchanges, score-threshold auto-promotion (no review gate).
+
+- [ ] **Phase 10: Dashboard Candidate CRUD** — Add/Edit/Delete modal in Price-Gap tab; round-trip via `/api/config` + i18n EN/zh-TW lockstep (PG-OPS-07)
+- [ ] **Phase 11: Auto-discovery Scanner** — Periodic scan across 6 exchanges; score by spread persistence + book depth + retreat depth; write to `pg:discovered:*` Redis keys (PG-DISC-01, PG-DISC-03)
+- [ ] **Phase 12: Auto-promotion** — Discovered candidates above `PriceGapAutoPromoteScore` threshold append to `cfg.PriceGapCandidates`; respect `PriceGapMaxCandidates` cap; Telegram + WS broadcast on promotion (PG-DISC-02)
+- [ ] **Phase 13: v2.0 Deferred Closure** — Fix `realized_slippage_bps` calc, audit dashboard auto-POST mystery, decide `cmd/bingxprobe/` fate (PG-VAL-03, PG-OPS-08, PG-DEBT-01)
+
+Requirements: `.planning/REQUIREMENTS.md`
 
 ## Progress
 
@@ -59,3 +68,7 @@ Run `/gsd-new-milestone` to define the next milestone scope.
 | 7. Milestone Polish | v1.0 | 1/1 | Complete | 2026-04-06 |
 | 8. Price-Gap Tracker Core | v2.0 | 8/8 | Complete | 2026-04-22 |
 | 9. Price-Gap Dashboard & Paper→Live Operations | v2.0 | 11/11 | Complete | 2026-04-25 |
+| 10. Dashboard Candidate CRUD | v2.1 | 0/? | Not started | — |
+| 11. Auto-discovery Scanner | v2.1 | 0/? | Not started | — |
+| 12. Auto-promotion | v2.1 | 0/? | Not started | — |
+| 13. v2.0 Deferred Closure | v2.1 | 0/? | Not started | — |

@@ -1,0 +1,47 @@
+# Requirements — v2.1 Candidate Operations
+
+Strategy 4 candidate lifecycle: manual control via dashboard, algorithmic auto-discovery, auto-promotion. **Paper-mode only for the entire milestone** — no live capital flip until v2.2 after observation.
+
+## Constraints (locked at milestone start)
+
+- All work in paper mode (`PriceGapPaperMode=true`); zero real exchange `PlaceOrder` calls from new code
+- Auto-discovery scope: 6 existing exchanges (Binance, Bybit, Gate.io, Bitget, OKX, BingX) — no `coinglass` source
+- Auto-promotion: score-threshold-based, no human-in-the-loop review
+
+## Requirements
+
+### Dashboard CRUD (Phase 10)
+
+- [ ] **PG-OPS-07** — Price-Gap tab gains Add/Edit/Delete candidate modal. Fields: `symbol`, `long_exch`, `short_exch`, `threshold_bps`, `max_position_usdt`, `modeled_slippage_bps`. Posts to `/api/config` and persists to `config.json` via existing `SaveJSON` path. EN + zh-TW locale keys in lockstep. Existing Disable/Re-enable buttons unchanged.
+
+### Auto-discovery (Phase 11)
+
+- [ ] **PG-DISC-01** — Periodic scanner reads BBO + depth across all listed perp pairs on the 6 exchanges. Computes per-pair score from: spread persistence (≥4 consecutive 1m bars above T), top-of-book size ≥ configurable threshold, retreat depth (size available within X bps of mid for both legs).
+- [ ] **PG-DISC-03** — Discovered candidates written to `pg:discovered:<symbol>:<longExch>:<shortExch>` Redis hash with score, sample window, last-seen timestamp. Audit trail even though promotion is automatic. Pruned after configurable TTL if not re-observed.
+
+### Auto-promotion (Phase 12)
+
+- [ ] **PG-DISC-02** — Discovered candidates with score ≥ `PriceGapAutoPromoteScore` are appended to `cfg.PriceGapCandidates` (and persisted to `config.json` via SaveJSON). Promotion respects `PriceGapMaxCandidates` cap (new config field, default 12). Auto-disable from PG-RISK-03 (v2.0) handles demotion. Promotion events emit Telegram alert + WS broadcast.
+
+### v2.0 Deferred Closure (Phase 13)
+
+- [ ] **PG-VAL-03** — Fix `realized_slippage_bps` calc so paper-mode rows show non-zero realized slip (Pitfall 7 intent). Decision: store absolute slip vs. mid-at-decision, OR add stochastic noise to synth fills. Pick one + regression test.
+- [ ] **PG-OPS-08** — Audit dashboard mount/focus/visibility paths for any auto-POST. Reproduce 2026-04-25 07:47 incident with DevTools Network capture. Land a guard so dashboard load never POSTs `/api/config` without a click.
+- [ ] **PG-DEBT-01** — `cmd/bingxprobe/` — promote to a documented `make probe-bingx` target with optional `--symbol` flag, OR delete after confirming the BingX bug pattern is unlikely to recur.
+
+## Out of Scope (for v2.1)
+
+- Live capital deployment of Strategy 4 — explicitly deferred to v2.2 after live observation window
+- CoinGlass-sourced auto-discovery — current scraper pipeline retained for spot-futures only
+- Operator-review gate on promotion — auto-promotion is decided per `#3 / 自動晉升`
+- Unified capital pool across perp-perp + spot-futures + price-gap — v3.0 territory
+
+## Success Criteria
+
+The milestone is complete when:
+
+1. Operator can Add/Edit/Delete pricegap candidates from the Dashboard without editing `config.json` manually
+2. Auto-discovery scanner runs continuously and writes scored candidates to `pg:discovered:*` Redis keys
+3. Candidates above the auto-promote score threshold appear in `cfg.PriceGapCandidates` automatically and the tracker starts paper-trading them on the next tick
+4. The 3 v2.0 deferred items are closed (or explicitly re-deferred with rationale)
+5. Zero real exchange `PlaceOrder` calls fired from any new v2.1 code path (paper-only constraint)

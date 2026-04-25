@@ -131,4 +131,4 @@ A multi-strategy arbitrage platform that monitors funding rate differentials and
 This document evolves at phase transitions and milestone boundaries.
 
 ---
-*Last updated: 2026-04-25 — v2.0 milestone complete (Phase 9 verified at v0.34.8). Three deferred items tracked in 09-VERIFICATION.md.*
+*Last updated: 2026-04-25 — v2.0 shipped + v2.1 Candidate Operations scaffolded (paper-only, auto-discovery + auto-promotion across 6 existing exchanges, no operator review gate).*
