@@ -14,6 +14,7 @@ import (
 
 	"arb/internal/config"
 	"arb/internal/database"
+	"arb/internal/models"
 	"arb/internal/risk"
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
@@ -392,23 +393,23 @@ type configAIResponse struct {
 }
 
 type configStrategyResponse struct {
-	TopOpportunities    int                     `json:"top_opportunities"`
-	ScanMinutes         []int                   `json:"scan_minutes"`
-	EntryScanMinute     int                     `json:"entry_scan_minute"`
-	ExitScanMinute      int                     `json:"exit_scan_minute"`
-	RotateScanMinute    int                     `json:"rotate_scan_minute"`
-	RebalanceScanMinute int                     `json:"rebalance_scan_minute"`
-	EnablePoolAllocator bool                    `json:"enable_pool_allocator"`
-	TopPairsPerSymbol   int                     `json:"top_pairs_per_symbol"`
-	AllocatorTimeoutMs  int                     `json:"allocator_timeout_ms"`
+	TopOpportunities    int   `json:"top_opportunities"`
+	ScanMinutes         []int `json:"scan_minutes"`
+	EntryScanMinute     int   `json:"entry_scan_minute"`
+	ExitScanMinute      int   `json:"exit_scan_minute"`
+	RotateScanMinute    int   `json:"rotate_scan_minute"`
+	RebalanceScanMinute int   `json:"rebalance_scan_minute"`
+	EnablePoolAllocator bool  `json:"enable_pool_allocator"`
+	TopPairsPerSymbol   int   `json:"top_pairs_per_symbol"`
+	AllocatorTimeoutMs  int   `json:"allocator_timeout_ms"`
 
 	RebalanceMinNetPnLUSDT float64 `json:"rebalance_min_net_pnl_usdt"`
 	RebalanceDonorFloorPct float64 `json:"rebalance_donor_floor_pct"`
 
-	Discovery           configDiscoveryResponse `json:"discovery"`
-	Entry               configEntryResponse     `json:"entry"`
-	Exit                configExitResponse      `json:"exit"`
-	Rotation            configRotationResponse  `json:"rotation"`
+	Discovery configDiscoveryResponse `json:"discovery"`
+	Entry     configEntryResponse     `json:"entry"`
+	Exit      configExitResponse      `json:"exit"`
+	Rotation  configRotationResponse  `json:"rotation"`
 }
 
 type configDiscoveryResponse struct {
@@ -780,10 +781,14 @@ type configUpdate struct {
 // Phase 9 D-12: PaperMode is the dashboard-writable live/paper toggle.
 // Phase 9 gap-closure (Plan 09-09): DebugLog gates the rate-limited
 // non-fire reason logger in tracker.runTick.
+// Phase 10 (Plan 10-01): Candidates is a pointer-to-slice so nil = "not
+// provided" and empty slice = "intentional delete-all" (Pitfall 2). Full
+// replace, last-write-wins per D-16.
 type priceGapUpdate struct {
-	Enabled   *bool `json:"enabled"`
-	PaperMode *bool `json:"paper_mode"`
-	DebugLog  *bool `json:"debug_log"`
+	Enabled    *bool                       `json:"enabled"`
+	PaperMode  *bool                       `json:"paper_mode"`
+	DebugLog   *bool                       `json:"debug_log"`
+	Candidates *[]models.PriceGapCandidate `json:"candidates"`
 }
 
 type allocationUpdate struct {
@@ -869,23 +874,23 @@ type aiUpdate struct {
 }
 
 type strategyUpdate struct {
-	TopOpportunities    *int             `json:"top_opportunities"`
-	ScanMinutes         []int            `json:"scan_minutes"`
-	EntryScanMinute     *int             `json:"entry_scan_minute"`
-	ExitScanMinute      *int             `json:"exit_scan_minute"`
-	RotateScanMinute    *int             `json:"rotate_scan_minute"`
-	RebalanceScanMinute *int             `json:"rebalance_scan_minute"`
-	EnablePoolAllocator *bool            `json:"enable_pool_allocator"`
-	TopPairsPerSymbol   *int             `json:"top_pairs_per_symbol"`
-	AllocatorTimeoutMs  *int             `json:"allocator_timeout_ms"`
+	TopOpportunities    *int  `json:"top_opportunities"`
+	ScanMinutes         []int `json:"scan_minutes"`
+	EntryScanMinute     *int  `json:"entry_scan_minute"`
+	ExitScanMinute      *int  `json:"exit_scan_minute"`
+	RotateScanMinute    *int  `json:"rotate_scan_minute"`
+	RebalanceScanMinute *int  `json:"rebalance_scan_minute"`
+	EnablePoolAllocator *bool `json:"enable_pool_allocator"`
+	TopPairsPerSymbol   *int  `json:"top_pairs_per_symbol"`
+	AllocatorTimeoutMs  *int  `json:"allocator_timeout_ms"`
 
 	RebalanceMinNetPnLUSDT *float64 `json:"rebalance_min_net_pnl_usdt"`
 	RebalanceDonorFloorPct *float64 `json:"rebalance_donor_floor_pct"`
 
-	Discovery           *discoveryUpdate `json:"discovery"`
-	Entry               *entryUpdate     `json:"entry"`
-	Exit                *exitUpdate      `json:"exit"`
-	Rotation            *rotationUpdate  `json:"rotation"`
+	Discovery *discoveryUpdate `json:"discovery"`
+	Entry     *entryUpdate     `json:"entry"`
+	Exit      *exitUpdate      `json:"exit"`
+	Rotation  *rotationUpdate  `json:"rotation"`
 }
 
 type discoveryUpdate struct {
@@ -1595,6 +1600,35 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if pg.DebugLog != nil {
 			s.cfg.PriceGapDebugLog = *pg.DebugLog
+		}
+		if pg.Candidates != nil {
+			// Phase 10 D-16 / Pitfall 2: nil = untouched, empty slice = delete-all.
+			next := make([]models.PriceGapCandidate, len(*pg.Candidates))
+			copy(next, *pg.Candidates)
+			// Pitfall 3: normalise symbol case + whitespace BEFORE validation
+			// so the validator + storage agree on the canonical form.
+			for i := range next {
+				next[i].Symbol = strings.ToUpper(strings.TrimSpace(next[i].Symbol))
+				next[i].LongExch = strings.ToLower(strings.TrimSpace(next[i].LongExch))
+				next[i].ShortExch = strings.ToLower(strings.TrimSpace(next[i].ShortExch))
+			}
+			if errs := validatePriceGapCandidates(next); len(errs) > 0 {
+				s.cfg.Unlock()
+				writeJSON(w, http.StatusBadRequest, Response{Error: strings.Join(errs, "; ")})
+				return
+			}
+			// D-14 / Pitfall 4: any tuple removed (whether outright delete or
+			// tuple-change edit) with an open position must be blocked.
+			if blocker, err := s.guardActivePositionRemoval(s.cfg.PriceGapCandidates, next); err != nil {
+				s.cfg.Unlock()
+				writeJSON(w, http.StatusInternalServerError, Response{Error: "active-position check: " + err.Error()})
+				return
+			} else if blocker != "" {
+				s.cfg.Unlock()
+				writeJSON(w, http.StatusConflict, Response{Error: blocker})
+				return
+			}
+			s.cfg.PriceGapCandidates = next
 		}
 	}
 	if upd.PriceGapPaperMode != nil && (upd.PriceGap == nil || upd.PriceGap.PaperMode == nil) {

@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,6 +29,109 @@ import (
 	"arb/internal/models"
 	"arb/internal/pricegaptrader"
 )
+
+// ---------------------------------------------------------------------------
+// Phase 10 (Plan 10-01) — POST /api/config price_gap.candidates validation
+// + active-position safety guard. Helpers live here so the handler-side apply
+// block in handlers.go keeps to its existing shape.
+// ---------------------------------------------------------------------------
+
+// symbolRE matches the internal canonical symbol format (D-05).
+var symbolRE = regexp.MustCompile(`^[A-Z0-9]+USDT$`)
+
+// allowedExch is the closed enum of exchange identifiers the price-gap engine
+// supports today (D-06). Phase 10 ships paper-only against the same 6 CEXes
+// the rest of the platform talks to.
+var allowedExch = map[string]struct{}{
+	"binance": {},
+	"bybit":   {},
+	"gateio":  {},
+	"bitget":  {},
+	"okx":     {},
+	"bingx":   {},
+}
+
+// validatePriceGapCandidates enforces D-05..D-11 invariants. Returns a slice
+// of human-readable error strings, one per failed candidate (errors collated
+// rather than fail-fast so the dashboard can surface every issue at once).
+//
+// Caller is expected to have already normalised Symbol/LongExch/ShortExch
+// case + whitespace per Pitfall 3 so the validator + storage agree on the
+// canonical form.
+func validatePriceGapCandidates(cs []models.PriceGapCandidate) []string {
+	var errs []string
+	seen := make(map[string]struct{}, len(cs))
+	for i, c := range cs {
+		prefix := fmt.Sprintf("candidate[%d] %s/%s/%s", i, c.Symbol, c.LongExch, c.ShortExch)
+		if !symbolRE.MatchString(c.Symbol) {
+			errs = append(errs, prefix+": symbol must match ^[A-Z0-9]+USDT$")
+		}
+		if _, ok := allowedExch[c.LongExch]; !ok {
+			errs = append(errs, prefix+": long_exch invalid")
+		}
+		if _, ok := allowedExch[c.ShortExch]; !ok {
+			errs = append(errs, prefix+": short_exch invalid")
+		}
+		if c.LongExch == c.ShortExch {
+			errs = append(errs, prefix+": long_exch must differ from short_exch")
+		}
+		if c.ThresholdBps < 50 || c.ThresholdBps > 1000 {
+			errs = append(errs, prefix+": threshold_bps out of range [50,1000]")
+		}
+		if c.MaxPositionUSDT < 100 || c.MaxPositionUSDT > 50000 {
+			errs = append(errs, prefix+": max_position_usdt out of range [100,50000]")
+		}
+		if c.ModeledSlippageBps < 0 || c.ModeledSlippageBps > 100 {
+			errs = append(errs, prefix+": modeled_slippage_bps out of range [0,100]")
+		}
+		key := c.Symbol + "|" + c.LongExch + "|" + c.ShortExch
+		if _, dup := seen[key]; dup {
+			errs = append(errs, prefix+": duplicate tuple")
+		}
+		seen[key] = struct{}{}
+	}
+	return errs
+}
+
+// guardActivePositionRemoval blocks the apply path when any tuple present in
+// `prev` but absent from `next` has an open position in pg:positions:active
+// (D-14, Pitfall 4 — covers both outright delete AND tuple-change edits).
+//
+// Returns ("", nil) when the operation is safe to apply. Returns a
+// human-readable blocker string + nil err for HTTP 409. Returns ("", err) for
+// downstream Redis failures (HTTP 500).
+func (s *Server) guardActivePositionRemoval(prev, next []models.PriceGapCandidate) (string, error) {
+	nextSet := make(map[string]struct{}, len(next))
+	for _, c := range next {
+		nextSet[c.Symbol+"|"+c.LongExch+"|"+c.ShortExch] = struct{}{}
+	}
+	var removed []models.PriceGapCandidate
+	for _, c := range prev {
+		if _, kept := nextSet[c.Symbol+"|"+c.LongExch+"|"+c.ShortExch]; !kept {
+			removed = append(removed, c)
+		}
+	}
+	if len(removed) == 0 {
+		return "", nil
+	}
+	if s.db == nil {
+		// Tests without a DB — skip the active-position guard.
+		return "", nil
+	}
+	active, err := s.db.GetActivePriceGapPositions()
+	if err != nil {
+		return "", err
+	}
+	for _, p := range active {
+		for _, rm := range removed {
+			if p.Symbol == rm.Symbol && p.LongExchange == rm.LongExch && p.ShortExchange == rm.ShortExch {
+				return fmt.Sprintf("candidate %s/%s/%s has active position; close it first (position id=%s)",
+					rm.Symbol, rm.LongExch, rm.ShortExch, p.ID), nil
+			}
+		}
+	}
+	return "", nil
+}
 
 // priceGapCandidateView pairs a configured candidate with its current disable
 // state for the dashboard REST seed.
