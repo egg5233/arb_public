@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.34.10] - 2026-04-25
+
+### Fixed
+
+- **Critical: live config.json wipe by `go test ./internal/api/`.** Root cause identified during Phase 10 UAT (audit syscall trace pinned `comm="api.test"` writing to `/var/solana/data/arb/config.json` at the wipe timestamp 2026-04-25 11:56:40 UTC). The chain: `Config.SaveJSONWithExchangeSecretOverrides()` had an absolute-path fallback `/var/solana/data/arb/config.json`. Tests in subpackages run with `cwd=internal/api/` (no local `config.json`), and the test helper `newPriceGapTestServer` constructed a near-zero `&config.Config{}`. When tests POSTed to handlers that called `SaveJSON()`, the absolute fallback resolved to the live production file and overwrote it with all-zero defaults — explaining every "mystery wipe" recorded in `config_watchdog.log` over the past several days (always the same fields: bool=true → omitted via omitempty, numerics → 0/1/0.5 defaults). Two-layer fix:
+  1. `SaveJSONWithExchangeSecretOverrides` now requires either `CONFIG_FILE` env var OR `config.json` in cwd. No absolute fallback. Production unaffected (systemd `WorkingDirectory=/var/solana/data/arb` makes the relative path resolve correctly).
+  2. `newPriceGapTestServer` now sets `CONFIG_FILE` to a `t.TempDir()` sandbox path (belt-and-suspenders).
+- Verification: `go test ./...` (844 tests across 44 packages) all pass; live `config.json` byte-equal at 8870 bytes before and after the full suite. Previously the same test invocation reproduced the wipe deterministically.
+- Added `cmd/configprobe` debug utility — runs `Load()` (and optionally `SaveJSON()`) against a sandbox config to verify load/save symmetry.
+
 ## [0.34.9] - 2026-04-25
 
 ### Fixed
