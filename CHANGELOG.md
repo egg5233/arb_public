@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **Pricegap tracker (PG-DIR-01, Phase 999.1 Plan 01):** `PriceGapCandidate.Direction` field added (default `"pinned"`). Pinned mode now requires positive-direction sign continuity to fire — closes a latent Phase-8 bug where `barRing.allExceed` used `math.Abs` and silently fired any sign for pinned candidates, placing wrong-side trades on inverse spreads. Bidirectional candidates (`direction: "bidirectional"`) fire on either sign and the executor swaps wire-side leg roles for inverse fires; the lock key, position ID, and Phase 10 active-position guard all continue to use the CONFIGURED tuple. `PriceGapPosition` gains `FiredDirection` ("forward"|"inverse"), `CandidateLongExch`, `CandidateShortExch` for observability and Phase 10 D-11 tuple matching when wire-side roles diverge from configured. Existing operator candidates retain pinned behavior — no JSON migration required, but pinned candidates that were silently firing inverse-direction will stop doing so. Verify your candidate list with `pg-admin list` and flip any intentionally-symmetric candidates to `direction: "bidirectional"`. Risk-gate Gate-concentration check verified role-blind (counts notional on either leg) — no change required.
+
 ## [0.34.11] - 2026-04-25
 
 ### Fixed

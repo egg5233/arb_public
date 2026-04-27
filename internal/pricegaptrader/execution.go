@@ -42,7 +42,10 @@ func (t *Tracker) openPair(
 		return nil, ErrPriceGapCircuitBreaker
 	}
 
-	// Per-symbol lock via Redis so a second tick can't race us.
+	// Per-symbol lock via Redis so a second tick can't race us. Lock key uses
+	// the CONFIGURED tuple (not wire-side) so a single bidirectional candidate
+	// cannot fire forward and inverse concurrently — preserves T-08-08
+	// single-fire-per-candidate invariant. PG-DIR-01.
 	lockRes := cand.Symbol + ":" + cand.LongExch + ":" + cand.ShortExch
 	token, ok, err := t.db.AcquirePriceGapLock(lockRes, 30*time.Second)
 	if err != nil || !ok {
@@ -50,17 +53,38 @@ func (t *Tracker) openPair(
 	}
 	defer func() { _ = t.db.ReleasePriceGapLock(lockRes, token) }()
 
-	longEx, ok := t.exchanges[cand.LongExch]
-	if !ok {
-		return nil, fmt.Errorf("openPair: long exchange %q not configured", cand.LongExch)
-	}
-	shortEx, ok := t.exchanges[cand.ShortExch]
-	if !ok {
-		return nil, fmt.Errorf("openPair: short exchange %q not configured", cand.ShortExch)
+	// PG-DIR-01: resolve wire-side leg roles. For bidirectional candidates an
+	// inverse-sign fire (det.SpreadBps < 0 means configured short_exch is
+	// cheaper than configured long_exch) flips the wire-side roles: BUY on
+	// configured short_exch, SELL on configured long_exch. Pinned candidates
+	// always trade configured-side (detector enforces positive-sign-only via
+	// allExceedDirected).
+	//
+	// The lock key (lockRes above) and CandidateLongExch/CandidateShortExch on
+	// the persisted position preserve the CONFIGURED tuple — these are what
+	// Phase 10's active-position guard matches against (Pitfall 5).
+	firedDirection := models.PriceGapFiredForward
+	wireLongExch := cand.LongExch
+	wireShortExch := cand.ShortExch
+	wireMidLong := det.MidLong
+	wireMidShort := det.MidShort
+	if cand.Direction == models.PriceGapDirectionBidirectional && det.SpreadBps < 0 {
+		firedDirection = models.PriceGapFiredInverse
+		wireLongExch, wireShortExch = cand.ShortExch, cand.LongExch
+		wireMidLong, wireMidShort = det.MidShort, det.MidLong
 	}
 
-	decL := t.sizeDecimals(cand.LongExch, cand.Symbol)
-	decS := t.sizeDecimals(cand.ShortExch, cand.Symbol)
+	longEx, ok := t.exchanges[wireLongExch]
+	if !ok {
+		return nil, fmt.Errorf("openPair: long exchange %q not configured", wireLongExch)
+	}
+	shortEx, ok := t.exchanges[wireShortExch]
+	if !ok {
+		return nil, fmt.Errorf("openPair: short exchange %q not configured", wireShortExch)
+	}
+
+	decL := t.sizeDecimals(wireLongExch, cand.Symbol)
+	decS := t.sizeDecimals(wireShortExch, cand.Symbol)
 
 	longCh := make(chan fillResult, 1)
 	shortCh := make(chan fillResult, 1)
@@ -73,11 +97,11 @@ func (t *Tracker) openPair(
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		longCh <- t.placeLeg(longEx, cand.Symbol, exchange.SideBuy, sizeBase, decL, "ioc", det.MidLong, modeledEdgeBps)
+		longCh <- t.placeLeg(longEx, cand.Symbol, exchange.SideBuy, sizeBase, decL, "ioc", wireMidLong, modeledEdgeBps)
 	}()
 	go func() {
 		defer wg.Done()
-		shortCh <- t.placeLeg(shortEx, cand.Symbol, exchange.SideSell, sizeBase, decS, "ioc", det.MidShort, modeledEdgeBps)
+		shortCh <- t.placeLeg(shortEx, cand.Symbol, exchange.SideSell, sizeBase, decS, "ioc", wireMidShort, modeledEdgeBps)
 	}()
 	wg.Wait()
 
@@ -135,23 +159,28 @@ func (t *Tracker) openPair(
 	if t.cfg.PriceGapPaperMode {
 		mode = models.PriceGapModePaper
 	}
+	// posID uses CONFIGURED tuple (cand.LongExch/cand.ShortExch) — preserves
+	// Phase 8 D-15 ID format and Phase 10 D-11 tuple identity (Pitfall 5).
 	posID := fmt.Sprintf("pg_%s_%s_%s_%d", cand.Symbol, cand.LongExch, cand.ShortExch, time.Now().UnixNano())
 	pos := &models.PriceGapPosition{
 		ID:                 posID,
 		Symbol:             cand.Symbol,
-		LongExchange:       cand.LongExch,
-		ShortExchange:      cand.ShortExch,
+		LongExchange:       wireLongExch,   // wire-side (may differ from configured for inverse fire)
+		ShortExchange:      wireShortExch,  // wire-side (may differ from configured for inverse fire)
+		CandidateLongExch:  cand.LongExch,  // configured tuple — for Phase 10 D-11 guard
+		CandidateShortExch: cand.ShortExch, // configured tuple — for Phase 10 D-11 guard
+		FiredDirection:     firedDirection, // PG-DIR-01: "forward" | "inverse"
 		Status:             models.PriceGapStatusOpen,
 		Mode:               mode,
-		EntrySpreadBps:     det.SpreadBps,
+		EntrySpreadBps:     det.SpreadBps, // KEEP signed value — analytics needs the sign
 		ThresholdBps:       cand.ThresholdBps,
 		NotionalUSDT:       match * ((lr.price + sr.price) / 2.0),
-		LongFillPrice:      lr.price,
-		ShortFillPrice:     sr.price,
+		LongFillPrice:      lr.price,    // wire-side fill
+		ShortFillPrice:     sr.price,    // wire-side fill
 		LongSize:           match,
 		ShortSize:          match,
-		LongMidAtDecision:  det.MidLong,
-		ShortMidAtDecision: det.MidShort,
+		LongMidAtDecision:  wireMidLong,  // wire-side mid (post-swap for inverse)
+		ShortMidAtDecision: wireMidShort, // wire-side mid (post-swap for inverse)
 		ModeledSlipBps:     cand.ModeledSlippageBps,
 		OpenedAt:           time.Now(),
 	}

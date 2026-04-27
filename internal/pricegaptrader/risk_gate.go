@@ -135,6 +135,12 @@ func (t *Tracker) preEntry(
 	return GateDecision{Approved: true}
 }
 
+// PG-DIR-01 verified 2026-04-27: Gate-concentration check (Gate 5 above) is
+// already role-blind — both candHasGate and positionHasGate match Gate.io on
+// EITHER leg via OR. Bidirectional inverse fires (where Gate may end up on
+// the wire-side LONG leg even though configured as the SHORT leg) are
+// correctly counted. No code change required for A5; this comment is the
+// audit-trail marker.
 func candHasGate(c models.PriceGapCandidate) bool {
 	return strings.EqualFold(c.LongExch, "gate") || strings.EqualFold(c.ShortExch, "gate")
 }
