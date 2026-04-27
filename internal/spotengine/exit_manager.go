@@ -767,9 +767,9 @@ func (e *SpotEngine) resolveManualRecovery(positionID string) error {
 		return fmt.Errorf("position %s not pending manual recovery", positionID)
 	}
 
-	smExch, ok := e.spotMargin[pos.Exchange]
+	smExch, ok := e.getSpotExchange(pos.Exchange)
 	if !ok {
-		return fmt.Errorf("exchange %s does not support spot margin", pos.Exchange)
+		return fmt.Errorf("exchange %s does not support spot trading", pos.Exchange)
 	}
 
 	if pos.PendingSpotExitOrderID != "" {
@@ -794,20 +794,26 @@ func (e *SpotEngine) resolveManualRecovery(positionID string) error {
 		}
 	}
 
-	bal, err := smExch.GetMarginBalance(pos.BaseCoin)
-	if err != nil {
-		return fmt.Errorf("manual recovery balance check failed: %w", err)
-	}
+	if pos.Direction == "borrow_sell_long" {
+		marginExch, ok := smExch.(exchange.SpotMarginExchange)
+		if !ok {
+			return fmt.Errorf("manual recovery margin balance unsupported for %s", pos.Exchange)
+		}
+		bal, err := marginExch.GetMarginBalance(pos.BaseCoin)
+		if err != nil {
+			return fmt.Errorf("manual recovery balance check failed: %w", err)
+		}
 
-	liability := bal.Borrowed + bal.Interest
-	if math.Abs(liability) > spotQtyTolerance || math.Abs(bal.TotalBalance) > spotQtyTolerance {
-		return fmt.Errorf(
-			"manual recovery still open on exchange: total=%.6f available=%.6f borrowed=%.6f interest=%.6f",
-			bal.TotalBalance,
-			bal.Available,
-			bal.Borrowed,
-			bal.Interest,
-		)
+		liability := bal.Borrowed + bal.Interest
+		if math.Abs(liability) > spotQtyTolerance || math.Abs(bal.TotalBalance) > spotQtyTolerance {
+			return fmt.Errorf(
+				"manual recovery still open on exchange: total=%.6f available=%.6f borrowed=%.6f interest=%.6f",
+				bal.TotalBalance,
+				bal.Available,
+				bal.Borrowed,
+				bal.Interest,
+			)
+		}
 	}
 
 	now := time.Now().UTC()

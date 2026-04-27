@@ -19,6 +19,31 @@ All notable changes to this project will be documented in this file.
 
 - **Pricegap risk-gate concentration (Phase 999.1 A5):** Gate-concentration check is role-blind — counts notional on either leg — required for correct concentration accounting under bidirectional inverse fires where wire-side roles diverge from the configured tuple.
 
+## [0.34.13] - 2026-04-27
+
+### Fixed
+
+- Hardened BingX live order preflights so probes use the actual entry side, reject unsafe probe parameters, fail closed on missing probe order IDs, and report filled-before-cancel probes as failures.
+- Added BingX futures preflight coverage to spot-futures Dir B entry and pending-entry recovery before any spot leg is opened.
+- Added BingX preflight coverage to price-gap live entry before concurrent leg placement so a BingX API order disable cannot leave the peer leg opened first.
+
+### Added
+
+- Added a Dir B strategy-priority flow HTML reference diagram under `docs/`.
+
+## [0.34.12] - 2026-04-27
+
+### Fixed
+
+- Added a BingX futures entry preflight using a signed, non-marketable IOC probe on the live `/openApi/swap/v2/trade/order` endpoint, so temporary BingX API order disables are detected before either real arbitrage leg is placed.
+- Fixed planned allocator transfer sizing so donor min-withdraw constraints no longer cap a transfer below the remaining deficit.
+- Made PnL reconciliation refresh and apply close stats atomically to avoid stale-position races during concurrent reconciliation.
+
+### Added
+
+- Added strategy-priority SLO backend/dashboard visibility for the existing `/api/strategy-priority` endpoint.
+- Added spot-only Dir B plumbing for BingX behind the disabled-by-default spot-only exchange rollout flag.
+
 ## [0.34.11] - 2026-04-25
 
 ### Fixed

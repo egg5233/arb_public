@@ -202,9 +202,10 @@ func (s *Server) handleSpotManualOpen(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Symbol    string `json:"symbol"`
-		Exchange  string `json:"exchange"`
-		Direction string `json:"direction"`
+		Symbol                   string `json:"symbol"`
+		Exchange                 string `json:"exchange"`
+		Direction                string `json:"direction"`
+		OverrideStrategyPriority bool   `json:"override_strategy_priority"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Symbol == "" || req.Exchange == "" || req.Direction == "" {
 		writeJSON(w, http.StatusBadRequest, Response{Error: "symbol, exchange, direction required"})
@@ -216,11 +217,13 @@ func (s *Server) handleSpotManualOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.spotOpenPosition(req.Symbol, req.Exchange, req.Direction); err != nil {
+	opts := ManualOpenOptions{OverrideStrategyPriority: req.OverrideStrategyPriority}
+	if err := s.spotOpenPosition(req.Symbol, req.Exchange, req.Direction, opts); err != nil {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "not found") {
 			writeJSON(w, http.StatusNotFound, Response{Error: errMsg})
-		} else if strings.Contains(errMsg, "already") || strings.Contains(errMsg, "capacity") {
+		} else if strings.Contains(errMsg, "already") || strings.Contains(errMsg, "capacity") ||
+			strings.Contains(errMsg, "override_required") || strings.Contains(errMsg, "strategy priority denied") {
 			writeJSON(w, http.StatusConflict, Response{Error: errMsg})
 		} else if strings.Contains(errMsg, "is filtered") {
 			writeJSON(w, http.StatusUnprocessableEntity, Response{Error: errMsg})
@@ -376,18 +379,19 @@ func (s *Server) handleSpotAutoConfig(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var req struct {
-			Enabled               *bool    `json:"enabled"`
-			DryRun                *bool    `json:"dry_run"`
-			PersistenceScans      *int     `json:"persistence_scans"`
-			ScannerMode           *string  `json:"scanner_mode"`
-			EnableMinHold         *bool    `json:"enable_min_hold"`
-			MinHoldHours          *int     `json:"min_hold_hours"`
-			EnableSettlementGuard *bool    `json:"enable_settlement_guard"`
-			SettlementWindowMin   *int     `json:"settlement_window_min"`
-			EnablePriceGapGate    *bool    `json:"enable_price_gap_gate"`
-			MaxPriceGapPct        *float64 `json:"max_price_gap_pct"`
-			EnableExitSpreadGate  *bool    `json:"enable_exit_spread_gate"`
-			ExitSpreadPct         *float64 `json:"exit_spread_pct"`
+			Enabled                 *bool    `json:"enabled"`
+			DryRun                  *bool    `json:"dry_run"`
+			PersistenceScans        *int     `json:"persistence_scans"`
+			EnableSpotOnlyExchanges *bool    `json:"enable_spot_only_exchanges"`
+			ScannerMode             *string  `json:"scanner_mode"`
+			EnableMinHold           *bool    `json:"enable_min_hold"`
+			MinHoldHours            *int     `json:"min_hold_hours"`
+			EnableSettlementGuard   *bool    `json:"enable_settlement_guard"`
+			SettlementWindowMin     *int     `json:"settlement_window_min"`
+			EnablePriceGapGate      *bool    `json:"enable_price_gap_gate"`
+			MaxPriceGapPct          *float64 `json:"max_price_gap_pct"`
+			EnableExitSpreadGate    *bool    `json:"enable_exit_spread_gate"`
+			ExitSpreadPct           *float64 `json:"exit_spread_pct"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, Response{Error: "invalid JSON"})
@@ -406,6 +410,10 @@ func (s *Server) handleSpotAutoConfig(w http.ResponseWriter, r *http.Request) {
 		if req.PersistenceScans != nil && *req.PersistenceScans >= 0 {
 			s.cfg.SpotFuturesPersistenceScans = *req.PersistenceScans
 			s.db.SetConfigField("spot_futures_persistence_scans", strconv.Itoa(*req.PersistenceScans))
+		}
+		if req.EnableSpotOnlyExchanges != nil {
+			s.cfg.SpotFuturesEnableSpotOnlyExchanges = *req.EnableSpotOnlyExchanges
+			s.db.SetConfigField("spot_futures_enable_spot_only_exchanges", strconv.FormatBool(*req.EnableSpotOnlyExchanges))
 		}
 		if req.ScannerMode != nil && (*req.ScannerMode == "native" || *req.ScannerMode == "coinglass" || *req.ScannerMode == "both") {
 			s.cfg.SpotFuturesScannerMode = *req.ScannerMode
@@ -493,21 +501,22 @@ func (s *Server) handleSpotManualClose(w http.ResponseWriter, r *http.Request) {
 // spotAutoConfigResponse builds the shared response for GET and POST /api/spot/config/auto.
 func (s *Server) spotAutoConfigResponse() map[string]interface{} {
 	return map[string]interface{}{
-		"auto_enabled":            s.cfg.SpotFuturesAutoEnabled,
-		"dry_run":                 s.cfg.SpotFuturesDryRun,
-		"persistence_scans":       s.cfg.SpotFuturesPersistenceScans,
-		"max_positions":           s.cfg.SpotFuturesMaxPositions,
-		"capital_separate_usdt":   s.cfg.SpotFuturesCapitalSeparate,
-		"capital_unified_usdt":    s.cfg.SpotFuturesCapitalUnified,
-		"scanner_mode":            s.cfg.SpotFuturesScannerMode,
-		"enable_min_hold":         s.cfg.SpotFuturesEnableMinHold,
-		"min_hold_hours":          s.cfg.SpotFuturesMinHoldHours,
-		"enable_settlement_guard": s.cfg.SpotFuturesEnableSettlementGuard,
-		"settlement_window_min":   s.cfg.SpotFuturesSettlementWindowMin,
-		"enable_price_gap_gate":   s.cfg.SpotFuturesEnablePriceGapGate,
-		"max_price_gap_pct":       s.cfg.SpotFuturesMaxPriceGapPct,
-		"enable_exit_spread_gate": s.cfg.SpotFuturesEnableExitSpreadGate,
-		"exit_spread_pct":         s.cfg.SpotFuturesExitSpreadPct,
+		"auto_enabled":               s.cfg.SpotFuturesAutoEnabled,
+		"dry_run":                    s.cfg.SpotFuturesDryRun,
+		"persistence_scans":          s.cfg.SpotFuturesPersistenceScans,
+		"enable_spot_only_exchanges": s.cfg.SpotFuturesEnableSpotOnlyExchanges,
+		"max_positions":              s.cfg.SpotFuturesMaxPositions,
+		"capital_separate_usdt":      s.cfg.SpotFuturesCapitalSeparate,
+		"capital_unified_usdt":       s.cfg.SpotFuturesCapitalUnified,
+		"scanner_mode":               s.cfg.SpotFuturesScannerMode,
+		"enable_min_hold":            s.cfg.SpotFuturesEnableMinHold,
+		"min_hold_hours":             s.cfg.SpotFuturesMinHoldHours,
+		"enable_settlement_guard":    s.cfg.SpotFuturesEnableSettlementGuard,
+		"settlement_window_min":      s.cfg.SpotFuturesSettlementWindowMin,
+		"enable_price_gap_gate":      s.cfg.SpotFuturesEnablePriceGapGate,
+		"max_price_gap_pct":          s.cfg.SpotFuturesMaxPriceGapPct,
+		"enable_exit_spread_gate":    s.cfg.SpotFuturesEnableExitSpreadGate,
+		"exit_spread_pct":            s.cfg.SpotFuturesExitSpreadPct,
 	}
 }
 
@@ -721,7 +730,7 @@ func (s *Server) handleSpotTestLifecycle(w http.ResponseWriter, r *http.Request)
 	s.spotInjectTestOpp(symbol, req.Exchange)
 
 	openStepA := &lifecycleStepResult{}
-	if err := s.spotOpenPosition(symbol, req.Exchange, "borrow_sell_long"); err != nil {
+	if err := s.spotOpenPosition(symbol, req.Exchange, "borrow_sell_long", ManualOpenOptions{}); err != nil {
 		openStepA.Status = "error"
 		openStepA.Error = err.Error()
 		report.DirA.Open = openStepA
@@ -770,7 +779,7 @@ func (s *Server) handleSpotTestLifecycle(w http.ResponseWriter, r *http.Request)
 	s.spotInjectTestOpp(symbol, req.Exchange)
 
 	openStepB := &lifecycleStepResult{}
-	if err := s.spotOpenPosition(symbol, req.Exchange, "buy_spot_short"); err != nil {
+	if err := s.spotOpenPosition(symbol, req.Exchange, "buy_spot_short", ManualOpenOptions{}); err != nil {
 		openStepB.Status = "error"
 		openStepB.Error = err.Error()
 		report.DirB.Open = openStepB

@@ -2,10 +2,200 @@ package config
 
 import (
 	"encoding/json"
+	"math"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"arb/internal/models"
 )
+
+func TestStrategyPriorityDefaultsAreSafe(t *testing.T) {
+	t.Setenv("CONFIG_FILE", filepath.Join(t.TempDir(), "missing-config.json"))
+
+	cfg := Load()
+
+	if cfg.EnableStrategyPriority {
+		t.Fatalf("expected EnableStrategyPriority=false")
+	}
+	if cfg.StrategyPriority != StrategyPriorityPerpPerpFirst {
+		t.Fatalf("expected StrategyPriority=%s, got %s", StrategyPriorityPerpPerpFirst, cfg.StrategyPriority)
+	}
+	if cfg.EffectiveStrategyPriority() != StrategyPriorityPerpPerpFirst {
+		t.Fatalf("expected EffectiveStrategyPriority=%s, got %s", StrategyPriorityPerpPerpFirst, cfg.EffectiveStrategyPriority())
+	}
+	if cfg.ExpectedHoldHours != 24 {
+		t.Fatalf("expected ExpectedHoldHours=24, got %v", cfg.ExpectedHoldHours)
+	}
+}
+
+func TestSpotOnlyExchangesDefaultOffAndApplyJSON(t *testing.T) {
+	t.Setenv("CONFIG_FILE", filepath.Join(t.TempDir(), "missing-config.json"))
+
+	cfg := Load()
+	if cfg.SpotFuturesEnableSpotOnlyExchanges {
+		t.Fatal("expected SpotFuturesEnableSpotOnlyExchanges default false")
+	}
+
+	enabled := true
+	cfg.applyJSON(&jsonConfig{SpotFutures: &jsonSpotFutures{EnableSpotOnlyExchanges: &enabled}})
+	if !cfg.SpotFuturesEnableSpotOnlyExchanges {
+		t.Fatal("expected SpotFuturesEnableSpotOnlyExchanges=true after applyJSON")
+	}
+}
+
+func TestSpotOnlyExchangesEnvOverride(t *testing.T) {
+	t.Setenv("CONFIG_FILE", filepath.Join(t.TempDir(), "missing-config.json"))
+	t.Setenv("SPOT_FUTURES_ENABLE_SPOT_ONLY_EXCHANGES", "true")
+
+	cfg := Load()
+	if !cfg.SpotFuturesEnableSpotOnlyExchanges {
+		t.Fatal("expected SPOT_FUTURES_ENABLE_SPOT_ONLY_EXCHANGES=true to enable spot-only exchanges")
+	}
+}
+
+func TestApplyJSON_StrategyPriorityFields(t *testing.T) {
+	enabled := true
+	mode := string(StrategyPriorityDirBFirst)
+	hold := 12.5
+	cfg := &Config{
+		StrategyPriority:  StrategyPriorityPerpPerpFirst,
+		ExpectedHoldHours: 24,
+	}
+
+	cfg.applyJSON(&jsonConfig{Strategy: &jsonStrategy{
+		EnablePriority:    &enabled,
+		StrategyPriority:  &mode,
+		ExpectedHoldHours: &hold,
+	}})
+
+	if !cfg.EnableStrategyPriority {
+		t.Fatalf("expected EnableStrategyPriority=true")
+	}
+	if cfg.StrategyPriority != StrategyPriorityDirBFirst {
+		t.Fatalf("expected StrategyPriority=%s, got %s", StrategyPriorityDirBFirst, cfg.StrategyPriority)
+	}
+	if cfg.ExpectedHoldHours != hold {
+		t.Fatalf("expected ExpectedHoldHours=%v, got %v", hold, cfg.ExpectedHoldHours)
+	}
+}
+
+func TestApplyJSON_StrategyPriorityAbsentPreserves(t *testing.T) {
+	cfg := &Config{
+		EnableStrategyPriority: true,
+		StrategyPriority:       StrategyPriorityDirBOnly,
+		ExpectedHoldHours:      36,
+	}
+
+	cfg.applyJSON(&jsonConfig{Strategy: &jsonStrategy{}})
+
+	if !cfg.EnableStrategyPriority {
+		t.Fatalf("expected EnableStrategyPriority preserved true")
+	}
+	if cfg.StrategyPriority != StrategyPriorityDirBOnly {
+		t.Fatalf("expected StrategyPriority preserved %s, got %s", StrategyPriorityDirBOnly, cfg.StrategyPriority)
+	}
+	if cfg.ExpectedHoldHours != 36 {
+		t.Fatalf("expected ExpectedHoldHours preserved 36, got %v", cfg.ExpectedHoldHours)
+	}
+}
+
+func TestApplyJSON_StrategyPriorityInvalidFallsBack(t *testing.T) {
+	badMode := "unknown"
+	badHold := 0.0
+	cfg := &Config{
+		StrategyPriority:  StrategyPriorityDirBOnly,
+		ExpectedHoldHours: 36,
+	}
+
+	cfg.applyJSON(&jsonConfig{Strategy: &jsonStrategy{
+		StrategyPriority:  &badMode,
+		ExpectedHoldHours: &badHold,
+	}})
+
+	if cfg.StrategyPriority != StrategyPriorityPerpPerpFirst {
+		t.Fatalf("expected invalid strategy priority fallback %s, got %s", StrategyPriorityPerpPerpFirst, cfg.StrategyPriority)
+	}
+	if cfg.ExpectedHoldHours != 24 {
+		t.Fatalf("expected invalid expected_hold_hours fallback 24, got %v", cfg.ExpectedHoldHours)
+	}
+}
+
+func TestStrategyPrioritySaveJSONRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	t.Setenv("CONFIG_FILE", configPath)
+	if err := os.WriteFile(configPath, []byte(`{"strategy":{}}`), 0644); err != nil {
+		t.Fatalf("write temp config: %v", err)
+	}
+
+	cfg := &Config{
+		EnableStrategyPriority: true,
+		StrategyPriority:       StrategyPriorityPerpPerpOnly,
+		ExpectedHoldHours:      48,
+	}
+	if err := cfg.SaveJSON(); err != nil {
+		t.Fatalf("SaveJSON: %v", err)
+	}
+
+	loaded := Load()
+	if !loaded.EnableStrategyPriority {
+		t.Fatalf("expected EnableStrategyPriority=true after round trip")
+	}
+	if loaded.StrategyPriority != StrategyPriorityPerpPerpOnly {
+		t.Fatalf("expected StrategyPriority=%s, got %s", StrategyPriorityPerpPerpOnly, loaded.StrategyPriority)
+	}
+	if loaded.ExpectedHoldHours != 48 {
+		t.Fatalf("expected ExpectedHoldHours=48, got %v", loaded.ExpectedHoldHours)
+	}
+}
+
+func TestStrategyPriorityEnvOverrides(t *testing.T) {
+	t.Setenv("CONFIG_FILE", filepath.Join(t.TempDir(), "missing-config.json"))
+	t.Setenv("ENABLE_STRATEGY_PRIORITY", "true")
+	t.Setenv("STRATEGY_PRIORITY", string(StrategyPriorityDirBOnly))
+	t.Setenv("EXPECTED_HOLD_HOURS", "6.5")
+
+	cfg := Load()
+	if !cfg.EnableStrategyPriority {
+		t.Fatalf("expected EnableStrategyPriority=true from env")
+	}
+	if cfg.StrategyPriority != StrategyPriorityDirBOnly {
+		t.Fatalf("expected StrategyPriority=%s, got %s", StrategyPriorityDirBOnly, cfg.StrategyPriority)
+	}
+	if cfg.ExpectedHoldHours != 6.5 {
+		t.Fatalf("expected ExpectedHoldHours=6.5, got %v", cfg.ExpectedHoldHours)
+	}
+}
+
+func TestStrategyPriorityEnvInvalidKeepsDefaults(t *testing.T) {
+	t.Setenv("CONFIG_FILE", filepath.Join(t.TempDir(), "missing-config.json"))
+	t.Setenv("ENABLE_STRATEGY_PRIORITY", "maybe")
+	t.Setenv("STRATEGY_PRIORITY", "bad")
+	t.Setenv("EXPECTED_HOLD_HOURS", "0")
+
+	cfg := Load()
+	if cfg.EnableStrategyPriority {
+		t.Fatalf("expected EnableStrategyPriority default false")
+	}
+	if cfg.StrategyPriority != StrategyPriorityPerpPerpFirst {
+		t.Fatalf("expected StrategyPriority default, got %s", cfg.StrategyPriority)
+	}
+	if cfg.ExpectedHoldHours != 24 {
+		t.Fatalf("expected ExpectedHoldHours default 24, got %v", cfg.ExpectedHoldHours)
+	}
+}
+
+func TestValidateExpectedHoldHours(t *testing.T) {
+	for _, v := range []float64{0, -1, math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if ValidateExpectedHoldHours(v) {
+			t.Fatalf("expected %v to be invalid", v)
+		}
+	}
+	if !ValidateExpectedHoldHours(0.1) {
+		t.Fatalf("expected positive finite hold hours to be valid")
+	}
+}
 
 func TestApplyJSON_StrategyScanMinutesRejectZero(t *testing.T) {
 	// Minute 0 collides with normalScan at :00 and is never a valid typed scan
@@ -349,4 +539,3 @@ func TestConfig_PriceGapDebugLog_SaveJSONRoundTrip(t *testing.T) {
 		})
 	}
 }
-

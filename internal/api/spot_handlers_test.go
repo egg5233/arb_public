@@ -233,7 +233,7 @@ func TestHandleSpotManualOpen_RejectsFilteredOpportunity(t *testing.T) {
 	s, mr := newTestServer(t)
 	defer mr.Close()
 
-	s.spotOpenPosition = func(string, string, string) error {
+	s.spotOpenPosition = func(string, string, string, ManualOpenOptions) error {
 		return errors.New("opportunity BTCUSDT on stub (buy_spot_short) is filtered: margin unavailable")
 	}
 
@@ -250,7 +250,7 @@ func TestHandleSpotManualOpen_ReturnsAcceptedForPendingConfirmation(t *testing.T
 	s, mr := newTestServer(t)
 	defer mr.Close()
 
-	s.spotOpenPosition = func(string, string, string) error {
+	s.spotOpenPosition = func(string, string, string, ManualOpenOptions) error {
 		return errors.New("spot entry pending confirmation on order spot-123")
 	}
 
@@ -274,6 +274,31 @@ func TestHandleSpotManualOpen_ReturnsAcceptedForPendingConfirmation(t *testing.T
 	}
 	if resp.Data["status"] != "pending" {
 		t.Fatalf("expected pending status, got %v", resp.Data["status"])
+	}
+}
+
+func TestHandleSpotManualOpen_PassesOverrideStrategyPriority(t *testing.T) {
+	s, mr := newTestServer(t)
+	defer mr.Close()
+
+	var got ManualOpenOptions
+	s.SetSpotOpenHandlerWithOptions(func(symbol, exchange, direction string, opts ManualOpenOptions) error {
+		if symbol != "BTCUSDT" || exchange != "stub" || direction != "buy_spot_short" {
+			t.Fatalf("unexpected spot open tuple: %s %s %s", symbol, exchange, direction)
+		}
+		got = opts
+		return nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/spot/open", strings.NewReader(`{"symbol":"BTCUSDT","exchange":"stub","direction":"buy_spot_short","override_strategy_priority":true}`))
+	w := httptest.NewRecorder()
+	s.handleSpotManualOpen(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !got.OverrideStrategyPriority {
+		t.Fatal("expected override_strategy_priority option true")
 	}
 }
 

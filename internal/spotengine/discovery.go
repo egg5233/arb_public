@@ -26,6 +26,7 @@ type SpotArbOpportunity struct {
 	BorrowAPR       float64   `json:"borrow_apr"` // 0 for Direction B
 	FeePct          float64   `json:"fee_pct"`
 	NetAPR          float64   `json:"net_apr"`
+	EVNetBpsH       float64   `json:"ev_net_bps_h,omitempty"`
 	MaintenanceRate float64   `json:"maintenance_rate"` // tier-1 rate from ContractInfo (display only, per D-15)
 	Source          string    `json:"source"`
 	Timestamp       time.Time `json:"timestamp"`
@@ -49,6 +50,7 @@ var spotExchangeMap = map[string]string{
 	"Bybit":   "bybit",
 	"OKX":     "okx",
 	"Bitget":  "bitget",
+	"BingX":   "bingx",
 	"Gate":    "gateio",
 	"Gate.io": "gateio",
 }
@@ -61,6 +63,7 @@ var spotFees = map[string]float64{
 	"bybit":   0.055 * 0.8 / 100,
 	"okx":     0.05 * 0.8 / 100,
 	"bitget":  0.06 * 0.8 / 100,
+	"bingx":   0.05 * 0.8 / 100,
 	"gateio":  0.05 * 0.8 / 100,
 }
 
@@ -176,7 +179,7 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 		upper := strings.ToUpper(baseSym)
 		symbol := upper + "USDT"
 
-		for exchName, smExch := range e.spotMargin {
+		for exchName, spotExch := range e.availableSpotExchanges() {
 			if e.stopping() {
 				e.log.Info("native discovery: shutdown requested, aborting scan early")
 				return opps
@@ -215,7 +218,7 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 			// Dir B (short futures): receives funding when rate is positive, pays when negative.
 			dirAFundingAPR := -fundingAPR // long futures: opposite sign
 			dirBFundingAPR := fundingAPR  // short futures: same sign
-			spotAvailable, spotAvailErr := e.checkSpotMarketAvailable(exchName, symbol, smExch)
+			spotAvailable, spotAvailErr := e.checkSpotMarketAvailable(exchName, symbol, spotExch)
 			spotFilterStatus := ""
 			if spotAvailErr != nil {
 				spotFilterStatus = "spot market check failed"
@@ -228,7 +231,7 @@ func (e *SpotEngine) runNativeDiscoveryScanFromLoris(loris *models.LorisResponse
 			maintRate := e.lookupMaintenanceRateForDisplay(symbol, exchName)
 
 			// --- Dir A: borrow_sell_long ---
-			{
+			if smExch, ok := e.spotMargin[exchName]; ok {
 				isActive := activeKeys[symbol+":"+exchName+":borrow_sell_long"]
 				filterStatus := spotFilterStatus
 				var borrowAPR float64
@@ -391,15 +394,17 @@ func (e *SpotEngine) runCoinGlassFallback() []SpotArbOpportunity {
 			continue
 		}
 
-		// Check exchange implements SpotMarginExchange.
-		_, ok = e.spotMargin[exchName]
-		if !ok {
-			continue
-		}
-
 		// Determine direction from Portfolio field.
 		direction, baseCoin := parsePortfolio(item.Symbol, item.Portfolio)
 		if direction == "" || baseCoin == "" {
+			continue
+		}
+		smExch, hasMargin := e.spotMargin[exchName]
+		spotExch, hasSpot := e.getSpotExchange(exchName)
+		if direction == "borrow_sell_long" && !hasMargin {
+			continue
+		}
+		if direction == "buy_spot_short" && !hasSpot {
 			continue
 		}
 
@@ -429,18 +434,17 @@ func (e *SpotEngine) runCoinGlassFallback() []SpotArbOpportunity {
 		// Check spot margin availability for all directions — ensures the
 		// symbol actually exists on the exchange's cross-margin market.
 		// For borrow_sell_long, also check borrowability and borrow rate.
-		smExch := e.spotMargin[exchName]
-		spotAvailable, spotAvailErr := e.checkSpotMarketAvailable(exchName, spotSymbol, smExch)
+		spotAvailable, spotAvailErr := e.checkSpotMarketAvailable(exchName, spotSymbol, spotExch)
 		if spotAvailErr != nil {
 			filterStatus = "spot market check failed"
 		} else if !spotAvailable {
 			filterStatus = "spot market unavailable"
 		}
-		if filterStatus == "" {
+		if filterStatus == "" && direction == "borrow_sell_long" {
 			spotBal, err := smExch.GetMarginBalance(baseCoin)
 			if err != nil {
 				filterStatus = "margin unavailable"
-			} else if direction == "borrow_sell_long" && spotBal.MaxBorrowable <= 0 {
+			} else if spotBal.MaxBorrowable <= 0 {
 				filterStatus = "not borrowable"
 			}
 		}
@@ -608,14 +612,14 @@ func parsePercent(s string) float64 {
 	return f / 100
 }
 
-func (e *SpotEngine) checkSpotMarketAvailable(exchName, symbol string, smExch exchange.SpotMarginExchange) (bool, error) {
+func (e *SpotEngine) checkSpotMarketAvailable(exchName, symbol string, spotExch exchange.SpotExchange) (bool, error) {
 	if cached, found, err := e.db.GetSpotMarketAvailability(exchName, symbol); err == nil && found {
 		return cached, nil
 	} else if err != nil {
 		e.log.Warn("spot discovery: spot-market cache read failed for %s on %s: %v", symbol, exchName, err)
 	}
 
-	if _, err := smExch.GetSpotBBO(symbol); err != nil {
+	if _, err := spotExch.GetSpotBBO(symbol); err != nil {
 		if isMissingSpotMarketError(err) {
 			if cacheErr := e.db.SetSpotMarketAvailability(exchName, symbol, false); cacheErr != nil {
 				e.log.Warn("spot discovery: failed to cache missing spot market for %s on %s: %v", symbol, exchName, cacheErr)

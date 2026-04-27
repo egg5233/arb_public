@@ -1222,6 +1222,17 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 	e.log.Info("[reconcile-debug] reconcile %s [attempt %d]: after split — shortAgg Fees=%.6f Funding=%.6f PricePnL=%.6f NetPnL=%.6f",
 		pos.ID, attempt, shortAgg.Fees, shortAgg.Funding, shortAgg.PricePnL, shortAgg.NetPnL)
 
+	// Refresh mutable PnL fields before diff calculation. Async retries can run
+	// with a stale position copy while another reconciliation or rotation has
+	// already updated Redis; stats must be based on storage state.
+	if fresh, err := e.db.GetPosition(pos.ID); err == nil && fresh != nil {
+		pos.RealizedPnL = fresh.RealizedPnL
+		pos.RotationPnL = fresh.RotationPnL
+		pos.PartialReconcile = fresh.PartialReconcile
+	} else if err != nil {
+		e.log.Warn("reconcile %s [attempt %d]: failed to refresh position before diff: %v", pos.ID, attempt, err)
+	}
+
 	// Calculate reconciled PnL from exchange-reported figures.
 	reconciledPnL := longAgg.NetPnL + shortAgg.NetPnL + pos.RotationPnL
 	reconciledFunding := longAgg.Funding + shortAgg.Funding
@@ -1309,15 +1320,26 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 		return true
 	}
 
+	appliedOldPnL := oldPnL
+	appliedReconciledPnL := reconciledPnL
+	appliedPartialReconcile := pos.PartialReconcile
+	appliedNeedsPnLUpdate := false
+
 	if err := e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
-		if needsPnLUpdate {
-			fresh.RealizedPnL = reconciledPnL
+		freshReconciledPnL, _, freshNeedsPnLUpdate := reconcileAppliedPnL(longAgg.NetPnL, shortAgg.NetPnL, fresh.RotationPnL, fresh.RealizedPnL)
+		appliedOldPnL = fresh.RealizedPnL
+		appliedReconciledPnL = freshReconciledPnL
+		appliedPartialReconcile = fresh.PartialReconcile
+		appliedNeedsPnLUpdate = freshNeedsPnLUpdate
+
+		if freshNeedsPnLUpdate {
+			fresh.RealizedPnL = freshReconciledPnL
 		}
 		if needsFundingUpdate {
 			fresh.FundingCollected = reconciledFunding
 		}
 		// Per-leg breakdown + decomposition: populate whenever PnL, funding, or breakdown needs update.
-		if needsBreakdownUpdate || needsPnLUpdate || needsFundingUpdate {
+		if needsBreakdownUpdate || freshNeedsPnLUpdate || needsFundingUpdate {
 			// DEBUG: writing per-leg fields into position
 			e.log.Info("[reconcile-debug] reconcile %s [attempt %d]: WRITING per-leg fields — LongTotalFees=%.6f ShortTotalFees=%.6f LongFunding=%.6f ShortFunding=%.6f LongClosePnL=%.6f ShortClosePnL=%.6f",
 				pos.ID, attempt, longAgg.Fees, shortAgg.Fees, longAgg.Funding, shortAgg.Funding, longAgg.PricePnL, shortAgg.PricePnL)
@@ -1348,20 +1370,20 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 	}
 	e.log.Info("[reconcile-debug] reconcile %s [attempt %d]: UpdatePositionFields succeeded", pos.ID, attempt)
 
-	if needsPnLUpdate {
+	if appliedNeedsPnLUpdate {
 		// Adjust total_pnl only — do NOT call UpdateStats which increments trade/win/loss counts.
-		statsDiff := reconciledPnL - oldPnL
+		statsDiff := appliedReconciledPnL - appliedOldPnL
 		if err := e.db.AdjustPnL(statsDiff); err != nil {
 			e.log.Error("reconcile %s: failed to adjust stats PnL: %v", pos.ID, err)
 		} else {
 			e.log.Info("reconcile %s: corrected PnL %.4f → %.4f (stats adjusted by %.4f)",
-				pos.ID, oldPnL, reconciledPnL, statsDiff)
+				pos.ID, appliedOldPnL, appliedReconciledPnL, statsDiff)
 		}
 
 		// Correct win/loss counts if partial close PnL sign changed after reconciliation.
-		if pos.PartialReconcile {
-			oldWon := pos.RealizedPnL > 0
-			newWon := reconciledPnL > 0
+		if appliedPartialReconcile {
+			oldWon := appliedOldPnL > 0
+			newWon := appliedReconciledPnL > 0
 			if oldWon != newWon {
 				if err := e.db.AdjustWinLoss(oldWon, newWon); err != nil {
 					e.log.Error("reconcile %s: AdjustWinLoss failed: %v", pos.ID, err)
@@ -1403,6 +1425,13 @@ func (e *Engine) tryReconcilePnL(pos *models.ArbitragePosition, attempt int) boo
 	}
 
 	return true
+}
+
+func reconcileAppliedPnL(longNet, shortNet, rotationPnL, currentRealized float64) (reconciled, diff float64, needsUpdate bool) {
+	reconciled = longNet + shortNet + rotationPnL
+	diff = reconciled - currentRealized
+	needsUpdate = math.Abs(diff) >= 0.01
+	return reconciled, diff, needsUpdate
 }
 
 // aggregateClosePnLBySide sums all ClosePnL records matching the given side.

@@ -17,6 +17,7 @@ import (
 	"arb/internal/models"
 	"arb/internal/notify"
 	"arb/internal/risk"
+	"arb/internal/strategy"
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
@@ -51,6 +52,15 @@ func isMarginError(err error) bool {
 		strings.Contains(msg, "margin") && strings.Contains(msg, "available")
 }
 
+func isBingXAPIOrdersTemporarilyDisabled(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "api orders are temporarily disabled") ||
+		strings.Contains(msg, "large market fluctuations")
+}
+
 // Engine is the core arbitrage engine. It orchestrates discovery, risk
 // approval, trade execution, position management and exit logic.
 type Engine struct {
@@ -64,29 +74,30 @@ type Engine struct {
 	db            *database.Client
 	api           *api.Server
 	cfg           *config.Config
+	strategyCoord *strategy.Coordinator
 	log           *utils.Logger
 	stopCh        chan struct{}
 
 	// Exit goroutine tracking for L4/L5 preemption.
 	exitMu      sync.Mutex
-	exitCancels map[string]context.CancelFunc // posID → cancel running exit goroutine
-	exitActive  map[string]bool               // posID → true while exit goroutine is running
-	exitDone    map[string]chan struct{}      // posID → signalled when exit goroutine finishes
+	exitCancels map[string]context.CancelFunc // posID ??cancel running exit goroutine
+	exitActive  map[string]bool               // posID ??true while exit goroutine is running
+	exitDone    map[string]chan struct{}      // posID ??signalled when exit goroutine finishes
 
 	// Pre-settlement timer dedup.
 	preSettleMu     sync.Mutex
-	preSettleActive map[string]bool // posID → true while timer is pending
+	preSettleActive map[string]bool // posID ??true while timer is pending
 
 	// Entry tracking: prevents consolidator from treating mid-fill positions as orphans.
 	entryMu     sync.Mutex
-	entryActive map[string]string // "exchange:symbol" → posID while depth fill is running
+	entryActive map[string]string // "exchange:symbol" ??posID while depth fill is running
 
 	// Global capacity lock for manual open to prevent concurrent over-subscription.
 	capacityMu sync.Mutex
 
 	// Per-position PnL reconciliation locks. Each position gets its own mutex
 	// so concurrent reconciliations for different positions don't block each other.
-	pnlLocks sync.Map // posID → *sync.Mutex
+	pnlLocks sync.Map // posID ??*sync.Mutex
 
 	// Rejection tracking for dashboard display.
 	rejStore *models.RejectionStore
@@ -106,25 +117,25 @@ type Engine struct {
 	apiErrMu     sync.Mutex
 	apiErrCounts map[string]int // exchange name -> consecutive failure count
 
-	// SL/TP fill detection: reverse index from (exchange:orderID) → (posID, leg, kind).
+	// SL/TP fill detection: reverse index from (exchange:orderID) ??(posID, leg, kind).
 	slIndexMu sync.RWMutex
-	slIndex   map[string]stopOrderEntry // "exchange:orderID" → posID + leg + kind
+	slIndex   map[string]stopOrderEntry // "exchange:orderID" ??posID + leg + kind
 	slFillCh  chan slFillEvent          // buffered channel for non-blocking WS callbacks
 
 	// ownOrders tracks order IDs placed by the engine itself.
 	// Used by handleSLFill method 2 to avoid false-triggering on our own
 	// reduce-only fills (exits, L4 reductions, rotation closes, consolidator trims).
-	ownOrders sync.Map // "exchange:orderID" → struct{}{}
+	ownOrders sync.Map // "exchange:orderID" ??struct{}{}
 
 	// consolidateRetries tracks PnL query retry counts per position in markPositionClosed.
-	// key: posID → consecutive consolidation cycles where GetClosePnL failed.
+	// key: posID ??consecutive consolidation cycles where GetClosePnL failed.
 	consolidateRetries map[string]int
 
 	// allocOverrides stores the allocator's chosen exchange pairs from the most
 	// recent rebalance scan, keyed by symbol. The entry scan applies these to
 	// patch opportunities so the executed pair matches the rebalanced pair.
 	allocOverrideMu sync.Mutex
-	allocOverrides  map[string]allocatorChoice // symbol → chosen pair
+	allocOverrides  map[string]allocatorChoice // symbol ??chosen pair
 
 	// activePosSource is the seam used by getActivePositionsWithRetry.
 	// Production: wired to e.db in NewEngine. Tests: swapped for a
@@ -156,9 +167,9 @@ type Engine struct {
 	spotCloseCallback func(pos *models.SpotFuturesPosition, reason string, isEmergency bool) error
 
 	// Ref-counted depth subscriptions for pre-warming before entry scan.
-	depthRefsMu    sync.Mutex
-	depthRefs      map[string]*depthRef // "exchange:symbol" → ref
-	prewarmedKeys  []string             // keys acquired by prewarmDepthForEntry
+	depthRefsMu   sync.Mutex
+	depthRefs     map[string]*depthRef // "exchange:symbol" ??ref
+	prewarmedKeys []string             // keys acquired by prewarmDepthForEntry
 }
 
 // stopOrderEntry maps a stop-loss or take-profit order to its position, leg, and kind.
@@ -184,32 +195,38 @@ func NewEngine(
 	apiSrv *api.Server,
 	cfg *config.Config,
 	allocator *risk.CapitalAllocator,
+	strategyCoord *strategy.Coordinator,
 ) *Engine {
 	e := &Engine{
-		exchanges:       exchanges,
-		discovery:       disc,
-		risk:            riskMgr,
-		monitor:         riskMon,
-		healthMonitor:   healthMon,
-		allocator:       allocator,
-		db:              db,
-		api:             apiSrv,
-		cfg:             cfg,
-		log:             utils.NewLogger("engine"),
-		stopCh:          make(chan struct{}),
-		exitCancels:     make(map[string]context.CancelFunc),
-		exitActive:      make(map[string]bool),
-		exitDone:        make(map[string]chan struct{}),
-		preSettleActive: make(map[string]bool),
-		entryActive:     make(map[string]string),
-		slIndex:         make(map[string]stopOrderEntry),
-		slFillCh:        make(chan slFillEvent, 64),
+		exchanges:          exchanges,
+		discovery:          disc,
+		risk:               riskMgr,
+		monitor:            riskMon,
+		healthMonitor:      healthMon,
+		allocator:          allocator,
+		db:                 db,
+		api:                apiSrv,
+		cfg:                cfg,
+		strategyCoord:      strategyCoord,
+		log:                utils.NewLogger("engine"),
+		stopCh:             make(chan struct{}),
+		exitCancels:        make(map[string]context.CancelFunc),
+		exitActive:         make(map[string]bool),
+		exitDone:           make(map[string]chan struct{}),
+		preSettleActive:    make(map[string]bool),
+		entryActive:        make(map[string]string),
+		slIndex:            make(map[string]stopOrderEntry),
+		slFillCh:           make(chan slFillEvent, 64),
 		apiErrCounts:       make(map[string]int),
 		consolidateRetries: make(map[string]int),
 		depthRefs:          make(map[string]*depthRef),
 	}
 	e.activePosSource = e.db
 	return e
+}
+
+func (e *Engine) ManualOpenWithOptions(symbol, longExchange, shortExchange string, opts api.ManualOpenOptions) error {
+	return e.manualOpenWithOptions(symbol, longExchange, shortExchange, opts)
 }
 
 // acquirePnlLock returns the per-position mutex for PnL reconciliation.
@@ -313,7 +330,9 @@ func (e *Engine) SetLossLimiter(ll *risk.LossLimitChecker) {
 
 // SetSnapshotWriter injects the analytics snapshot writer for recording
 // position close events. The writer is optional; nil means analytics disabled.
-func (e *Engine) SetSnapshotWriter(sw interface{ RecordPerpClose(pos *models.ArbitragePosition) }) {
+func (e *Engine) SetSnapshotWriter(sw interface {
+	RecordPerpClose(pos *models.ArbitragePosition)
+}) {
 	e.snapshotWriter = sw
 }
 
@@ -349,7 +368,7 @@ func (e *Engine) recordAPISuccess(exchName string) {
 }
 
 // ManualClose initiates an exit for the given position from the dashboard.
-// spawnExitGoroutine is the single authority for the active → exiting transition.
+// spawnExitGoroutine is the single authority for the active ??exiting transition.
 func (e *Engine) ManualClose(posID string) error {
 	pos, err := e.db.GetPosition(posID)
 	if err != nil {
@@ -369,6 +388,10 @@ func (e *Engine) ManualClose(posID string) error {
 // synchronously and executing the depth fill asynchronously.
 // If force is true, risk approval is skipped (user override from dashboard).
 func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bool) error {
+	return e.manualOpenWithOptions(symbol, longExchange, shortExchange, api.ManualOpenOptions{Force: force})
+}
+
+func (e *Engine) manualOpenWithOptions(symbol, longExchange, shortExchange string, opts api.ManualOpenOptions) error {
 	// 1. Find opportunity in scanner cache (thread-safe)
 	opps := e.discovery.GetOpportunities()
 	var opp *models.Opportunity
@@ -399,6 +422,18 @@ func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bo
 			return fmt.Errorf("position for %s already open", symbol)
 		}
 	}
+	spotFuturesKeys, _ := e.buildSpotFuturesMaps()
+	spotFuturesOccupied := make(map[string]bool, len(spotFuturesKeys))
+	for key := range spotFuturesKeys {
+		parts := strings.SplitN(key, ":", 3)
+		if len(parts) == 3 {
+			spotFuturesOccupied[parts[0]+":"+parts[1]] = true
+		}
+	}
+	if blockedExchange, blocked := ppCrossEngineBlocked(*opp, spotFuturesOccupied); blocked {
+		e.capacityMu.Unlock()
+		return fmt.Errorf("cross-engine block: spot-futures active on %s:%s", blockedExchange, symbol)
+	}
 
 	// 3. Check capacity
 	slots := e.cfg.MaxPositions - len(active)
@@ -407,32 +442,32 @@ func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bo
 		return fmt.Errorf("at max capacity (%d/%d)", len(active), e.cfg.MaxPositions)
 	}
 
-	// 4. Acquire execution lock
-	lockResource := fmt.Sprintf("execute:%s", symbol)
-	lock, acquired, err := e.db.AcquireOwnedLock(lockResource, 5*time.Minute)
+	snap, strategyEnabled := e.ppStrategySnapshot()
+	strategyReservationID, err := e.tryReservePPStrategy(snap, "pp_manual", *opp, opts)
 	if err != nil {
 		e.capacityMu.Unlock()
-		return fmt.Errorf("failed to acquire lock for %s", symbol)
+		return err
 	}
-	if !acquired {
-		e.capacityMu.Unlock()
-		return fmt.Errorf("execution already in progress for %s", symbol)
+	completeStrategy := func(outcome strategy.ReservationOutcome) {
+		if strategyEnabled {
+			e.completePPStrategyReservation(strategyReservationID, outcome)
+		}
 	}
 
 	// 5. Risk approval (synchronous, under capacity lock to prevent races)
 	approval, err := e.risk.Approve(*opp)
 	if err != nil {
+		completeStrategy(strategy.ReservationOutcomeAborted)
 		e.capacityMu.Unlock()
-		lock.Release()
 		return fmt.Errorf("risk check failed: %v", err)
 	}
 	if !approval.Approved {
 		// Rejected approvals now carry populated Size/Price/RequiredMargin for
 		// RejectionKindCapital (used by allocator rescue). ManualOpen must not
-		// execute on those fields — risk rejection is final here.
+		// execute on those fields ??risk rejection is final here.
+		completeStrategy(strategy.ReservationOutcomeAborted)
 		e.capacityMu.Unlock()
-		lock.Release()
-		if force {
+		if opts.Force {
 			return fmt.Errorf("force open cannot execute from rejected risk approval: %s", approval.Reason)
 		}
 		return fmt.Errorf("risk rejected: %s", approval.Reason)
@@ -440,13 +475,35 @@ func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bo
 
 	// 6. Dry run check
 	if e.cfg.DryRun {
+		completeStrategy(strategy.ReservationOutcomeAborted)
 		e.capacityMu.Unlock()
-		lock.Release()
-		return fmt.Errorf("dry run mode — trade not executed")
+		return fmt.Errorf("dry run mode ??trade not executed")
+	}
+
+	if strategyReservationID != "" {
+		if err := e.strategyCoord.MarkInFlight(strategyReservationID); err != nil {
+			completeStrategy(strategy.ReservationOutcomeAborted)
+			e.capacityMu.Unlock()
+			return fmt.Errorf("strategy reservation lost: %w", err)
+		}
+	}
+
+	lockResource := fmt.Sprintf("execute:%s", symbol)
+	lock, acquired, err := e.db.AcquireOwnedLock(lockResource, 5*time.Minute)
+	if err != nil {
+		completeStrategy(strategy.ReservationOutcomeAborted)
+		e.capacityMu.Unlock()
+		return fmt.Errorf("failed to acquire lock for %s", symbol)
+	}
+	if !acquired {
+		completeStrategy(strategy.ReservationOutcomeAborted)
+		e.capacityMu.Unlock()
+		return fmt.Errorf("execution already in progress for %s", symbol)
 	}
 
 	reservation, err := e.reservePerpCapital(*opp, approval, 0)
 	if err != nil {
+		completeStrategy(strategy.ReservationOutcomeAborted)
 		e.capacityMu.Unlock()
 		lock.Release()
 		return fmt.Errorf("capital allocator rejected: %v", err)
@@ -456,18 +513,20 @@ func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bo
 	//    but *before* releasing the capacity mutex, so concurrent requests
 	//    see the occupied slot without the reservation self-rejecting.
 	pendingPos := e.createPendingPosition(*opp)
+	e.applyPPStrategyMeta(pendingPos, strategyReservationID)
 	if err := e.db.SavePosition(pendingPos); err != nil {
 		e.releasePerpReservation(reservation)
+		completeStrategy(strategy.ReservationOutcomeAborted)
 		e.capacityMu.Unlock()
 		lock.Release()
 		return fmt.Errorf("failed to reserve position slot: %v", err)
 	}
 	e.api.BroadcastPositionUpdate(pendingPos)
 
-	// Slot reserved — release capacity mutex now.
+	// Slot reserved ??release capacity mutex now.
 	e.capacityMu.Unlock()
 
-	// 8. Async execution (depth fill is slow — return 202 to user)
+	// 8. Async execution (depth fill is slow ??return 202 to user)
 	e.log.Info("manual open: executing trade for %s (L:%s S:%s) size=%.6f price=%.5f",
 		symbol, longExchange, shortExchange, approval.Size, approval.Price)
 	go func() {
@@ -480,20 +539,23 @@ func (e *Engine) ManualOpen(symbol, longExchange, shortExchange string, force bo
 					_ = e.allocator.Reconcile()
 				}
 			}
+			completeStrategy(strategy.ReservationOutcomeActive)
 			return
 		}
 		if err != nil {
 			e.releasePerpReservation(reservation)
+			completeStrategy(strategy.ReservationOutcomeAborted)
 			e.log.Error("manual open: trade execution failed for %s: %v", symbol, err)
 			e.removePendingPosition(pendingPos)
 			return
 		}
 		if cErr := e.commitPerpCapital(reservation, pendingPos.ID); cErr != nil {
-			e.log.Error("manual open: capital commit failed for %s: %v — triggering allocator reconcile", symbol, cErr)
+			e.log.Error("manual open: capital commit failed for %s: %v ??triggering allocator reconcile", symbol, cErr)
 			if e.allocator != nil && e.allocator.Enabled() {
 				_ = e.allocator.Reconcile()
 			}
 		}
+		completeStrategy(strategy.ReservationOutcomeActive)
 	}()
 	return nil
 }
@@ -561,7 +623,7 @@ func (e *Engine) Start() {
 }
 
 // rebalanceFunds analyzes upcoming opportunities and ensures each exchange
-// has enough margin. Two-pass flow (§4.3/§4.5 of
+// has enough margin. Two-pass flow (禮4.3/禮4.5 of
 // plans/PLAN-allocator-unified.md):
 //   - rebalancePass1: rank-first sequential walk with inline capital rescue
 //     and post-transfer approval replay.
@@ -604,7 +666,7 @@ func (e *Engine) rebalanceFunds(passedOpps ...[]models.Opportunity) {
 		}
 	}
 
-	// Build Pass-2 reservations = reserved − rescue-kept reservations.
+	// Build Pass-2 reservations = reserved ??rescue-kept reservations.
 	// After projectBalancesAfterFunding subtracts kept margin from balances,
 	// passing the full `reserved` to cloneBalancesWithReservations would
 	// double-subtract rescue-kept. Keep only case-a reservations.
@@ -699,7 +761,7 @@ func (e *Engine) applyAllocatorOverrides(opps []models.Opportunity) ([]models.Op
 	// Filter to only allocator-selected symbols, and patch pairs.
 	// IMPORTANT: When the override wants a different exchange pair, we validate
 	// that the pair still exists in the CURRENT scan's alternatives and use the
-	// fresh data from the current scan — never stale data from the rebalance scan.
+	// fresh data from the current scan ??never stale data from the rebalance scan.
 	var filtered []models.Opportunity
 	patched := 0
 	skipped := 0
@@ -713,15 +775,15 @@ func (e *Engine) applyAllocatorOverrides(opps []models.Opportunity) ([]models.Op
 		// Copy to avoid mutating the shared scanner slice.
 		o := opp
 		if choice.longExchange == o.LongExchange && choice.shortExchange == o.ShortExchange {
-			// Primary pair already matches the override — use current fresh data as-is.
+			// Primary pair already matches the override ??use current fresh data as-is.
 		} else {
-			// Override wants a different pair — validate it still exists in
+			// Override wants a different pair ??validate it still exists in
 			// the current scan's alternatives so we never apply stale data.
 			found := false
 			rejected := false
 			for _, alt := range o.Alternatives {
 				if alt.LongExchange == choice.longExchange && alt.ShortExchange == choice.shortExchange {
-					// Reject unverified alternatives — they never passed exchange API checks.
+					// Reject unverified alternatives ??they never passed exchange API checks.
 					if !alt.Verified {
 						e.log.Warn("entry: override %s alt %s/%s not verified, skipping",
 							o.Symbol, alt.LongExchange, alt.ShortExchange)
@@ -746,7 +808,7 @@ func (e *Engine) applyAllocatorOverrides(opps []models.Opportunity) ([]models.Op
 						rejected = true
 						break
 					}
-					e.log.Info("allocator override %s: %s/%s → %s/%s (spread %.4f→%.4f bps/h)",
+					e.log.Info("allocator override %s: %s/%s -> %s/%s (spread %.4f->%.4f bps/h)",
 						o.Symbol, o.LongExchange, o.ShortExchange,
 						choice.longExchange, choice.shortExchange,
 						o.Spread, alt.Spread)
@@ -775,7 +837,7 @@ func (e *Engine) applyAllocatorOverrides(opps []models.Opportunity) ([]models.Op
 				e.log.Warn("entry: allocator override for %s pair %s/%s no longer in current scan, skipping",
 					o.Symbol, choice.longExchange, choice.shortExchange)
 				stale++
-				continue // skip this opp entirely — pair is stale
+				continue // skip this opp entirely ??pair is stale
 			}
 		}
 		filtered = append(filtered, o)
@@ -793,12 +855,12 @@ func (e *Engine) applyAllocatorOverrides(opps []models.Opportunity) ([]models.Op
 
 // getActivePositionsWithRetry wraps the injected activePositionsGetter with a
 // simple retry to survive transient Redis hiccups during the critical
-// stage-1 → stage-2 transition. Used only by the entry-scan path where a
+// stage-1 ??stage-2 transition. Used only by the entry-scan path where a
 // dropped read leads to fund stranding (see PLAN-stage2-db-failure-salvage.md).
 //
 // The call goes through e.activePosSource (NOT e.db directly) so that tests
 // can inject a failingActivePosGetter to exercise the retry + salvage branches.
-// e.activePosSource is wired to e.db in NewEngine; see §5.
+// e.activePosSource is wired to e.db in NewEngine; see 禮5.
 func (e *Engine) getActivePositionsWithRetry(maxAttempts int, backoff time.Duration) ([]*models.ArbitragePosition, error) {
 	if maxAttempts < 1 {
 		maxAttempts = 1
@@ -826,11 +888,10 @@ func (e *Engine) getActivePositionsWithRetry(maxAttempts int, backoff time.Durat
 // executes the remainder with the pre-approved (long, short) exchange pair.
 //
 // The salvage block handles two failure classes:
-//  1. Stage 2 DB read failed — stage2Attempted is empty, so salvage considers
+//  1. Stage 2 DB read failed ??stage2Attempted is empty, so salvage considers
 //     ALL override symbols (including those present in the scan) rather than
 //     only out-of-scan symbols as the previous guard did.
-//  2. Bug-7: rebalance funded a symbol absent from the current scan —
-//     salvage rescans it via RescanSymbols to prevent fund stranding.
+//  2. Bug-7: rebalance funded a symbol absent from the current scan ??//     salvage rescans it via RescanSymbols to prevent fund stranding.
 //
 // See PLAN-stage2-db-failure-salvage.md for the full design rationale.
 func (e *Engine) runStage2AndSalvage(opps []models.Opportunity, perpCap float64) {
@@ -852,7 +913,7 @@ func (e *Engine) runStage2AndSalvage(opps []models.Opportunity, perpCap float64)
 		// Finding #1 Fix A: retry DB read once on transient failure.
 		activeAfterS1, err := e.getActivePositionsWithRetry(2, 300*time.Millisecond)
 		if err != nil {
-			e.log.Warn("entry stage-2: GetActivePositions failed after retry: %v — deferring to salvage", err)
+			e.log.Warn("entry stage-2: GetActivePositions failed after retry: %v ??deferring to salvage", err)
 			// Intentionally do NOT early-return: fall through to salvage with
 			// stage2Attempted empty, so salvage covers in-scan symbols too.
 		} else {
@@ -866,7 +927,7 @@ func (e *Engine) runStage2AndSalvage(opps []models.Opportunity, perpCap float64)
 			dropped := 0
 			for _, o := range patched {
 				// Mark attempted regardless of duplicate-filter outcome.
-				// openedS1 symbols are already active — salvage would be a noop anyway.
+				// openedS1 symbols are already active ??salvage would be a noop anyway.
 				stage2Attempted[o.Symbol] = true
 				if openedS1[o.Symbol] {
 					dropped++
@@ -889,14 +950,14 @@ func (e *Engine) runStage2AndSalvage(opps []models.Opportunity, perpCap float64)
 		// NOTE: stage2Attempted stays empty. Salvage will consider these symbols.
 		// applyAllocatorOverrides already logged per-symbol reasons. Symbols that
 		// were legitimately stale-rejected will fail RescanSymbols too, so salvage
-		// is a noop for them — no extra cost.
+		// is a noop for them ??no extra cost.
 	}
 
 	// --- Salvage block ---
 	if len(overrideSnapshot) > 0 {
 		activeForSalvage, err := e.getActivePositionsWithRetry(2, 300*time.Millisecond)
 		if err != nil {
-			e.log.Warn("entry stage-2 salvage: GetActivePositions failed after retry: %v — transfers may be stranded until next cycle", err)
+			e.log.Warn("entry stage-2 salvage: GetActivePositions failed after retry: %v ??transfers may be stranded until next cycle", err)
 		} else {
 			openedByUs := make(map[string]bool, len(activeForSalvage))
 			for _, p := range activeForSalvage {
@@ -931,7 +992,7 @@ func (e *Engine) runStage2AndSalvage(opps []models.Opportunity, perpCap float64)
 					e.log.Info("entry stage-2 salvage: %d/%d passed re-scan, executing", len(salvageOpps), len(missingPairs))
 					e.executeArbitrage(salvageOpps, perpCap)
 				} else {
-					e.log.Warn("entry stage-2 salvage: all %d symbols failed re-scan — transfers may be stranded until next cycle", len(missingPairs))
+					e.log.Warn("entry stage-2 salvage: all %d symbols failed re-scan ??transfers may be stranded until next cycle", len(missingPairs))
 				}
 			}
 		}
@@ -973,10 +1034,10 @@ func (e *Engine) Stop() {
 
 // run is the main event loop. It listens for new opportunity batches from
 // discovery and dispatches actions based on scan type:
-//   - RebalanceScan (:10 default, production :20) → rebalance funds across exchanges
-//   - ExitScan      (:30) → check exit conditions
-//   - RotateScan    (:35) → check leg rotations
-//   - EntryScan     (:40) → execute new arb positions
+//   - RebalanceScan (:10 default, production :20) ??rebalance funds across exchanges
+//   - ExitScan      (:30) ??check exit conditions
+//   - RotateScan    (:35) ??check leg rotations
+//   - EntryScan     (:40) ??execute new arb positions
 func (e *Engine) run() {
 	oppCh := e.discovery.OpportunityChan()
 
@@ -986,7 +1047,7 @@ func (e *Engine) run() {
 			e.log.Info("run loop: received %d opportunities (type=%s), dispatching...",
 				len(result.Opps), result.Type)
 
-			// Forward to dashboard only from normal scans — filtered scan types
+			// Forward to dashboard only from normal scans ??filtered scan types
 			// (rebalance, entry, exit, rotate) apply heavy filters that can produce
 			// 0 results and would wipe the dashboard opportunity list.
 			if result.Type == discovery.NormalScan {
@@ -1042,11 +1103,11 @@ func (e *Engine) run() {
 					maxAge := 2 * scanInterval
 					count, err := e.db.GetSpotEntryableOppsCount(maxAge)
 					if err == nil && count >= 0 {
-						// Fresh cache: count == 0 means confirmed no opps → free cap for perp.
-						// count > 0 means spot has opps → keep cap reserved.
+						// Fresh cache: count == 0 means confirmed no opps ??free cap for perp.
+						// count > 0 means spot has opps ??keep cap reserved.
 						spotHasOpps = count > 0
 					}
-					// else: cache missing/stale/error → keep conservative default (spotHasOpps=true)
+					// else: cache missing/stale/error ??keep conservative default (spotHasOpps=true)
 				}
 				perpCap := e.dynamicStrategyPct(risk.StrategyPerpPerp, perpHasOpps, spotHasOpps)
 				if perpCap > 0 {
@@ -1057,7 +1118,7 @@ func (e *Engine) run() {
 				if len(result.Opps) > 0 {
 					e.log.Info("entry scan complete, triggering trade execution")
 
-					// Canonical two-stage flow per PLAN-allocator-unified §4.1 / §8 Step 4.5:
+					// Canonical two-stage flow per PLAN-allocator-unified 禮4.1 / 禮8 Step 4.5:
 					//   Stage 1: rank-based execution over the full scan result FIRST.
 					//            This covers both "already had enough capital" opps
 					//            (rebalance Pass 1 case a) and "just received transferred
@@ -1067,7 +1128,7 @@ func (e *Engine) run() {
 					//            Stage 1 already opened, and execute the remainder with
 					//            the pre-approved (long, short) exchange pair.
 					//
-					// Stage 1 MUST run before Stage 2 — overrides must never short-circuit
+					// Stage 1 MUST run before Stage 2 ??overrides must never short-circuit
 					// the rank path. Symbols selected by Stage 1 are filtered out of
 					// Stage 2 via the active-positions check below.
 					e.log.Info("entry stage-1: rank-based executeArbitrage with %d opps", len(result.Opps))
@@ -1194,19 +1255,19 @@ func (e *Engine) handleTransfer(action risk.HealthAction) {
 	amountStr := fmt.Sprintf("%.4f", action.Amount)
 
 	// NOTE: L3 cross-exchange transfer is NOT fully implemented. The code below
-	// only moves funds within each exchange's own accounts (futures→spot on donor,
-	// spot→futures on target). There is NO actual withdrawal/deposit between
-	// exchanges — that requires withdrawal API, deposit address lookup, on-chain
+	// only moves funds within each exchange's own accounts (futures?pot on donor,
+	// spot?utures on target). There is NO actual withdrawal/deposit between
+	// exchanges ??that requires withdrawal API, deposit address lookup, on-chain
 	// confirmation, and is complex/risky to automate. For real cross-exchange
 	// rebalancing, rely on L4 (position reduction) or L5 (emergency close) instead.
 	if action.DonorExch != action.Exchange {
-		e.log.Error("L3 transfer: cross-exchange transfer from %s to %s is NOT possible — "+
+		e.log.Error("L3 transfer: cross-exchange transfer from %s to %s is NOT possible ??"+
 			"no withdrawal/deposit implemented. Skipping. L4/L5 will handle this.",
 			action.DonorExch, action.Exchange)
 		return
 	}
 
-	// Intra-exchange transfer: donor futures → spot, then spot → futures.
+	// Intra-exchange transfer: donor futures ??spot, then spot ??futures.
 	if err := donorExch.TransferToSpot("USDT", amountStr); err != nil {
 		e.log.Error("L3 transfer: donor %s futures->spot failed: %v", action.DonorExch, err)
 		return
@@ -1247,7 +1308,7 @@ func (e *Engine) cancelExitGoroutine(posID string) {
 // checkDelistPositions checks if any active positions hold coins flagged
 // for delisting (any exchange that supports deliveryDate detection or that
 // the article scraper picks up). If so, preempts any exit goroutine and
-// triggers emergency close. Auto-exits unconditionally — a delisted coin
+// triggers emergency close. Auto-exits unconditionally ??a delisted coin
 // must be closed regardless of which leg's exchange triggered the flag,
 // since holding a perpetual past its delivery date forces unfavorable
 // settlement.
@@ -1274,7 +1335,7 @@ func (e *Engine) checkDelistPositions() {
 		e.api.BroadcastAlert(map[string]string{
 			"type":    "delist",
 			"symbol":  pos.Symbol,
-			"message": fmt.Sprintf("Delist detected for %s — emergency closing %s", pos.Symbol, pos.ID),
+			"message": fmt.Sprintf("Delist detected for %s ??emergency closing %s", pos.Symbol, pos.ID),
 		})
 
 		pos.ExitReason = fmt.Sprintf("delist: %s", pos.Symbol)
@@ -1283,7 +1344,7 @@ func (e *Engine) checkDelistPositions() {
 }
 
 // registerStopOrders adds stop-loss and take-profit order IDs to the SL/TP index
-// for instant fill detection. Registers all 4 IDs: long/short × sl/tp.
+// for instant fill detection. Registers all 4 IDs: long/short ? sl/tp.
 func (e *Engine) registerStopOrders(pos *models.ArbitragePosition) {
 	e.slIndexMu.Lock()
 	defer e.slIndexMu.Unlock()
@@ -1320,8 +1381,8 @@ func (e *Engine) unregisterStopOrders(pos *models.ArbitragePosition) {
 
 // handleSLFill processes an SL fill event from the slFillCh channel.
 // Two detection methods:
-//  1. slIndex lookup — matches plan/algo order IDs (may miss if exchange issues new ID on trigger)
-//  2. ReduceOnly detection — if a close fill arrives for a symbol we hold, and we didn't initiate it,
+//  1. slIndex lookup ??matches plan/algo order IDs (may miss if exchange issues new ID on trigger)
+//  2. ReduceOnly detection ??if a close fill arrives for a symbol we hold, and we didn't initiate it,
 //     verify the leg is actually gone on the exchange before triggering emergency close.
 func (e *Engine) handleSLFill(exchName string, upd exchange.OrderUpdate) {
 	// Method 1: Try slIndex match (original approach).
@@ -1398,11 +1459,11 @@ func (e *Engine) handleSLFill(exchName string, upd exchange.OrderUpdate) {
 		_, sfSizeOffset := e.buildSpotFuturesMaps()
 		remaining = sfSubtract(remaining, sfSizeOffset, exchName, pos.Symbol, leg)
 		if remaining > 0 {
-			// Leg still has size — this was a partial close (trim, L4 reduction, etc.), not SL.
+			// Leg still has size ??this was a partial close (trim, L4 reduction, etc.), not SL.
 			continue
 		}
 
-		e.log.Warn("SL/LIQUIDATION DETECTED: %s on %s %s filled=%.6f avg=%.8f — leg confirmed flat (pos=%s leg=%s)",
+		e.log.Warn("SL/LIQUIDATION DETECTED: %s on %s %s filled=%.6f avg=%.8f ??leg confirmed flat (pos=%s leg=%s)",
 			upd.OrderID, exchName, upd.Symbol, upd.FilledVolume, upd.AvgPrice, pos.ID, leg)
 		e.triggerEmergencyClose(exchName, pos.ID, leg, upd)
 		return
@@ -1429,7 +1490,7 @@ func (e *Engine) triggerEmergencyClose(exchName, posID, leg string, upd exchange
 	e.api.BroadcastAlert(map[string]string{
 		"type":    "sl_triggered",
 		"symbol":  pos.Symbol,
-		"message": fmt.Sprintf("Stop-loss triggered on %s (%s leg) — emergency closing %s", exchName, leg, posID),
+		"message": fmt.Sprintf("Stop-loss triggered on %s (%s leg) ??emergency closing %s", exchName, leg, posID),
 	})
 
 	if e.cfg.EnablePerpTelegram {
@@ -1474,7 +1535,7 @@ func (e *Engine) AttachAdapterCallbacks(name string, exch exchange.Exchange) {
 	exchName := name
 	// SL/TP fill event callback.
 	exch.SetOrderCallback(func(upd exchange.OrderUpdate) {
-		// Non-blocking send — drop if channel full (consumeSLFills will catch up).
+		// Non-blocking send ??drop if channel full (consumeSLFills will catch up).
 		select {
 		case e.slFillCh <- slFillEvent{Exchange: exchName, Update: upd}:
 		default:
@@ -1498,7 +1559,7 @@ func (e *Engine) handleAlgoRemap(exchName string, remap exchange.AlgoRemap) {
 	defer e.slIndexMu.Unlock()
 	if entry, ok := e.slIndex[exchName+":"+remap.AlgoID]; ok {
 		e.slIndex[exchName+":"+remap.RealID] = entry
-		e.log.Info("algoRemap %s: %s → %s (leg=%s kind=%s)",
+		e.log.Info("algoRemap %s: %s ??%s (leg=%s kind=%s)",
 			exchName, remap.AlgoID, remap.RealID, entry.Leg, entry.Kind)
 	}
 }
@@ -1619,7 +1680,7 @@ func (e *Engine) handleOrphanClose(action risk.HealthAction) {
 			continue
 		}
 
-		// Claim position with CAS — set StatusClosing atomically.
+		// Claim position with CAS ??set StatusClosing atomically.
 		claimed := false
 		_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
 			if fresh.Status != models.StatusActive {
@@ -1663,7 +1724,7 @@ func (e *Engine) handleOrphanClose(action risk.HealthAction) {
 			e.log.Info("[orphan-cleanup] closing %s %s leg on %s (size=%.6f)", pos.ID, action.OrphanSide, action.OrphanExchange, size)
 			rem := e.closeFullyWithRetry(exch, pos.Symbol, side, size)
 			if rem > 0 {
-				e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", pos.Symbol, side, rem, exch.Name())
+				e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s ??manual intervention needed", pos.Symbol, side, rem, exch.Name())
 			}
 
 			// Verify flat after close.
@@ -1676,7 +1737,7 @@ func (e *Engine) handleOrphanClose(action risk.HealthAction) {
 				remaining = sfSubtract(remaining, sfOff, action.OrphanExchange, pos.Symbol, action.OrphanSide)
 			}
 			if verifyErr != nil || remaining > 0 {
-				e.log.Error("[orphan-cleanup] position %s NOT flat after close (remaining=%.6f, err=%v) — reverting to active",
+				e.log.Error("[orphan-cleanup] position %s NOT flat after close (remaining=%.6f, err=%v) ??reverting to active",
 					pos.ID, remaining, verifyErr)
 				_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
 					fresh.Status = models.StatusActive
@@ -1696,7 +1757,7 @@ func (e *Engine) handleOrphanClose(action risk.HealthAction) {
 				continue
 			}
 		}
-		// "close_orphan_dust": skip market close — too small to trade.
+		// "close_orphan_dust": skip market close ??too small to trade.
 
 		// Mark position as closed with proper bookkeeping.
 		_ = e.db.UpdatePositionFields(pos.ID, func(fresh *models.ArbitragePosition) bool {
@@ -1864,7 +1925,7 @@ func (e *Engine) updateFundingCollected() {
 				// Always advance NextFunding when settlement passed, regardless of
 				// whether funding was credited this cycle. Zero-rate periods (e.g.
 				// TSLAUSDT during quiet hours) otherwise leave NextFunding stuck
-				// in the past, breaking the ±10min settlement protection window
+				// in the past, breaking the 簣10min settlement protection window
 				// in checkSpreadReversal (exit.go).
 				if !fresh.NextFunding.IsZero() && time.Now().UTC().After(fresh.NextFunding) {
 					fresh.NextFunding = nextFunding
@@ -1998,7 +2059,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 			continue
 		}
 		if blockedExchange, blocked := ppCrossEngineBlocked(opp, spotFuturesOccupied); blocked {
-			e.log.Info("[engine] entry filter: %s skipped — SF active on %s (cross-engine block)", opp.Symbol, blockedExchange)
+			e.log.Info("[engine] entry filter: %s skipped ??SF active on %s (cross-engine block)", opp.Symbol, blockedExchange)
 			continue
 		}
 		exchangeSet[opp.LongExchange] = true
@@ -2037,7 +2098,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 			}
 		}(exch)
 	}
-	// Collect BingX symbols separately — BingX has strict rate limits,
+	// Collect BingX symbols separately ??BingX has strict rate limits,
 	// so its orderbook requests run sequentially in one goroutine.
 	var bingxSymbols []string
 	for key := range symbolPairs {
@@ -2110,7 +2171,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 	})
 	e.log.Info("executeArbitrage: pre-fetched %d balances + %d orderbooks in %v",
 		len(prefetchCache.Balances), len(prefetchCache.Orderbooks), time.Since(prefetchStart).Round(time.Millisecond))
-	// Log balance summary — uses prefetched data only (no extra API calls post-prefetch).
+	// Log balance summary ??uses prefetched data only (no extra API calls post-prefetch).
 	{
 		var summary string
 		for name, bal := range prefetchCache.Balances {
@@ -2129,27 +2190,29 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 		e.log.Info("[entry] balances: %s", summary)
 	}
 
-	// Phase 1: Sequential pre-filter — approve up to `slots` candidates.
+	// Phase 1: Sequential pre-filter ??approve up to `slots` candidates.
 	type candidate struct {
-		opp         models.Opportunity
-		size        float64
-		price       float64
-		gapBPS      float64
-		lockKey     string
-		lock        *database.OwnedLock
-		pos         *models.ArbitragePosition
-		reservation *risk.CapitalReservation
+		opp                   models.Opportunity
+		size                  float64
+		price                 float64
+		gapBPS                float64
+		lockKey               string
+		lock                  *database.OwnedLock
+		pos                   *models.ArbitragePosition
+		reservation           *risk.CapitalReservation
+		strategyReservationID string
 	}
 	var candidates []candidate
 	newSlotCandidates := 0
 	reserved := map[string]float64{} // tracks margin committed by prior approvals in this batch
+	strategySnap, strategyEnabled := e.ppStrategySnapshot()
 
 	for _, opp := range opps {
 		if activeSymbols[opp.Symbol] {
-			continue // skip — symbol already has an active position
+			continue // skip ??symbol already has an active position
 		}
 		if blockedExchange, blocked := ppCrossEngineBlocked(opp, spotFuturesOccupied); blocked {
-			e.log.Info("[engine] entry filter: %s skipped — SF active on %s (cross-engine block)", opp.Symbol, blockedExchange)
+			e.log.Info("[engine] entry filter: %s skipped ??SF active on %s (cross-engine block)", opp.Symbol, blockedExchange)
 			continue
 		}
 		// Check blacklist
@@ -2163,15 +2226,18 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 			continue
 		}
 
-		lockResource := fmt.Sprintf("execute:%s", opp.Symbol)
-		symLock, acquired, err := e.db.AcquireOwnedLock(lockResource, 5*time.Minute)
+		strategyReservationID, err := e.tryReservePPStrategy(strategySnap, "pp_auto", opp, api.ManualOpenOptions{})
 		if err != nil {
-			e.log.Error("failed to acquire lock for %s: %v", opp.Symbol, err)
+			e.log.Info("strategy priority rejected %s: %v", opp.Symbol, err)
+			if e.rejStore != nil {
+				e.rejStore.AddOpp(opp, "strategy", err.Error())
+			}
 			continue
 		}
-		if !acquired {
-			e.log.Info("lock busy for %s, skipping", opp.Symbol)
-			continue
+		completeStrategy := func(outcome strategy.ReservationOutcome) {
+			if strategyEnabled {
+				e.completePPStrategyReservation(strategyReservationID, outcome)
+			}
 		}
 
 		e.log.Info("executeArbitrage: risk.Approve %s...", opp.Symbol)
@@ -2181,7 +2247,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 			if e.rejStore != nil {
 				e.rejStore.AddOpp(opp, "risk", fmt.Sprintf("error: %v", err))
 			}
-			symLock.Release()
+			completeStrategy(strategy.ReservationOutcomeAborted)
 			continue
 		}
 		if !approval.Approved {
@@ -2189,14 +2255,35 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 			if e.rejStore != nil {
 				e.rejStore.AddOpp(opp, "risk", approval.Reason)
 			}
-			symLock.Release()
+			completeStrategy(strategy.ReservationOutcomeAborted)
 			continue
 		}
 		e.log.Info("executeArbitrage: risk approved %s size=%.6f", opp.Symbol, approval.Size)
 
 		if e.cfg.DryRun {
 			e.log.Info("[DRY RUN] would execute trade for %s: size=%.6f price=%.2f spread=%.2f bps/h", opp.Symbol, approval.Size, approval.Price, opp.Spread)
-			symLock.Release()
+			completeStrategy(strategy.ReservationOutcomeAborted)
+			continue
+		}
+
+		if strategyReservationID != "" {
+			if err := e.strategyCoord.MarkInFlight(strategyReservationID); err != nil {
+				completeStrategy(strategy.ReservationOutcomeAborted)
+				e.log.Info("strategy reservation lost for %s: %v", opp.Symbol, err)
+				continue
+			}
+		}
+
+		lockResource := fmt.Sprintf("execute:%s", opp.Symbol)
+		symLock, acquired, err := e.db.AcquireOwnedLock(lockResource, 5*time.Minute)
+		if err != nil {
+			completeStrategy(strategy.ReservationOutcomeAborted)
+			e.log.Error("failed to acquire lock for %s: %v", opp.Symbol, err)
+			continue
+		}
+		if !acquired {
+			completeStrategy(strategy.ReservationOutcomeAborted)
+			e.log.Info("lock busy for %s, skipping", opp.Symbol)
 			continue
 		}
 
@@ -2206,13 +2293,16 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 			if e.rejStore != nil {
 				e.rejStore.AddOpp(opp, "risk", fmt.Sprintf("capital allocator: %v", err))
 			}
+			completeStrategy(strategy.ReservationOutcomeAborted)
 			symLock.Release()
 			continue
 		}
 
 		pendingPos := e.createPendingPosition(opp)
+		e.applyPPStrategyMeta(pendingPos, strategyReservationID)
 		if err := e.db.SavePosition(pendingPos); err != nil {
 			e.releasePerpReservation(reservation)
+			completeStrategy(strategy.ReservationOutcomeAborted)
 			e.log.Error("failed to save pending position for %s: %v", opp.Symbol, err)
 			symLock.Release()
 			continue
@@ -2221,14 +2311,15 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 		e.api.BroadcastPositionUpdate(pendingPos)
 
 		candidates = append(candidates, candidate{
-			opp:         opp,
-			size:        approval.Size,
-			price:       approval.Price,
-			gapBPS:      approval.GapBPS,
-			lockKey:     lockResource,
-			lock:        symLock,
-			pos:         pendingPos,
-			reservation: reservation,
+			opp:                   opp,
+			size:                  approval.Size,
+			price:                 approval.Price,
+			gapBPS:                approval.GapBPS,
+			lockKey:               lockResource,
+			lock:                  symLock,
+			pos:                   pendingPos,
+			reservation:           reservation,
+			strategyReservationID: strategyReservationID,
 		})
 		longMargin := approval.LongMarginNeeded
 		if longMargin <= 0 {
@@ -2243,7 +2334,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 		newSlotCandidates++
 	}
 
-	// Release capacity lock — candidates hold per-symbol locks and will
+	// Release capacity lock ??candidates hold per-symbol locks and will
 	// create pending positions inside executeTradeV2.
 	e.log.Info("executeArbitrage: releasing capacity lock, %d candidates approved", len(candidates))
 	e.capacityMu.Unlock()
@@ -2252,7 +2343,7 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 		return
 	}
 
-	// Phase 2: Parallel execution — launch all candidates simultaneously.
+	// Phase 2: Parallel execution ??launch all candidates simultaneously.
 	e.log.Info("parallel execution: %d candidates approved, launching", len(candidates))
 
 	var wg sync.WaitGroup
@@ -2271,20 +2362,23 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 						_ = e.allocator.Reconcile()
 					}
 				}
+				e.completePPStrategyReservation(c.strategyReservationID, strategy.ReservationOutcomeActive)
 				return
 			}
 			if err != nil {
 				e.releasePerpReservation(c.reservation)
+				e.completePPStrategyReservation(c.strategyReservationID, strategy.ReservationOutcomeAborted)
 				e.log.Error("trade execution failed for %s: %v", c.opp.Symbol, err)
 				e.cleanupFailedPosition(c.opp.Symbol, err.Error())
 				return
 			}
 			if cErr := e.commitPerpCapital(c.reservation, c.pos.ID); cErr != nil {
-				e.log.Error("capital commit failed for %s: %v — triggering allocator reconcile", c.opp.Symbol, cErr)
+				e.log.Error("capital commit failed for %s: %v ??triggering allocator reconcile", c.opp.Symbol, cErr)
 				if e.allocator != nil && e.allocator.Enabled() {
 					_ = e.allocator.Reconcile()
 				}
 			}
+			e.completePPStrategyReservation(c.strategyReservationID, strategy.ReservationOutcomeActive)
 		}(c)
 	}
 	e.log.Info("executeArbitrage: waiting for %d goroutines to complete...", len(candidates))
@@ -2432,7 +2526,7 @@ func (e *Engine) MergeExistingDuplicates() {
 			if p.ID == survivor.ID {
 				continue
 			}
-			e.log.Info("startup merge: absorbing %s into %s (%s %s→%s)",
+			e.log.Info("startup merge: absorbing %s into %s (%s %s->%s)",
 				p.ID, survivor.ID, k.symbol, k.long, k.short)
 
 			// Cancel SLs on the absorbed position
@@ -2564,7 +2658,7 @@ func deriveFailureStage(reason string) string {
 // queryAvgFillPrice attempts to read the real average fill price for an order
 // from the adapter's WS-populated order store. Falls back to a 200ms retry if
 // the first read shows AvgPrice==0 (WS may lag slightly). Returns 0 if no
-// average price is yet available — caller decides the fallback.
+// average price is yet available ??caller decides the fallback.
 func (e *Engine) queryAvgFillPrice(exch exchange.Exchange, orderID string) float64 {
 	if upd, ok := exch.GetOrderUpdate(orderID); ok && upd.AvgPrice > 0 {
 		return upd.AvgPrice
@@ -2591,12 +2685,12 @@ func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol 
 		}
 
 		bbo, ok := exch.GetBBO(symbol)
-		// H1B: symmetric ±20% BBO sanity clamp against refPrice. Reject garbage
+		// H1B: symmetric 簣20% BBO sanity clamp against refPrice. Reject garbage
 		// BBO snapshots (e.g. stale or corrupted feed) by falling back to refPrice.
 		if !ok || bbo.Bid <= 0 || bbo.Ask <= 0 ||
 			bbo.Bid > refPrice*1.20 || bbo.Bid < refPrice*0.80 ||
 			bbo.Ask > refPrice*1.20 || bbo.Ask < refPrice*0.80 {
-			e.log.Warn("retrySecondLeg: BBO sanity failed (bid=%.6f ask=%.6f ref=%.6f) — fallback to refPrice",
+			e.log.Warn("retrySecondLeg: BBO sanity failed (bid=%.6f ask=%.6f ref=%.6f) ??fallback to refPrice",
 				bbo.Bid, bbo.Ask, refPrice)
 			bbo = exchange.BBO{Bid: refPrice, Ask: refPrice}
 		}
@@ -2639,7 +2733,7 @@ func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol 
 		time.Sleep(500 * time.Millisecond)
 		filledQty, qErr := exch.GetOrderFilledQty(orderID, symbol)
 		if qErr != nil {
-			// Fill state unknown — do NOT continue placing more orders. Compute
+			// Fill state unknown ??do NOT continue placing more orders. Compute
 			// running avgPrice from any partial fills accumulated so far and
 			// return so callers can persist a partial entry instead of retrying.
 			if totalFilled > 0 {
@@ -2667,7 +2761,7 @@ func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol 
 		}
 	}
 
-	// Phase 2: Market order — keep retrying until fully filled.
+	// Phase 2: Market order ??keep retrying until fully filled.
 	// Leg 1 is already open, we MUST match it.
 	for mktAttempt := 0; remainingSize > 0 && mktAttempt < 10; mktAttempt++ {
 		if mktAttempt > 0 {
@@ -2696,7 +2790,7 @@ func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol 
 		time.Sleep(500 * time.Millisecond)
 		filledQty, qErr := exch.GetOrderFilledQty(orderID, symbol)
 		if qErr != nil {
-			// Fill state unknown — do NOT continue placing more market orders.
+			// Fill state unknown ??do NOT continue placing more market orders.
 			// Compute running avgPrice and return so callers persist a partial
 			// entry rather than duplicating exposure.
 			if totalFilled > 0 {
@@ -2729,6 +2823,94 @@ done:
 		avgPrice = totalNotional / totalFilled
 	}
 	return totalFilled, avgPrice, nil
+}
+
+func (e *Engine) preflightBingXEntryOrder(exch exchange.Exchange, exchName, symbol string, side exchange.Side, refPrice float64, size string) error {
+	if !strings.EqualFold(exchName, "bingx") {
+		return nil
+	}
+	preflight, ok := exch.(exchange.OrderPreflight)
+	if !ok {
+		return nil
+	}
+	probePriceStr, err := e.bingXEntryProbePrice(exch, exchName, symbol, side, refPrice)
+	if err != nil {
+		return err
+	}
+	err = preflight.TestOrder(exchange.PlaceOrderParams{
+		Symbol:    symbol,
+		Side:      side,
+		OrderType: "limit",
+		Price:     probePriceStr,
+		Size:      size,
+		Force:     "ioc",
+	})
+	if err == nil {
+		return nil
+	}
+	if isBingXAPIOrdersTemporarilyDisabled(err) {
+		return fmt.Errorf("bingx preflight hard reject for %s: %w", symbol, err)
+	}
+	return fmt.Errorf("bingx preflight failed for %s: %w", symbol, err)
+}
+
+func (e *Engine) bingXEntryProbePrice(exch exchange.Exchange, exchName, symbol string, side exchange.Side, refPrice float64) (string, error) {
+	if refPrice <= 0 {
+		return "", fmt.Errorf("bingx preflight invalid reference price for %s: %.8f", symbol, refPrice)
+	}
+	if side != exchange.SideBuy && side != exchange.SideSell {
+		return "", fmt.Errorf("bingx preflight invalid side for %s: %s", symbol, side)
+	}
+
+	priceStep, priceDecimals := e.bingXContractPriceFormat(exch, exchName, symbol)
+	probePrice := refPrice * 0.01
+	if side == exchange.SideSell {
+		probePrice = refPrice * 1.99
+	}
+
+	if priceStep > 0 {
+		if side == exchange.SideBuy {
+			probePrice = utils.RoundToStep(probePrice, priceStep)
+			if probePrice <= 0 {
+				probePrice = priceStep
+			}
+		} else {
+			probePrice = utils.RoundUpToStep(probePrice, priceStep)
+			if probePrice <= refPrice {
+				probePrice = utils.RoundUpToStep(refPrice+priceStep, priceStep)
+			}
+		}
+	}
+
+	priceStr := utils.FormatPrice(probePrice, priceDecimals)
+	parsed, _ := strconv.ParseFloat(priceStr, 64)
+	if parsed <= 0 {
+		return "", fmt.Errorf("bingx preflight invalid probe price for %s: ref=%.8f probe=%s", symbol, refPrice, priceStr)
+	}
+	if side == exchange.SideBuy && parsed >= refPrice {
+		return "", fmt.Errorf("bingx preflight cannot build non-marketable buy probe for %s: ref=%.8f probe=%s", symbol, refPrice, priceStr)
+	}
+	if side == exchange.SideSell && parsed <= refPrice {
+		return "", fmt.Errorf("bingx preflight cannot build non-marketable sell probe for %s: ref=%.8f probe=%s", symbol, refPrice, priceStr)
+	}
+	return priceStr, nil
+}
+
+func (e *Engine) bingXContractPriceFormat(exch exchange.Exchange, exchName, symbol string) (float64, int) {
+	if e.contracts != nil {
+		if exContracts, ok := e.contracts[exchName]; ok {
+			if ci, ok := exContracts[symbol]; ok && ci.PriceStep > 0 {
+				return ci.PriceStep, ci.PriceDecimals
+			}
+		}
+	}
+	contracts, err := exch.LoadAllContracts()
+	if err == nil {
+		if ci, ok := contracts[symbol]; ok && ci.PriceStep > 0 {
+			return ci.PriceStep, ci.PriceDecimals
+		}
+	}
+	return 0, 8
 }
 
 // executeTrade opens a delta-neutral position across two exchanges using
@@ -2827,7 +3009,7 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 	sizeStr := utils.FormatSize(size, 6)
 
 	// ---------------------------------------------------------------
-	// BBO snapshot → compute IOC limit prices with slippage ceiling
+	// BBO snapshot ??compute IOC limit prices with slippage ceiling
 	// ---------------------------------------------------------------
 	longBBO, ok := longExch.GetBBO(opp.Symbol)
 	if !ok {
@@ -2894,7 +3076,7 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 		e.log.Error("long IOC failed: %v, closing short leg", longRes.err)
 		rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, size) // buy to close short
 		if rem > 0 {
-			e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", opp.Symbol, exchange.SideBuy, rem, shortExch.Name())
+			e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s ??manual intervention needed", opp.Symbol, exchange.SideBuy, rem, shortExch.Name())
 		}
 		pos.Status = models.StatusClosed
 		pos.UpdatedAt = time.Now().UTC()
@@ -2905,7 +3087,7 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 		e.log.Error("short IOC failed: %v, closing long leg", shortRes.err)
 		rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, size) // sell to close long
 		if rem > 0 {
-			e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", opp.Symbol, exchange.SideSell, rem, longExch.Name())
+			e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s ??manual intervention needed", opp.Symbol, exchange.SideSell, rem, longExch.Name())
 		}
 		pos.Status = models.StatusClosed
 		pos.UpdatedAt = time.Now().UTC()
@@ -2915,6 +3097,8 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 
 	pos.LongOrderID = longRes.orderID
 	pos.ShortOrderID = shortRes.orderID
+	e.bindPPStrategyOrder(pos, opp.LongExchange, longRes.orderID)
+	e.bindPPStrategyOrder(pos, opp.ShortExchange, shortRes.orderID)
 	pos.Status = models.StatusPartial
 	pos.UpdatedAt = time.Now().UTC()
 	_ = e.db.SavePosition(pos)
@@ -2934,7 +3118,7 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 	}
 	// If one side filled but the other is unknown, we have orphan risk
 	if longFilled > 0 && shortCFErr != nil {
-		e.log.Error("ORPHAN WARNING: %s long filled %.6f but short fill unknown — saving as partial", posID, longFilled)
+		e.log.Error("ORPHAN WARNING: %s long filled %.6f but short fill unknown ??saving as partial", posID, longFilled)
 		pos.LongSize = longFilled
 		pos.ShortSize = 0
 		pos.Status = models.StatusPartial
@@ -2944,7 +3128,7 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 		return errPartialEntry
 	}
 	if shortFilled > 0 && longCFErr != nil {
-		e.log.Error("ORPHAN WARNING: %s short filled %.6f but long fill unknown — saving as partial", posID, shortFilled)
+		e.log.Error("ORPHAN WARNING: %s short filled %.6f but long fill unknown ??saving as partial", posID, shortFilled)
 		pos.LongSize = 0
 		pos.ShortSize = shortFilled
 		pos.Status = models.StatusPartial
@@ -2967,18 +3151,18 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 	longNotional := longFilled * longAvg
 	shortNotional := shortFilled * shortAvg
 	if longNotional < minPositionUSDT || shortNotional < minPositionUSDT {
-		// Too small to keep — close whatever filled.
+		// Too small to keep ??close whatever filled.
 		e.log.Warn("IOC fills too small for %s (long=$%.2f short=$%.2f), aborting", posID, longNotional, shortNotional)
 		if longFilled > 0 {
 			rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
 			if rem > 0 {
-				e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", opp.Symbol, exchange.SideSell, rem, longExch.Name())
+				e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s ??manual intervention needed", opp.Symbol, exchange.SideSell, rem, longExch.Name())
 			}
 		}
 		if shortFilled > 0 {
 			rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
 			if rem > 0 {
-				e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", opp.Symbol, exchange.SideBuy, rem, shortExch.Name())
+				e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s ??manual intervention needed", opp.Symbol, exchange.SideBuy, rem, shortExch.Name())
 			}
 		}
 		pos.Status = models.StatusClosed
@@ -3241,7 +3425,7 @@ func (e *Engine) executeTradeV2WithPos(opp models.Opportunity, pos *models.Arbit
 			break
 		}
 		if attempt == 0 {
-			// First attempt failed — force re-subscribe (handles stale WS state)
+			// First attempt failed ??force re-subscribe (handles stale WS state)
 			e.log.Warn("depth subscribe retry for %s: re-subscribing both legs", opp.Symbol)
 			e.releaseDepthRef(opp.LongExchange, opp.Symbol)
 			e.releaseDepthRef(opp.ShortExchange, opp.Symbol)
@@ -3351,7 +3535,7 @@ fillLoop:
 			break
 		}
 		if longConsecFails >= maxConsecFails || shortConsecFails >= maxConsecFails {
-			e.log.Error("depth fill loop: circuit breaker for %s — %s has %d consecutive failures, aborting",
+			e.log.Error("depth fill loop: circuit breaker for %s ??%s has %d consecutive failures, aborting",
 				opp.Symbol, func() string {
 					if longConsecFails >= maxConsecFails {
 						return opp.LongExchange
@@ -3458,7 +3642,7 @@ fillLoop:
 			continue
 		}
 
-		// Determine less-liquid leg (higher consumption ratio = riskier → goes first)
+		// Determine less-liquid leg (higher consumption ratio = riskier goes first).
 		shortFirst := (size / bidQty) >= (size / askQty)
 		// Override: when step sizes differ, coarser-step exchange goes first.
 		// Its fills are guaranteed multiples of its own step, which the finer
@@ -3511,7 +3695,7 @@ fillLoop:
 				// Round down to step size that both exchanges can represent.
 				affordableSize = e.commonTradeableSize(opp.LongExchange, opp.ShortExchange, opp.Symbol, affordableSize)
 				if affordableSize > 0 && affordableSize*bidPrice >= e.cfg.MinChunkUSDT {
-					e.log.Info("depth tick: margin cap %s size %.6f → %.6f (longAvail=%.2f shortAvail=%.2f)",
+					e.log.Info("depth tick: margin cap %s size %.6f ??%.6f (longAvail=%.2f shortAvail=%.2f)",
 						opp.Symbol, size, affordableSize, cachedLongBal.Available, cachedShortBal.Available)
 					size = affordableSize
 					// Re-format sizes after capping
@@ -3523,6 +3707,21 @@ fillLoop:
 					continue
 				}
 			}
+		}
+
+		if err := e.preflightBingXEntryOrder(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, askPrice, longSizeStr); err != nil {
+			e.log.Warn("depth fill preflight blocked %s long leg before any new orders: %v", opp.Symbol, err)
+			if e.discovery != nil {
+				e.discovery.SetReEnterCooldown(opp.Symbol, 30*time.Minute)
+			}
+			break fillLoop
+		}
+		if err := e.preflightBingXEntryOrder(shortExch, opp.ShortExchange, opp.Symbol, exchange.SideSell, bidPrice, shortSizeStr); err != nil {
+			e.log.Warn("depth fill preflight blocked %s short leg before any new orders: %v", opp.Symbol, err)
+			if e.discovery != nil {
+				e.discovery.SetReEnterCooldown(opp.Symbol, 30*time.Minute)
+			}
+			break fillLoop
 		}
 
 		// On INSUFFICIENT errors, invalidate cache to force fresh balance next tick
@@ -3568,9 +3767,9 @@ fillLoop:
 			var shortCFErr error
 			shortFilled, shortAvg, shortCFErr = e.confirmFillSafe(shortExch, shortOID, opp.Symbol)
 			if shortCFErr != nil {
-				// First-leg fill state unknown — cancel and freeze this tick.
+				// First-leg fill state unknown ??cancel and freeze this tick.
 				// Do NOT continue loop blindly; the order may have filled.
-				e.log.Error("depth tick: short fill state unknown for %s: %v — freezing tick", shortOID, shortCFErr)
+				e.log.Error("depth tick: short fill state unknown for %s: %v ??freezing tick", shortOID, shortCFErr)
 				_ = shortExch.CancelOrder(opp.Symbol, shortOID)
 				// Check if fill actually happened using existing helper
 				exchSize, exchErr := getExchangePositionSize(shortExch, opp.Symbol, "short")
@@ -3603,7 +3802,7 @@ fillLoop:
 			}
 			shortConsecFails = 0
 
-			// Long leg second (buy from asks) — only fill what short filled
+			// Long leg second (buy from asks) ??only fill what short filled
 			// Normalize to common-tradeable size so both exchanges can represent it.
 			matchSize := e.commonTradeableSize(opp.LongExchange, opp.ShortExchange, opp.Symbol, shortFilled)
 			if matchSize < shortFilled {
@@ -3662,7 +3861,7 @@ fillLoop:
 								}
 								shortFilled += topUpFilled
 								matchSize = e.commonTradeableSize(opp.LongExchange, opp.ShortExchange, opp.Symbol, shortFilled)
-								e.log.Info("depth tick: topped up %s by %.6f → total %.6f, matchSize=%.6f",
+								e.log.Info("depth tick: topped up %s by %.6f ??total %.6f, matchSize=%.6f",
 									opp.Symbol, topUpFilled, shortFilled, matchSize)
 							}
 						} else {
@@ -3672,13 +3871,13 @@ fillLoop:
 				}
 
 				if matchSize < shortFilled {
-					// Top-up failed — rollback as last resort
+					// Top-up failed ??rollback as last resort
 					e.log.Warn("depth tick: top-up failed (matchSize=%.6f < shortFilled=%.6f), rolling back on %s",
 						matchSize, shortFilled, opp.ShortExchange)
 					rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
 					if rem > 0 {
 						e.log.Error("ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.ShortExchange)
-						e.telegram.Send("⚠️ ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.ShortExchange)
+						e.telegram.Send("?? ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.ShortExchange)
 						shortFilled = rem
 						longFilled = 0
 						abortFillLoop = true
@@ -3712,7 +3911,7 @@ fillLoop:
 					longConsecFails = 0
 				}
 				if retryErr != nil {
-					// State unknown — do NOT retry the leg or place another order. Persist
+					// State unknown ??do NOT retry the leg or place another order. Persist
 					// known partial so consolidator/operator can reconcile on next cycle.
 					e.log.Error("ORPHAN WARNING: %s long retry fill unknown after short filled %.6f: %v", posID, shortFilled, retryErr)
 					pos.LongSize = confirmedLong + longFilled
@@ -3733,9 +3932,9 @@ fillLoop:
 					rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
 					if rem > 0 {
 						e.log.Error("ORPHAN EXPOSURE: %s rollback incomplete, %.6f still open on %s", opp.Symbol, rem, opp.ShortExchange)
-						e.telegram.Send("⚠️ ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.ShortExchange)
+						e.telegram.Send("?? ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.ShortExchange)
 						// Preserve surviving exposure so VWAP accumulation accounts for it.
-						// Do NOT overwrite shortAvg — it holds the original fill price.
+						// Do NOT overwrite shortAvg ??it holds the original fill price.
 						shortFilled = rem
 						longFilled = 0
 						abortFillLoop = true
@@ -3789,7 +3988,7 @@ fillLoop:
 						rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
 						if rem > 0 {
 							e.log.Error("ORPHAN EXPOSURE: %s rollback incomplete, %.6f still open on %s", opp.Symbol, rem, opp.ShortExchange)
-							e.telegram.Send("⚠️ ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.ShortExchange)
+							e.telegram.Send("?? ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.ShortExchange)
 							shortFilled = rem
 							longFilled = 0
 							abortFillLoop = true
@@ -3806,7 +4005,7 @@ fillLoop:
 				rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, excess)
 				if rem > 0 {
 					e.log.Warn("trim incomplete: %s %.6f remaining on %s", opp.Symbol, rem, opp.ShortExchange)
-					e.telegram.Send("⚠️ TRIM INCOMPLETE: %s %.6f on %s", opp.Symbol, rem, opp.ShortExchange)
+					e.telegram.Send("?? TRIM INCOMPLETE: %s %.6f on %s", opp.Symbol, rem, opp.ShortExchange)
 					// shortFilled = matched portion + un-closable remainder
 					shortFilled = longFilled + rem
 					abortFillLoop = true
@@ -3854,7 +4053,7 @@ fillLoop:
 			var longCFErr error
 			longFilled, longAvg, longCFErr = e.confirmFillSafe(longExch, longOID, opp.Symbol)
 			if longCFErr != nil {
-				e.log.Error("depth tick: long fill state unknown for %s: %v — freezing tick", longOID, longCFErr)
+				e.log.Error("depth tick: long fill state unknown for %s: %v ??freezing tick", longOID, longCFErr)
 				_ = longExch.CancelOrder(opp.Symbol, longOID)
 				// Check if fill actually happened using existing helper
 				exchSize, exchErr := getExchangePositionSize(longExch, opp.Symbol, "long")
@@ -3876,7 +4075,7 @@ fillLoop:
 					return errPartialEntry
 				}
 				longConsecFails++
-				break // freeze depth loop — post-loop reconciliation handles
+				break // freeze depth loop ??post-loop reconciliation handles
 			}
 			if longFilled == 0 {
 				longConsecFails++
@@ -3885,7 +4084,7 @@ fillLoop:
 			}
 			longConsecFails = 0
 
-			// Short leg second — only fill what long filled
+			// Short leg second ??only fill what long filled
 			// Normalize to common-tradeable size so both exchanges can represent it.
 			matchSize := e.commonTradeableSize(opp.LongExchange, opp.ShortExchange, opp.Symbol, longFilled)
 			if matchSize < longFilled {
@@ -3943,7 +4142,7 @@ fillLoop:
 								}
 								longFilled += topUpFilled
 								matchSize = e.commonTradeableSize(opp.LongExchange, opp.ShortExchange, opp.Symbol, longFilled)
-								e.log.Info("depth tick: topped up %s by %.6f → total %.6f, matchSize=%.6f",
+								e.log.Info("depth tick: topped up %s by %.6f ??total %.6f, matchSize=%.6f",
 									opp.Symbol, topUpFilled, longFilled, matchSize)
 							}
 						} else {
@@ -3958,7 +4157,7 @@ fillLoop:
 					rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
 					if rem > 0 {
 						e.log.Error("ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.LongExchange)
-						e.telegram.Send("⚠️ ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.LongExchange)
+						e.telegram.Send("?? ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.LongExchange)
 						longFilled = rem
 						shortFilled = 0
 						abortFillLoop = true
@@ -3992,7 +4191,7 @@ fillLoop:
 					shortConsecFails = 0
 				}
 				if retryErr != nil {
-					// State unknown — persist partial and hand off to consolidator.
+					// State unknown ??persist partial and hand off to consolidator.
 					e.log.Error("ORPHAN WARNING: %s short retry fill unknown after long filled %.6f: %v", posID, longFilled, retryErr)
 					pos.LongSize = confirmedLong + longFilled
 					pos.ShortSize = confirmedShort + shortFilled
@@ -4012,9 +4211,9 @@ fillLoop:
 					rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
 					if rem > 0 {
 						e.log.Error("ORPHAN EXPOSURE: %s rollback incomplete, %.6f still open on %s", opp.Symbol, rem, opp.LongExchange)
-						e.telegram.Send("⚠️ ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.LongExchange)
+						e.telegram.Send("?? ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.LongExchange)
 						// Preserve surviving exposure so VWAP accumulation accounts for it.
-						// Do NOT overwrite longAvg — it holds the original fill price.
+						// Do NOT overwrite longAvg ??it holds the original fill price.
 						longFilled = rem
 						shortFilled = 0
 						abortFillLoop = true
@@ -4068,7 +4267,7 @@ fillLoop:
 						rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
 						if rem > 0 {
 							e.log.Error("ORPHAN EXPOSURE: %s rollback incomplete, %.6f still open on %s", opp.Symbol, rem, opp.LongExchange)
-							e.telegram.Send("⚠️ ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.LongExchange)
+							e.telegram.Send("?? ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.LongExchange)
 							longFilled = rem
 							shortFilled = 0
 							abortFillLoop = true
@@ -4085,7 +4284,7 @@ fillLoop:
 				rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, excess)
 				if rem > 0 {
 					e.log.Warn("trim incomplete: %s %.6f remaining on %s", opp.Symbol, rem, opp.LongExchange)
-					e.telegram.Send("⚠️ TRIM INCOMPLETE: %s %.6f on %s", opp.Symbol, rem, opp.LongExchange)
+					e.telegram.Send("?? TRIM INCOMPLETE: %s %.6f on %s", opp.Symbol, rem, opp.LongExchange)
 					// longFilled = matched portion + un-closable remainder
 					longFilled = shortFilled + rem
 					abortFillLoop = true
@@ -4127,7 +4326,7 @@ fillLoop:
 		e.log.Info("depth fill: %s cumulative long=%.6f short=%.6f (%.1f%% of target)",
 			opp.Symbol, confirmedLong, confirmedShort, minSoFar/targetSize*100)
 
-		// Debounced position save: update on ≥10% fill increment
+		// Debounced position save: update on ??0% fill increment
 		if minSoFar-lastSavedFill >= targetSize*0.10 || minSoFar >= targetSize {
 			pos.LongSize = confirmedLong
 			pos.ShortSize = confirmedShort
@@ -4153,13 +4352,13 @@ fillLoop:
 		if confirmedLong > 0 {
 			rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, confirmedLong)
 			if rem > 0 {
-				e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", opp.Symbol, exchange.SideSell, rem, longExch.Name())
+				e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s ??manual intervention needed", opp.Symbol, exchange.SideSell, rem, longExch.Name())
 			}
 		}
 		if confirmedShort > 0 {
 			rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, confirmedShort)
 			if rem > 0 {
-				e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s — manual intervention needed", opp.Symbol, exchange.SideBuy, rem, shortExch.Name())
+				e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s ??manual intervention needed", opp.Symbol, exchange.SideBuy, rem, shortExch.Name())
 			}
 		}
 		reason := fmt.Sprintf("depth fills below minimum (%s: long=%.6f short=%.6f)", opp.Symbol, confirmedLong, confirmedShort)
@@ -4175,7 +4374,7 @@ fillLoop:
 		return fmt.Errorf("%s", reason)
 	}
 
-	// Force checkpoint before trim — ensures DB has current fill state
+	// Force checkpoint before trim ??ensures DB has current fill state
 	pos.LongSize = confirmedLong
 	pos.ShortSize = confirmedShort
 	pos.LongEntry = longVWAP
@@ -4221,7 +4420,7 @@ fillLoop:
 		return fmt.Errorf("checkpoint save failed, rolled back to flat: %w", ckErr)
 	}
 
-	// Trim excess from the larger leg — track actual post-trim sizes
+	// Trim excess from the larger leg ??track actual post-trim sizes
 	trimFailed := false
 	actualLong := confirmedLong
 	actualShort := confirmedShort
@@ -4303,7 +4502,7 @@ fillLoop:
 		time.Sleep(time.Duration(attempt) * time.Second)
 	}
 	if saveErr != nil {
-		e.log.Error("CRITICAL: %s filled but save failed after 3 attempts — left as StatusPartial", posID)
+		e.log.Error("CRITICAL: %s filled but save failed after 3 attempts ??left as StatusPartial", posID)
 		return errPartialEntry
 	}
 	e.api.BroadcastPositionUpdate(pos)
@@ -4338,7 +4537,7 @@ func (e *Engine) confirmFill(exch exchange.Exchange, orderID, symbol string) (fi
 	defer ticker.Stop()
 
 	for {
-		// Try WS first — wait for terminal state (filled/cancelled) so we
+		// Try WS first ??wait for terminal state (filled/cancelled) so we
 		// get the final fill quantity, not a partial mid-fill snapshot.
 		if upd, ok := exch.GetOrderUpdate(orderID); ok {
 			if upd.Status == "filled" || upd.Status == "cancelled" {
@@ -4438,7 +4637,7 @@ func (e *Engine) queryEntryFees(pos *models.ArbitragePosition) {
 	longExch, lok := e.exchanges[pos.LongExchange]
 	shortExch, sok := e.exchanges[pos.ShortExchange]
 
-	// Retry up to 3 times with increasing delays — some exchanges (BingX)
+	// Retry up to 3 times with increasing delays ??some exchanges (BingX)
 	// are slow to make fill records available via REST after WS confirms.
 	delays := []time.Duration{5 * time.Second, 10 * time.Second, 20 * time.Second}
 	var longFees, shortFees float64
@@ -4468,12 +4667,12 @@ func (e *Engine) queryEntryFees(pos *models.ArbitragePosition) {
 			}
 		}
 
-		// Both legs returned fees — done.
+		// Both legs returned fees ??done.
 		if longFees > 0 && shortFees > 0 {
 			break
 		}
 		if attempt < len(delays)-1 {
-			e.log.Debug("queryEntryFees %s: attempt %d — long=%.4f short=%.4f, retrying...",
+			e.log.Debug("queryEntryFees %s: attempt %d ??long=%.4f short=%.4f, retrying...",
 				pos.ID, attempt+1, longFees, shortFees)
 		}
 	}
@@ -4495,10 +4694,10 @@ func (e *Engine) queryEntryFees(pos *models.ArbitragePosition) {
 }
 
 // attachStopLosses places protective stop-loss and take-profit orders on both legs.
-// SL distance = 90% / leverage (e.g. 3x → 30%).
+// SL distance = 90% / leverage (e.g. 3x ??30%).
 // TP on each leg is set at the other leg's SL trigger price, so both legs close
 // when price moves significantly in either direction (prevents orphan positions).
-// Logs errors but does not fail — position is already open.
+// Logs errors but does not fail ??position is already open.
 func (e *Engine) attachStopLosses(pos *models.ArbitragePosition) {
 	leverage := float64(e.cfg.Leverage)
 	if leverage <= 0 {
@@ -4513,10 +4712,10 @@ func (e *Engine) attachStopLosses(pos *models.ArbitragePosition) {
 	var longTPID, shortTPID string
 
 	// Compute SL trigger prices for both legs.
-	longSLTrigger := pos.LongEntry * (1 - distance)   // price drops → long loses
-	shortSLTrigger := pos.ShortEntry * (1 + distance)  // price rises → short loses
+	longSLTrigger := pos.LongEntry * (1 - distance)   // price drops ??long loses
+	shortSLTrigger := pos.ShortEntry * (1 + distance) // price rises ??short loses
 
-	// Long SL: trigger when price drops → sell to close.
+	// Long SL: trigger when price drops ??sell to close.
 	if lok && pos.LongEntry > 0 {
 		tp := e.formatPrice(pos.LongExchange, pos.Symbol, longSLTrigger)
 		oid, err := longExch.PlaceStopLoss(exchange.StopLossParams{
@@ -4534,7 +4733,7 @@ func (e *Engine) attachStopLosses(pos *models.ArbitragePosition) {
 		}
 	}
 
-	// Short SL: trigger when price rises → buy to close.
+	// Short SL: trigger when price rises ??buy to close.
 	if sok && pos.ShortEntry > 0 {
 		tp := e.formatPrice(pos.ShortExchange, pos.Symbol, shortSLTrigger)
 		oid, err := shortExch.PlaceStopLoss(exchange.StopLossParams{
@@ -4552,7 +4751,7 @@ func (e *Engine) attachStopLosses(pos *models.ArbitragePosition) {
 		}
 	}
 
-	// Long TP: trigger when price rises to short's SL level → sell to close.
+	// Long TP: trigger when price rises to short's SL level ??sell to close.
 	// This ensures the long leg closes when the short leg's SL fires.
 	if lok && pos.LongEntry > 0 && pos.ShortEntry > 0 {
 		tp := e.formatPrice(pos.LongExchange, pos.Symbol, shortSLTrigger)
@@ -4571,7 +4770,7 @@ func (e *Engine) attachStopLosses(pos *models.ArbitragePosition) {
 		}
 	}
 
-	// Short TP: trigger when price drops to long's SL level → buy to close.
+	// Short TP: trigger when price drops to long's SL level ??buy to close.
 	// This ensures the short leg closes when the long leg's SL fires.
 	if sok && pos.ShortEntry > 0 && pos.LongEntry > 0 {
 		tp := e.formatPrice(pos.ShortExchange, pos.Symbol, longSLTrigger)

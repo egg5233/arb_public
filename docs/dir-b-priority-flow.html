@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dir B Priority Flow</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --ink: #172033;
+      --muted: #667085;
+      --line: #b9c2d0;
+      --blue: #2563eb;
+      --green: #16825d;
+      --amber: #b45309;
+      --red: #b42318;
+      --panel: #ffffff;
+      --shadow: 0 10px 28px rgba(16, 24, 40, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Arial, "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+      line-height: 1.45;
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 28px 18px 44px;
+    }
+
+    h1 {
+      margin: 0 0 6px;
+      font-size: 28px;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      margin: 0 0 24px;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+
+    .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      display: inline-block;
+    }
+
+    .dot.blue { background: var(--blue); }
+    .dot.green { background: var(--green); }
+    .dot.amber { background: var(--amber); }
+    .dot.red { background: var(--red); }
+
+    .flow {
+      display: grid;
+      gap: 14px;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      align-items: stretch;
+    }
+
+    .box {
+      position: relative;
+      min-height: 106px;
+      padding: 16px;
+      background: var(--panel);
+      border: 1px solid #d9e0ea;
+      border-left: 5px solid var(--blue);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .box.green { border-left-color: var(--green); }
+    .box.amber { border-left-color: var(--amber); }
+    .box.red { border-left-color: var(--red); }
+
+    .box h2 {
+      margin: 0 0 8px;
+      font-size: 17px;
+      letter-spacing: 0;
+    }
+
+    .box p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .box ul {
+      margin: 8px 0 0;
+      padding-left: 18px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .box li {
+      margin: 2px 0;
+    }
+
+    .arrow {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      font-size: 22px;
+      line-height: 1;
+      min-height: 22px;
+    }
+
+    .decision {
+      border-style: dashed;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .full {
+      grid-column: 1 / -1;
+    }
+
+    .formula {
+      margin-top: 8px;
+      padding: 9px 10px;
+      background: #eef4ff;
+      border: 1px solid #c7d7fe;
+      border-radius: 6px;
+      color: #1849a9;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 13px;
+      white-space: normal;
+    }
+
+    .note {
+      margin-top: 18px;
+      padding: 14px 16px;
+      background: #fffbeb;
+      border: 1px solid #fedf89;
+      border-radius: 8px;
+      color: #7a2e0e;
+      font-size: 14px;
+    }
+
+    @media (max-width: 860px) {
+      .row,
+      .split {
+        grid-template-columns: 1fr;
+      }
+
+      .box {
+        min-height: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Dir B 優先計算流程</h1>
+    <p class="subtitle">重點：先做策略優先權與 EV arbitration，再進 allocator 資金保留，最後才下單。</p>
+
+    <div class="legend">
+      <span><i class="dot blue"></i>候選與 EV</span>
+      <span><i class="dot green"></i>Strategy Coordinator</span>
+      <span><i class="dot amber"></i>Allocator / 交易前置</span>
+      <span><i class="dot red"></i>拒絕或回滾</span>
+    </div>
+
+    <section class="flow" aria-label="Dir B priority flow">
+      <div class="row">
+        <div class="box">
+          <h2>1. 掃描候選</h2>
+          <p>掃描器產生 PP、Dir A、Dir B 候選。Dir B 是 buy_spot_short。</p>
+          <ul>
+            <li>symbol / exchange</li>
+            <li>funding / fee</li>
+            <li>direction</li>
+          </ul>
+        </div>
+        <div class="box">
+          <h2>2. 基本資格檢查</h2>
+          <p>先過非資金類 gate，避免拿無效候選去搶 priority。</p>
+          <ul>
+            <li>交易所與 market 支援</li>
+            <li>已有倉位 / cooldown</li>
+            <li>delist / blacklist / 最小交易量</li>
+          </ul>
+        </div>
+        <div class="box">
+          <h2>3. 計算 Dir B EV</h2>
+          <p>Dir B 沒有 borrow cost，主要看 futures funding 扣掉攤提手續費。</p>
+          <div class="formula">DirB EV bps/h = funding bps/h - roundTripFee bps / expectedHoldHours</div>
+        </div>
+      </div>
+
+      <div class="arrow">↓</div>
+
+      <div class="row">
+        <div class="box green decision full">
+          <h2>4. Strategy Coordinator：策略優先權判斷</h2>
+          <p>這層只管「哪個策略可以先占用 leg」，不分配資金。</p>
+          <div class="split">
+            <div>
+              <ul>
+                <li>enable_strategy_priority = false：跳過，維持原流程</li>
+                <li>dir_b_first：Dir B priority 高於 PP / Dir A</li>
+                <li>perp_perp_first：PP priority 高於 Dir B / Dir A</li>
+              </ul>
+            </div>
+            <div>
+              <ul>
+                <li>dir_b_only：只允許 Dir B 自動開倉</li>
+                <li>perp_perp_only：只允許 PP 自動開倉</li>
+                <li>同 priority 才用 EV 決勝</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="arrow">↓</div>
+
+      <div class="row">
+        <div class="box green">
+          <h2>5. 建立 leg reservation</h2>
+          <p>Dir B 會同時保留 spot 與 futures leg，避免 PP 先吃掉同一個 futures 位子。</p>
+          <ul>
+            <li>Dir B: exchange / spot / symbol</li>
+            <li>Dir B: exchange / futures / symbol</li>
+          </ul>
+        </div>
+        <div class="box green decision">
+          <h2>6. 檢查 leg conflict</h2>
+          <p>如果跟其他候選搶同一個 leg，依 priority 與 EV 決定。</p>
+          <ul>
+            <li>新 priority 高：bump 舊 pending</li>
+            <li>同 priority：EV 高者勝</li>
+            <li>對方 in-flight：不可搶</li>
+          </ul>
+        </div>
+        <div class="box green">
+          <h2>7. MarkInFlight</h2>
+          <p>成功後代表 reservation 進入下單前不可被搶狀態。</p>
+          <ul>
+            <li>成功：繼續 allocator</li>
+            <li>失敗：abort，不下單</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="arrow">↓</div>
+
+      <div class="row">
+        <div class="box amber">
+          <h2>8. Allocator 資金保留</h2>
+          <p>Coordinator 通過後，才由 allocator 決定錢能不能給。</p>
+          <ul>
+            <li>總資金與可用資金</li>
+            <li>strategy cap</li>
+            <li>exchange cap</li>
+          </ul>
+        </div>
+        <div class="box amber">
+          <h2>9. Pending Position</h2>
+          <p>下單前先落 pending，寫入 strategy metadata，方便 crash recovery 與 SLO replay。</p>
+          <ul>
+            <li>reservation_id</li>
+            <li>candidate_id</li>
+            <li>strategy_epoch / leg_keys</li>
+          </ul>
+        </div>
+        <div class="box amber">
+          <h2>10. 交易前置檢查</h2>
+          <p>設定交易所必要狀態，確認可進入實際 execution。</p>
+          <ul>
+            <li>leverage / margin mode</li>
+            <li>transfer</li>
+            <li>exchange-specific preflight</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="arrow">↓</div>
+
+      <div class="row">
+        <div class="box amber full">
+          <h2>11. Dir B 下單</h2>
+          <div class="split">
+            <div>
+              <p>開倉順序</p>
+              <ul>
+                <li>spot BUY</li>
+                <li>confirm spot fill</li>
+                <li>futures SELL</li>
+                <li>confirm futures fill</li>
+              </ul>
+            </div>
+            <div>
+              <p>成功後</p>
+              <ul>
+                <li>commit allocator capital</li>
+                <li>CompleteReservation(active)</li>
+                <li>Release reservation</li>
+                <li>position active</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="arrow">↓</div>
+
+      <div class="row">
+        <div class="box red">
+          <h2>拒絕：priority / conflict</h2>
+          <p>策略層不通過，不進 allocator，也不下單。</p>
+        </div>
+        <div class="box red">
+          <h2>拒絕：allocator</h2>
+          <p>資金層不通過，release strategy reservation，不下單。</p>
+        </div>
+        <div class="box red">
+          <h2>失敗：execution</h2>
+          <p>進入 rollback 或 pending recovery，並完成 reservation aborted。</p>
+        </div>
+      </div>
+    </section>
+
+    <div class="note">
+      SLO 只記錄「Dir B 本應優先但被 PP in-flight / active leg 卡住」這類策略層衝突；
+      allocator 沒資金、交易所不支援、風控不過，不算 PP 搶掉 Dir B。
+    </div>
+  </main>
+</body>
+</html>

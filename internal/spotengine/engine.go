@@ -14,6 +14,7 @@ import (
 	"arb/internal/models"
 	"arb/internal/notify"
 	"arb/internal/risk"
+	"arb/internal/strategy"
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
@@ -21,16 +22,18 @@ import (
 // SpotEngine orchestrates spot-futures arbitrage: discovery, entry, monitoring
 // and exit of delta-neutral positions using spot margin + futures hedging.
 type SpotEngine struct {
-	exchanges  map[string]exchange.Exchange
-	spotMargin map[string]exchange.SpotMarginExchange
-	db         *database.Client
-	api        *api.Server
-	cfg        *config.Config
-	allocator  *risk.CapitalAllocator
-	log        *utils.Logger
-	stopCh     chan struct{}
-	wg         sync.WaitGroup
-	exitWG     sync.WaitGroup
+	exchanges     map[string]exchange.Exchange
+	spotMargin    map[string]exchange.SpotMarginExchange
+	spotMarkets   map[string]exchange.SpotExchange
+	db            *database.Client
+	api           *api.Server
+	cfg           *config.Config
+	allocator     *risk.CapitalAllocator
+	strategyCoord *strategy.Coordinator
+	log           *utils.Logger
+	stopCh        chan struct{}
+	wg            sync.WaitGroup
+	exitWG        sync.WaitGroup
 
 	// latestOpps caches the most recent discovery scan results for ManualOpen lookups.
 	oppsMu     sync.RWMutex
@@ -86,21 +89,32 @@ func NewSpotEngine(
 	cfg *config.Config,
 	allocator *risk.CapitalAllocator,
 	telegram *notify.TelegramNotifier,
+	strategyCoord *strategy.Coordinator,
 ) *SpotEngine {
 	sm := make(map[string]exchange.SpotMarginExchange)
+	spotMarkets := make(map[string]exchange.SpotExchange)
 	for name, exc := range exchanges {
 		if m, ok := exc.(exchange.SpotMarginExchange); ok {
 			sm[name] = m
+			spotMarkets[name] = m
+			continue
+		}
+		if cfg != nil && cfg.SpotFuturesEnableSpotOnlyExchanges {
+			if s, ok := exc.(exchange.SpotExchange); ok {
+				spotMarkets[name] = s
+			}
 		}
 	}
 
 	return &SpotEngine{
 		exchanges:      exchanges,
 		spotMargin:     sm,
+		spotMarkets:    spotMarkets,
 		db:             db,
 		api:            apiSrv,
 		cfg:            cfg,
 		allocator:      allocator,
+		strategyCoord:  strategyCoord,
 		log:            utils.NewLogger("spot-engine"),
 		stopCh:         make(chan struct{}),
 		exitState:      exitState{exiting: make(map[string]bool)},
@@ -131,6 +145,7 @@ func (e *SpotEngine) Start() {
 	e.log.Info("Spot-futures engine starting (monitor interval: %ds, max positions: %d)",
 		e.cfg.SpotFuturesMonitorIntervalSec, e.cfg.SpotFuturesMaxPositions)
 	e.log.Info("Spot margin exchanges available: %d", len(e.spotMargin))
+	e.log.Info("Spot markets available for Dir B: %d", len(e.spotMarkets))
 
 	e.wg.Add(2)
 	go e.discoveryLoop()
@@ -153,6 +168,31 @@ func (e *SpotEngine) stopping() bool {
 	default:
 		return false
 	}
+}
+
+func (e *SpotEngine) getSpotExchange(name string) (exchange.SpotExchange, bool) {
+	if e.spotMarkets != nil {
+		if spotExch, ok := e.spotMarkets[name]; ok {
+			return spotExch, true
+		}
+	}
+	if e.spotMargin != nil {
+		if smExch, ok := e.spotMargin[name]; ok {
+			return smExch, true
+		}
+	}
+	return nil, false
+}
+
+func (e *SpotEngine) availableSpotExchanges() map[string]exchange.SpotExchange {
+	out := make(map[string]exchange.SpotExchange)
+	for name, smExch := range e.spotMargin {
+		out[name] = smExch
+	}
+	for name, spotExch := range e.spotMarkets {
+		out[name] = spotExch
+	}
+	return out
 }
 
 // launchExit runs an automated exit in the background and tracks it so Stop

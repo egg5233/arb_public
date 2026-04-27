@@ -59,6 +59,22 @@ func (s *nativeScannerStubExchange) SpotOrderRules(string) (*exchange.SpotOrderR
 	return nil, nil
 }
 
+type nativeScannerSpotOnlyExchange struct {
+	*closeTestExchange
+	bboCalls int
+}
+
+func (s *nativeScannerSpotOnlyExchange) PlaceSpotMarginOrder(exchange.SpotMarginOrderParams) (string, error) {
+	return "spot-only-order", nil
+}
+func (s *nativeScannerSpotOnlyExchange) GetSpotBBO(string) (exchange.BBO, error) {
+	s.bboCalls++
+	return exchange.BBO{Bid: 100, Ask: 100.1}, nil
+}
+func (s *nativeScannerSpotOnlyExchange) SpotOrderRules(string) (*exchange.SpotOrderRules, error) {
+	return &exchange.SpotOrderRules{MinBaseQty: 0.001, QtyStep: 0.001, MinNotional: 5}, nil
+}
+
 // mockLorisServer creates an httptest.Server that returns Loris funding rate data.
 func mockLorisServer(resp models.LorisResponse) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -81,6 +97,43 @@ func buildTestLorisResponse(symbols []string, rates map[string]map[string]float6
 		Symbols:      symbols,
 		FundingRates: rates,
 		Timestamp:    time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+func TestNativeScannerBingXDirBSpotOnlyRequiresFlag(t *testing.T) {
+	base, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	makeEngine := func(enableSpotOnly bool) *SpotEngine {
+		return NewSpotEngine(map[string]exchange.Exchange{
+			"bingx": &nativeScannerSpotOnlyExchange{closeTestExchange: &closeTestExchange{}},
+		}, base.db, nil, &config.Config{
+			SpotFuturesScannerMode:             "native",
+			SpotFuturesMinNetYieldAPR:          0.01,
+			SpotFuturesEnableSpotOnlyExchanges: enableSpotOnly,
+		}, nil, nil, nil)
+	}
+
+	lorisResp := &models.LorisResponse{
+		Symbols: []string{"BTC"},
+		FundingRates: map[string]map[string]float64{
+			"bingx": {"BTC": 10.0},
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	disabled := makeEngine(false)
+	if opps := disabled.runNativeDiscoveryScanFromLoris(lorisResp); len(opps) != 0 {
+		t.Fatalf("spot-only disabled: got %d opportunities, want 0", len(opps))
+	}
+
+	enabled := makeEngine(true)
+	opps := enabled.runNativeDiscoveryScanFromLoris(lorisResp)
+	if len(opps) != 1 {
+		t.Fatalf("spot-only enabled: got %d opportunities, want 1", len(opps))
+	}
+	if opps[0].Exchange != "bingx" || opps[0].Direction != "buy_spot_short" {
+		t.Fatalf("got %+v, want BingX Dir B only", opps[0])
 	}
 }
 

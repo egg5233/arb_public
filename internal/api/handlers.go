@@ -97,10 +97,11 @@ func (s *Server) handleOpenPosition(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Symbol        string `json:"symbol"`
-		LongExchange  string `json:"long_exchange"`
-		ShortExchange string `json:"short_exchange"`
-		Force         bool   `json:"force"`
+		Symbol                   string `json:"symbol"`
+		LongExchange             string `json:"long_exchange"`
+		ShortExchange            string `json:"short_exchange"`
+		Force                    bool   `json:"force"`
+		OverrideStrategyPriority bool   `json:"override_strategy_priority"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Symbol == "" || req.LongExchange == "" || req.ShortExchange == "" {
 		writeJSON(w, http.StatusBadRequest, Response{Error: "symbol, long_exchange, short_exchange required"})
@@ -110,13 +111,18 @@ func (s *Server) handleOpenPosition(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, Response{Error: "open handler not available"})
 		return
 	}
-	if err := s.openPosition(req.Symbol, req.LongExchange, req.ShortExchange, req.Force); err != nil {
+	opts := ManualOpenOptions{
+		Force:                    req.Force,
+		OverrideStrategyPriority: req.OverrideStrategyPriority,
+	}
+	if err := s.openPosition(req.Symbol, req.LongExchange, req.ShortExchange, opts); err != nil {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "not found") {
 			writeJSON(w, http.StatusNotFound, Response{Error: errMsg})
 		} else if strings.Contains(errMsg, "rejected") || strings.Contains(errMsg, "risk check failed") || strings.Contains(errMsg, "dry run") {
 			writeJSON(w, http.StatusUnprocessableEntity, Response{Error: errMsg})
-		} else if strings.Contains(errMsg, "already") || strings.Contains(errMsg, "capacity") {
+		} else if strings.Contains(errMsg, "already") || strings.Contains(errMsg, "capacity") ||
+			strings.Contains(errMsg, "override_required") || strings.Contains(errMsg, "strategy priority denied") {
 			writeJSON(w, http.StatusConflict, Response{Error: errMsg})
 		} else {
 			writeJSON(w, http.StatusInternalServerError, Response{Error: errMsg})
@@ -355,6 +361,7 @@ type configSpotFuturesResponse struct {
 	AutoEnabled                bool     `json:"auto_enabled"`
 	DryRun                     bool     `json:"auto_dry_run"`
 	PersistenceScans           int      `json:"persistence_scans"`
+	EnableSpotOnlyExchanges    bool     `json:"enable_spot_only_exchanges"`
 	ProfitTransferEnabled      bool     `json:"profit_transfer_enabled"`
 	CapitalSeparateUSDT        float64  `json:"capital_separate_usdt"`
 	CapitalUnifiedUSDT         float64  `json:"capital_unified_usdt"`
@@ -393,15 +400,19 @@ type configAIResponse struct {
 }
 
 type configStrategyResponse struct {
-	TopOpportunities    int   `json:"top_opportunities"`
-	ScanMinutes         []int `json:"scan_minutes"`
-	EntryScanMinute     int   `json:"entry_scan_minute"`
-	ExitScanMinute      int   `json:"exit_scan_minute"`
-	RotateScanMinute    int   `json:"rotate_scan_minute"`
-	RebalanceScanMinute int   `json:"rebalance_scan_minute"`
-	EnablePoolAllocator bool  `json:"enable_pool_allocator"`
-	TopPairsPerSymbol   int   `json:"top_pairs_per_symbol"`
-	AllocatorTimeoutMs  int   `json:"allocator_timeout_ms"`
+	TopOpportunities    int     `json:"top_opportunities"`
+	ScanMinutes         []int   `json:"scan_minutes"`
+	EntryScanMinute     int     `json:"entry_scan_minute"`
+	ExitScanMinute      int     `json:"exit_scan_minute"`
+	RotateScanMinute    int     `json:"rotate_scan_minute"`
+	RebalanceScanMinute int     `json:"rebalance_scan_minute"`
+	EnablePoolAllocator bool    `json:"enable_pool_allocator"`
+	TopPairsPerSymbol   int     `json:"top_pairs_per_symbol"`
+	AllocatorTimeoutMs  int     `json:"allocator_timeout_ms"`
+	EnablePriority      bool    `json:"enable_strategy_priority"`
+	StrategyPriority    string  `json:"strategy_priority"`
+	EffectivePriority   string  `json:"effective_strategy_priority"`
+	ExpectedHoldHours   float64 `json:"expected_hold_hours"`
 
 	RebalanceMinNetPnLUSDT float64 `json:"rebalance_min_net_pnl_usdt"`
 	RebalanceDonorFloorPct float64 `json:"rebalance_donor_floor_pct"`
@@ -544,6 +555,10 @@ func (s *Server) buildConfigResponse() configResponse {
 			EnablePoolAllocator: s.cfg.EnablePoolAllocator,
 			TopPairsPerSymbol:   s.cfg.TopPairsPerSymbol,
 			AllocatorTimeoutMs:  s.cfg.AllocatorTimeoutMs,
+			EnablePriority:      s.cfg.EnableStrategyPriority,
+			StrategyPriority:    string(s.cfg.StrategyPriority),
+			EffectivePriority:   string(s.cfg.EffectiveStrategyPriority()),
+			ExpectedHoldHours:   s.cfg.ExpectedHoldHours,
 
 			RebalanceMinNetPnLUSDT: s.cfg.RebalanceMinNetPnLUSDT,
 			RebalanceDonorFloorPct: s.cfg.RebalanceDonorFloorPct,
@@ -681,6 +696,7 @@ func (s *Server) buildConfigResponse() configResponse {
 		AutoEnabled:                s.cfg.SpotFuturesAutoEnabled,
 		DryRun:                     s.cfg.SpotFuturesDryRun,
 		PersistenceScans:           s.cfg.SpotFuturesPersistenceScans,
+		EnableSpotOnlyExchanges:    s.cfg.SpotFuturesEnableSpotOnlyExchanges,
 		ProfitTransferEnabled:      s.cfg.SpotFuturesProfitTransferEnabled,
 		CapitalSeparateUSDT:        s.cfg.SpotFuturesCapitalSeparate,
 		CapitalUnifiedUSDT:         s.cfg.SpotFuturesCapitalUnified,
@@ -837,6 +853,7 @@ type spotFuturesUpdate struct {
 	DryRun                     *bool    `json:"auto_dry_run"`
 	LegacyDryRun               *bool    `json:"dry_run"`
 	PersistenceScans           *int     `json:"persistence_scans"`
+	EnableSpotOnlyExchanges    *bool    `json:"enable_spot_only_exchanges"`
 	ProfitTransferEnabled      *bool    `json:"profit_transfer_enabled"`
 	CapitalSeparateUSDT        *float64 `json:"capital_separate_usdt"`
 	CapitalUnifiedUSDT         *float64 `json:"capital_unified_usdt"`
@@ -874,15 +891,18 @@ type aiUpdate struct {
 }
 
 type strategyUpdate struct {
-	TopOpportunities    *int  `json:"top_opportunities"`
-	ScanMinutes         []int `json:"scan_minutes"`
-	EntryScanMinute     *int  `json:"entry_scan_minute"`
-	ExitScanMinute      *int  `json:"exit_scan_minute"`
-	RotateScanMinute    *int  `json:"rotate_scan_minute"`
-	RebalanceScanMinute *int  `json:"rebalance_scan_minute"`
-	EnablePoolAllocator *bool `json:"enable_pool_allocator"`
-	TopPairsPerSymbol   *int  `json:"top_pairs_per_symbol"`
-	AllocatorTimeoutMs  *int  `json:"allocator_timeout_ms"`
+	TopOpportunities    *int     `json:"top_opportunities"`
+	ScanMinutes         []int    `json:"scan_minutes"`
+	EntryScanMinute     *int     `json:"entry_scan_minute"`
+	ExitScanMinute      *int     `json:"exit_scan_minute"`
+	RotateScanMinute    *int     `json:"rotate_scan_minute"`
+	RebalanceScanMinute *int     `json:"rebalance_scan_minute"`
+	EnablePoolAllocator *bool    `json:"enable_pool_allocator"`
+	TopPairsPerSymbol   *int     `json:"top_pairs_per_symbol"`
+	AllocatorTimeoutMs  *int     `json:"allocator_timeout_ms"`
+	EnablePriority      *bool    `json:"enable_strategy_priority"`
+	StrategyPriority    *string  `json:"strategy_priority"`
+	ExpectedHoldHours   *float64 `json:"expected_hold_hours"`
 
 	RebalanceMinNetPnLUSDT *float64 `json:"rebalance_min_net_pnl_usdt"`
 	RebalanceDonorFloorPct *float64 `json:"rebalance_donor_floor_pct"`
@@ -992,8 +1012,37 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var stagedPriority config.StrategyPriority
+	strategyPriorityProvided := false
+	strategyPriorityTouched := false
+	if upd.Strategy != nil {
+		if upd.Strategy.StrategyPriority != nil {
+			mode, ok := config.NormalizeStrategyPriority(*upd.Strategy.StrategyPriority)
+			if !ok {
+				writeJSON(w, http.StatusBadRequest, Response{Error: "invalid strategy_priority"})
+				return
+			}
+			stagedPriority = mode
+			strategyPriorityProvided = true
+			strategyPriorityTouched = true
+		}
+		if upd.Strategy.ExpectedHoldHours != nil {
+			if !config.ValidateExpectedHoldHours(*upd.Strategy.ExpectedHoldHours) {
+				writeJSON(w, http.StatusBadRequest, Response{Error: "invalid expected_hold_hours"})
+				return
+			}
+			strategyPriorityTouched = true
+		}
+		if upd.Strategy.EnablePriority != nil {
+			strategyPriorityTouched = true
+		}
+	}
+
 	// Apply updates under config lock to prevent data races.
 	s.cfg.Lock()
+	oldEnableStrategyPriority := s.cfg.EnableStrategyPriority
+	oldStrategyPriority := s.cfg.StrategyPriority
+	oldExpectedHoldHours := s.cfg.ExpectedHoldHours
 	if upd.DryRun != nil {
 		s.cfg.DryRun = *upd.DryRun
 	}
@@ -1022,6 +1071,15 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if st.AllocatorTimeoutMs != nil && *st.AllocatorTimeoutMs > 0 {
 			s.cfg.AllocatorTimeoutMs = *st.AllocatorTimeoutMs
+		}
+		if st.EnablePriority != nil {
+			s.cfg.EnableStrategyPriority = *st.EnablePriority
+		}
+		if strategyPriorityProvided {
+			s.cfg.StrategyPriority = stagedPriority
+		}
+		if st.ExpectedHoldHours != nil {
+			s.cfg.ExpectedHoldHours = *st.ExpectedHoldHours
 		}
 		if st.RebalanceMinNetPnLUSDT != nil && *st.RebalanceMinNetPnLUSDT >= 0 {
 			s.cfg.RebalanceMinNetPnLUSDT = *st.RebalanceMinNetPnLUSDT
@@ -1445,6 +1503,9 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		if sf.PersistenceScans != nil && *sf.PersistenceScans >= 0 {
 			s.cfg.SpotFuturesPersistenceScans = *sf.PersistenceScans
 		}
+		if sf.EnableSpotOnlyExchanges != nil {
+			s.cfg.SpotFuturesEnableSpotOnlyExchanges = *sf.EnableSpotOnlyExchanges
+		}
 		if sf.ProfitTransferEnabled != nil {
 			s.cfg.SpotFuturesProfitTransferEnabled = *sf.ProfitTransferEnabled
 		}
@@ -1656,6 +1717,9 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"enable_pool_allocator":               strconv.FormatBool(snapshot.Strategy.EnablePoolAllocator),
 		"top_pairs_per_symbol":                strconv.Itoa(snapshot.Strategy.TopPairsPerSymbol),
 		"allocator_timeout_ms":                strconv.Itoa(snapshot.Strategy.AllocatorTimeoutMs),
+		"enable_strategy_priority":            strconv.FormatBool(snapshot.Strategy.EnablePriority),
+		"strategy_priority":                   snapshot.Strategy.StrategyPriority,
+		"expected_hold_hours":                 strconv.FormatFloat(snapshot.Strategy.ExpectedHoldHours, 'f', -1, 64),
 		"rebalance_min_net_pnl_usdt":          strconv.FormatFloat(snapshot.Strategy.RebalanceMinNetPnLUSDT, 'f', -1, 64),
 		"rebalance_donor_floor_pct":           strconv.FormatFloat(snapshot.Strategy.RebalanceDonorFloorPct, 'f', -1, 64),
 		"top_opportunities":                   strconv.Itoa(snapshot.Strategy.TopOpportunities),
@@ -1748,6 +1812,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		fields["spot_futures_auto_enabled"] = strconv.FormatBool(sf.AutoEnabled)
 		fields["spot_futures_dry_run"] = strconv.FormatBool(sf.DryRun)
 		fields["spot_futures_persistence_scans"] = strconv.Itoa(sf.PersistenceScans)
+		fields["spot_futures_enable_spot_only_exchanges"] = strconv.FormatBool(sf.EnableSpotOnlyExchanges)
 		fields["spot_futures_profit_transfer_enabled"] = strconv.FormatBool(sf.ProfitTransferEnabled)
 		fields["spot_futures_capital_unified_usdt"] = strconv.FormatFloat(sf.CapitalUnifiedUSDT, 'f', -1, 64)
 		fields["spot_futures_scanner_mode"] = sf.ScannerMode
@@ -1789,9 +1854,22 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 
 	// Also persist to config.json so changes survive fresh installs.
 	if err := s.cfg.SaveJSONWithExchangeSecretOverrides(exchangeSecretOverrides); err != nil {
+		if strategyPriorityTouched {
+			s.cfg.EnableStrategyPriority = oldEnableStrategyPriority
+			s.cfg.StrategyPriority = oldStrategyPriority
+			s.cfg.ExpectedHoldHours = oldExpectedHoldHours
+			s.cfg.Unlock()
+			s.log.Error("save strategy-priority config.json: %v", err)
+			writeJSON(w, http.StatusInternalServerError, Response{Error: "failed to persist strategy priority config"})
+			return
+		}
 		s.log.Warn("save config.json: %v (Redis saved OK)", err)
 	}
 	s.cfg.Unlock()
+
+	if strategyPriorityTouched && s.strategyCoordinator != nil {
+		s.strategyCoordinator.UpdatePriority(s.cfg)
+	}
 
 	// Notify all subscribers (engine, scanner, etc.) that config has changed.
 	s.configNotifier.Notify()
@@ -1817,6 +1895,19 @@ func (s *Server) handleGetAllocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: summary})
+}
+
+func (s *Server) handleGetStrategyPriority(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	stats, err := s.db.GetDirBSLOStats()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, Response{OK: false, Error: "strategy priority stats: " + err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: stats})
 }
 
 // handleGetRejections returns the in-memory list of recently rejected opportunities.

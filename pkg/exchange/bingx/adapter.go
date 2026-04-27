@@ -192,10 +192,7 @@ func toBingXOrderType(orderType string) string {
 
 // ---------- Orders ----------
 
-// PlaceOrder places a new order on BingX.
-func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
-	log.Info("PlaceOrder: symbol=%s side=%s type=%s size=%s price=%s force=%s reduceOnly=%v",
-		req.Symbol, req.Side, req.OrderType, req.Size, req.Price, req.Force, req.ReduceOnly)
+func bingXOrderParams(req exchange.PlaceOrderParams) map[string]string {
 	params := map[string]string{
 		"symbol":   toBingXSymbol(req.Symbol),
 		"type":     toBingXOrderType(req.OrderType),
@@ -214,6 +211,88 @@ func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 	if req.ClientOid != "" {
 		params["clientOrderId"] = req.ClientOid
 	}
+	return params
+}
+
+// TestOrder validates live order availability with a caller-supplied
+// non-marketable IOC probe. BingX's documented /order/test endpoint does not
+// hit the same temporary market-risk gate that rejects real /order requests.
+func (a *Adapter) TestOrder(req exchange.PlaceOrderParams) error {
+	if err := validateTestOrderProbe(req); err != nil {
+		return err
+	}
+	params := bingXOrderParams(req)
+	result, err := a.client.Post("/openApi/swap/v2/trade/order", params)
+	if err != nil {
+		return fmt.Errorf("bingx TestOrder: %w", err)
+	}
+	var resp struct {
+		Order struct {
+			OrderID json.Number `json:"orderId"`
+		} `json:"order"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return fmt.Errorf("bingx TestOrder parse probe order: %w", err)
+	}
+	orderID := resp.Order.OrderID.String()
+	if orderID == "" {
+		return fmt.Errorf("bingx TestOrder missing probe order id")
+	}
+	if cancelErr := a.cancelProbeOrder(req.Symbol, orderID); cancelErr != nil {
+		return fmt.Errorf("bingx TestOrder cancel probe order %s: %w", orderID, cancelErr)
+	}
+	return nil
+}
+
+func validateTestOrderProbe(req exchange.PlaceOrderParams) error {
+	if req.ReduceOnly {
+		return fmt.Errorf("bingx TestOrder unsafe probe: reduceOnly is not allowed")
+	}
+	if req.Side != exchange.SideBuy && req.Side != exchange.SideSell {
+		return fmt.Errorf("bingx TestOrder unsafe probe: invalid side %q", req.Side)
+	}
+	if !strings.EqualFold(req.OrderType, "limit") {
+		return fmt.Errorf("bingx TestOrder unsafe probe: order type must be limit")
+	}
+	if !strings.EqualFold(req.Force, "ioc") {
+		return fmt.Errorf("bingx TestOrder unsafe probe: force must be ioc")
+	}
+	price, err := strconv.ParseFloat(req.Price, 64)
+	if err != nil || price <= 0 {
+		return fmt.Errorf("bingx TestOrder unsafe probe: price must be positive")
+	}
+	size, err := strconv.ParseFloat(req.Size, 64)
+	if err != nil || size <= 0 {
+		return fmt.Errorf("bingx TestOrder unsafe probe: size must be positive")
+	}
+	return nil
+}
+
+func (a *Adapter) cancelProbeOrder(symbol, orderID string) error {
+	params := map[string]string{
+		"symbol":  toBingXSymbol(symbol),
+		"orderId": orderID,
+	}
+	_, err := a.client.Delete("/openApi/swap/v2/trade/order", params)
+	if err == nil {
+		return nil
+	}
+	if apiErr, ok := err.(*APIError); ok {
+		switch apiErr.Code {
+		case 80016, 109421:
+			return nil
+		case 80018:
+			return fmt.Errorf("probe order filled before cancel: %w", err)
+		}
+	}
+	return fmt.Errorf("bingx cancel probe order: %w", err)
+}
+
+// PlaceOrder places a new order on BingX.
+func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
+	log.Info("PlaceOrder: symbol=%s side=%s type=%s size=%s price=%s force=%s reduceOnly=%v",
+		req.Symbol, req.Side, req.OrderType, req.Size, req.Price, req.Force, req.ReduceOnly)
+	params := bingXOrderParams(req)
 
 	result, err := a.client.Post("/openApi/swap/v2/trade/order", params)
 	if err != nil {
@@ -249,7 +328,7 @@ func (a *Adapter) CancelOrder(symbol, orderID string) error {
 	if err != nil {
 		// 80018 = already filled, 80016 = order not exist
 		if apiErr, ok := err.(*APIError); ok {
-			if apiErr.Code == 80018 || apiErr.Code == 80016 || apiErr.Code == 109400 {
+			if apiErr.Code == 80018 || apiErr.Code == 80016 || apiErr.Code == 109400 || apiErr.Code == 109421 {
 				return nil
 			}
 		}
@@ -761,6 +840,36 @@ func (a *Adapter) TransferToFutures(coin string, amount string) error {
 	return nil
 }
 
+// TransferToSpotTrading moves funds from perpetual futures to the spot trading account.
+func (a *Adapter) TransferToSpotTrading(coin string, amount string) error {
+	params := map[string]string{
+		"fromAccount": "USDTMPerp",
+		"toAccount":   "spot",
+		"asset":       coin,
+		"amount":      amount,
+	}
+	_, err := a.client.Post("/openApi/api/asset/v1/transfer", params)
+	if err != nil {
+		return fmt.Errorf("bingx TransferToSpotTrading: %w", err)
+	}
+	return nil
+}
+
+// TransferFromSpotTrading moves funds from the spot trading account to perpetual futures.
+func (a *Adapter) TransferFromSpotTrading(coin string, amount string) error {
+	params := map[string]string{
+		"fromAccount": "spot",
+		"toAccount":   "USDTMPerp",
+		"asset":       coin,
+		"amount":      amount,
+	}
+	_, err := a.client.Post("/openApi/api/asset/v1/transfer", params)
+	if err != nil {
+		return fmt.Errorf("bingx TransferFromSpotTrading: %w", err)
+	}
+	return nil
+}
+
 // Withdraw initiates a withdrawal from BingX.
 func (a *Adapter) Withdraw(params exchange.WithdrawParams) (*exchange.WithdrawResult, error) {
 	reqParams := map[string]string{
@@ -922,6 +1031,144 @@ func (a *Adapter) GetBBO(symbol string) (exchange.BBO, bool) {
 	}
 	bbo, ok := val.(exchange.BBO)
 	return bbo, ok
+}
+
+// GetSpotBBO returns the spot top-of-book for Dir B spot-only execution.
+func (a *Adapter) GetSpotBBO(symbol string) (exchange.BBO, error) {
+	result, err := a.client.Get("/openApi/spot/v1/ticker/bookTicker", map[string]string{
+		"symbol": toBingXSymbol(symbol),
+	})
+	if err != nil {
+		return exchange.BBO{}, fmt.Errorf("bingx GetSpotBBO: %w", err)
+	}
+	var resp []struct {
+		BidPrice string `json:"bidPrice"`
+		AskPrice string `json:"askPrice"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return exchange.BBO{}, fmt.Errorf("bingx GetSpotBBO parse: %w", err)
+	}
+	if len(resp) == 0 {
+		return exchange.BBO{}, fmt.Errorf("no data for %s", symbol)
+	}
+	bid, _ := strconv.ParseFloat(resp[0].BidPrice, 64)
+	ask, _ := strconv.ParseFloat(resp[0].AskPrice, 64)
+	if bid <= 0 || ask <= 0 {
+		return exchange.BBO{}, fmt.Errorf("invalid spot BBO for %s: bid=%s ask=%s", symbol, resp[0].BidPrice, resp[0].AskPrice)
+	}
+	return exchange.BBO{Bid: bid, Ask: ask}, nil
+}
+
+func (a *Adapter) SpotOrderRules(symbol string) (*exchange.SpotOrderRules, error) {
+	result, err := a.client.Get("/openApi/spot/v1/common/symbols", map[string]string{
+		"symbol": toBingXSymbol(symbol),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("bingx SpotOrderRules: %w", err)
+	}
+	var resp struct {
+		Symbols []struct {
+			MinQty      float64 `json:"minQty"`
+			StepSize    float64 `json:"stepSize"`
+			MinNotional float64 `json:"minNotional"`
+			Status      int     `json:"status"`
+		} `json:"symbols"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return nil, fmt.Errorf("bingx SpotOrderRules parse: %w", err)
+	}
+	if len(resp.Symbols) == 0 {
+		return nil, fmt.Errorf("no data for %s", symbol)
+	}
+	r := resp.Symbols[0]
+	if r.Status == 0 {
+		return nil, fmt.Errorf("spot market %s inactive", symbol)
+	}
+	return &exchange.SpotOrderRules{MinBaseQty: r.MinQty, QtyStep: r.StepSize, MinNotional: r.MinNotional}, nil
+}
+
+func (a *Adapter) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (string, error) {
+	req := map[string]string{
+		"symbol": toBingXSymbol(params.Symbol),
+		"side":   toBingXSide(params.Side),
+		"type":   toBingXOrderType(params.OrderType),
+	}
+	if params.Size != "" {
+		req["quantity"] = params.Size
+	}
+	if params.QuoteSize != "" {
+		req["quoteOrderQty"] = params.QuoteSize
+	}
+	if params.Price != "" {
+		req["price"] = params.Price
+	}
+	if params.Force != "" {
+		req["timeInForce"] = toBingXTIF(params.Force)
+	}
+	if params.ClientOid != "" {
+		req["newClientOrderId"] = params.ClientOid
+	}
+	result, err := a.client.Post("/openApi/spot/v1/trade/order", req)
+	if err != nil {
+		return "", fmt.Errorf("bingx PlaceSpotOrder: %w", err)
+	}
+	var resp struct {
+		OrderID json.RawMessage `json:"orderId"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return "", fmt.Errorf("bingx PlaceSpotOrder parse: %w", err)
+	}
+	id := strings.Trim(string(resp.OrderID), `"`)
+	if id == "" || id == "null" {
+		return "", fmt.Errorf("bingx PlaceSpotOrder missing orderId")
+	}
+	return id, nil
+}
+
+func (a *Adapter) GetSpotMarginOrder(orderID, symbol string) (*exchange.SpotMarginOrderStatus, error) {
+	result, err := a.client.Get("/openApi/spot/v1/trade/query", map[string]string{
+		"symbol":  toBingXSymbol(symbol),
+		"orderId": orderID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("bingx GetSpotOrder: %w", err)
+	}
+	var resp struct {
+		OrderID             json.RawMessage `json:"orderId"`
+		Symbol              string          `json:"symbol"`
+		Status              string          `json:"status"`
+		ExecutedQty         string          `json:"executedQty"`
+		CummulativeQuoteQty string          `json:"cummulativeQuoteQty"`
+		Fee                 string          `json:"fee"`
+		FeeAsset            string          `json:"feeAsset"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return nil, fmt.Errorf("bingx GetSpotOrder parse: %w", err)
+	}
+	filled, _ := strconv.ParseFloat(resp.ExecutedQty, 64)
+	quote, _ := strconv.ParseFloat(resp.CummulativeQuoteQty, 64)
+	avg := 0.0
+	if filled > 0 {
+		avg = quote / filled
+	}
+	fee, _ := strconv.ParseFloat(resp.Fee, 64)
+	feeDeducted := 0.0
+	base := strings.TrimSuffix(fromBingXSymbol(resp.Symbol), "USDT")
+	if strings.EqualFold(resp.FeeAsset, base) {
+		feeDeducted = fee
+	}
+	id := strings.Trim(string(resp.OrderID), `"`)
+	if id == "" || id == "null" {
+		id = orderID
+	}
+	return &exchange.SpotMarginOrderStatus{
+		OrderID:     id,
+		Symbol:      fromBingXSymbol(resp.Symbol),
+		Status:      strings.ToLower(resp.Status),
+		FilledQty:   filled,
+		AvgPrice:    avg,
+		FeeDeducted: feeDeducted,
+	}, nil
 }
 
 // GetPriceStore returns the underlying sync.Map for BBO data.

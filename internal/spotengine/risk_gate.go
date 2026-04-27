@@ -142,9 +142,9 @@ func (e *SpotEngine) calculateEntryPriceGap(symbol, exchName, direction string) 
 	if !ok {
 		return 0, fmt.Errorf("exchange %s not found", exchName)
 	}
-	spotExch, ok := e.spotMargin[exchName]
+	spotExch, ok := e.getSpotExchange(exchName)
 	if !ok {
-		return 0, fmt.Errorf("spot margin exchange %s not found", exchName)
+		return 0, fmt.Errorf("spot exchange %s not found", exchName)
 	}
 
 	futBBO, err := getFuturesBBO(futExch, symbol)

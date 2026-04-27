@@ -27,6 +27,7 @@ type closeTestExchange struct {
 	orderbookRelease <-chan struct{}
 	positions        []exchange.Position
 	placeCalls       int
+	contracts        map[string]exchange.ContractInfo
 }
 
 func (s *closeTestExchange) Name() string { return "stub" }
@@ -42,6 +43,9 @@ func (s *closeTestExchange) GetAllPositions() ([]exchange.Position, error)     {
 func (s *closeTestExchange) SetLeverage(string, string, string) error          { return nil }
 func (s *closeTestExchange) SetMarginMode(string, string) error                { return nil }
 func (s *closeTestExchange) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
+	if s.contracts != nil {
+		return s.contracts, nil
+	}
 	return nil, nil
 }
 func (s *closeTestExchange) GetFundingRate(string) (*exchange.FundingRate, error) { return nil, nil }
@@ -105,6 +109,17 @@ func (s *closeTestExchange) GetWithdrawFee(string, string) (float64, float64, er
 func (s *closeTestExchange) EnsureOneWayMode() error      { return nil }
 func (s *closeTestExchange) CancelAllOrders(string) error { return nil }
 func (s *closeTestExchange) Close()                       {}
+
+type closeTestPreflightExchange struct {
+	*closeTestExchange
+	preflightCalls []exchange.PlaceOrderParams
+	preflightErr   error
+}
+
+func (s *closeTestPreflightExchange) TestOrder(params exchange.PlaceOrderParams) error {
+	s.preflightCalls = append(s.preflightCalls, params)
+	return s.preflightErr
+}
 
 type closeTestSpotMargin struct {
 	placeCalls   int
@@ -177,6 +192,33 @@ func (s *closeTestSpotMargin) GetSpotMarginOrder(string, string) (*exchange.Spot
 	return state, nil
 }
 
+type closeTestSpotOnly struct {
+	placeCalls  int
+	placeSizes  []string
+	queryStates []*exchange.SpotMarginOrderStatus
+	spotRules   *exchange.SpotOrderRules
+}
+
+func (s *closeTestSpotOnly) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (string, error) {
+	s.placeCalls++
+	s.placeSizes = append(s.placeSizes, params.Size)
+	return "spot-close-1", nil
+}
+func (s *closeTestSpotOnly) GetSpotBBO(string) (exchange.BBO, error) {
+	return exchange.BBO{Bid: 100, Ask: 100.1}, nil
+}
+func (s *closeTestSpotOnly) SpotOrderRules(string) (*exchange.SpotOrderRules, error) {
+	return s.spotRules, nil
+}
+func (s *closeTestSpotOnly) GetSpotMarginOrder(string, string) (*exchange.SpotMarginOrderStatus, error) {
+	if len(s.queryStates) == 0 {
+		return &exchange.SpotMarginOrderStatus{OrderID: "spot-close-1", Status: "filled", FilledQty: 1, AvgPrice: 101}, nil
+	}
+	state := s.queryStates[0]
+	s.queryStates = s.queryStates[1:]
+	return state, nil
+}
+
 func newExecutionTestEngine(t *testing.T) (*SpotEngine, *miniredis.Miniredis) {
 	t.Helper()
 	mr := miniredis.RunT(t)
@@ -191,6 +233,188 @@ func newExecutionTestEngine(t *testing.T) (*SpotEngine, *miniredis.Miniredis) {
 		stopCh:    make(chan struct{}),
 		exitState: exitState{exiting: make(map[string]bool)},
 	}, mr
+}
+
+func TestClosePosition_DirBAllowsSpotOnlyExchange(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	futExch := &closeTestExchange{
+		orderUpdates: map[string]exchange.OrderUpdate{
+			"fut-close-1": {
+				OrderID:      "fut-close-1",
+				Status:       "filled",
+				FilledVolume: 1,
+				AvgPrice:     100,
+			},
+		},
+		orderbook: &exchange.Orderbook{
+			Bids: []exchange.PriceLevel{{Price: 100, Quantity: 1}},
+			Asks: []exchange.PriceLevel{{Price: 102, Quantity: 1}},
+		},
+	}
+	spotExch := &closeTestSpotOnly{
+		queryStates: []*exchange.SpotMarginOrderStatus{
+			{OrderID: "spot-close-1", Symbol: "BTCUSDT", Status: "filled", FilledQty: 1, AvgPrice: 101},
+		},
+		spotRules: &exchange.SpotOrderRules{MinBaseQty: 0.001, QtyStep: 0.001, MinNotional: 5},
+	}
+	engine.exchanges = map[string]exchange.Exchange{"bingx": futExch}
+	engine.spotMarkets = map[string]exchange.SpotExchange{"bingx": spotExch}
+
+	pos := &models.SpotFuturesPosition{
+		ID:             "spot-only-dirb",
+		Symbol:         "BTCUSDT",
+		BaseCoin:       "BTC",
+		Exchange:       "bingx",
+		Direction:      "buy_spot_short",
+		Status:         models.SpotStatusActive,
+		SpotSize:       1,
+		FuturesSize:    1,
+		FuturesSide:    "short",
+		SpotEntryPrice: 100,
+		FuturesEntry:   100,
+		HedgeIntact:    true,
+	}
+
+	if err := engine.ClosePosition(pos, "test", false); err != nil {
+		t.Fatalf("ClosePosition Dir B spot-only: %v", err)
+	}
+	if spotExch.placeCalls != 1 {
+		t.Fatalf("spot place calls = %d, want 1", spotExch.placeCalls)
+	}
+	if !pos.SpotExitFilled || pos.SpotExitPrice != 101 {
+		t.Fatalf("spot exit not reconciled: filled=%v price=%.2f", pos.SpotExitFilled, pos.SpotExitPrice)
+	}
+}
+
+func TestExecuteBuySpotShort_BingXPreflightBlocksBeforeSpotBuy(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	futExch := &closeTestPreflightExchange{
+		closeTestExchange: &closeTestExchange{
+			orderbook: &exchange.Orderbook{
+				Bids: []exchange.PriceLevel{{Price: 0.04937, Quantity: 1000}},
+				Asks: []exchange.PriceLevel{{Price: 0.04946, Quantity: 1000}},
+			},
+		},
+		preflightErr: errors.New("bingx API error code=109400 msg=Reminder: Due to the large market fluctuations, in order to reduce the risk of liquidation, API orders are temporarily disabled."),
+	}
+	spotExch := &closeTestSpotOnly{}
+	pos := &models.SpotFuturesPosition{
+		ID:        "dirb-preflight",
+		Symbol:    "SPORTFUNUSDT",
+		Exchange:  "bingx",
+		Direction: "buy_spot_short",
+	}
+
+	_, _, _, _, err := engine.executeBuySpotShort(
+		spotExch,
+		futExch,
+		"SPORTFUNUSDT",
+		"100",
+		100,
+		4.94,
+		1,
+		1,
+		0,
+		func(string) error { return nil },
+		pos,
+	)
+	if err == nil {
+		t.Fatal("executeBuySpotShort returned nil, want BingX preflight rejection")
+	}
+	if !strings.Contains(err.Error(), "bingx futures preflight hard reject for SPORTFUNUSDT") {
+		t.Fatalf("error = %q, want BingX preflight hard reject", err.Error())
+	}
+	if spotExch.placeCalls != 0 {
+		t.Fatalf("spot place calls = %d, want 0", spotExch.placeCalls)
+	}
+	if futExch.placeCalls != 0 {
+		t.Fatalf("futures real place calls = %d, want 0", futExch.placeCalls)
+	}
+	if len(futExch.preflightCalls) != 1 {
+		t.Fatalf("preflight calls = %d, want 1", len(futExch.preflightCalls))
+	}
+	call := futExch.preflightCalls[0]
+	if call.Symbol != "SPORTFUNUSDT" ||
+		call.Side != exchange.SideSell ||
+		call.OrderType != "limit" ||
+		call.Price != "0.09842540" ||
+		call.Size != "100" ||
+		call.Force != "ioc" {
+		t.Fatalf("preflight params = %+v", call)
+	}
+}
+
+func TestReconcilePendingEntry_DirBPreflightsBeforeRecoveredBingXFuturesHedge(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	futExch := &closeTestPreflightExchange{
+		closeTestExchange: &closeTestExchange{
+			orderbook: &exchange.Orderbook{
+				Bids: []exchange.PriceLevel{{Price: 0.04937, Quantity: 1000}},
+				Asks: []exchange.PriceLevel{{Price: 0.04946, Quantity: 1000}},
+			},
+		},
+		preflightErr: errors.New("bingx API error code=109400 msg=API orders are temporarily disabled"),
+	}
+	spotExch := &closeTestSpotOnly{}
+	engine.exchanges = map[string]exchange.Exchange{"bingx": futExch}
+	engine.spotMarkets = map[string]exchange.SpotExchange{"bingx": spotExch}
+
+	pos := &models.SpotFuturesPosition{
+		ID:             "dirb-recover-preflight",
+		Symbol:         "SPORTFUNUSDT",
+		BaseCoin:       "SPORTFUN",
+		Exchange:       "bingx",
+		Direction:      "buy_spot_short",
+		Status:         models.SpotStatusPending,
+		SpotSize:       100,
+		SpotEntryPrice: 0.0494,
+		NotionalUSDT:   4.94,
+	}
+
+	engine.reconcilePendingEntry(pos)
+	if len(futExch.preflightCalls) != 1 {
+		t.Fatalf("preflight calls = %d, want 1", len(futExch.preflightCalls))
+	}
+	if futExch.placeCalls != 0 {
+		t.Fatalf("futures real place calls = %d, want 0", futExch.placeCalls)
+	}
+}
+
+func TestPreflightBingXFuturesEntryOrderUsesMinimumTickWhenProbeRoundsToZero(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	futExch := &closeTestPreflightExchange{
+		closeTestExchange: &closeTestExchange{
+			orderbook: &exchange.Orderbook{
+				Bids: []exchange.PriceLevel{{Price: 0.000020, Quantity: 100000}},
+				Asks: []exchange.PriceLevel{{Price: 0.000022, Quantity: 100000}},
+			},
+			contracts: map[string]exchange.ContractInfo{
+				"TINYUSDT": {PriceStep: 0.000001, PriceDecimals: 6},
+			},
+		},
+	}
+
+	if err := engine.preflightBingXFuturesEntryOrder(futExch, "bingx", "TINYUSDT", "100"); err != nil {
+		t.Fatalf("preflight returned error: %v", err)
+	}
+	if len(futExch.preflightCalls) != 1 {
+		t.Fatalf("preflight calls = %d, want 1", len(futExch.preflightCalls))
+	}
+	call := futExch.preflightCalls[0]
+	if call.Side != exchange.SideSell {
+		t.Fatalf("probe side = %s, want sell", call.Side)
+	}
+	if got := call.Price; got != "0.000044" {
+		t.Fatalf("probe price = %q, want non-marketable sell tick above ask", got)
+	}
 }
 
 func TestClosePosition_ReusesPendingSpotExitOrderAfterQueryFailure(t *testing.T) {

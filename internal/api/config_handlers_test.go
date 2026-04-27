@@ -14,6 +14,14 @@ import (
 	"arb/pkg/exchange"
 )
 
+type strategyCoordinatorStub struct {
+	calls int
+}
+
+func (s *strategyCoordinatorStub) UpdatePriority(_ *config.Config) {
+	s.calls++
+}
+
 func TestHandlePostConfig_PersistsDisabledSpotFutures(t *testing.T) {
 	s, mr := newTestServer(t)
 	defer mr.Close()
@@ -108,6 +116,194 @@ func TestHandlePostConfig_PersistsDisabledSpotFutures(t *testing.T) {
 	}
 	if reloaded.SpotFuturesCapitalSeparate != 300 {
 		t.Fatalf("expected reloaded capital_separate_usdt=300, got %v", reloaded.SpotFuturesCapitalSeparate)
+	}
+}
+
+func TestHandleConfig_StrategyPriorityGetPost(t *testing.T) {
+	s, mr := newTestServer(t)
+	defer mr.Close()
+
+	s.cfg.EnableStrategyPriority = false
+	s.cfg.StrategyPriority = config.StrategyPriorityDirBFirst
+	s.cfg.ExpectedHoldHours = 36
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"strategy":{"strategy_priority":"dir_b_first","expected_hold_hours":36}}`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("CONFIG_FILE", configPath)
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	getW := httptest.NewRecorder()
+	s.handleGetConfig(getW, getReq)
+	if getW.Code != http.StatusOK {
+		t.Fatalf("GET expected 200, got %d: %s", getW.Code, getW.Body.String())
+	}
+	var getResp struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Strategy struct {
+				EnablePriority    bool    `json:"enable_strategy_priority"`
+				StrategyPriority  string  `json:"strategy_priority"`
+				EffectivePriority string  `json:"effective_strategy_priority"`
+				ExpectedHoldHours float64 `json:"expected_hold_hours"`
+			} `json:"strategy"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(getW.Body).Decode(&getResp); err != nil {
+		t.Fatalf("decode GET response: %v", err)
+	}
+	if getResp.Data.Strategy.EnablePriority {
+		t.Fatal("expected enable_strategy_priority=false")
+	}
+	if getResp.Data.Strategy.StrategyPriority != "dir_b_first" {
+		t.Fatalf("expected staged strategy_priority=dir_b_first, got %q", getResp.Data.Strategy.StrategyPriority)
+	}
+	if getResp.Data.Strategy.EffectivePriority != "perp_perp_first" {
+		t.Fatalf("expected effective_strategy_priority=perp_perp_first, got %q", getResp.Data.Strategy.EffectivePriority)
+	}
+	if getResp.Data.Strategy.ExpectedHoldHours != 36 {
+		t.Fatalf("expected expected_hold_hours=36, got %v", getResp.Data.Strategy.ExpectedHoldHours)
+	}
+
+	coord := &strategyCoordinatorStub{}
+	s.SetStrategyCoordinator(coord)
+	notifyCh := s.ConfigNotifier().Subscribe()
+
+	postReq := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"strategy":{"enable_strategy_priority":true,"strategy_priority":"dir_b_only","expected_hold_hours":12}}`))
+	postW := httptest.NewRecorder()
+	s.handlePostConfig(postW, postReq)
+	if postW.Code != http.StatusOK {
+		t.Fatalf("POST expected 200, got %d: %s", postW.Code, postW.Body.String())
+	}
+	if !s.cfg.EnableStrategyPriority {
+		t.Fatal("expected EnableStrategyPriority=true after POST")
+	}
+	if s.cfg.StrategyPriority != config.StrategyPriorityDirBOnly {
+		t.Fatalf("expected StrategyPriority=dir_b_only, got %q", s.cfg.StrategyPriority)
+	}
+	if s.cfg.ExpectedHoldHours != 12 {
+		t.Fatalf("expected ExpectedHoldHours=12, got %v", s.cfg.ExpectedHoldHours)
+	}
+	if coord.calls != 1 {
+		t.Fatalf("expected coordinator update once, got %d", coord.calls)
+	}
+	select {
+	case <-notifyCh:
+	default:
+		t.Fatal("expected config notifier signal")
+	}
+}
+
+func TestHandlePostConfig_InvalidStrategyPriority(t *testing.T) {
+	s, mr := newTestServer(t)
+	defer mr.Close()
+
+	s.cfg.StrategyPriority = config.StrategyPriorityPerpPerpFirst
+	req := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"strategy":{"strategy_priority":"unknown"}}`))
+	w := httptest.NewRecorder()
+	s.handlePostConfig(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if s.cfg.StrategyPriority != config.StrategyPriorityPerpPerpFirst {
+		t.Fatalf("strategy priority changed on invalid request: %q", s.cfg.StrategyPriority)
+	}
+}
+
+func TestHandlePostConfig_InvalidExpectedHoldHours(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"zero", `{"strategy":{"expected_hold_hours":0}}`},
+		{"negative", `{"strategy":{"expected_hold_hours":-1}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, mr := newTestServer(t)
+			defer mr.Close()
+
+			s.cfg.ExpectedHoldHours = 24
+			req := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(tc.body))
+			w := httptest.NewRecorder()
+			s.handlePostConfig(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+			}
+			if s.cfg.ExpectedHoldHours != 24 {
+				t.Fatalf("expected hold hours changed on invalid request: %v", s.cfg.ExpectedHoldHours)
+			}
+		})
+	}
+}
+
+func TestHandlePostConfig_StrategyPrioritySaveFailureRollsBack(t *testing.T) {
+	s, mr := newTestServer(t)
+	defer mr.Close()
+
+	s.cfg.EnableStrategyPriority = false
+	s.cfg.StrategyPriority = config.StrategyPriorityPerpPerpFirst
+	s.cfg.ExpectedHoldHours = 24
+	t.Setenv("CONFIG_FILE", filepath.Join(t.TempDir(), "missing-config.json"))
+
+	coord := &strategyCoordinatorStub{}
+	s.SetStrategyCoordinator(coord)
+	notifyCh := s.ConfigNotifier().Subscribe()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"strategy":{"enable_strategy_priority":true,"strategy_priority":"dir_b_first","expected_hold_hours":8}}`))
+	w := httptest.NewRecorder()
+	s.handlePostConfig(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+	if s.cfg.EnableStrategyPriority {
+		t.Fatal("expected EnableStrategyPriority rollback to false")
+	}
+	if s.cfg.StrategyPriority != config.StrategyPriorityPerpPerpFirst {
+		t.Fatalf("expected StrategyPriority rollback to perp_perp_first, got %q", s.cfg.StrategyPriority)
+	}
+	if s.cfg.ExpectedHoldHours != 24 {
+		t.Fatalf("expected ExpectedHoldHours rollback to 24, got %v", s.cfg.ExpectedHoldHours)
+	}
+	if coord.calls != 0 {
+		t.Fatalf("coordinator updated despite save failure: %d", coord.calls)
+	}
+	select {
+	case <-notifyCh:
+		t.Fatal("config notifier fired despite save failure")
+	default:
+	}
+}
+
+func TestHandleOpenPosition_PassesManualOpenOptions(t *testing.T) {
+	s, mr := newTestServer(t)
+	defer mr.Close()
+
+	var got ManualOpenOptions
+	s.SetOpenHandlerWithOptions(func(symbol, longExchange, shortExchange string, opts ManualOpenOptions) error {
+		if symbol != "BTCUSDT" || longExchange != "binance" || shortExchange != "bybit" {
+			t.Fatalf("unexpected open tuple: %s %s %s", symbol, longExchange, shortExchange)
+		}
+		got = opts
+		return nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/positions/open", strings.NewReader(`{"symbol":"BTCUSDT","long_exchange":"binance","short_exchange":"bybit","force":true,"override_strategy_priority":true}`))
+	w := httptest.NewRecorder()
+	s.handleOpenPosition(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+	if !got.Force {
+		t.Fatal("expected force option true")
+	}
+	if !got.OverrideStrategyPriority {
+		t.Fatal("expected override_strategy_priority option true")
 	}
 }
 
