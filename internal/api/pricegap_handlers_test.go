@@ -660,3 +660,107 @@ func TestHandlePriceGapState_IncludesMetrics(t *testing.T) {
 		t.Fatalf("no BTCUSDT non-zero row in state.metrics: %+v", resp.Data.Metrics)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Phase 999.1 Plan 02 (PG-DIR-01) — validatePriceGapCandidates direction-field
+// branch coverage. Constructs minimal-valid candidates and only varies
+// Direction so the new check is the sole reason a case passes or fails.
+// Pitfall 3 (research §"Validator silently accepts unknown Direction values"):
+// case-sensitive enum, no auto-lowercase. Empty defaults silently to "pinned"
+// via the handler-side normalization loop (covered by Test 1's post-validation
+// NormalizeDirection assertion).
+// ---------------------------------------------------------------------------
+
+// baseValidCandidate returns a minimal candidate that passes every existing
+// D-05..D-11 check. Tests vary only Direction (and, for Test 6, ThresholdBps)
+// so a regression in the existing checks doesn't masquerade as a Direction
+// regression.
+func baseValidCandidate() models.PriceGapCandidate {
+	return models.PriceGapCandidate{
+		Symbol:          "BTCUSDT",
+		LongExch:        "binance",
+		ShortExch:       "bybit",
+		ThresholdBps:    200,
+		MaxPositionUSDT: 1000,
+	}
+}
+
+func TestValidate_DirectionMissing_AcceptedAsDefault(t *testing.T) {
+	c := baseValidCandidate()
+	c.Direction = ""
+	errs := validatePriceGapCandidates([]models.PriceGapCandidate{c})
+	if len(errs) != 0 {
+		t.Fatalf("empty Direction must be accepted; got errors: %v", errs)
+	}
+	// Mirror the handler's post-validation normalization loop so the same
+	// canonical default ships to persistence/reload.
+	models.NormalizeDirection(&c)
+	if c.Direction != models.PriceGapDirectionPinned {
+		t.Fatalf("NormalizeDirection: want %q, got %q", models.PriceGapDirectionPinned, c.Direction)
+	}
+}
+
+func TestValidate_DirectionPinned_Accepted(t *testing.T) {
+	c := baseValidCandidate()
+	c.Direction = models.PriceGapDirectionPinned
+	errs := validatePriceGapCandidates([]models.PriceGapCandidate{c})
+	if len(errs) != 0 {
+		t.Fatalf("Direction=%q must be accepted; got errors: %v", c.Direction, errs)
+	}
+}
+
+func TestValidate_DirectionBidirectional_Accepted(t *testing.T) {
+	c := baseValidCandidate()
+	c.Direction = models.PriceGapDirectionBidirectional
+	errs := validatePriceGapCandidates([]models.PriceGapCandidate{c})
+	if len(errs) != 0 {
+		t.Fatalf("Direction=%q must be accepted; got errors: %v", c.Direction, errs)
+	}
+}
+
+func TestValidate_DirectionInvalid_Rejected(t *testing.T) {
+	c := baseValidCandidate()
+	c.Direction = "sideways"
+	errs := validatePriceGapCandidates([]models.PriceGapCandidate{c})
+	if len(errs) == 0 {
+		t.Fatalf("Direction=%q must be rejected", c.Direction)
+	}
+	joined := strings.Join(errs, "\n")
+	if !strings.Contains(joined, "BTCUSDT") {
+		t.Fatalf("error must include candidate symbol BTCUSDT; got: %v", errs)
+	}
+	if !strings.Contains(joined, "sideways") {
+		t.Fatalf("error must include rejected value 'sideways'; got: %v", errs)
+	}
+}
+
+func TestValidate_DirectionCaseSensitive_Rejected(t *testing.T) {
+	// Pitfall 3: no auto-lowercase. "Pinned" must surface as an explicit error
+	// so operators don't get silent normalization.
+	c := baseValidCandidate()
+	c.Direction = "Pinned"
+	errs := validatePriceGapCandidates([]models.PriceGapCandidate{c})
+	if len(errs) == 0 {
+		t.Fatalf("Direction=%q must be rejected (case-sensitive)", c.Direction)
+	}
+	joined := strings.Join(errs, "\n")
+	if !strings.Contains(joined, "Pinned") {
+		t.Fatalf("error must echo the rejected value 'Pinned'; got: %v", errs)
+	}
+}
+
+func TestValidate_DirectionExistingChecksStillPass(t *testing.T) {
+	// A new check must not mask older checks: a candidate with a valid
+	// Direction but invalid ThresholdBps must still surface the
+	// threshold_bps error (D-08 invariant).
+	c := baseValidCandidate()
+	c.Direction = models.PriceGapDirectionBidirectional
+	c.ThresholdBps = 0 // invalid
+	errs := validatePriceGapCandidates([]models.PriceGapCandidate{c})
+	if len(errs) == 0 {
+		t.Fatalf("threshold_bps=0 must still produce an error even with valid Direction")
+	}
+	if !strings.Contains(strings.Join(errs, "\n"), "threshold_bps") {
+		t.Fatalf("expected threshold_bps error; got: %v", errs)
+	}
+}
