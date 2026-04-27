@@ -1617,6 +1617,14 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusBadRequest, Response{Error: strings.Join(errs, "; ")})
 				return
 			}
+			// PG-DIR-01 (Phase 999.1 Plan 02): post-validation, pre-persistence
+			// normalisation so downstream detector/executor see the canonical
+			// "pinned" default rather than empty string. Validator deliberately
+			// leaves cs untouched (separation of concerns); the mutation happens
+			// here once, just before the candidates are committed to s.cfg.
+			for i := range next {
+				models.NormalizeDirection(&next[i])
+			}
 			// D-14 / Pitfall 4: any tuple removed (whether outright delete or
 			// tuple-change edit) with an open position must be blocked.
 			if blocker, err := s.guardActivePositionRemoval(s.cfg.PriceGapCandidates, next); err != nil {

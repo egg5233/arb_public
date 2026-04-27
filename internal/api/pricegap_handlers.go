@@ -84,6 +84,20 @@ func validatePriceGapCandidates(cs []models.PriceGapCandidate) []string {
 		if c.ModeledSlippageBps < 0 || c.ModeledSlippageBps > 1000 {
 			errs = append(errs, prefix+": modeled_slippage_bps out of range [0,1000]")
 		}
+		// PG-DIR-01 (Phase 999.1 Plan 02): validate optional direction field.
+		// Empty/missing defaults to "pinned" via models.NormalizeDirection in
+		// the caller (handlers.go apply block) — keep validator pure (no
+		// mutation). Unknown values rejected with explicit per-symbol error
+		// (Pitfall 3 — case-sensitive, no silent normalization beyond the
+		// empty→pinned default).
+		switch c.Direction {
+		case "", models.PriceGapDirectionPinned, models.PriceGapDirectionBidirectional:
+			// accepted
+		default:
+			errs = append(errs, fmt.Sprintf(
+				"candidate[%d] %s: direction must be \"pinned\" or \"bidirectional\" (got %q)",
+				i, c.Symbol, c.Direction))
+		}
 		key := c.Symbol + "|" + c.LongExch + "|" + c.ShortExch
 		if _, dup := seen[key]; dup {
 			errs = append(errs, prefix+": duplicate tuple")
