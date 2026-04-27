@@ -38,10 +38,51 @@ func (b *barRing) push(unixMinute int64, spreadBps float64) bool {
 	return true
 }
 
-// allExceed returns true only when ALL 4 bars are populated, each |s|≥T, and
-// all same sign. Same-sign check (T-08-11 mitigation) prevents a threshold
-// crossing followed by a sign reversion from firing a false event.
-func (b *barRing) allExceed(T float64) bool {
+// allExceedDirected returns true only when ALL 4 bars are populated, each
+// |s|≥T, all same sign, AND the sign matches the candidate's direction policy.
+//
+//   - "pinned" (or empty/default): only positive-sign continuity fires
+//     (configured long_exch cheaper than short_exch by ≥ T, i.e. spread > 0).
+//     Closes the latent Phase-8 bug where allExceed used math.Abs and
+//     silently fired any sign — pinned candidates that fired on inverse
+//     spread were placing wrong-side trades (Pitfall 2 / PG-DIR-01).
+//   - "bidirectional": either positive or negative same-sign continuity
+//     fires; the executor swaps wire-side leg roles for negative fires.
+//
+// Same-sign check (T-08-11 mitigation) prevents a threshold crossing followed
+// by a sign reversion from firing a false event in BOTH modes.
+func (b *barRing) allExceedDirected(T float64, direction string) bool {
+	var firstSign float64
+	for i, ok := range b.valid {
+		if !ok {
+			return false
+		}
+		s := b.closes[i]
+		if math.Abs(s) < T {
+			return false
+		}
+		if i == 0 {
+			firstSign = s
+		} else if s*firstSign < 0 {
+			return false
+		}
+	}
+	// Direction filter — pinned (default/empty) requires positive-sign
+	// continuity; bidirectional accepts either.
+	if direction != models.PriceGapDirectionBidirectional {
+		if firstSign < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// barsAllValidAndExceed reports whether the ring has 4 valid bars with same
+// sign and magnitude ≥ T, ignoring direction policy. Used by detectOnce to
+// distinguish "pinned_wrong_sign" (sign-only rejection) from
+// "insufficient_persistence" (anything else) for log diagnostics — does NOT
+// affect fire semantics. PG-DIR-01.
+func (b *barRing) barsAllValidAndExceed(T float64) bool {
 	var firstSign float64
 	for i, ok := range b.valid {
 		if !ok {
@@ -58,6 +99,13 @@ func (b *barRing) allExceed(T float64) bool {
 		}
 	}
 	return true
+}
+
+// allExceed — backward-compat wrapper preserving the pre-PG-DIR-01 signature
+// for any external callers (currently none in production; retained for tests
+// that still call the unparameterized form).
+func (b *barRing) allExceed(T float64) bool {
+	return b.allExceedDirected(T, models.PriceGapDirectionPinned)
 }
 
 // computeSpreadBps — D-06: (pxLong - pxShort) / mid × 10_000 bps.
@@ -153,14 +201,28 @@ func (t *Tracker) detectOnce(cand models.PriceGapCandidate, now time.Time) Detec
 	}
 	cb.ring.push(now.Unix()/60, spread)
 	cb.lastSampleAt = now
-	fired := !stale && cb.ring.allExceed(cand.ThresholdBps)
+	fired := !stale && cb.ring.allExceedDirected(cand.ThresholdBps, cand.Direction)
+	// Snapshot post-fire state for diagnostic Reason classification while still
+	// under barsMu (allExceed reads the same closes/valid arrays push() just
+	// mutated; we must NOT release the lock between these reads).
+	pinnedWrongSign := false
+	if !fired && !stale && cand.Direction != models.PriceGapDirectionBidirectional {
+		pinnedWrongSign = cb.ring.barsAllValidAndExceed(cand.ThresholdBps)
+	}
 	t.barsMu.Unlock()
 
 	reason := ""
 	if !fired {
-		if stale {
+		switch {
+		case stale:
 			reason = "stale_bbo"
-		} else {
+		case pinnedWrongSign:
+			// 4 same-sign bars with |s|≥T but sign was negative on a pinned
+			// candidate — PG-DIR-01 sign filter rejected. Distinct reason for
+			// observability so Phase 9 dashboards can surface latent-bug
+			// closures without changing fire semantics.
+			reason = "pinned_wrong_sign"
+		default:
 			reason = "insufficient_persistence"
 		}
 	}
