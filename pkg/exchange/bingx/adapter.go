@@ -218,6 +218,9 @@ func bingXOrderParams(req exchange.PlaceOrderParams) map[string]string {
 // non-marketable IOC probe. BingX's documented /order/test endpoint does not
 // hit the same temporary market-risk gate that rejects real /order requests.
 func (a *Adapter) TestOrder(req exchange.PlaceOrderParams) error {
+	if err := validateTestOrderProbe(req); err != nil {
+		return err
+	}
 	params := bingXOrderParams(req)
 	result, err := a.client.Post("/openApi/swap/v2/trade/order", params)
 	if err != nil {
@@ -228,10 +231,61 @@ func (a *Adapter) TestOrder(req exchange.PlaceOrderParams) error {
 			OrderID json.Number `json:"orderId"`
 		} `json:"order"`
 	}
-	if err := json.Unmarshal(result, &resp); err == nil && resp.Order.OrderID.String() != "" {
-		_ = a.CancelOrder(req.Symbol, resp.Order.OrderID.String())
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return fmt.Errorf("bingx TestOrder parse probe order: %w", err)
+	}
+	orderID := resp.Order.OrderID.String()
+	if orderID == "" {
+		return fmt.Errorf("bingx TestOrder missing probe order id")
+	}
+	if cancelErr := a.cancelProbeOrder(req.Symbol, orderID); cancelErr != nil {
+		return fmt.Errorf("bingx TestOrder cancel probe order %s: %w", orderID, cancelErr)
 	}
 	return nil
+}
+
+func validateTestOrderProbe(req exchange.PlaceOrderParams) error {
+	if req.ReduceOnly {
+		return fmt.Errorf("bingx TestOrder unsafe probe: reduceOnly is not allowed")
+	}
+	if req.Side != exchange.SideBuy && req.Side != exchange.SideSell {
+		return fmt.Errorf("bingx TestOrder unsafe probe: invalid side %q", req.Side)
+	}
+	if !strings.EqualFold(req.OrderType, "limit") {
+		return fmt.Errorf("bingx TestOrder unsafe probe: order type must be limit")
+	}
+	if !strings.EqualFold(req.Force, "ioc") {
+		return fmt.Errorf("bingx TestOrder unsafe probe: force must be ioc")
+	}
+	price, err := strconv.ParseFloat(req.Price, 64)
+	if err != nil || price <= 0 {
+		return fmt.Errorf("bingx TestOrder unsafe probe: price must be positive")
+	}
+	size, err := strconv.ParseFloat(req.Size, 64)
+	if err != nil || size <= 0 {
+		return fmt.Errorf("bingx TestOrder unsafe probe: size must be positive")
+	}
+	return nil
+}
+
+func (a *Adapter) cancelProbeOrder(symbol, orderID string) error {
+	params := map[string]string{
+		"symbol":  toBingXSymbol(symbol),
+		"orderId": orderID,
+	}
+	_, err := a.client.Delete("/openApi/swap/v2/trade/order", params)
+	if err == nil {
+		return nil
+	}
+	if apiErr, ok := err.(*APIError); ok {
+		switch apiErr.Code {
+		case 80016, 109421:
+			return nil
+		case 80018:
+			return fmt.Errorf("probe order filled before cancel: %w", err)
+		}
+	}
+	return fmt.Errorf("bingx cancel probe order: %w", err)
 }
 
 // PlaceOrder places a new order on BingX.

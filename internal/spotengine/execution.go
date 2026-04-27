@@ -630,6 +630,10 @@ func (e *SpotEngine) executeBuySpotShort(
 	pos *models.SpotFuturesPosition,
 ) (spotAvg, futAvg, spotFilled, futFilled float64, err error) {
 
+	if err := e.preflightBingXFuturesEntryOrder(futExch, pos.Exchange, symbol, sizeStr); err != nil {
+		return 0, 0, 0, 0, err
+	}
+
 	// Step 1: Buy spot (margin order)
 	if err := requireEntryLock("spot buy"); err != nil {
 		return 0, 0, 0, 0, err
@@ -758,6 +762,58 @@ func (e *SpotEngine) executeBuySpotShort(
 	pos.NotionalUSDT = spotFilled * spotAvg // Use gross for notional tracking
 
 	return spotAvg, futAvg, spotNetReceived, futFilled, nil
+}
+
+func (e *SpotEngine) preflightBingXFuturesEntryOrder(futExch exchange.Exchange, exchName, symbol, sizeStr string) error {
+	if !strings.EqualFold(exchName, "bingx") {
+		return nil
+	}
+	preflight, ok := futExch.(exchange.OrderPreflight)
+	if !ok {
+		return nil
+	}
+	ob, err := futExch.GetOrderbook(symbol, 5)
+	if err != nil {
+		return fmt.Errorf("bingx futures preflight orderbook %s: %w", symbol, err)
+	}
+	if len(ob.Bids) == 0 || len(ob.Asks) == 0 {
+		return fmt.Errorf("bingx futures preflight orderbook %s: empty depth", symbol)
+	}
+	bestAsk := ob.Asks[0].Price
+	probePrice := bestAsk * 1.99
+	priceStr := utils.FormatPrice(probePrice, 8)
+	if contracts, cErr := futExch.LoadAllContracts(); cErr == nil {
+		if ci, ok := contracts[symbol]; ok && ci.PriceStep > 0 {
+			rounded := utils.RoundUpToStep(probePrice, ci.PriceStep)
+			if rounded <= bestAsk {
+				rounded = utils.RoundUpToStep(bestAsk+ci.PriceStep, ci.PriceStep)
+			}
+			priceStr = utils.FormatPrice(rounded, ci.PriceDecimals)
+		}
+	}
+	parsed, _ := strconv.ParseFloat(priceStr, 64)
+	if parsed <= 0 {
+		return fmt.Errorf("bingx futures preflight invalid probe price for %s: ask=%.8f probe=%s", symbol, bestAsk, priceStr)
+	}
+	if parsed <= bestAsk {
+		return fmt.Errorf("bingx futures preflight cannot build non-marketable sell probe for %s: ask=%.8f probe=%s", symbol, bestAsk, priceStr)
+	}
+	err = preflight.TestOrder(exchange.PlaceOrderParams{
+		Symbol:    symbol,
+		Side:      exchange.SideSell,
+		OrderType: "limit",
+		Price:     priceStr,
+		Size:      sizeStr,
+		Force:     "ioc",
+	})
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "api orders are temporarily disabled") ||
+		strings.Contains(strings.ToLower(err.Error()), "large market fluctuations") {
+		return fmt.Errorf("bingx futures preflight hard reject for %s: %w", symbol, err)
+	}
+	return fmt.Errorf("bingx futures preflight failed for %s: %w", symbol, err)
 }
 
 // ---------------------------------------------------------------------------
@@ -1258,6 +1314,12 @@ func (e *SpotEngine) reconcilePendingEntry(pos *models.SpotFuturesPosition) {
 	}
 
 	spotFilledStr := utils.FormatSize(pos.SpotSize, 6)
+	if pos.Direction == "buy_spot_short" {
+		if err := e.preflightBingXFuturesEntryOrder(futExch, pos.Exchange, pos.Symbol, spotFilledStr); err != nil {
+			e.log.Warn("pending entry %s: futures hedge preflight blocked: %v", pos.ID, err)
+			return
+		}
+	}
 	var side exchange.Side
 	switch pos.Direction {
 	case "borrow_sell_long":

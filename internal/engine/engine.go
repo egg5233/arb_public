@@ -2825,7 +2825,7 @@ done:
 	return totalFilled, avgPrice, nil
 }
 
-func (e *Engine) preflightBingXEntryOrder(exch exchange.Exchange, exchName, symbol string, refPrice float64, size string) error {
+func (e *Engine) preflightBingXEntryOrder(exch exchange.Exchange, exchName, symbol string, side exchange.Side, refPrice float64, size string) error {
 	if !strings.EqualFold(exchName, "bingx") {
 		return nil
 	}
@@ -2833,17 +2833,13 @@ func (e *Engine) preflightBingXEntryOrder(exch exchange.Exchange, exchName, symb
 	if !ok {
 		return nil
 	}
-	probePrice := refPrice * 0.01
-	if probePrice <= 0 {
-		return fmt.Errorf("bingx preflight invalid reference price for %s: %.8f", symbol, refPrice)
+	probePriceStr, err := e.bingXEntryProbePrice(exch, exchName, symbol, side, refPrice)
+	if err != nil {
+		return err
 	}
-	probePriceStr := e.formatPrice(exchName, symbol, probePrice)
-	if parsed, _ := strconv.ParseFloat(probePriceStr, 64); parsed <= 0 {
-		probePriceStr = strconv.FormatFloat(probePrice, 'f', 8, 64)
-	}
-	err := preflight.TestOrder(exchange.PlaceOrderParams{
+	err = preflight.TestOrder(exchange.PlaceOrderParams{
 		Symbol:    symbol,
-		Side:      exchange.SideBuy,
+		Side:      side,
 		OrderType: "limit",
 		Price:     probePriceStr,
 		Size:      size,
@@ -2856,6 +2852,65 @@ func (e *Engine) preflightBingXEntryOrder(exch exchange.Exchange, exchName, symb
 		return fmt.Errorf("bingx preflight hard reject for %s: %w", symbol, err)
 	}
 	return fmt.Errorf("bingx preflight failed for %s: %w", symbol, err)
+}
+
+func (e *Engine) bingXEntryProbePrice(exch exchange.Exchange, exchName, symbol string, side exchange.Side, refPrice float64) (string, error) {
+	if refPrice <= 0 {
+		return "", fmt.Errorf("bingx preflight invalid reference price for %s: %.8f", symbol, refPrice)
+	}
+	if side != exchange.SideBuy && side != exchange.SideSell {
+		return "", fmt.Errorf("bingx preflight invalid side for %s: %s", symbol, side)
+	}
+
+	priceStep, priceDecimals := e.bingXContractPriceFormat(exch, exchName, symbol)
+	probePrice := refPrice * 0.01
+	if side == exchange.SideSell {
+		probePrice = refPrice * 1.99
+	}
+
+	if priceStep > 0 {
+		if side == exchange.SideBuy {
+			probePrice = utils.RoundToStep(probePrice, priceStep)
+			if probePrice <= 0 {
+				probePrice = priceStep
+			}
+		} else {
+			probePrice = utils.RoundUpToStep(probePrice, priceStep)
+			if probePrice <= refPrice {
+				probePrice = utils.RoundUpToStep(refPrice+priceStep, priceStep)
+			}
+		}
+	}
+
+	priceStr := utils.FormatPrice(probePrice, priceDecimals)
+	parsed, _ := strconv.ParseFloat(priceStr, 64)
+	if parsed <= 0 {
+		return "", fmt.Errorf("bingx preflight invalid probe price for %s: ref=%.8f probe=%s", symbol, refPrice, priceStr)
+	}
+	if side == exchange.SideBuy && parsed >= refPrice {
+		return "", fmt.Errorf("bingx preflight cannot build non-marketable buy probe for %s: ref=%.8f probe=%s", symbol, refPrice, priceStr)
+	}
+	if side == exchange.SideSell && parsed <= refPrice {
+		return "", fmt.Errorf("bingx preflight cannot build non-marketable sell probe for %s: ref=%.8f probe=%s", symbol, refPrice, priceStr)
+	}
+	return priceStr, nil
+}
+
+func (e *Engine) bingXContractPriceFormat(exch exchange.Exchange, exchName, symbol string) (float64, int) {
+	if e.contracts != nil {
+		if exContracts, ok := e.contracts[exchName]; ok {
+			if ci, ok := exContracts[symbol]; ok && ci.PriceStep > 0 {
+				return ci.PriceStep, ci.PriceDecimals
+			}
+		}
+	}
+	contracts, err := exch.LoadAllContracts()
+	if err == nil {
+		if ci, ok := contracts[symbol]; ok && ci.PriceStep > 0 {
+			return ci.PriceStep, ci.PriceDecimals
+		}
+	}
+	return 0, 8
 }
 
 // executeTrade opens a delta-neutral position across two exchanges using
@@ -3654,14 +3709,14 @@ fillLoop:
 			}
 		}
 
-		if err := e.preflightBingXEntryOrder(longExch, opp.LongExchange, opp.Symbol, askPrice, longSizeStr); err != nil {
+		if err := e.preflightBingXEntryOrder(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, askPrice, longSizeStr); err != nil {
 			e.log.Warn("depth fill preflight blocked %s long leg before any new orders: %v", opp.Symbol, err)
 			if e.discovery != nil {
 				e.discovery.SetReEnterCooldown(opp.Symbol, 30*time.Minute)
 			}
 			break fillLoop
 		}
-		if err := e.preflightBingXEntryOrder(shortExch, opp.ShortExchange, opp.Symbol, bidPrice, shortSizeStr); err != nil {
+		if err := e.preflightBingXEntryOrder(shortExch, opp.ShortExchange, opp.Symbol, exchange.SideSell, bidPrice, shortSizeStr); err != nil {
 			e.log.Warn("depth fill preflight blocked %s short leg before any new orders: %v", opp.Symbol, err)
 			if e.discovery != nil {
 				e.discovery.SetReEnterCooldown(opp.Symbol, 30*time.Minute)

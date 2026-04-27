@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"arb/internal/models"
 	"arb/pkg/exchange"
+	"arb/pkg/utils"
 )
 
 // fillResult — per-leg fill outcome captured concurrently by openPair.
@@ -61,6 +63,15 @@ func (t *Tracker) openPair(
 
 	decL := t.sizeDecimals(cand.LongExch, cand.Symbol)
 	decS := t.sizeDecimals(cand.ShortExch, cand.Symbol)
+
+	if err := t.preflightBingXPriceGapEntry(longEx, cand.LongExch, cand.Symbol, exchange.SideBuy, sizeBase, decL, det.MidLong); err != nil {
+		t.bumpFailures()
+		return nil, err
+	}
+	if err := t.preflightBingXPriceGapEntry(shortEx, cand.ShortExch, cand.Symbol, exchange.SideSell, sizeBase, decS, det.MidShort); err != nil {
+		t.bumpFailures()
+		return nil, err
+	}
 
 	longCh := make(chan fillResult, 1)
 	shortCh := make(chan fillResult, 1)
@@ -216,6 +227,91 @@ func (t *Tracker) placeLeg(
 		return fillResult{orderID: orderID, err: fmt.Errorf("fill fetch: %w", err)}
 	}
 	return fillResult{orderID: orderID, filled: qty, price: fillPrice}
+}
+
+func (t *Tracker) preflightBingXPriceGapEntry(
+	ex exchange.Exchange,
+	exchName, symbol string,
+	side exchange.Side,
+	sizeBase float64,
+	decimals int,
+	refPrice float64,
+) error {
+	if t.cfg.PriceGapPaperMode || !strings.EqualFold(exchName, "bingx") {
+		return nil
+	}
+	preflight, ok := ex.(exchange.OrderPreflight)
+	if !ok {
+		return nil
+	}
+	priceStr, err := priceGapBingXProbePrice(ex, symbol, side, refPrice)
+	if err != nil {
+		return err
+	}
+	sizeStr := strconv.FormatFloat(roundStep(sizeBase, decimals), 'f', decimals, 64)
+	err = preflight.TestOrder(exchange.PlaceOrderParams{
+		Symbol:    symbol,
+		Side:      side,
+		OrderType: "limit",
+		Price:     priceStr,
+		Size:      sizeStr,
+		Force:     "ioc",
+	})
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("pricegap: bingx preflight blocked %s %s: %w", symbol, side, err)
+}
+
+func priceGapBingXProbePrice(ex exchange.Exchange, symbol string, side exchange.Side, refPrice float64) (string, error) {
+	if refPrice <= 0 {
+		return "", fmt.Errorf("pricegap: bingx preflight invalid reference price for %s: %.8f", symbol, refPrice)
+	}
+	if side != exchange.SideBuy && side != exchange.SideSell {
+		return "", fmt.Errorf("pricegap: bingx preflight invalid side for %s: %s", symbol, side)
+	}
+
+	priceStep, priceDecimals := priceGapBingXPriceFormat(ex, symbol)
+	probePrice := refPrice * 0.01
+	if side == exchange.SideSell {
+		probePrice = refPrice * 1.99
+	}
+	if priceStep > 0 {
+		if side == exchange.SideBuy {
+			probePrice = utils.RoundToStep(probePrice, priceStep)
+			if probePrice <= 0 {
+				probePrice = priceStep
+			}
+		} else {
+			probePrice = utils.RoundUpToStep(probePrice, priceStep)
+			if probePrice <= refPrice {
+				probePrice = utils.RoundUpToStep(refPrice+priceStep, priceStep)
+			}
+		}
+	}
+
+	priceStr := utils.FormatPrice(probePrice, priceDecimals)
+	parsed, _ := strconv.ParseFloat(priceStr, 64)
+	if parsed <= 0 {
+		return "", fmt.Errorf("pricegap: bingx preflight invalid probe price for %s: ref=%.8f probe=%s", symbol, refPrice, priceStr)
+	}
+	if side == exchange.SideBuy && parsed >= refPrice {
+		return "", fmt.Errorf("pricegap: bingx preflight cannot build non-marketable buy probe for %s: ref=%.8f probe=%s", symbol, refPrice, priceStr)
+	}
+	if side == exchange.SideSell && parsed <= refPrice {
+		return "", fmt.Errorf("pricegap: bingx preflight cannot build non-marketable sell probe for %s: ref=%.8f probe=%s", symbol, refPrice, priceStr)
+	}
+	return priceStr, nil
+}
+
+func priceGapBingXPriceFormat(ex exchange.Exchange, symbol string) (float64, int) {
+	contracts, err := ex.LoadAllContracts()
+	if err == nil {
+		if ci, ok := contracts[symbol]; ok && ci.PriceStep > 0 {
+			return ci.PriceStep, ci.PriceDecimals
+		}
+	}
+	return 0, 8
 }
 
 // closeLegMarket submits a MARKET order (no IOC) with ReduceOnly for exit/unwind.

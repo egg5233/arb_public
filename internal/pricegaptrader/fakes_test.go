@@ -31,6 +31,8 @@ type stubExchange struct {
 	placed        []exchange.PlaceOrderParams
 	placeOrderErr error
 	placeOrderFn  func(p exchange.PlaceOrderParams) (string, error)
+	preflighted   []exchange.PlaceOrderParams
+	preflightErr  error
 
 	// Plan 05: scripted fills — tests enqueue via queueFill; PlaceOrder pops
 	// the next script. Per-order fill recorded under orderIdFill for
@@ -46,8 +48,8 @@ type stubExchange struct {
 
 	// Plan 09-10 (Gap #2): SubscribeSymbol call tracking. subs counts per-symbol
 	// calls; subscribeFn, if non-nil, overrides the default `return true`.
-	subs         map[string]int
-	subscribeFn  func(symbol string) bool
+	subs        map[string]int
+	subscribeFn func(symbol string) bool
 }
 
 // Compile-time check — if pkg/exchange adds a method, this line breaks the build
@@ -82,6 +84,14 @@ func (s *stubExchange) placedOrders() []exchange.PlaceOrderParams {
 	defer s.mu.Unlock()
 	out := make([]exchange.PlaceOrderParams, len(s.placed))
 	copy(out, s.placed)
+	return out
+}
+
+func (s *stubExchange) preflightOrders() []exchange.PlaceOrderParams {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]exchange.PlaceOrderParams, len(s.preflighted))
+	copy(out, s.preflighted)
 	return out
 }
 
@@ -140,6 +150,13 @@ func (s *stubExchange) PlaceOrder(p exchange.PlaceOrderParams) (string, error) {
 	return "stub-order-id", nil
 }
 
+func (s *stubExchange) TestOrder(p exchange.PlaceOrderParams) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.preflighted = append(s.preflighted, p)
+	return s.preflightErr
+}
+
 func (s *stubExchange) GetOrderFilledQty(orderID, _ string) (float64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -185,8 +202,10 @@ func (s *stubExchange) SetLeverage(symbol, leverage, holdSide string) error     
 func (s *stubExchange) SetMarginMode(symbol, mode string) error                     { return nil }
 func (s *stubExchange) GetFundingRate(symbol string) (*exchange.FundingRate, error) { return nil, nil }
 func (s *stubExchange) GetFundingInterval(symbol string) (time.Duration, error)     { return 0, nil }
-func (s *stubExchange) GetFuturesBalance() (*exchange.Balance, error)               { return &exchange.Balance{}, nil }
-func (s *stubExchange) GetSpotBalance() (*exchange.Balance, error)                  { return &exchange.Balance{}, nil }
+func (s *stubExchange) GetFuturesBalance() (*exchange.Balance, error) {
+	return &exchange.Balance{}, nil
+}
+func (s *stubExchange) GetSpotBalance() (*exchange.Balance, error) { return &exchange.Balance{}, nil }
 func (s *stubExchange) Withdraw(p exchange.WithdrawParams) (*exchange.WithdrawResult, error) {
 	return nil, nil
 }
@@ -199,7 +218,7 @@ func (s *stubExchange) TransferToFutures(coin, amount string) error { return nil
 func (s *stubExchange) GetOrderbook(symbol string, depth int) (*exchange.Orderbook, error) {
 	return nil, nil
 }
-func (s *stubExchange) StartPriceStream(symbols []string)    {}
+func (s *stubExchange) StartPriceStream(symbols []string) {}
 func (s *stubExchange) SubscribeSymbol(symbol string) bool {
 	s.mu.Lock()
 	s.subs[symbol]++
@@ -215,21 +234,21 @@ func (s *stubExchange) subscribeCount(symbol string) int {
 	defer s.mu.Unlock()
 	return s.subs[symbol]
 }
-func (s *stubExchange) GetPriceStore() *sync.Map             { return &s.priceStore }
-func (s *stubExchange) SubscribeDepth(symbol string) bool    { return true }
-func (s *stubExchange) UnsubscribeDepth(symbol string) bool  { return true }
+func (s *stubExchange) GetPriceStore() *sync.Map            { return &s.priceStore }
+func (s *stubExchange) SubscribeDepth(symbol string) bool   { return true }
+func (s *stubExchange) UnsubscribeDepth(symbol string) bool { return true }
 func (s *stubExchange) GetDepth(symbol string) (*exchange.Orderbook, bool) {
 	return nil, false
 }
-func (s *stubExchange) StartPrivateStream()                                       {}
+func (s *stubExchange) StartPrivateStream() {}
 func (s *stubExchange) GetOrderUpdate(orderID string) (exchange.OrderUpdate, bool) {
 	return exchange.OrderUpdate{}, false
 }
-func (s *stubExchange) SetOrderCallback(fn func(exchange.OrderUpdate))                {}
-func (s *stubExchange) PlaceStopLoss(p exchange.StopLossParams) (string, error)       { return "", nil }
-func (s *stubExchange) CancelStopLoss(symbol, orderID string) error                   { return nil }
-func (s *stubExchange) PlaceTakeProfit(p exchange.TakeProfitParams) (string, error)   { return "", nil }
-func (s *stubExchange) CancelTakeProfit(symbol, orderID string) error                 { return nil }
+func (s *stubExchange) SetOrderCallback(fn func(exchange.OrderUpdate))              {}
+func (s *stubExchange) PlaceStopLoss(p exchange.StopLossParams) (string, error)     { return "", nil }
+func (s *stubExchange) CancelStopLoss(symbol, orderID string) error                 { return nil }
+func (s *stubExchange) PlaceTakeProfit(p exchange.TakeProfitParams) (string, error) { return "", nil }
+func (s *stubExchange) CancelTakeProfit(symbol, orderID string) error               { return nil }
 func (s *stubExchange) GetUserTrades(symbol string, startTime time.Time, limit int) ([]exchange.Trade, error) {
 	return nil, nil
 }
@@ -239,7 +258,7 @@ func (s *stubExchange) GetFundingFees(symbol string, since time.Time) ([]exchang
 func (s *stubExchange) GetClosePnL(symbol string, since time.Time) ([]exchange.ClosePnL, error) {
 	return nil, nil
 }
-func (s *stubExchange) EnsureOneWayMode() error            { return nil }
+func (s *stubExchange) EnsureOneWayMode() error             { return nil }
 func (s *stubExchange) CancelAllOrders(symbol string) error { return nil }
 func (s *stubExchange) Close()                              {}
 
@@ -247,6 +266,6 @@ func (s *stubExchange) Close()                              {}
 
 type fakeClock struct{ t time.Time }
 
-func newFakeClock(start time.Time) *fakeClock       { return &fakeClock{t: start} }
-func (c *fakeClock) Now() time.Time                 { return c.t }
-func (c *fakeClock) Advance(d time.Duration)        { c.t = c.t.Add(d) }
+func newFakeClock(start time.Time) *fakeClock { return &fakeClock{t: start} }
+func (c *fakeClock) Now() time.Time           { return c.t }
+func (c *fakeClock) Advance(d time.Duration)  { c.t = c.t.Add(d) }

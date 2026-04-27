@@ -4,6 +4,7 @@ import (
 	"errors"
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 
 	"arb/internal/config"
@@ -184,6 +185,85 @@ func TestExecution_BothLegsFail_NoCleanup(t *testing.T) {
 	}
 	if len(store.saved) != 0 {
 		t.Errorf("saved = %d, want 0", len(store.saved))
+	}
+}
+
+func TestExecution_BingXShortPreflightBlocksBeforeAnyRealLeg(t *testing.T) {
+	tr, longEx, _, store := newExecTestTracker(t)
+	bingx := newStubExchange("bingx")
+	bingx.preflightErr = errors.New("bingx API error code=109400 msg=API orders are temporarily disabled")
+	tr.exchanges["bingx"] = bingx
+
+	cand := execCand()
+	cand.ShortExch = "bingx"
+
+	_, err := tr.openPair(cand, 100, execDet())
+	if err == nil {
+		t.Fatal("openPair returned nil error, want BingX preflight rejection")
+	}
+	if !strings.Contains(err.Error(), "pricegap: bingx preflight blocked SOON sell") {
+		t.Fatalf("error = %q, want BingX preflight context", err.Error())
+	}
+	if len(longEx.placedOrders()) != 0 {
+		t.Fatalf("non-BingX long real orders = %d, want 0", len(longEx.placedOrders()))
+	}
+	if len(bingx.placedOrders()) != 0 {
+		t.Fatalf("BingX real orders = %d, want 0", len(bingx.placedOrders()))
+	}
+	if len(store.saved) != 0 {
+		t.Fatalf("saved positions = %d, want 0", len(store.saved))
+	}
+	calls := bingx.preflightOrders()
+	if len(calls) != 1 {
+		t.Fatalf("BingX preflight calls = %d, want 1", len(calls))
+	}
+	call := calls[0]
+	if call.Symbol != "SOON" ||
+		call.Side != exchange.SideSell ||
+		call.OrderType != "limit" ||
+		call.Price != "2.03975000" ||
+		call.Size != "100.000000" ||
+		call.Force != "ioc" {
+		t.Fatalf("BingX preflight params = %+v", call)
+	}
+}
+
+func TestExecution_BingXLongPreflightRunsBeforeLiveOrders(t *testing.T) {
+	tr, _, shortEx, _ := newExecTestTracker(t)
+	bingx := newStubExchange("bingx")
+	bingx.contracts["SOON"] = exchange.ContractInfo{PriceStep: 0.0001, PriceDecimals: 4, SizeDecimals: 2}
+	tr.exchanges["bingx"] = bingx
+
+	cand := execCand()
+	cand.LongExch = "bingx"
+	bingx.queueFill(100, 1.00, nil)
+	shortEx.queueFill(100, 1.025, nil)
+
+	pos, err := tr.openPair(cand, 100, execDet())
+	if err != nil {
+		t.Fatalf("openPair returned error: %v", err)
+	}
+	if pos == nil {
+		t.Fatal("expected position, got nil")
+	}
+	calls := bingx.preflightOrders()
+	if len(calls) != 1 {
+		t.Fatalf("BingX preflight calls = %d, want 1", len(calls))
+	}
+	call := calls[0]
+	if call.Symbol != "SOON" ||
+		call.Side != exchange.SideBuy ||
+		call.OrderType != "limit" ||
+		call.Price != "0.0100" ||
+		call.Size != "100.00" ||
+		call.Force != "ioc" {
+		t.Fatalf("BingX preflight params = %+v", call)
+	}
+	if len(bingx.placedOrders()) != 1 {
+		t.Fatalf("BingX real orders = %d, want 1 after successful preflight", len(bingx.placedOrders()))
+	}
+	if len(shortEx.placedOrders()) != 1 {
+		t.Fatalf("short real orders = %d, want 1 after successful preflight", len(shortEx.placedOrders()))
 	}
 }
 

@@ -11,8 +11,10 @@ import (
 
 func TestTestOrderPostsNonMarketableIOCToLiveOrderEndpoint(t *testing.T) {
 	var seen bool
+	var deleteSeen bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodDelete {
+			deleteSeen = true
 			if r.URL.Path != "/openApi/swap/v2/trade/order" {
 				t.Fatalf("delete path = %s, want /openApi/swap/v2/trade/order", r.URL.Path)
 			}
@@ -86,6 +88,9 @@ func TestTestOrderPostsNonMarketableIOCToLiveOrderEndpoint(t *testing.T) {
 	if !seen {
 		t.Fatal("test server did not receive request")
 	}
+	if !deleteSeen {
+		t.Fatal("test server did not receive probe cancel request")
+	}
 }
 
 func TestTestOrderReturnsAPIOrdersDisabledError(t *testing.T) {
@@ -118,5 +123,148 @@ func TestTestOrderReturnsAPIOrdersDisabledError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "API orders are temporarily disabled") {
 		t.Fatalf("error = %q, want API orders disabled message", err.Error())
+	}
+}
+
+func TestTestOrderReturnsErrorWhenProbeOrderIDMissing(t *testing.T) {
+	var deleteSeen bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			deleteSeen = true
+			t.Fatalf("delete should not be sent without a probe order id")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"msg":"","data":{"order":{}}}`))
+	}))
+	defer server.Close()
+
+	adapter := NewAdapter(exchange.ExchangeConfig{
+		ApiKey:    "test-key",
+		SecretKey: "test-secret",
+	})
+	adapter.client.baseURL = server.URL
+	adapter.client.httpClient = server.Client()
+
+	err := adapter.TestOrder(exchange.PlaceOrderParams{
+		Symbol:    "SPORTFUNUSDT",
+		Side:      exchange.SideSell,
+		OrderType: "limit",
+		Price:     "0.09842540",
+		Size:      "1000",
+		Force:     "ioc",
+	})
+	if err == nil {
+		t.Fatal("TestOrder returned nil error, want missing order id failure")
+	}
+	if !strings.Contains(err.Error(), "missing probe order id") {
+		t.Fatalf("error = %q, want missing probe order id context", err.Error())
+	}
+	if deleteSeen {
+		t.Fatal("delete was sent without a probe order id")
+	}
+}
+
+func TestTestOrderReturnsProbeCancelError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodDelete {
+			_, _ = w.Write([]byte(`{"code":100500,"msg":"cancel failed","data":{}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0,"msg":"","data":{"order":{"orderId":123456789}}}`))
+	}))
+	defer server.Close()
+
+	adapter := NewAdapter(exchange.ExchangeConfig{
+		ApiKey:    "test-key",
+		SecretKey: "test-secret",
+	})
+	adapter.client.baseURL = server.URL
+	adapter.client.httpClient = server.Client()
+
+	err := adapter.TestOrder(exchange.PlaceOrderParams{
+		Symbol:    "SPORTFUNUSDT",
+		Side:      exchange.SideBuy,
+		OrderType: "limit",
+		Price:     "0.00049415",
+		Size:      "1000",
+		Force:     "ioc",
+	})
+	if err == nil {
+		t.Fatal("TestOrder returned nil error, want cancel failure")
+	}
+	if !strings.Contains(err.Error(), "cancel probe order") {
+		t.Fatalf("error = %q, want cancel probe order context", err.Error())
+	}
+}
+
+func TestTestOrderReturnsErrorWhenProbeFillsBeforeCancel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodDelete {
+			_, _ = w.Write([]byte(`{"code":80018,"msg":"order already filled","data":{}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0,"msg":"","data":{"order":{"orderId":123456789}}}`))
+	}))
+	defer server.Close()
+
+	adapter := NewAdapter(exchange.ExchangeConfig{
+		ApiKey:    "test-key",
+		SecretKey: "test-secret",
+	})
+	adapter.client.baseURL = server.URL
+	adapter.client.httpClient = server.Client()
+
+	err := adapter.TestOrder(exchange.PlaceOrderParams{
+		Symbol:    "SPORTFUNUSDT",
+		Side:      exchange.SideSell,
+		OrderType: "limit",
+		Price:     "0.09842540",
+		Size:      "1000",
+		Force:     "ioc",
+	})
+	if err == nil {
+		t.Fatal("TestOrder returned nil error, want filled probe failure")
+	}
+	if !strings.Contains(err.Error(), "probe order filled before cancel") {
+		t.Fatalf("error = %q, want filled probe context", err.Error())
+	}
+}
+
+func TestTestOrderRejectsUnsafeProbeParamsWithoutSending(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		t.Fatalf("server should not receive unsafe probe request")
+	}))
+	defer server.Close()
+
+	adapter := NewAdapter(exchange.ExchangeConfig{
+		ApiKey:    "test-key",
+		SecretKey: "test-secret",
+	})
+	adapter.client.baseURL = server.URL
+	adapter.client.httpClient = server.Client()
+
+	tests := []exchange.PlaceOrderParams{
+		{Symbol: "SPORTFUNUSDT", Side: exchange.SideBuy, OrderType: "market", Size: "100", Force: "ioc"},
+		{Symbol: "SPORTFUNUSDT", Side: exchange.SideBuy, OrderType: "limit", Price: "0.1", Size: "100", Force: "gtc"},
+		{Symbol: "SPORTFUNUSDT", Side: exchange.SideBuy, OrderType: "limit", Price: "", Size: "100", Force: "ioc"},
+		{Symbol: "SPORTFUNUSDT", Side: exchange.SideBuy, OrderType: "limit", Price: "0.1", Size: "0", Force: "ioc"},
+		{Symbol: "SPORTFUNUSDT", Side: exchange.SideBuy, OrderType: "limit", Price: "0.1", Size: "100", Force: "ioc", ReduceOnly: true},
+		{Symbol: "SPORTFUNUSDT", Side: exchange.Side("close"), OrderType: "limit", Price: "0.1", Size: "100", Force: "ioc"},
+	}
+	for _, tc := range tests {
+		err := adapter.TestOrder(tc)
+		if err == nil {
+			t.Fatalf("TestOrder(%+v) returned nil error, want unsafe probe rejection", tc)
+		}
+		if !strings.Contains(err.Error(), "unsafe probe") {
+			t.Fatalf("error = %q, want unsafe probe context", err.Error())
+		}
+	}
+	if requests != 0 {
+		t.Fatalf("unsafe probes sent %d requests, want 0", requests)
 	}
 }

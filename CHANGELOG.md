@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.34.13] - 2026-04-27
+
+### Fixed
+
+- Hardened BingX live order preflights so probes use the actual entry side, reject unsafe probe parameters, fail closed on missing probe order IDs, and report filled-before-cancel probes as failures.
+- Added BingX futures preflight coverage to spot-futures Dir B entry and pending-entry recovery before any spot leg is opened.
+- Added BingX preflight coverage to price-gap live entry before concurrent leg placement so a BingX API order disable cannot leave the peer leg opened first.
+
+### Added
+
+- Added a Dir B strategy-priority flow HTML reference diagram under `docs/`.
+
 ## [0.34.12] - 2026-04-27
 
 ### Fixed

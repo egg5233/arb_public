@@ -27,7 +27,7 @@ func TestPreflightBingXEntryOrderHardRejectsAPIOrdersDisabled(t *testing.T) {
 	}
 
 	var e Engine
-	err := e.preflightBingXEntryOrder(stub, "bingx", "SPORTFUNUSDT", 0.003733, "1000")
+	err := e.preflightBingXEntryOrder(stub, "bingx", "SPORTFUNUSDT", exchange.SideSell, 0.003733, "1000")
 	if err == nil {
 		t.Fatal("preflight returned nil, want hard reject")
 	}
@@ -40,9 +40,9 @@ func TestPreflightBingXEntryOrderHardRejectsAPIOrdersDisabled(t *testing.T) {
 
 	call := stub.calls[0]
 	if call.Symbol != "SPORTFUNUSDT" ||
-		call.Side != exchange.SideBuy ||
+		call.Side != exchange.SideSell ||
 		call.OrderType != "limit" ||
-		call.Price != "0.00003733" ||
+		call.Price != "0.00742867" ||
 		call.Size != "1000" ||
 		call.Force != "ioc" {
 		t.Fatalf("TestOrder params = %+v", call)
@@ -59,7 +59,7 @@ func TestPreflightBingXEntryOrderSkipsNonBingX(t *testing.T) {
 	}
 
 	var e Engine
-	err := e.preflightBingXEntryOrder(stub, "bybit", "SPORTFUNUSDT", 0.003733, "1000")
+	err := e.preflightBingXEntryOrder(stub, "bybit", "SPORTFUNUSDT", exchange.SideSell, 0.003733, "1000")
 	if err != nil {
 		t.Fatalf("preflight returned error for non-BingX exchange: %v", err)
 	}
