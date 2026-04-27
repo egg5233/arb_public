@@ -1,9 +1,6 @@
 package spotengine
 
-import (
-	"arb/internal/api"
-	"strings"
-)
+import "strings"
 
 // attemptAutoEntries processes discovered opportunities and attempts automated
 // entry for qualifying candidates. Entries are executed sequentially (one at a
@@ -37,7 +34,7 @@ func (e *SpotEngine) attemptAutoEntries(opps []SpotArbOpportunity) {
 		e.log.Info("auto-entry: ENTERING %s on %s (%s, net %.1f%% APR)",
 			opp.Symbol, opp.Exchange, opp.Direction, opp.NetAPR*100)
 
-		err := e.openWithStrategyOptions(opp.Symbol, opp.Exchange, opp.Direction, api.ManualOpenOptions{}, "sf_auto")
+		err := e.manualOpen(opp.Symbol, opp.Exchange, opp.Direction)
 		if err != nil {
 			e.log.Error("auto-entry: FAILED %s on %s: %v", opp.Symbol, opp.Exchange, err)
 			continue

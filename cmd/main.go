@@ -20,7 +20,6 @@ import (
 	"arb/internal/risk"
 	"arb/internal/scraper"
 	"arb/internal/spotengine"
-	"arb/internal/strategy"
 	"arb/pkg/exchange"
 	"arb/pkg/exchange/binance"
 	"arb/pkg/exchange/bingx"
@@ -212,13 +211,7 @@ func main() {
 	apiSrv.SetPermissions(permResults)
 	apiSrv.SetExchangeScorer(scorer)
 	apiSrv.SetCapitalAllocator(allocator)
-	strategyCoord := strategy.NewCoordinator(cfg)
-	strategyCoord.SetSLOStore(db)
-	if err := db.ReplayDirBSLOFromPositions(); err != nil {
-		log.Warn("strategy priority SLO replay failed: %v", err)
-	}
-	apiSrv.SetStrategyCoordinator(strategyCoord)
-	eng := engine.NewEngine(exchanges, scanner, riskMgr, riskMon, healthMon, db, apiSrv, cfg, allocator, strategyCoord)
+	eng := engine.NewEngine(exchanges, scanner, riskMgr, riskMon, healthMon, db, apiSrv, cfg, allocator)
 	eng.SetContracts(allContracts)
 
 	// Create shared Telegram notifier for both engines.
@@ -444,7 +437,7 @@ func main() {
 	// Start spot-futures arbitrage engine if enabled.
 	var spotEng *spotengine.SpotEngine
 	if cfg.SpotFuturesEnabled {
-		spotEng = spotengine.NewSpotEngine(exchanges, db, apiSrv, cfg, allocator, tg, strategyCoord)
+		spotEng = spotengine.NewSpotEngine(exchanges, db, apiSrv, cfg, allocator, tg)
 		spotEng.SetConfigNotify(notifier.Subscribe(), notifier.Subscribe())
 		if snapWriter != nil {
 			spotEng.SetSnapshotWriter(snapWriter)

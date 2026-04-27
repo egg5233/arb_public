@@ -61,12 +61,6 @@ type ArbitragePosition struct {
 	// NOT modified by depth-exit zeroing. Used by reconcile completeness gate.
 	LongCloseSize  float64 `json:"long_close_size,omitempty"`
 	ShortCloseSize float64 `json:"short_close_size,omitempty"`
-
-	StrategyReservationID string   `json:"strategy_reservation_id,omitempty"`
-	StrategyCandidateID   string   `json:"strategy_candidate_id,omitempty"`
-	StrategyEpoch         uint64   `json:"strategy_epoch,omitempty"`
-	Strategy              string   `json:"strategy,omitempty"`
-	StrategyLegKeys       []string `json:"strategy_leg_keys,omitempty"`
 }
 
 // InferHasReconciled back-fills HasReconciled for legacy positions that were

@@ -277,31 +277,6 @@ func TestHandleSpotManualOpen_ReturnsAcceptedForPendingConfirmation(t *testing.T
 	}
 }
 
-func TestHandleSpotManualOpen_PassesOverrideStrategyPriority(t *testing.T) {
-	s, mr := newTestServer(t)
-	defer mr.Close()
-
-	var got ManualOpenOptions
-	s.SetSpotOpenHandlerWithOptions(func(symbol, exchange, direction string, opts ManualOpenOptions) error {
-		if symbol != "BTCUSDT" || exchange != "stub" || direction != "buy_spot_short" {
-			t.Fatalf("unexpected spot open tuple: %s %s %s", symbol, exchange, direction)
-		}
-		got = opts
-		return nil
-	})
-
-	req := httptest.NewRequest(http.MethodPost, "/api/spot/open", strings.NewReader(`{"symbol":"BTCUSDT","exchange":"stub","direction":"buy_spot_short","override_strategy_priority":true}`))
-	w := httptest.NewRecorder()
-	s.handleSpotManualOpen(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	if !got.OverrideStrategyPriority {
-		t.Fatal("expected override_strategy_priority option true")
-	}
-}
-
 // TestHandleSpotBacktest_AcceptsBothDirections verifies the handler routes
 // Dir B (buy_spot_short) and Dir A (borrow_sell_long) to the engine, and
 // rejects unknown directions with 400 before hitting the engine.

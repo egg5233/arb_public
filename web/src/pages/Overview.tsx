@@ -1,5 +1,5 @@
 import { useState, useEffect, type FC } from 'react';
-import type { Position, Stats, ExchangeInfo, SpotPosition, LossLimitStatus, StrategyPriorityStats } from '../types.ts';
+import type { Position, Stats, ExchangeInfo, SpotPosition, LossLimitStatus } from '../types.ts';
 import StatusBadge from '../components/StatusBadge.tsx';
 import { useLocale } from '../i18n/index.ts';
 
@@ -52,7 +52,6 @@ const Overview: FC<OverviewProps> = ({
     pool_total: number;
     capital_per_leg: number;
   } | null>(null);
-  const [strategyPriority, setStrategyPriority] = useState<StrategyPriorityStats | null>(null);
 
   useEffect(() => {
     const token = localStorage.getItem('arb_token');
@@ -63,15 +62,6 @@ const Overview: FC<OverviewProps> = ({
       .then(res => res.ok ? res.json() : null)
       .then(resp => {
         if (resp && resp.ok && resp.data) setAllocation(resp.data);
-      })
-      .catch(() => {});
-
-    fetch('/api/strategy-priority', {
-      headers: { 'Authorization': `Bearer ${token}` },
-    })
-      .then(res => res.ok ? res.json() : null)
-      .then(resp => {
-        if (resp && resp.ok && resp.data) setStrategyPriority(resp.data);
       })
       .catch(() => {});
   }, []);
@@ -258,26 +248,6 @@ const Overview: FC<OverviewProps> = ({
               </div>
             </div>
           )}
-        </div>
-      )}
-
-      {strategyPriority && (
-        <div className="bg-gray-900 rounded-xl border border-gray-800 p-4">
-          <h3 className="text-sm font-semibold text-gray-300 mb-3">{t('overview.strategyPriority.title')}</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <div className="text-xs text-gray-500">{t('overview.strategyPriority.sloBreaches')}</div>
-              <div className={`text-lg font-bold ${strategyPriority.dirb_slo_breach_count > 0 ? 'text-yellow-400' : 'text-green-400'}`}>
-                {strategyPriority.dirb_slo_breach_count}
-              </div>
-            </div>
-            <div>
-              <div className="text-xs text-gray-500">{t('overview.strategyPriority.pendingConflicts')}</div>
-              <div className={`text-lg font-bold ${strategyPriority.pending_conflicts > 0 ? 'text-yellow-400' : 'text-green-400'}`}>
-                {strategyPriority.pending_conflicts}
-              </div>
-            </div>
-          </div>
         </div>
       )}
 

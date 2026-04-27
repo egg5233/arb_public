@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.35.1] - 2026-04-27
+
+### Removed
+
+- Removed the Dir B strategy-priority plan scaffold, including coordinator/SLO persistence, dashboard SLO visibility, strategy-priority config fields, reservation metadata, and the obsolete plan document.
+
+### Fixed
+
+- Kept the BingX probe-cancel hardening so cancel responses that say the probe order no longer exists are treated as successful cleanup, while API-disabled responses still fail closed.
+
 ## [0.35.0] - 2026-04-27
 
 ### Added

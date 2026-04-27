@@ -278,6 +278,13 @@ func (a *Adapter) cancelProbeOrder(symbol, orderID string) error {
 		return nil
 	}
 	if apiErr, ok := err.(*APIError); ok {
+		msg := strings.ToLower(apiErr.Msg)
+		if strings.Contains(msg, "order not exist") || strings.Contains(msg, "order does not exist") {
+			return nil
+		}
+		if strings.Contains(msg, "filled") {
+			return fmt.Errorf("probe order filled before cancel: %w", err)
+		}
 		switch apiErr.Code {
 		case 80016, 109421:
 			return nil

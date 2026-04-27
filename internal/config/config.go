@@ -3,7 +3,6 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"os"
 	"runtime"
 	"strconv"
@@ -13,34 +12,6 @@ import (
 
 	"arb/internal/models"
 )
-
-type StrategyPriority string
-
-const (
-	StrategyPriorityPerpPerpFirst StrategyPriority = "perp_perp_first"
-	StrategyPriorityDirBFirst     StrategyPriority = "dir_b_first"
-	StrategyPriorityDirBOnly      StrategyPriority = "dir_b_only"
-	StrategyPriorityPerpPerpOnly  StrategyPriority = "perp_perp_only"
-)
-
-func NormalizeStrategyPriority(raw string) (StrategyPriority, bool) {
-	switch StrategyPriority(strings.TrimSpace(raw)) {
-	case StrategyPriorityPerpPerpFirst:
-		return StrategyPriorityPerpPerpFirst, true
-	case StrategyPriorityDirBFirst:
-		return StrategyPriorityDirBFirst, true
-	case StrategyPriorityDirBOnly:
-		return StrategyPriorityDirBOnly, true
-	case StrategyPriorityPerpPerpOnly:
-		return StrategyPriorityPerpPerpOnly, true
-	default:
-		return StrategyPriorityPerpPerpFirst, false
-	}
-}
-
-func ValidateExpectedHoldHours(v float64) bool {
-	return !math.IsNaN(v) && !math.IsInf(v, 0) && v > 0
-}
 
 func parseBoolEnv(raw string) (bool, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
@@ -85,9 +56,6 @@ type Config struct {
 	AllowMixedIntervals     bool          // allow cross-interval pairs in ranker (default false)
 	DryRun                  bool          // if true, skip trade execution (log only)
 	TradFiSigned            bool          // true after Binance TradFi-Perps agreement is signed
-	EnableStrategyPriority  bool          // enable strategy-priority coordinator behavior (default false)
-	StrategyPriority        StrategyPriority
-	ExpectedHoldHours       float64 // expected hold window used by strategy-priority EV math (default 24)
 
 	// Depth-driven entry execution
 	EntryTimeoutSec int     // max seconds for depth fill loop (default 60)
@@ -479,18 +447,15 @@ type jsonAI struct {
 }
 
 type jsonStrategy struct {
-	TopOpportunities    *int     `json:"top_opportunities"`
-	ScanMinutes         []int    `json:"scan_minutes"`
-	EntryScanMinute     *int     `json:"entry_scan_minute"`
-	ExitScanMinute      *int     `json:"exit_scan_minute"`
-	RotateScanMinute    *int     `json:"rotate_scan_minute"`
-	RebalanceScanMinute *int     `json:"rebalance_scan_minute"`
-	EnablePoolAllocator *bool    `json:"enable_pool_allocator"`
-	TopPairsPerSymbol   *int     `json:"top_pairs_per_symbol"`
-	AllocatorTimeoutMs  *int     `json:"allocator_timeout_ms"`
-	EnablePriority      *bool    `json:"enable_strategy_priority"`
-	StrategyPriority    *string  `json:"strategy_priority"`
-	ExpectedHoldHours   *float64 `json:"expected_hold_hours"`
+	TopOpportunities    *int  `json:"top_opportunities"`
+	ScanMinutes         []int `json:"scan_minutes"`
+	EntryScanMinute     *int  `json:"entry_scan_minute"`
+	ExitScanMinute      *int  `json:"exit_scan_minute"`
+	RotateScanMinute    *int  `json:"rotate_scan_minute"`
+	RebalanceScanMinute *int  `json:"rebalance_scan_minute"`
+	EnablePoolAllocator *bool `json:"enable_pool_allocator"`
+	TopPairsPerSymbol   *int  `json:"top_pairs_per_symbol"`
+	AllocatorTimeoutMs  *int  `json:"allocator_timeout_ms"`
 
 	RebalanceMinNetPnLUSDT *float64       `json:"rebalance_min_net_pnl_usdt"`
 	RebalanceDonorFloorPct *float64       `json:"rebalance_donor_floor_pct"`
@@ -686,9 +651,6 @@ func Load() *Config {
 		SpreadReversalTolerance:            1,
 		ZeroSpreadTolerance:                2,
 		ReEnterCooldownHours:               1.0,
-		EnableStrategyPriority:             false,
-		StrategyPriority:                   StrategyPriorityPerpPerpFirst,
-		ExpectedHoldHours:                  24,
 		RedisAddr:                          "localhost:6379",
 		RedisDB:                            2,
 		DashboardAddr:                      ":8080",
@@ -785,16 +747,6 @@ func (c *Config) RLock() { c.mu.RLock() }
 
 // RUnlock releases the config read lock.
 func (c *Config) RUnlock() { c.mu.RUnlock() }
-
-func (c *Config) EffectiveStrategyPriority() StrategyPriority {
-	if !c.EnableStrategyPriority {
-		return StrategyPriorityPerpPerpFirst
-	}
-	if mode, ok := NormalizeStrategyPriority(string(c.StrategyPriority)); ok {
-		return mode
-	}
-	return StrategyPriorityPerpPerpFirst
-}
 
 // isValidScannerMode returns true if mode is one of the accepted scanner modes.
 func isValidScannerMode(mode string) bool {
@@ -895,25 +847,6 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		}
 		if s.AllocatorTimeoutMs != nil && *s.AllocatorTimeoutMs > 0 {
 			c.AllocatorTimeoutMs = *s.AllocatorTimeoutMs
-		}
-		if s.EnablePriority != nil {
-			c.EnableStrategyPriority = *s.EnablePriority
-		}
-		if s.StrategyPriority != nil {
-			if mode, ok := NormalizeStrategyPriority(*s.StrategyPriority); ok {
-				c.StrategyPriority = mode
-			} else {
-				fmt.Fprintf(os.Stderr, "[config] WARNING: invalid strategy.strategy_priority %q; using %s\n", *s.StrategyPriority, StrategyPriorityPerpPerpFirst)
-				c.StrategyPriority = StrategyPriorityPerpPerpFirst
-			}
-		}
-		if s.ExpectedHoldHours != nil {
-			if ValidateExpectedHoldHours(*s.ExpectedHoldHours) {
-				c.ExpectedHoldHours = *s.ExpectedHoldHours
-			} else {
-				fmt.Fprintf(os.Stderr, "[config] WARNING: invalid strategy.expected_hold_hours %v; using 24\n", *s.ExpectedHoldHours)
-				c.ExpectedHoldHours = 24
-			}
 		}
 		if s.RebalanceMinNetPnLUSDT != nil && *s.RebalanceMinNetPnLUSDT >= 0 {
 			c.RebalanceMinNetPnLUSDT = *s.RebalanceMinNetPnLUSDT
@@ -1647,17 +1580,6 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	strategy["enable_pool_allocator"] = c.EnablePoolAllocator
 	strategy["top_pairs_per_symbol"] = c.TopPairsPerSymbol
 	strategy["allocator_timeout_ms"] = c.AllocatorTimeoutMs
-	strategy["enable_strategy_priority"] = c.EnableStrategyPriority
-	mode, ok := NormalizeStrategyPriority(string(c.StrategyPriority))
-	if !ok {
-		mode = StrategyPriorityPerpPerpFirst
-	}
-	expectedHoldHours := c.ExpectedHoldHours
-	if !ValidateExpectedHoldHours(expectedHoldHours) {
-		expectedHoldHours = 24
-	}
-	strategy["strategy_priority"] = string(mode)
-	strategy["expected_hold_hours"] = expectedHoldHours
 	strategy["rebalance_min_net_pnl_usdt"] = c.RebalanceMinNetPnLUSDT
 	strategy["rebalance_donor_floor_pct"] = c.RebalanceDonorFloorPct
 
@@ -1981,28 +1903,6 @@ func (c *Config) loadEnvOverrides() {
 			c.MinChunkUSDT = f
 		}
 	}
-	if v := os.Getenv("ENABLE_STRATEGY_PRIORITY"); v != "" {
-		if b, ok := parseBoolEnv(v); ok {
-			c.EnableStrategyPriority = b
-		} else {
-			fmt.Fprintf(os.Stderr, "[config] WARNING: invalid ENABLE_STRATEGY_PRIORITY %q; keeping %v\n", v, c.EnableStrategyPriority)
-		}
-	}
-	if v := os.Getenv("STRATEGY_PRIORITY"); v != "" {
-		if mode, ok := NormalizeStrategyPriority(v); ok {
-			c.StrategyPriority = mode
-		} else {
-			fmt.Fprintf(os.Stderr, "[config] WARNING: invalid STRATEGY_PRIORITY %q; keeping %s\n", v, c.StrategyPriority)
-		}
-	}
-	if v := os.Getenv("EXPECTED_HOLD_HOURS"); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil && ValidateExpectedHoldHours(f) {
-			c.ExpectedHoldHours = f
-		} else {
-			fmt.Fprintf(os.Stderr, "[config] WARNING: invalid EXPECTED_HOLD_HOURS %q; keeping %v\n", v, c.ExpectedHoldHours)
-		}
-	}
-
 	// Env vars override JSON for API keys
 	if v := os.Getenv("BINANCE_API_KEY"); v != "" {
 		c.BinanceAPIKey = v

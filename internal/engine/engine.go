@@ -17,7 +17,6 @@ import (
 	"arb/internal/models"
 	"arb/internal/notify"
 	"arb/internal/risk"
-	"arb/internal/strategy"
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
@@ -74,7 +73,6 @@ type Engine struct {
 	db            *database.Client
 	api           *api.Server
 	cfg           *config.Config
-	strategyCoord *strategy.Coordinator
 	log           *utils.Logger
 	stopCh        chan struct{}
 
@@ -195,7 +193,6 @@ func NewEngine(
 	apiSrv *api.Server,
 	cfg *config.Config,
 	allocator *risk.CapitalAllocator,
-	strategyCoord *strategy.Coordinator,
 ) *Engine {
 	e := &Engine{
 		exchanges:          exchanges,
@@ -207,7 +204,6 @@ func NewEngine(
 		db:                 db,
 		api:                apiSrv,
 		cfg:                cfg,
-		strategyCoord:      strategyCoord,
 		log:                utils.NewLogger("engine"),
 		stopCh:             make(chan struct{}),
 		exitCancels:        make(map[string]context.CancelFunc),
@@ -442,22 +438,9 @@ func (e *Engine) manualOpenWithOptions(symbol, longExchange, shortExchange strin
 		return fmt.Errorf("at max capacity (%d/%d)", len(active), e.cfg.MaxPositions)
 	}
 
-	snap, strategyEnabled := e.ppStrategySnapshot()
-	strategyReservationID, err := e.tryReservePPStrategy(snap, "pp_manual", *opp, opts)
-	if err != nil {
-		e.capacityMu.Unlock()
-		return err
-	}
-	completeStrategy := func(outcome strategy.ReservationOutcome) {
-		if strategyEnabled {
-			e.completePPStrategyReservation(strategyReservationID, outcome)
-		}
-	}
-
 	// 5. Risk approval (synchronous, under capacity lock to prevent races)
 	approval, err := e.risk.Approve(*opp)
 	if err != nil {
-		completeStrategy(strategy.ReservationOutcomeAborted)
 		e.capacityMu.Unlock()
 		return fmt.Errorf("risk check failed: %v", err)
 	}
@@ -465,7 +448,6 @@ func (e *Engine) manualOpenWithOptions(symbol, longExchange, shortExchange strin
 		// Rejected approvals now carry populated Size/Price/RequiredMargin for
 		// RejectionKindCapital (used by allocator rescue). ManualOpen must not
 		// execute on those fields ??risk rejection is final here.
-		completeStrategy(strategy.ReservationOutcomeAborted)
 		e.capacityMu.Unlock()
 		if opts.Force {
 			return fmt.Errorf("force open cannot execute from rejected risk approval: %s", approval.Reason)
@@ -475,35 +457,23 @@ func (e *Engine) manualOpenWithOptions(symbol, longExchange, shortExchange strin
 
 	// 6. Dry run check
 	if e.cfg.DryRun {
-		completeStrategy(strategy.ReservationOutcomeAborted)
 		e.capacityMu.Unlock()
 		return fmt.Errorf("dry run mode ??trade not executed")
-	}
-
-	if strategyReservationID != "" {
-		if err := e.strategyCoord.MarkInFlight(strategyReservationID); err != nil {
-			completeStrategy(strategy.ReservationOutcomeAborted)
-			e.capacityMu.Unlock()
-			return fmt.Errorf("strategy reservation lost: %w", err)
-		}
 	}
 
 	lockResource := fmt.Sprintf("execute:%s", symbol)
 	lock, acquired, err := e.db.AcquireOwnedLock(lockResource, 5*time.Minute)
 	if err != nil {
-		completeStrategy(strategy.ReservationOutcomeAborted)
 		e.capacityMu.Unlock()
 		return fmt.Errorf("failed to acquire lock for %s", symbol)
 	}
 	if !acquired {
-		completeStrategy(strategy.ReservationOutcomeAborted)
 		e.capacityMu.Unlock()
 		return fmt.Errorf("execution already in progress for %s", symbol)
 	}
 
 	reservation, err := e.reservePerpCapital(*opp, approval, 0)
 	if err != nil {
-		completeStrategy(strategy.ReservationOutcomeAborted)
 		e.capacityMu.Unlock()
 		lock.Release()
 		return fmt.Errorf("capital allocator rejected: %v", err)
@@ -513,10 +483,8 @@ func (e *Engine) manualOpenWithOptions(symbol, longExchange, shortExchange strin
 	//    but *before* releasing the capacity mutex, so concurrent requests
 	//    see the occupied slot without the reservation self-rejecting.
 	pendingPos := e.createPendingPosition(*opp)
-	e.applyPPStrategyMeta(pendingPos, strategyReservationID)
 	if err := e.db.SavePosition(pendingPos); err != nil {
 		e.releasePerpReservation(reservation)
-		completeStrategy(strategy.ReservationOutcomeAborted)
 		e.capacityMu.Unlock()
 		lock.Release()
 		return fmt.Errorf("failed to reserve position slot: %v", err)
@@ -539,12 +507,10 @@ func (e *Engine) manualOpenWithOptions(symbol, longExchange, shortExchange strin
 					_ = e.allocator.Reconcile()
 				}
 			}
-			completeStrategy(strategy.ReservationOutcomeActive)
 			return
 		}
 		if err != nil {
 			e.releasePerpReservation(reservation)
-			completeStrategy(strategy.ReservationOutcomeAborted)
 			e.log.Error("manual open: trade execution failed for %s: %v", symbol, err)
 			e.removePendingPosition(pendingPos)
 			return
@@ -555,7 +521,6 @@ func (e *Engine) manualOpenWithOptions(symbol, longExchange, shortExchange strin
 				_ = e.allocator.Reconcile()
 			}
 		}
-		completeStrategy(strategy.ReservationOutcomeActive)
 	}()
 	return nil
 }
@@ -2192,20 +2157,18 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 
 	// Phase 1: Sequential pre-filter ??approve up to `slots` candidates.
 	type candidate struct {
-		opp                   models.Opportunity
-		size                  float64
-		price                 float64
-		gapBPS                float64
-		lockKey               string
-		lock                  *database.OwnedLock
-		pos                   *models.ArbitragePosition
-		reservation           *risk.CapitalReservation
-		strategyReservationID string
+		opp         models.Opportunity
+		size        float64
+		price       float64
+		gapBPS      float64
+		lockKey     string
+		lock        *database.OwnedLock
+		pos         *models.ArbitragePosition
+		reservation *risk.CapitalReservation
 	}
 	var candidates []candidate
 	newSlotCandidates := 0
 	reserved := map[string]float64{} // tracks margin committed by prior approvals in this batch
-	strategySnap, strategyEnabled := e.ppStrategySnapshot()
 
 	for _, opp := range opps {
 		if activeSymbols[opp.Symbol] {
@@ -2226,20 +2189,6 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 			continue
 		}
 
-		strategyReservationID, err := e.tryReservePPStrategy(strategySnap, "pp_auto", opp, api.ManualOpenOptions{})
-		if err != nil {
-			e.log.Info("strategy priority rejected %s: %v", opp.Symbol, err)
-			if e.rejStore != nil {
-				e.rejStore.AddOpp(opp, "strategy", err.Error())
-			}
-			continue
-		}
-		completeStrategy := func(outcome strategy.ReservationOutcome) {
-			if strategyEnabled {
-				e.completePPStrategyReservation(strategyReservationID, outcome)
-			}
-		}
-
 		e.log.Info("executeArbitrage: risk.Approve %s...", opp.Symbol)
 		approval, err := e.risk.ApproveWithReservedCached(opp, reserved, prefetchCache)
 		if err != nil {
@@ -2247,7 +2196,6 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 			if e.rejStore != nil {
 				e.rejStore.AddOpp(opp, "risk", fmt.Sprintf("error: %v", err))
 			}
-			completeStrategy(strategy.ReservationOutcomeAborted)
 			continue
 		}
 		if !approval.Approved {
@@ -2255,34 +2203,22 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 			if e.rejStore != nil {
 				e.rejStore.AddOpp(opp, "risk", approval.Reason)
 			}
-			completeStrategy(strategy.ReservationOutcomeAborted)
 			continue
 		}
 		e.log.Info("executeArbitrage: risk approved %s size=%.6f", opp.Symbol, approval.Size)
 
 		if e.cfg.DryRun {
 			e.log.Info("[DRY RUN] would execute trade for %s: size=%.6f price=%.2f spread=%.2f bps/h", opp.Symbol, approval.Size, approval.Price, opp.Spread)
-			completeStrategy(strategy.ReservationOutcomeAborted)
 			continue
-		}
-
-		if strategyReservationID != "" {
-			if err := e.strategyCoord.MarkInFlight(strategyReservationID); err != nil {
-				completeStrategy(strategy.ReservationOutcomeAborted)
-				e.log.Info("strategy reservation lost for %s: %v", opp.Symbol, err)
-				continue
-			}
 		}
 
 		lockResource := fmt.Sprintf("execute:%s", opp.Symbol)
 		symLock, acquired, err := e.db.AcquireOwnedLock(lockResource, 5*time.Minute)
 		if err != nil {
-			completeStrategy(strategy.ReservationOutcomeAborted)
 			e.log.Error("failed to acquire lock for %s: %v", opp.Symbol, err)
 			continue
 		}
 		if !acquired {
-			completeStrategy(strategy.ReservationOutcomeAborted)
 			e.log.Info("lock busy for %s, skipping", opp.Symbol)
 			continue
 		}
@@ -2293,16 +2229,13 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 			if e.rejStore != nil {
 				e.rejStore.AddOpp(opp, "risk", fmt.Sprintf("capital allocator: %v", err))
 			}
-			completeStrategy(strategy.ReservationOutcomeAborted)
 			symLock.Release()
 			continue
 		}
 
 		pendingPos := e.createPendingPosition(opp)
-		e.applyPPStrategyMeta(pendingPos, strategyReservationID)
 		if err := e.db.SavePosition(pendingPos); err != nil {
 			e.releasePerpReservation(reservation)
-			completeStrategy(strategy.ReservationOutcomeAborted)
 			e.log.Error("failed to save pending position for %s: %v", opp.Symbol, err)
 			symLock.Release()
 			continue
@@ -2311,15 +2244,14 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 		e.api.BroadcastPositionUpdate(pendingPos)
 
 		candidates = append(candidates, candidate{
-			opp:                   opp,
-			size:                  approval.Size,
-			price:                 approval.Price,
-			gapBPS:                approval.GapBPS,
-			lockKey:               lockResource,
-			lock:                  symLock,
-			pos:                   pendingPos,
-			reservation:           reservation,
-			strategyReservationID: strategyReservationID,
+			opp:         opp,
+			size:        approval.Size,
+			price:       approval.Price,
+			gapBPS:      approval.GapBPS,
+			lockKey:     lockResource,
+			lock:        symLock,
+			pos:         pendingPos,
+			reservation: reservation,
 		})
 		longMargin := approval.LongMarginNeeded
 		if longMargin <= 0 {
@@ -2362,12 +2294,10 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 						_ = e.allocator.Reconcile()
 					}
 				}
-				e.completePPStrategyReservation(c.strategyReservationID, strategy.ReservationOutcomeActive)
 				return
 			}
 			if err != nil {
 				e.releasePerpReservation(c.reservation)
-				e.completePPStrategyReservation(c.strategyReservationID, strategy.ReservationOutcomeAborted)
 				e.log.Error("trade execution failed for %s: %v", c.opp.Symbol, err)
 				e.cleanupFailedPosition(c.opp.Symbol, err.Error())
 				return
@@ -2378,7 +2308,6 @@ func (e *Engine) executeArbitrage(opps []models.Opportunity, dynamicCap float64)
 					_ = e.allocator.Reconcile()
 				}
 			}
-			e.completePPStrategyReservation(c.strategyReservationID, strategy.ReservationOutcomeActive)
 		}(c)
 	}
 	e.log.Info("executeArbitrage: waiting for %d goroutines to complete...", len(candidates))
@@ -3097,8 +3026,6 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 
 	pos.LongOrderID = longRes.orderID
 	pos.ShortOrderID = shortRes.orderID
-	e.bindPPStrategyOrder(pos, opp.LongExchange, longRes.orderID)
-	e.bindPPStrategyOrder(pos, opp.ShortExchange, shortRes.orderID)
 	pos.Status = models.StatusPartial
 	pos.UpdatedAt = time.Now().UTC()
 	_ = e.db.SavePosition(pos)

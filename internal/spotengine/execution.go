@@ -10,7 +10,6 @@ import (
 
 	"arb/internal/api"
 	"arb/internal/models"
-	"arb/internal/strategy"
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
@@ -59,17 +58,17 @@ func roundToFuturesStep(qty, stepSize float64, decimals int) (float64, string) {
 }
 
 func (e *SpotEngine) ManualOpenWithOptions(symbol, exchName, direction string, opts api.ManualOpenOptions) error {
-	return e.openWithStrategyOptions(symbol, exchName, direction, opts, "sf_manual")
+	return e.manualOpen(symbol, exchName, direction)
 }
 
 // ManualOpen executes a spot-futures arbitrage entry for the given symbol,
 // exchange, and direction. It runs synchronously (blocking) and returns an
 // error if any pre-check or execution step fails.
 func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
-	return e.manualOpen(symbol, exchName, direction, nil)
+	return e.manualOpen(symbol, exchName, direction)
 }
 
-func (e *SpotEngine) manualOpen(symbol, exchName, direction string, strategyMeta *strategy.PositionStrategyMeta) error {
+func (e *SpotEngine) manualOpen(symbol, exchName, direction string) error {
 	symbol = strings.ToUpper(strings.TrimSpace(symbol))
 	exchName = strings.ToLower(strings.TrimSpace(exchName))
 	direction = strings.TrimSpace(direction)
@@ -334,7 +333,6 @@ func (e *SpotEngine) manualOpen(symbol, exchName, direction string, strategyMeta
 	} else {
 		entryPos.FuturesSide = "short"
 	}
-	applySpotStrategyMeta(entryPos, strategyMeta)
 
 	if err := requireEntryLock("capital reservation"); err != nil {
 		return err
@@ -526,7 +524,6 @@ func (e *SpotEngine) executeBorrowSellLong(
 	if err != nil {
 		return 0, 0, 0, 0, 0, fmt.Errorf("margin sell (auto-borrow) failed: %w", err)
 	}
-	e.bindSpotStrategyOrder(pos, "spot_margin", spotOrderID)
 	e.log.Info("ManualOpen [borrow_sell_long] step 1: spot order placed: %s", spotOrderID)
 	if cpErr := e.persistPendingEntry(pos, spotOrderID); cpErr != nil {
 		return 0, 0, 0, 0, 0, e.abortAcceptedSpotEntry(smExch, futExch, pos, spotOrderID, symbol, size, cpErr)
@@ -571,7 +568,6 @@ func (e *SpotEngine) executeBorrowSellLong(
 		e.rollbackBorrowSell(smExch, symbol, baseCoin, spotFilledStr, buybackQuote, spotFilled)
 		return 0, 0, 0, 0, 0, fmt.Errorf("futures long failed: %w", err)
 	}
-	e.bindSpotStrategyOrder(pos, "futures", futOrderID)
 	e.log.Info("ManualOpen [borrow_sell_long] step 2: futures order placed: %s", futOrderID)
 
 	// Confirm futures fill.
@@ -654,7 +650,6 @@ func (e *SpotEngine) executeBuySpotShort(
 	if err != nil {
 		return 0, 0, 0, 0, fmt.Errorf("spot buy failed: %w", err)
 	}
-	e.bindSpotStrategyOrder(pos, "spot", spotOrderID)
 	e.log.Info("ManualOpen [buy_spot_short] step 1: spot order placed: %s", spotOrderID)
 	if cpErr := e.persistPendingEntry(pos, spotOrderID); cpErr != nil {
 		return 0, 0, 0, 0, e.abortAcceptedSpotEntry(spotExch, futExch, pos, spotOrderID, symbol, size, cpErr)
@@ -715,7 +710,6 @@ func (e *SpotEngine) executeBuySpotShort(
 		e.rollbackSpotOrder(spotExch, symbol, exchange.SideSell, spotFilledStr, "", false)
 		return 0, 0, 0, 0, fmt.Errorf("futures short failed: %w", err)
 	}
-	e.bindSpotStrategyOrder(pos, "futures", futOrderID)
 	e.log.Info("ManualOpen [buy_spot_short] step 2: futures order placed: %s", futOrderID)
 
 	// Confirm futures fill.

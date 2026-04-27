@@ -14,7 +14,6 @@ import (
 	"arb/internal/models"
 	"arb/internal/notify"
 	"arb/internal/risk"
-	"arb/internal/strategy"
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
@@ -22,18 +21,17 @@ import (
 // SpotEngine orchestrates spot-futures arbitrage: discovery, entry, monitoring
 // and exit of delta-neutral positions using spot margin + futures hedging.
 type SpotEngine struct {
-	exchanges     map[string]exchange.Exchange
-	spotMargin    map[string]exchange.SpotMarginExchange
-	spotMarkets   map[string]exchange.SpotExchange
-	db            *database.Client
-	api           *api.Server
-	cfg           *config.Config
-	allocator     *risk.CapitalAllocator
-	strategyCoord *strategy.Coordinator
-	log           *utils.Logger
-	stopCh        chan struct{}
-	wg            sync.WaitGroup
-	exitWG        sync.WaitGroup
+	exchanges   map[string]exchange.Exchange
+	spotMargin  map[string]exchange.SpotMarginExchange
+	spotMarkets map[string]exchange.SpotExchange
+	db          *database.Client
+	api         *api.Server
+	cfg         *config.Config
+	allocator   *risk.CapitalAllocator
+	log         *utils.Logger
+	stopCh      chan struct{}
+	wg          sync.WaitGroup
+	exitWG      sync.WaitGroup
 
 	// latestOpps caches the most recent discovery scan results for ManualOpen lookups.
 	oppsMu     sync.RWMutex
@@ -89,7 +87,6 @@ func NewSpotEngine(
 	cfg *config.Config,
 	allocator *risk.CapitalAllocator,
 	telegram *notify.TelegramNotifier,
-	strategyCoord *strategy.Coordinator,
 ) *SpotEngine {
 	sm := make(map[string]exchange.SpotMarginExchange)
 	spotMarkets := make(map[string]exchange.SpotExchange)
@@ -114,7 +111,6 @@ func NewSpotEngine(
 		api:            apiSrv,
 		cfg:            cfg,
 		allocator:      allocator,
-		strategyCoord:  strategyCoord,
 		log:            utils.NewLogger("spot-engine"),
 		stopCh:         make(chan struct{}),
 		exitState:      exitState{exiting: make(map[string]bool)},

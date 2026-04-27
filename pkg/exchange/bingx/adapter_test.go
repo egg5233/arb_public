@@ -198,6 +198,76 @@ func TestTestOrderReturnsProbeCancelError(t *testing.T) {
 	}
 }
 
+func TestTestOrderTreatsCancelOrderNotExistMessageAsSuccess(t *testing.T) {
+	var deleteSeen bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodDelete {
+			deleteSeen = true
+			_, _ = w.Write([]byte(`{"code":109400,"msg":"order not exist","data":{}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0,"msg":"","data":{"order":{"orderId":123456789}}}`))
+	}))
+	defer server.Close()
+
+	adapter := NewAdapter(exchange.ExchangeConfig{
+		ApiKey:    "test-key",
+		SecretKey: "test-secret",
+	})
+	adapter.client.baseURL = server.URL
+	adapter.client.httpClient = server.Client()
+
+	err := adapter.TestOrder(exchange.PlaceOrderParams{
+		Symbol:    "GUNUSDT",
+		Side:      exchange.SideSell,
+		OrderType: "limit",
+		Price:     "0.02823213",
+		Size:      "17414",
+		Force:     "ioc",
+	})
+	if err != nil {
+		t.Fatalf("TestOrder returned error for cancel order-not-exist message: %v", err)
+	}
+	if !deleteSeen {
+		t.Fatal("test server did not receive probe cancel request")
+	}
+}
+
+func TestTestOrderDoesNotTreatCancelAPIOrdersDisabledAsSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodDelete {
+			_, _ = w.Write([]byte(`{"code":109400,"msg":"Reminder: Due to the large market fluctuations, in order to reduce the risk of liquidation, API orders are temporarily disabled.","data":{}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0,"msg":"","data":{"order":{"orderId":123456789}}}`))
+	}))
+	defer server.Close()
+
+	adapter := NewAdapter(exchange.ExchangeConfig{
+		ApiKey:    "test-key",
+		SecretKey: "test-secret",
+	})
+	adapter.client.baseURL = server.URL
+	adapter.client.httpClient = server.Client()
+
+	err := adapter.TestOrder(exchange.PlaceOrderParams{
+		Symbol:    "GUNUSDT",
+		Side:      exchange.SideSell,
+		OrderType: "limit",
+		Price:     "0.02823213",
+		Size:      "17414",
+		Force:     "ioc",
+	})
+	if err == nil {
+		t.Fatal("TestOrder returned nil error, want cancel API-disabled failure")
+	}
+	if !strings.Contains(err.Error(), "API orders are temporarily disabled") {
+		t.Fatalf("error = %q, want API disabled message", err.Error())
+	}
+}
+
 func TestTestOrderReturnsErrorWhenProbeFillsBeforeCancel(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

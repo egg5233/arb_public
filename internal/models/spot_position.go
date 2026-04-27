@@ -70,12 +70,6 @@ type SpotFuturesPosition struct {
 	// Timing
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
-
-	StrategyReservationID string   `json:"strategy_reservation_id,omitempty"`
-	StrategyCandidateID   string   `json:"strategy_candidate_id,omitempty"`
-	StrategyEpoch         uint64   `json:"strategy_epoch,omitempty"`
-	Strategy              string   `json:"strategy,omitempty"`
-	StrategyLegKeys       []string `json:"strategy_leg_keys,omitempty"`
 }
 
 // SpotFutures position status constants.

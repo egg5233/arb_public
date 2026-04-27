@@ -111,7 +111,7 @@ func TestNativeScannerBingXDirBSpotOnlyRequiresFlag(t *testing.T) {
 			SpotFuturesScannerMode:             "native",
 			SpotFuturesMinNetYieldAPR:          0.01,
 			SpotFuturesEnableSpotOnlyExchanges: enableSpotOnly,
-		}, nil, nil, nil)
+		}, nil, nil)
 	}
 
 	lorisResp := &models.LorisResponse{

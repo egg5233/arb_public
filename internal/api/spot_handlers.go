@@ -202,10 +202,9 @@ func (s *Server) handleSpotManualOpen(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Symbol                   string `json:"symbol"`
-		Exchange                 string `json:"exchange"`
-		Direction                string `json:"direction"`
-		OverrideStrategyPriority bool   `json:"override_strategy_priority"`
+		Symbol    string `json:"symbol"`
+		Exchange  string `json:"exchange"`
+		Direction string `json:"direction"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Symbol == "" || req.Exchange == "" || req.Direction == "" {
 		writeJSON(w, http.StatusBadRequest, Response{Error: "symbol, exchange, direction required"})
@@ -217,13 +216,11 @@ func (s *Server) handleSpotManualOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	opts := ManualOpenOptions{OverrideStrategyPriority: req.OverrideStrategyPriority}
-	if err := s.spotOpenPosition(req.Symbol, req.Exchange, req.Direction, opts); err != nil {
+	if err := s.spotOpenPosition(req.Symbol, req.Exchange, req.Direction, ManualOpenOptions{}); err != nil {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "not found") {
 			writeJSON(w, http.StatusNotFound, Response{Error: errMsg})
-		} else if strings.Contains(errMsg, "already") || strings.Contains(errMsg, "capacity") ||
-			strings.Contains(errMsg, "override_required") || strings.Contains(errMsg, "strategy priority denied") {
+		} else if strings.Contains(errMsg, "already") || strings.Contains(errMsg, "capacity") {
 			writeJSON(w, http.StatusConflict, Response{Error: errMsg})
 		} else if strings.Contains(errMsg, "is filtered") {
 			writeJSON(w, http.StatusUnprocessableEntity, Response{Error: errMsg})

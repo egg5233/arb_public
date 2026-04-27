@@ -40,18 +40,11 @@ type Server struct {
 	configNotifier         *config.ConfigNotifier
 	analyticsStore         *analytics.Store
 	allocator              *risk.CapitalAllocator
-	strategyCoordinator    strategyPriorityCoordinator
 }
 
-// ManualOpenOptions carries dashboard-only manual entry overrides. Step 1 wires
-// OverrideStrategyPriority through the API but leaves it inert in engines.
+// ManualOpenOptions carries dashboard-only manual entry overrides.
 type ManualOpenOptions struct {
-	Force                    bool
-	OverrideStrategyPriority bool
-}
-
-type strategyPriorityCoordinator interface {
-	UpdatePriority(cfg *config.Config)
+	Force bool
 }
 
 // NewServer creates a new Dashboard server.
@@ -94,7 +87,6 @@ func (s *Server) Start() {
 	mux.HandleFunc("/api/opportunities", s.cors(s.authMiddleware(s.handleGetOpportunities)))
 	mux.HandleFunc("/api/stats", s.cors(s.authMiddleware(s.handleGetStats)))
 	mux.HandleFunc("/api/config", s.cors(s.authMiddleware(s.handleConfig)))
-	mux.HandleFunc("GET /api/strategy-priority", s.cors(s.authMiddleware(s.handleGetStrategyPriority)))
 	mux.HandleFunc("/api/exchanges", s.cors(s.authMiddleware(s.handleGetExchanges)))
 	mux.HandleFunc("GET /api/exchanges/health", s.cors(s.authMiddleware(s.handleGetExchangeHealth)))
 
@@ -363,13 +355,6 @@ func (s *Server) SetAnalyticsStore(store *analytics.Store) {
 // SetCapitalAllocator injects the capital allocator for the allocation API endpoint.
 func (s *Server) SetCapitalAllocator(allocator *risk.CapitalAllocator) {
 	s.allocator = allocator
-}
-
-// SetStrategyCoordinator injects the strategy-priority coordinator. It is
-// optional so existing tests and startup wiring can keep using nil until the
-// coordinator slice is linked in.
-func (s *Server) SetStrategyCoordinator(coordinator strategyPriorityCoordinator) {
-	s.strategyCoordinator = coordinator
 }
 
 // ConfigNotifier returns the shared ConfigNotifier so that other

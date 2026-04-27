@@ -26,7 +26,6 @@ import (
 	"arb/internal/engine"
 	"arb/internal/models"
 	"arb/internal/risk"
-	"arb/internal/strategy"
 	"arb/pkg/exchange"
 	"arb/pkg/exchange/binance"
 	"arb/pkg/exchange/bitget"
@@ -320,12 +319,9 @@ func main() {
 
 	// Build a real engine and execute
 	apiSrv := api.NewServer(db, cfg, exchanges)
-	strategyCoord := strategy.NewCoordinator(cfg)
-	strategyCoord.SetSLOStore(db)
-	apiSrv.SetStrategyCoordinator(strategyCoord)
 	riskMon := risk.NewMonitor(exchanges, db, cfg)
 	healthMon := risk.NewHealthMonitor(exchanges, db, cfg)
-	eng := engine.NewEngine(exchanges, nil, riskMgr, riskMon, healthMon, db, apiSrv, cfg, allocator, strategyCoord)
+	eng := engine.NewEngine(exchanges, nil, riskMgr, riskMon, healthMon, db, apiSrv, cfg, allocator)
 	eng.SetContracts(allContracts)
 
 	err = eng.SimExecuteTradeV2(opp, tradeSize, tradePrice, 0)
