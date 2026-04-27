@@ -261,6 +261,184 @@ func TestExecution_ResetFailuresOnSuccess(t *testing.T) {
 	}
 }
 
+// ---- PG-DIR-01: bidirectional executor leg-role swap tests -----------------
+
+// bidiCand returns a bidirectional candidate (same tuple as execCand).
+func bidiCand() models.PriceGapCandidate {
+	c := execCand()
+	c.Direction = models.PriceGapDirectionBidirectional
+	return c
+}
+
+// bidiInverseDet returns a DetectionResult with NEGATIVE spread (configured
+// short_exch is the cheaper / "wire-side long" leg).
+func bidiInverseDet() DetectionResult {
+	return DetectionResult{
+		SpreadBps:    -250,
+		MidLong:      1.025, // configured-long-exch mid (the EXPENSIVE side)
+		MidShort:     1.00,  // configured-short-exch mid (the CHEAP side)
+		StalenessSec: 1,
+	}
+}
+
+// TestOpenPair_PinnedForward — pinned candidate, positive spread → BUY on
+// configured LongExch, SELL on configured ShortExch; FiredDirection="forward";
+// CandidateLongExch == LongExchange == configured.
+func TestOpenPair_PinnedForward(t *testing.T) {
+	tr, longEx, shortEx, _ := newExecTestTracker(t)
+	cand := execCand() // Direction="" → treated as pinned
+	longEx.queueFill(100, 1.00, nil)
+	shortEx.queueFill(100, 1.025, nil)
+
+	pos, err := tr.openPair(cand, 100, execDet())
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if pos.FiredDirection != models.PriceGapFiredForward {
+		t.Errorf("FiredDirection = %q, want %q", pos.FiredDirection, models.PriceGapFiredForward)
+	}
+	if pos.LongExchange != "binance" || pos.ShortExchange != "gate" {
+		t.Errorf("wire-side roles = (%q, %q), want (binance, gate)", pos.LongExchange, pos.ShortExchange)
+	}
+	if pos.CandidateLongExch != "binance" || pos.CandidateShortExch != "gate" {
+		t.Errorf("configured tuple = (%q, %q), want (binance, gate)", pos.CandidateLongExch, pos.CandidateShortExch)
+	}
+	// BUY went to long_exch (binance), SELL to short_exch (gate).
+	longOrds := longEx.placedOrders()
+	shortOrds := shortEx.placedOrders()
+	if len(longOrds) == 0 || longOrds[0].Side != exchange.SideBuy {
+		t.Errorf("expected BUY on binance, got %+v", longOrds)
+	}
+	if len(shortOrds) == 0 || shortOrds[0].Side != exchange.SideSell {
+		t.Errorf("expected SELL on gate, got %+v", shortOrds)
+	}
+}
+
+// TestOpenPair_BidirectionalForward — bidirectional + positive spread behaves
+// identically to pinned forward (no swap).
+func TestOpenPair_BidirectionalForward(t *testing.T) {
+	tr, longEx, shortEx, _ := newExecTestTracker(t)
+	longEx.queueFill(100, 1.00, nil)
+	shortEx.queueFill(100, 1.025, nil)
+
+	pos, err := tr.openPair(bidiCand(), 100, execDet())
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if pos.FiredDirection != models.PriceGapFiredForward {
+		t.Errorf("FiredDirection = %q, want forward", pos.FiredDirection)
+	}
+	if pos.LongExchange != "binance" || pos.ShortExchange != "gate" {
+		t.Errorf("wire-side roles = (%q, %q), want (binance, gate)", pos.LongExchange, pos.ShortExchange)
+	}
+}
+
+// TestOpenPair_BidirectionalInverse — bidirectional + negative spread →
+// SWAP wire-side roles. BUY goes to configured short_exch (now the
+// wire-side long); SELL goes to configured long_exch. CandidateLongExch
+// preserves the CONFIGURED tuple for Phase 10 D-11 guard matching.
+func TestOpenPair_BidirectionalInverse(t *testing.T) {
+	tr, longEx, shortEx, _ := newExecTestTracker(t)
+	// "longEx" var is configured-long (binance); "shortEx" is configured-short (gate).
+	// In an inverse fire, BUY goes to gate (configured short, wire long) and
+	// SELL goes to binance (configured long, wire short). Queue fills accordingly.
+	shortEx.queueFill(100, 1.00, nil)  // wire-side long fill
+	longEx.queueFill(100, 1.025, nil)  // wire-side short fill
+
+	pos, err := tr.openPair(bidiCand(), 100, bidiInverseDet())
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if pos.FiredDirection != models.PriceGapFiredInverse {
+		t.Errorf("FiredDirection = %q, want %q", pos.FiredDirection, models.PriceGapFiredInverse)
+	}
+	// Wire-side roles SWAPPED.
+	if pos.LongExchange != "gate" || pos.ShortExchange != "binance" {
+		t.Errorf("wire-side roles = (%q, %q), want (gate, binance) [swapped]", pos.LongExchange, pos.ShortExchange)
+	}
+	// Configured tuple PRESERVED.
+	if pos.CandidateLongExch != "binance" || pos.CandidateShortExch != "gate" {
+		t.Errorf("configured tuple = (%q, %q), want (binance, gate) [unchanged]",
+			pos.CandidateLongExch, pos.CandidateShortExch)
+	}
+	// BUY went to gate (configured short, wire long), SELL to binance.
+	gateOrds := shortEx.placedOrders()
+	binanceOrds := longEx.placedOrders()
+	if len(gateOrds) == 0 || gateOrds[0].Side != exchange.SideBuy {
+		t.Errorf("expected BUY on gate (wire-side long), got %+v", gateOrds)
+	}
+	if len(binanceOrds) == 0 || binanceOrds[0].Side != exchange.SideSell {
+		t.Errorf("expected SELL on binance (wire-side short), got %+v", binanceOrds)
+	}
+}
+
+// TestOpenPair_LockKeyUnchangedByDirection — the per-symbol Redis lock key
+// uses the CONFIGURED tuple ({Symbol}:{cand.LongExch}:{cand.ShortExch}) so a
+// single candidate cannot fire forward and inverse concurrently. Asserted by
+// observing that an inverse fire still acquires the SAME lock resource
+// string as a forward fire.
+func TestOpenPair_LockKeyUnchangedByDirection(t *testing.T) {
+	tr, longEx, shortEx, store := newExecTestTracker(t)
+	// First call: forward fire, succeeds.
+	longEx.queueFill(100, 1.00, nil)
+	shortEx.queueFill(100, 1.025, nil)
+	if _, err := tr.openPair(bidiCand(), 100, execDet()); err != nil {
+		t.Fatalf("forward fire: %v", err)
+	}
+	forwardLock := ""
+	if len(store.lockHistory) > 0 {
+		forwardLock = store.lockHistory[0]
+	}
+
+	// Second call: inverse fire, would-be lock res must match forward's.
+	shortEx.queueFill(100, 1.00, nil)
+	longEx.queueFill(100, 1.025, nil)
+	if _, err := tr.openPair(bidiCand(), 100, bidiInverseDet()); err != nil {
+		t.Fatalf("inverse fire: %v", err)
+	}
+	inverseLock := ""
+	if len(store.lockHistory) >= 2 {
+		inverseLock = store.lockHistory[1]
+	}
+	if forwardLock == "" || forwardLock != inverseLock {
+		t.Fatalf("lock keys differ across directions: forward=%q inverse=%q (must use configured tuple)",
+			forwardLock, inverseLock)
+	}
+}
+
+// TestOpenPair_PaperModeInverseSwap — bidirectional + paper-mode + negative
+// spread → paper synth fills are computed on the SWAPPED legs (paper-mode
+// chokepoint preserved per Phase 9 D-12). Asserts pos.LongFillPrice reflects
+// a fill at wire-side-long mid (configured short_exch's mid = 1.00 here).
+func TestOpenPair_PaperModeInverseSwap(t *testing.T) {
+	tr, _, _, _ := newExecTestTracker(t)
+	tr.cfg.PriceGapPaperMode = true
+	cand := bidiCand()
+	cand.ModeledSlippageBps = 0 // simplify — synth fills exactly at mid
+
+	pos, err := tr.openPair(cand, 100, bidiInverseDet())
+	if err != nil {
+		t.Fatalf("paper inverse: %v", err)
+	}
+	if pos.FiredDirection != models.PriceGapFiredInverse {
+		t.Errorf("FiredDirection = %q, want inverse", pos.FiredDirection)
+	}
+	// In an inverse fire, wire-side LongMid is the configured-short mid (1.00).
+	if pos.LongMidAtDecision != 1.00 {
+		t.Errorf("LongMidAtDecision = %v, want 1.00 (configured short mid post-swap)", pos.LongMidAtDecision)
+	}
+	if pos.ShortMidAtDecision != 1.025 {
+		t.Errorf("ShortMidAtDecision = %v, want 1.025 (configured long mid post-swap)", pos.ShortMidAtDecision)
+	}
+	// With ModeledSlippageBps=0, paper synth = mid exactly.
+	if pos.LongFillPrice != 1.00 {
+		t.Errorf("LongFillPrice = %v, want 1.00 (paper synth at wire-side-long mid)", pos.LongFillPrice)
+	}
+	if pos.ShortFillPrice != 1.025 {
+		t.Errorf("ShortFillPrice = %v, want 1.025 (paper synth at wire-side-short mid)", pos.ShortFillPrice)
+	}
+}
+
 func TestExecution_PositionID_Format(t *testing.T) {
 	tr, longEx, shortEx, _ := newExecTestTracker(t)
 	longEx.queueFill(100, 1.00, nil)

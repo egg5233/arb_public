@@ -23,6 +23,11 @@ type fakeStore struct {
 	heldLocks    map[string]string // resource -> token (presence means held)
 	lockCounter  int
 	forceLockBusy bool // tests set true to simulate contention
+	// PG-DIR-01: per-call lock-resource history (FIFO append on every
+	// AcquirePriceGapLock invocation, regardless of held/forceLockBusy outcome).
+	// Used by TestOpenPair_LockKeyUnchangedByDirection to assert forward and
+	// inverse fires acquire the SAME lock key (configured tuple).
+	lockHistory []string
 
 	// Plan 06: rolling slippage window + disabled-flag write recorder.
 	slipWindow      map[string][]models.SlippageSample // candidateID -> samples
@@ -94,6 +99,7 @@ func (f *fakeStore) GetSlippageWindow(candidateID string, n int) ([]models.Slipp
 // AcquirePriceGapLock simulates a mutex: returns (token, true, nil) on free,
 // (_, false, nil) on already-held or when forceLockBusy is set.
 func (f *fakeStore) AcquirePriceGapLock(resource string, ttl time.Duration) (string, bool, error) {
+	f.lockHistory = append(f.lockHistory, resource)
 	if f.forceLockBusy {
 		return "", false, nil
 	}
