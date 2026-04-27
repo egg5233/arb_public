@@ -104,23 +104,27 @@ Plans:
 | 11. Auto-discovery Scanner | v2.1 | 0/? | Not started | — |
 | 12. Auto-promotion | v2.1 | 0/? | Not started | — |
 | 13. v2.0 Deferred Closure | v2.1 | 0/? | Not started | — |
+| 999.1. Bidirectional pricegap candidates | backlog | 2/6 | In Progress|  |
 
 ## Backlog
 
-### Phase 999.1: Bidirectional pricegap candidates (BACKLOG)
+### Phase 999.1: Bidirectional pricegap candidates (PLANNED)
 
-**Goal:** Add `direction: "bidirectional" | "pinned"` field to `PriceGapCandidate`. `pinned` = current behavior (fire only when spread crosses `T` in the configured `long_exch → short_exch` direction). `bidirectional` = detector evaluates `|spread| ≥ T` and fires whichever sign crosses, swapping leg roles on the wire at fire time. Saves 50% config when symmetric pairs have edge in both directions; opt-in per candidate so noise-prone pairs stay pinned.
+**Goal:** Add `direction: "bidirectional" | "pinned"` field to `PriceGapCandidate`. `pinned` = configured-direction-only fire (now WITH positive-sign filter — closes latent bug where `barRing.allExceed` used `math.Abs` and silently fired bidirectional in detection). `bidirectional` = detector evaluates `|spread| ≥ T` and fires whichever sign crosses, swapping leg roles on the wire at fire time. Saves 50% config when symmetric pairs have edge in both directions; opt-in per candidate so noise-prone pairs stay pinned.
 
-**Origin:** Operator question 2026-04-27 during Phase 10 testing. Phase 8 D-08 currently mandates two entries for both directions; this phase makes that optional.
+**Origin:** Operator question 2026-04-27 during Phase 10 testing. Phase 8 D-08 currently mandates two entries for both directions; this phase makes that optional. Planned 2026-04-25 after research + inline locked decisions (A1 sign-filter, A2/A5 verification, default=pinned, FiredDirection+CandidateLongExch+CandidateShortExch observability).
 
-**Touches:** `internal/pricegaptrader/detector.go` (sign-aware fire), `internal/pricegaptrader/execution.go` (pick leg roles at fire time), `internal/config/config.go` (add field with default `"pinned"` for backward compat), `web/src/pages/PriceGap.tsx` modal (radio toggle), `web/src/i18n/{en,zh-TW}.ts` (lockstep keys).
+**Touches:** `internal/models/pricegap_interfaces.go` + `pricegap_position.go` (struct fields), `internal/pricegaptrader/{detector,execution,monitor,risk_gate}.go` (sign branch + role swap + role-blindness), `internal/api/pricegap_handlers.go` (validator), `web/src/pages/PriceGap.tsx` (modal radio), `web/src/i18n/{en,zh-TW}.ts` (lockstep keys).
 
-**Risks to weigh in discuss-phase:** noise-side trades on weak-edge pairs; per-exchange leg-role economics (borrow rates, fees) that may favor one direction; observability — closed-position reporting must record which side actually fired.
+**Risks managed:** noise-side trades (opt-in only), per-exchange leg-role economics (operator controls per-candidate), observability (FiredDirection + configured tuple persisted), Phase 10 active-position guard tuple matching (CandidateLongExch/ShortExch fields).
 
-**Requirements:** TBD
-**Plans:** 0 plans
+**Requirements:** [PG-DIR-01]
+**Plans:** 2/6 plans executed
 
 Plans:
-- [ ] TBD (promote with /gsd-review-backlog when ready)
-</content>
-</invoke>
+- [x] 999.1-01-PLAN.md — Backend struct fields + detector sign branch + executor leg-role swap + risk-gate role-blindness verification (Wave 1)
+- [x] 999.1-02-PLAN.md — Validator extension for `direction` field with enum check (Wave 1)
+- [ ] 999.1-03-PLAN.md — i18n EN + zh-TW lockstep keys for `pricegap.candidates.modal.direction.*` (Wave 1)
+- [ ] 999.1-04-PLAN.md — Frontend modal Direction radio toggle + form-state + client-side validation (Wave 2; depends on 01/02/03)
+- [ ] 999.1-05-PLAN.md — End-to-end paper-mode test + backward-compat regression + i18n parity test (Wave 2; depends on 01/02/03/04)
+- [ ] 999.1-06-PLAN.md — Full build + VERSION/CHANGELOG bump + brief operator UAT (Wave 3; autonomous: false; depends on 01-05)

@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.1
 milestone_name: Candidate Operations
 status: executing
-stopped_at: Completed 999.1-01-PLAN.md
-last_updated: "2026-04-27T02:37:52.931Z"
+stopped_at: Completed 999.1-02-PLAN.md
+last_updated: "2026-04-27T02:41:52.021Z"
 last_activity: 2026-04-27
 progress:
   total_phases: 2
   completed_phases: 1
   total_plans: 11
-  completed_plans: 6
-  percent: 55
+  completed_plans: 7
+  percent: 64
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-21 after v1.0 shipped)
 ## Current Position
 
 Phase: 999.1 (bidirectional-pricegap-candidates) — EXECUTING
-Plan: 2 of 6
+Plan: 3 of 6
 Status: Ready to execute
 Last activity: 2026-04-27
 
@@ -97,6 +97,7 @@ Progress (v2.0): [          ] 0%
 | Phase 10 P03 | 7min | 2 tasks | 3 files |
 | Phase 10 P04 | 6min | 2 tasks | 4 files |
 | Phase 999.1 P01 | 45m | 3 tasks | 11 files |
+| Phase 999.1 P02 | 5min | 1 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -188,6 +189,7 @@ v1.0 decisions below (retained for reference):
 - [Phase 999.1]: PG-DIR-01: Direction is a behavior property excluded from PriceGapCandidate.ID() — preserves Phase 10 D-11/D-13/D-14 identity invariants
 - [Phase 999.1]: PG-DIR-01: Pinned mode receives a positive-sign filter (latent Phase-8 bug closure); CHANGELOG warns operators about behavior change
 - [Phase 999.1]: PG-DIR-01: Lock key + posID + CandidateLongExch use CONFIGURED tuple; LongExchange/ShortExchange use WIRE-SIDE roles for close-path correctness
+- [Phase 999.1]: Plan 02: validator stays pure (slice-of-strings); NormalizeDirection moves to caller for single mutation point
 
 ### Pending Todos
 
@@ -212,7 +214,7 @@ None yet. Next action: `/gsd-plan-phase 8` to decompose Phase 8 into executable 
 
 ## Session Continuity
 
-Last session: 2026-04-27T02:37:52.926Z
-Stopped at: Completed 999.1-01-PLAN.md
+Last session: 2026-04-27T02:41:46.303Z
+Stopped at: Completed 999.1-02-PLAN.md
 Resume file: None
 Next command: Operator runs 16-step UAT against /tmp/arb-phase10 → reports `approved` or divergences → resume executor to write 10-05-SUMMARY.md
