@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.1
 milestone_name: Candidate Operations
-status: Task 1 (full automated suite + binary build) GREEN; awaiting operator UAT (Task 2 — 16-step manual checklist)
-stopped_at: Plan 10-05 Task 1 complete (commit 9613c41 — gatecheck vet fix); /tmp/arb-phase10 binary built; awaiting operator manual UAT
-last_updated: "2026-04-25T12:14:29.245Z"
-last_activity: 2026-04-25
+status: executing
+stopped_at: Completed 999.1-01-PLAN.md
+last_updated: "2026-04-27T02:37:52.931Z"
+last_activity: 2026-04-27
 progress:
-  total_phases: 1
+  total_phases: 2
   completed_phases: 1
-  total_plans: 5
-  completed_plans: 5
-  percent: 100
+  total_plans: 11
+  completed_plans: 6
+  percent: 55
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-21 after v1.0 shipped)
 
 **Core value:** "I deposit USDT, select my risk preference, and the system automatically finds opportunities across multiple strategies, opens positions, collects yield, exits when profitable, and I can see exactly how much each position earned — with capital shifting between strategies as opportunities shift."
-**Current focus:** Phase 10 — Dashboard Candidate CRUD
+**Current focus:** Phase 999.1 — bidirectional-pricegap-candidates
 
 ## Current Position
 
-Phase: 10
-Plan: Not started
-Status: Task 1 (full automated suite + binary build) GREEN; awaiting operator UAT (Task 2 — 16-step manual checklist)
-Last activity: 2026-04-25
+Phase: 999.1 (bidirectional-pricegap-candidates) — EXECUTING
+Plan: 2 of 6
+Status: Ready to execute
+Last activity: 2026-04-27
 
 v1.0 shipped: 7 phases, 21 plans, 381 commits over 30 days (2026-03-23 → 2026-04-21). Audit: tech_debt — documentation/verification gaps carried forward as v2.0 backlog (DEBT-01..03, deferred).
 
@@ -96,6 +96,7 @@ Progress (v2.0): [          ] 0%
 | Phase 10 P02 | 6min | 2 tasks | 2 files |
 | Phase 10 P03 | 7min | 2 tasks | 3 files |
 | Phase 10 P04 | 6min | 2 tasks | 4 files |
+| Phase 999.1 P01 | 45m | 3 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -184,6 +185,9 @@ v1.0 decisions below (retained for reference):
 - [Phase 10]: Plan 10-04: Vitest unavailable per npm lockdown — used Node 22 native test runner (node --test --experimental-strip-types) as fallback per plan §<action> step 6; 17 tests pass, zero new deps
 - [Phase 10]: Plan 10-04: PG-OPS-08 invariant double-locked — 10-03 had one-shot AST scan; 10-04 adds continuous regression test (Tests 2-6) using brace-balanced JS-style scan re-run on every test invocation
 - [Phase 10]: Plan 10-04: Tracker hot-reload double-locked — static regex assertion on tracker.go struct fields catches future Pitfall-1 cache refactors; dynamic CandidateSnapshotForTest helper proves per-tick read-through
+- [Phase 999.1]: PG-DIR-01: Direction is a behavior property excluded from PriceGapCandidate.ID() — preserves Phase 10 D-11/D-13/D-14 identity invariants
+- [Phase 999.1]: PG-DIR-01: Pinned mode receives a positive-sign filter (latent Phase-8 bug closure); CHANGELOG warns operators about behavior change
+- [Phase 999.1]: PG-DIR-01: Lock key + posID + CandidateLongExch use CONFIGURED tuple; LongExchange/ShortExchange use WIRE-SIDE roles for close-path correctness
 
 ### Pending Todos
 
@@ -208,7 +212,7 @@ None yet. Next action: `/gsd-plan-phase 8` to decompose Phase 8 into executable 
 
 ## Session Continuity
 
-Last session: 2026-04-25T07:55:30.000Z
-Stopped at: Plan 10-05 Task 1 complete (commit 9613c41 — gatecheck vet fix); /tmp/arb-phase10 binary built; awaiting operator manual UAT
-Resume file: .planning/phases/10-dashboard-candidate-crud/10-05-PLAN.md (Task 2 checkpoint)
+Last session: 2026-04-27T02:37:52.926Z
+Stopped at: Completed 999.1-01-PLAN.md
+Resume file: None
 Next command: Operator runs 16-step UAT against /tmp/arb-phase10 → reports `approved` or divergences → resume executor to write 10-05-SUMMARY.md
