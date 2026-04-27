@@ -158,6 +158,127 @@ func TestDetectOnce_StalBBO(t *testing.T) {
 	}
 }
 
+// ---- PG-DIR-01: direction-aware allExceedDirected tests --------------------
+
+// Helper: push 4 bars with the given spread sign at fresh per-minute timestamps.
+// Sets BBOs to produce target spread (positive: pxLong > pxShort).
+func pushBarsAtSpread(t *testing.T, tr *Tracker, longEx, shortEx *stubExchange, cand models.PriceGapCandidate, start time.Time, bars int, signedBps float64) DetectionResult {
+	t.Helper()
+	clk := newFakeClock(start)
+	mid := 100.0
+	// spread = (pxLong - pxShort) / mid * 1e4, with mid = (pxLong+pxShort)/2.
+	// Set pxLong = mid + half, pxShort = mid - half → spread = 2*half/mid * 1e4.
+	// Solve: half = signedBps / 2 / 1e4 * mid.
+	half := signedBps / 2.0 / 10_000.0 * mid
+	pxLong := mid + half
+	pxShort := mid - half
+	var res DetectionResult
+	for i := 0; i < bars; i++ {
+		setMids(longEx, shortEx, cand.Symbol, pxLong, pxShort, clk.Now())
+		res = tr.detectOnce(cand, clk.Now())
+		clk.Advance(60 * time.Second)
+	}
+	return res
+}
+
+// TestDirection_PinnedFiresPositive — pinned + 4 same-sign positive bars at
+// |spread|≥T → fires (configured baseline).
+func TestDirection_PinnedFiresPositive(t *testing.T) {
+	cand := defaultCandidate()
+	cand.Direction = models.PriceGapDirectionPinned
+	tr, longEx, shortEx := newDetectorTestTracker(t, cand)
+	start := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	res := pushBarsAtSpread(t, tr, longEx, shortEx, cand, start, 4, +250)
+	if !res.Fired {
+		t.Fatalf("pinned + positive 4-bar must fire: reason=%q spread=%.2f", res.Reason, res.SpreadBps)
+	}
+}
+
+// TestDirection_PinnedSignFilter — pinned + 4 same-sign NEGATIVE bars at
+// |spread|≥T → does NOT fire. Closes the latent Phase-8 bug where allExceed
+// used math.Abs and silently fired any sign.
+func TestDirection_PinnedSignFilter(t *testing.T) {
+	cand := defaultCandidate()
+	cand.Direction = models.PriceGapDirectionPinned
+	tr, longEx, shortEx := newDetectorTestTracker(t, cand)
+	start := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	res := pushBarsAtSpread(t, tr, longEx, shortEx, cand, start, 4, -250)
+	if res.Fired {
+		t.Fatalf("pinned + negative 4-bar must NOT fire (sign filter); spread=%.2f", res.SpreadBps)
+	}
+	if res.Reason != "pinned_wrong_sign" {
+		t.Fatalf("reason=%q, want pinned_wrong_sign", res.Reason)
+	}
+}
+
+// TestDirection_DefaultEmptyTreatedAsPinned — Direction="" treated as pinned;
+// negative-direction bars do NOT fire.
+func TestDirection_DefaultEmptyTreatedAsPinned(t *testing.T) {
+	cand := defaultCandidate()
+	cand.Direction = "" // legacy / pre-Phase-999.1
+	tr, longEx, shortEx := newDetectorTestTracker(t, cand)
+	start := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	res := pushBarsAtSpread(t, tr, longEx, shortEx, cand, start, 4, -250)
+	if res.Fired {
+		t.Fatalf("default-empty + negative 4-bar must NOT fire (treated as pinned)")
+	}
+}
+
+// TestDirection_BidirectionalFiresEitherSign_Positive — bidirectional + 4
+// positive bars → fires.
+func TestDirection_BidirectionalFiresEitherSign_Positive(t *testing.T) {
+	cand := defaultCandidate()
+	cand.Direction = models.PriceGapDirectionBidirectional
+	tr, longEx, shortEx := newDetectorTestTracker(t, cand)
+	start := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	res := pushBarsAtSpread(t, tr, longEx, shortEx, cand, start, 4, +250)
+	if !res.Fired {
+		t.Fatalf("bidirectional + positive 4-bar must fire: reason=%q", res.Reason)
+	}
+	if res.SpreadBps < 240 || res.SpreadBps > 260 {
+		t.Fatalf("spread=%.2f, expected ~+250", res.SpreadBps)
+	}
+}
+
+// TestDirection_BidirectionalFiresEitherSign_Negative — bidirectional + 4
+// negative bars → fires; SpreadBps preserves the negative sign for the executor.
+func TestDirection_BidirectionalFiresEitherSign_Negative(t *testing.T) {
+	cand := defaultCandidate()
+	cand.Direction = models.PriceGapDirectionBidirectional
+	tr, longEx, shortEx := newDetectorTestTracker(t, cand)
+	start := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	res := pushBarsAtSpread(t, tr, longEx, shortEx, cand, start, 4, -250)
+	if !res.Fired {
+		t.Fatalf("bidirectional + negative 4-bar must fire: reason=%q", res.Reason)
+	}
+	if res.SpreadBps > -240 || res.SpreadBps < -260 {
+		t.Fatalf("spread=%.2f, expected ~-250 (sign preserved for executor swap)", res.SpreadBps)
+	}
+}
+
+// TestDirection_BidirectionalRejectsMixedSigns — bidirectional + mixed-sign
+// bars do NOT fire (T-08-11 same-sign continuity preserved for both modes).
+func TestDirection_BidirectionalRejectsMixedSigns(t *testing.T) {
+	cand := defaultCandidate()
+	cand.Direction = models.PriceGapDirectionBidirectional
+	tr, longEx, shortEx := newDetectorTestTracker(t, cand)
+	start := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	clk := newFakeClock(start)
+	// 4 bars: +250, +250, -250, -250 — magnitude OK on each, sign-flipped → must not fire.
+	for i, signedBps := range []float64{+250, +250, -250, -250} {
+		mid := 100.0
+		half := signedBps / 2.0 / 10_000.0 * mid
+		pxLong := mid + half
+		pxShort := mid - half
+		setMids(longEx, shortEx, cand.Symbol, pxLong, pxShort, clk.Now())
+		res := tr.detectOnce(cand, clk.Now())
+		clk.Advance(60 * time.Second)
+		if i == 3 && res.Fired {
+			t.Fatalf("bidirectional + mixed-sign must NOT fire (same-sign invariant T-08-11)")
+		}
+	}
+}
+
 func TestDetectOnce_FiresOnFourthBar(t *testing.T) {
 	cand := defaultCandidate()
 	tr, longEx, shortEx := newDetectorTestTracker(t, cand)
