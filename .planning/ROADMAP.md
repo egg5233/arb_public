@@ -104,5 +104,23 @@ Plans:
 | 11. Auto-discovery Scanner | v2.1 | 0/? | Not started | — |
 | 12. Auto-promotion | v2.1 | 0/? | Not started | — |
 | 13. v2.0 Deferred Closure | v2.1 | 0/? | Not started | — |
+
+## Backlog
+
+### Phase 999.1: Bidirectional pricegap candidates (BACKLOG)
+
+**Goal:** Add `direction: "bidirectional" | "pinned"` field to `PriceGapCandidate`. `pinned` = current behavior (fire only when spread crosses `T` in the configured `long_exch → short_exch` direction). `bidirectional` = detector evaluates `|spread| ≥ T` and fires whichever sign crosses, swapping leg roles on the wire at fire time. Saves 50% config when symmetric pairs have edge in both directions; opt-in per candidate so noise-prone pairs stay pinned.
+
+**Origin:** Operator question 2026-04-27 during Phase 10 testing. Phase 8 D-08 currently mandates two entries for both directions; this phase makes that optional.
+
+**Touches:** `internal/pricegaptrader/detector.go` (sign-aware fire), `internal/pricegaptrader/execution.go` (pick leg roles at fire time), `internal/config/config.go` (add field with default `"pinned"` for backward compat), `web/src/pages/PriceGap.tsx` modal (radio toggle), `web/src/i18n/{en,zh-TW}.ts` (lockstep keys).
+
+**Risks to weigh in discuss-phase:** noise-side trades on weak-edge pairs; per-exchange leg-role economics (borrow rates, fees) that may favor one direction; observability — closed-position reporting must record which side actually fired.
+
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd-review-backlog when ready)
 </content>
 </invoke>
