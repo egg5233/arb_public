@@ -20,6 +20,14 @@ const (
 	ExitReasonOrphan      = "recovered_orphan" // rehydration pitfall #3 per RESEARCH.md
 )
 
+// FiredDirection enum (PG-DIR-01) — exact string values for Redis persistence.
+// "forward" = configured-direction sign crossed (long_exch cheaper than short_exch).
+// "inverse" = opposite-direction sign crossed; executor swapped wire-side leg roles.
+const (
+	PriceGapFiredForward = "forward"
+	PriceGapFiredInverse = "inverse"
+)
+
 // Price-gap mode constants (Phase 9, D-12).
 // Default on unmarshal of pre-Phase-9 records is "live" — see NormalizeMode.
 const (
@@ -30,11 +38,24 @@ const (
 // PriceGapPosition — per D-14 persisted under pg:pos:{id}, D-15 ID format.
 // Delta-neutral cross-exchange price-gap position (Strategy 4).
 type PriceGapPosition struct {
-	ID             string `json:"id"`
-	Symbol         string `json:"symbol"`
-	LongExchange   string `json:"long_exchange"`
-	ShortExchange  string `json:"short_exchange"`
-	Status         string `json:"status"` // "pending" | "open" | "exiting" | "closed"
+	ID            string `json:"id"`
+	Symbol        string `json:"symbol"`
+	LongExchange  string `json:"long_exchange"`  // wire-side role (may swap from configured for inverse fires — PG-DIR-01)
+	ShortExchange string `json:"short_exchange"` // wire-side role (may swap from configured for inverse fires — PG-DIR-01)
+
+	// PG-DIR-01: bidirectional fire observability.
+	// FiredDirection: "forward" (configured-direction crossed) | "inverse" (opposite sign crossed).
+	// CandidateLongExch / CandidateShortExch: the CONFIGURED tuple at fire time —
+	// distinct from LongExchange / ShortExchange which are the WIRE-SIDE roles
+	// (which differ from the configured tuple when FiredDirection == "inverse").
+	// Required for Phase 10 D-11 active-position guard tuple matching (Pitfall 5).
+	// Empty on pre-Phase-999.1 records — close path never branches on these
+	// (it reads LongExchange/ShortExchange face-value), so legacy decode is safe.
+	FiredDirection     string `json:"fired_direction,omitempty"`
+	CandidateLongExch  string `json:"candidate_long_exch,omitempty"`
+	CandidateShortExch string `json:"candidate_short_exch,omitempty"`
+
+	Status string `json:"status"` // "pending" | "open" | "exiting" | "closed"
 	// Mode string `json:"mode"` — Phase 9 D-12: "paper" | "live". Defaults to
 	// "live" on unmarshal of pre-Phase-9 records via NormalizeMode.
 	Mode string `json:"mode"`
