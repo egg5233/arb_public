@@ -104,7 +104,7 @@ Plans:
 | 11. Auto-discovery Scanner | v2.1 | 0/? | Not started | — |
 | 12. Auto-promotion | v2.1 | 0/? | Not started | — |
 | 13. v2.0 Deferred Closure | v2.1 | 0/? | Not started | — |
-| 999.1. Bidirectional pricegap candidates | backlog | 5/6 | In Progress|  |
+| 999.1. Bidirectional pricegap candidates | backlog | 6/6 | Complete   | 2026-04-27 |
 
 ## Backlog
 
@@ -119,7 +119,7 @@ Plans:
 **Risks managed:** noise-side trades (opt-in only), per-exchange leg-role economics (operator controls per-candidate), observability (FiredDirection + configured tuple persisted), Phase 10 active-position guard tuple matching (CandidateLongExch/ShortExch fields).
 
 **Requirements:** [PG-DIR-01]
-**Plans:** 5/6 plans executed
+**Plans:** 6/6 plans complete
 
 Plans:
 - [x] 999.1-01-PLAN.md — Backend struct fields + detector sign branch + executor leg-role swap + risk-gate role-blindness verification (Wave 1)
@@ -127,4 +127,4 @@ Plans:
 - [x] 999.1-03-PLAN.md — i18n EN + zh-TW lockstep keys for `pricegap.candidates.modal.direction.*` (Wave 1)
 - [x] 999.1-04-PLAN.md — Frontend modal Direction radio toggle + form-state + client-side validation (Wave 2; depends on 01/02/03)
 - [x] 999.1-05-PLAN.md — End-to-end paper-mode test + backward-compat regression + i18n parity test (Wave 2; depends on 01/02/03/04)
-- [ ] 999.1-06-PLAN.md — Full build + VERSION/CHANGELOG bump + brief operator UAT (Wave 3; autonomous: false; depends on 01-05)
+- [x] 999.1-06-PLAN.md — Full build + VERSION/CHANGELOG bump + brief operator UAT (Wave 3; autonomous: false; depends on 01-05)
