@@ -4,9 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-04-27
+
+### Added
+
+- **Pricegap tracker (PG-DIR-01, Phase 999.1):** `PriceGapCandidate.Direction` field (default `"pinned"`). Bidirectional candidates (`direction: "bidirectional"`) fire on either sign of the spread; the executor swaps wire-side leg roles for inverse fires while the lock key, position ID, and Phase 10 active-position guard continue to use the CONFIGURED tuple. Operator UX: dashboard Add/Edit candidate modal exposes a Direction radio toggle with Pinned (default) and Bidirectional options, with i18n labels in EN and zh-TW.
+- **Pricegap position observability (Phase 999.1):** `FiredDirection` ("forward"|"inverse"), `CandidateLongExch`, `CandidateShortExch` fields persisted on `PriceGapPosition` for closed-log analytics and Phase 10 D-11 active-position guard tuple matching when wire-side roles diverge from configured.
+
 ### Changed
 
-- **Pricegap tracker (PG-DIR-01, Phase 999.1 Plan 01):** `PriceGapCandidate.Direction` field added (default `"pinned"`). Pinned mode now requires positive-direction sign continuity to fire — closes a latent Phase-8 bug where `barRing.allExceed` used `math.Abs` and silently fired any sign for pinned candidates, placing wrong-side trades on inverse spreads. Bidirectional candidates (`direction: "bidirectional"`) fire on either sign and the executor swaps wire-side leg roles for inverse fires; the lock key, position ID, and Phase 10 active-position guard all continue to use the CONFIGURED tuple. `PriceGapPosition` gains `FiredDirection` ("forward"|"inverse"), `CandidateLongExch`, `CandidateShortExch` for observability and Phase 10 D-11 tuple matching when wire-side roles diverge from configured. Existing operator candidates retain pinned behavior — no JSON migration required, but pinned candidates that were silently firing inverse-direction will stop doing so. Verify your candidate list with `pg-admin list` and flip any intentionally-symmetric candidates to `direction: "bidirectional"`. Risk-gate Gate-concentration check verified role-blind (counts notional on either leg) — no change required.
+- **BREAKING (behavior, not API) — pinned-mode sign filter (Phase 999.1 Plan 01):** Pinned mode now requires positive-direction sign continuity to fire. Previously `barRing.allExceed` used `math.Abs` and silently fired bidirectional in detection (only execution was direction-locked), placing wrong-side trades on inverse spreads. Operators with candidates intentionally exploiting this latent bug will see them stop firing — verify your candidate list with `pg-admin list` and flip any intentionally-symmetric candidates to `direction: "bidirectional"` via the dashboard modal (or the candidates JSON). No JSON migration required for pinned-only candidates.
+
+### Fixed
+
+- **Pricegap risk-gate concentration (Phase 999.1 A5):** Gate-concentration check is role-blind — counts notional on either leg — required for correct concentration accounting under bidirectional inverse fires where wire-side roles diverge from the configured tuple.
 
 ## [0.34.11] - 2026-04-25
 
