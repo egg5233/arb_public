@@ -1,6 +1,7 @@
 package spotengine
 
 import (
+	"arb/internal/api"
 	"strings"
 )
 
@@ -36,7 +37,7 @@ func (e *SpotEngine) attemptAutoEntries(opps []SpotArbOpportunity) {
 		e.log.Info("auto-entry: ENTERING %s on %s (%s, net %.1f%% APR)",
 			opp.Symbol, opp.Exchange, opp.Direction, opp.NetAPR*100)
 
-		err := e.ManualOpen(opp.Symbol, opp.Exchange, opp.Direction)
+		err := e.openWithStrategyOptions(opp.Symbol, opp.Exchange, opp.Direction, api.ManualOpenOptions{}, "sf_auto")
 		if err != nil {
 			e.log.Error("auto-entry: FAILED %s on %s: %v", opp.Symbol, opp.Exchange, err)
 			continue

@@ -52,6 +52,12 @@ const EXCHANGE_LIST = [
 
 const LEVERAGE_OPTIONS = [1, 2, 3, 5, 10, 20];
 const SF_LEVERAGE_OPTIONS = [1, 2, 3, 5];
+const STRATEGY_PRIORITY_OPTIONS = [
+  'perp_perp_first',
+  'dir_b_first',
+  'dir_b_only',
+  'perp_perp_only',
+] as const;
 
 // ---------------------------------------------------------------------------
 // Utility: nested path get/set
@@ -1209,6 +1215,7 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
     const sfEnabled = getByPath(config, ['spot_futures', 'enabled']) === true;
     const sfAutoEnabled = getByPath(config, ['spot_futures', 'auto_enabled']) === true;
     const sfDryRun = getByPath(config, ['spot_futures', 'auto_dry_run']) === true;
+    const sfSpotOnly = getByPath(config, ['spot_futures', 'enable_spot_only_exchanges']) === true;
     const sfExchanges = (getByPath(config, ['spot_futures', 'exchanges']) as string[] | undefined) || [];
     const sfMaintenanceGate = getByPath(config, ['spot_futures', 'enable_maintenance_gate']) === true;
 
@@ -1261,6 +1268,23 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
             />
             <span className={`text-sm font-semibold ${sfDryRun ? 'text-green-400' : 'text-red-400'}`}>
               {sfDryRun ? 'ON' : 'OFF'}
+            </span>
+          </div>
+        </div>
+
+        {/* Spot-only exchanges toggle */}
+        <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-sm font-medium">{t('cfg.sf.enableSpotOnlyExchanges')}</label>
+            <Tooltip text={t('cfg.sf.enableSpotOnlyExchangesDesc')} />
+          </div>
+          <div className="flex items-center gap-3">
+            <ToggleSwitch
+              on={sfSpotOnly}
+              onChange={(v) => handleBoolChange(['spot_futures', 'enable_spot_only_exchanges'], v)}
+            />
+            <span className={`text-sm font-semibold ${sfSpotOnly ? 'text-green-400' : 'text-red-400'}`}>
+              {sfSpotOnly ? 'ON' : 'OFF'}
             </span>
           </div>
         </div>
@@ -1718,6 +1742,8 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
   const renderAllocationTab = () => {
     const enabled = getByPath(config, ['allocation', 'enable_unified_capital']) === true;
     const currentProfile = (getByPath(config, ['allocation', 'risk_profile']) || 'balanced') as string;
+    const strategyPriority = (getByPath(config, ['strategy', 'strategy_priority']) || 'perp_perp_first') as string;
+    const strategyPriorityEnabled = getByPath(config, ['strategy', 'enable_strategy_priority']) === true;
 
     const handleProfileChange = (profile: string) => {
       handleChange(['allocation', 'risk_profile'], profile);
@@ -1732,6 +1758,51 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
           value={enabled}
           onChange={(v) => handleBoolChange(['allocation', 'enable_unified_capital'], v)}
         />
+
+        <h4 className="text-sm font-semibold text-gray-400 border-t border-gray-800 pt-4">
+          {t('cfg.alloc.strategyPrioritySection')}
+        </h4>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+            <div className="flex items-center gap-2 mb-2">
+              <label className="text-sm font-medium">{t('cfg.field.enableStrategyPriority')}</label>
+              <Tooltip text={t('cfg.desc.enableStrategyPriority')} />
+            </div>
+            <div className="flex items-center gap-3">
+              <ToggleSwitch
+                on={strategyPriorityEnabled}
+                onChange={(v) => handleBoolChange(['strategy', 'enable_strategy_priority'], v)}
+              />
+              <span className={`text-sm font-semibold ${strategyPriorityEnabled ? 'text-green-400' : 'text-red-400'}`}>
+                {strategyPriorityEnabled ? t('cfg.state.on') : t('cfg.state.off')}
+              </span>
+            </div>
+          </div>
+
+          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+            <div className="flex items-center gap-2 mb-2">
+              <label className="text-sm font-medium">{t('cfg.field.strategyPriority')}</label>
+              <Tooltip text={t('cfg.desc.strategyPriority')} />
+            </div>
+            <select
+              value={strategyPriority}
+              onChange={(e) => handleChange(['strategy', 'strategy_priority'], e.target.value)}
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg py-2 px-3 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+            >
+              {STRATEGY_PRIORITY_OPTIONS.map((mode) => (
+                <option key={mode} value={mode}>{t(`cfg.strategyPriority.${mode}` as TranslationKey)}</option>
+              ))}
+            </select>
+          </div>
+
+          <NumberField
+            label={t('cfg.field.expectedHoldHours')}
+            desc={t('cfg.desc.expectedHoldHours')}
+            value={getByPath(config, ['strategy', 'expected_hold_hours']) ?? 24}
+            unit={t('cfg.unit.hours')}
+            onChange={(v) => handleChange(['strategy', 'expected_hold_hours'], v)}
+          />
+        </div>
 
         <div className={!enabled ? 'opacity-50 space-y-4' : 'space-y-4'}>
           {/* Risk Profile Selector */}

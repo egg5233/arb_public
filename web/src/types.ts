@@ -206,6 +206,11 @@ export interface LossLimitStatus {
   breach_type: string; // "daily", "weekly", or ""
 }
 
+export interface StrategyPriorityStats {
+  dirb_slo_breach_count: number;
+  pending_conflicts: number;
+}
+
 // ---------------------------------------------------------------------------
 // Analytics types (Phase 4)
 // ---------------------------------------------------------------------------

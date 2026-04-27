@@ -25,14 +25,14 @@ type Server struct {
 	opps                   []models.Opportunity
 	auth                   *authStore
 	exchanges              map[string]exchange.Exchange
-	closePosition          func(posID string) error                                           // registered by engine
-	openPosition           func(symbol, longExchange, shortExchange string, force bool) error // registered by engine
+	closePosition          func(posID string) error                                                       // registered by engine
+	openPosition           func(symbol, longExchange, shortExchange string, opts ManualOpenOptions) error // registered by engine
 	logSub                 chan utils.LogEntry
 	rejStore               *models.RejectionStore
 	permissions            map[string]exchange.PermissionResult
 	scorer                 *risk.ExchangeScorer
 	spotOpps               atomic.Value // []interface{}
-	spotOpenPosition       func(symbol, exchange, direction string) error
+	spotOpenPosition       func(symbol, exchange, direction string, opts ManualOpenOptions) error
 	spotClosePosition      func(positionID string) error
 	spotInjectTestOpp      func(symbol, exchange string)
 	spotMaintenanceWarning func(symbol, exchange string) string
@@ -40,6 +40,18 @@ type Server struct {
 	configNotifier         *config.ConfigNotifier
 	analyticsStore         *analytics.Store
 	allocator              *risk.CapitalAllocator
+	strategyCoordinator    strategyPriorityCoordinator
+}
+
+// ManualOpenOptions carries dashboard-only manual entry overrides. Step 1 wires
+// OverrideStrategyPriority through the API but leaves it inert in engines.
+type ManualOpenOptions struct {
+	Force                    bool
+	OverrideStrategyPriority bool
+}
+
+type strategyPriorityCoordinator interface {
+	UpdatePriority(cfg *config.Config)
 }
 
 // NewServer creates a new Dashboard server.
@@ -82,6 +94,7 @@ func (s *Server) Start() {
 	mux.HandleFunc("/api/opportunities", s.cors(s.authMiddleware(s.handleGetOpportunities)))
 	mux.HandleFunc("/api/stats", s.cors(s.authMiddleware(s.handleGetStats)))
 	mux.HandleFunc("/api/config", s.cors(s.authMiddleware(s.handleConfig)))
+	mux.HandleFunc("GET /api/strategy-priority", s.cors(s.authMiddleware(s.handleGetStrategyPriority)))
 	mux.HandleFunc("/api/exchanges", s.cors(s.authMiddleware(s.handleGetExchanges)))
 	mux.HandleFunc("GET /api/exchanges/health", s.cors(s.authMiddleware(s.handleGetExchangeHealth)))
 
@@ -279,6 +292,18 @@ func (s *Server) SetCloseHandler(fn func(posID string) error) {
 
 // SetOpenHandler registers the engine's manual open callback.
 func (s *Server) SetOpenHandler(fn func(symbol, longExchange, shortExchange string, force bool) error) {
+	if fn == nil {
+		s.openPosition = nil
+		return
+	}
+	s.openPosition = func(symbol, longExchange, shortExchange string, opts ManualOpenOptions) error {
+		return fn(symbol, longExchange, shortExchange, opts.Force)
+	}
+}
+
+// SetOpenHandlerWithOptions registers a manual open callback that accepts the
+// full API options payload.
+func (s *Server) SetOpenHandlerWithOptions(fn func(symbol, longExchange, shortExchange string, opts ManualOpenOptions) error) {
 	s.openPosition = fn
 }
 
@@ -289,6 +314,18 @@ func (s *Server) SetOpportunities(opps []models.Opportunity) {
 
 // SetSpotOpenHandler registers the spot-futures engine's manual open callback.
 func (s *Server) SetSpotOpenHandler(fn func(symbol, exchange, direction string) error) {
+	if fn == nil {
+		s.spotOpenPosition = nil
+		return
+	}
+	s.spotOpenPosition = func(symbol, exchange, direction string, opts ManualOpenOptions) error {
+		return fn(symbol, exchange, direction)
+	}
+}
+
+// SetSpotOpenHandlerWithOptions registers a spot-futures manual open callback
+// that accepts the full API options payload.
+func (s *Server) SetSpotOpenHandlerWithOptions(fn func(symbol, exchange, direction string, opts ManualOpenOptions) error) {
 	s.spotOpenPosition = fn
 }
 
@@ -326,6 +363,13 @@ func (s *Server) SetAnalyticsStore(store *analytics.Store) {
 // SetCapitalAllocator injects the capital allocator for the allocation API endpoint.
 func (s *Server) SetCapitalAllocator(allocator *risk.CapitalAllocator) {
 	s.allocator = allocator
+}
+
+// SetStrategyCoordinator injects the strategy-priority coordinator. It is
+// optional so existing tests and startup wiring can keep using nil until the
+// coordinator slice is linked in.
+func (s *Server) SetStrategyCoordinator(coordinator strategyPriorityCoordinator) {
+	s.strategyCoordinator = coordinator
 }
 
 // ConfigNotifier returns the shared ConfigNotifier so that other

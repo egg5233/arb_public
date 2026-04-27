@@ -53,23 +53,29 @@ type SpotFuturesPosition struct {
 	NotionalUSDT     float64 `json:"notional_usdt"`
 
 	// Exit tracking
-	ExitReason             string     `json:"exit_reason,omitempty"`
-	ExitTriggeredAt        *time.Time `json:"exit_triggered_at,omitempty"`
-	ExitCompletedAt        *time.Time `json:"exit_completed_at,omitempty"`
-	PeakPriceMovePct       float64    `json:"peak_price_move_pct"`
-	MarginUtilizationPct   float64    `json:"margin_utilization_pct"`
-	PendingEntryOrderID    string     `json:"pending_entry_order_id,omitempty"`     // accepted spot entry order awaiting confirmation / hedge completion
-	PendingFuturesEntryOrderID string `json:"pending_futures_entry_order_id,omitempty"` // accepted futures entry order awaiting confirmation after spot leg already confirmed (e.g. bitget client error on fill query)
-	SpotExitFilledQty      float64    `json:"spot_exit_filled_qty,omitempty"`       // cumulative confirmed spot exit quantity across retries / partial IOC fills
-	SpotExitFilled         bool       `json:"spot_exit_filled,omitempty"`           // true once the entire spot exit quantity is confirmed flat
-	PendingSpotExitOrderID string     `json:"pending_spot_exit_order_id,omitempty"` // accepted spot exit order being reconciled; prevents duplicate close orders on retry
-	PendingRepay           bool       `json:"pending_repay,omitempty"`              // true when trade legs closed but margin repay still outstanding
-	PendingRepayRetryAt    *time.Time `json:"pending_repay_retry_at,omitempty"`     // earliest time to retry repay (e.g. after Bybit blackout)
-	ExitRetryCount         int        `json:"exit_retry_count,omitempty"`           // number of monitor-initiated exit retries
+	ExitReason                 string     `json:"exit_reason,omitempty"`
+	ExitTriggeredAt            *time.Time `json:"exit_triggered_at,omitempty"`
+	ExitCompletedAt            *time.Time `json:"exit_completed_at,omitempty"`
+	PeakPriceMovePct           float64    `json:"peak_price_move_pct"`
+	MarginUtilizationPct       float64    `json:"margin_utilization_pct"`
+	PendingEntryOrderID        string     `json:"pending_entry_order_id,omitempty"`         // accepted spot entry order awaiting confirmation / hedge completion
+	PendingFuturesEntryOrderID string     `json:"pending_futures_entry_order_id,omitempty"` // accepted futures entry order awaiting confirmation after spot leg already confirmed (e.g. bitget client error on fill query)
+	SpotExitFilledQty          float64    `json:"spot_exit_filled_qty,omitempty"`           // cumulative confirmed spot exit quantity across retries / partial IOC fills
+	SpotExitFilled             bool       `json:"spot_exit_filled,omitempty"`               // true once the entire spot exit quantity is confirmed flat
+	PendingSpotExitOrderID     string     `json:"pending_spot_exit_order_id,omitempty"`     // accepted spot exit order being reconciled; prevents duplicate close orders on retry
+	PendingRepay               bool       `json:"pending_repay,omitempty"`                  // true when trade legs closed but margin repay still outstanding
+	PendingRepayRetryAt        *time.Time `json:"pending_repay_retry_at,omitempty"`         // earliest time to retry repay (e.g. after Bybit blackout)
+	ExitRetryCount             int        `json:"exit_retry_count,omitempty"`               // number of monitor-initiated exit retries
 
 	// Timing
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+
+	StrategyReservationID string   `json:"strategy_reservation_id,omitempty"`
+	StrategyCandidateID   string   `json:"strategy_candidate_id,omitempty"`
+	StrategyEpoch         uint64   `json:"strategy_epoch,omitempty"`
+	Strategy              string   `json:"strategy,omitempty"`
+	StrategyLegKeys       []string `json:"strategy_leg_keys,omitempty"`
 }
 
 // SpotFutures position status constants.

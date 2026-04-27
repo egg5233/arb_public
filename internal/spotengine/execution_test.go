@@ -177,6 +177,33 @@ func (s *closeTestSpotMargin) GetSpotMarginOrder(string, string) (*exchange.Spot
 	return state, nil
 }
 
+type closeTestSpotOnly struct {
+	placeCalls  int
+	placeSizes  []string
+	queryStates []*exchange.SpotMarginOrderStatus
+	spotRules   *exchange.SpotOrderRules
+}
+
+func (s *closeTestSpotOnly) PlaceSpotMarginOrder(params exchange.SpotMarginOrderParams) (string, error) {
+	s.placeCalls++
+	s.placeSizes = append(s.placeSizes, params.Size)
+	return "spot-close-1", nil
+}
+func (s *closeTestSpotOnly) GetSpotBBO(string) (exchange.BBO, error) {
+	return exchange.BBO{Bid: 100, Ask: 100.1}, nil
+}
+func (s *closeTestSpotOnly) SpotOrderRules(string) (*exchange.SpotOrderRules, error) {
+	return s.spotRules, nil
+}
+func (s *closeTestSpotOnly) GetSpotMarginOrder(string, string) (*exchange.SpotMarginOrderStatus, error) {
+	if len(s.queryStates) == 0 {
+		return &exchange.SpotMarginOrderStatus{OrderID: "spot-close-1", Status: "filled", FilledQty: 1, AvgPrice: 101}, nil
+	}
+	state := s.queryStates[0]
+	s.queryStates = s.queryStates[1:]
+	return state, nil
+}
+
 func newExecutionTestEngine(t *testing.T) (*SpotEngine, *miniredis.Miniredis) {
 	t.Helper()
 	mr := miniredis.RunT(t)
@@ -191,6 +218,59 @@ func newExecutionTestEngine(t *testing.T) (*SpotEngine, *miniredis.Miniredis) {
 		stopCh:    make(chan struct{}),
 		exitState: exitState{exiting: make(map[string]bool)},
 	}, mr
+}
+
+func TestClosePosition_DirBAllowsSpotOnlyExchange(t *testing.T) {
+	engine, mr := newExecutionTestEngine(t)
+	defer mr.Close()
+
+	futExch := &closeTestExchange{
+		orderUpdates: map[string]exchange.OrderUpdate{
+			"fut-close-1": {
+				OrderID:      "fut-close-1",
+				Status:       "filled",
+				FilledVolume: 1,
+				AvgPrice:     100,
+			},
+		},
+		orderbook: &exchange.Orderbook{
+			Bids: []exchange.PriceLevel{{Price: 100, Quantity: 1}},
+			Asks: []exchange.PriceLevel{{Price: 102, Quantity: 1}},
+		},
+	}
+	spotExch := &closeTestSpotOnly{
+		queryStates: []*exchange.SpotMarginOrderStatus{
+			{OrderID: "spot-close-1", Symbol: "BTCUSDT", Status: "filled", FilledQty: 1, AvgPrice: 101},
+		},
+		spotRules: &exchange.SpotOrderRules{MinBaseQty: 0.001, QtyStep: 0.001, MinNotional: 5},
+	}
+	engine.exchanges = map[string]exchange.Exchange{"bingx": futExch}
+	engine.spotMarkets = map[string]exchange.SpotExchange{"bingx": spotExch}
+
+	pos := &models.SpotFuturesPosition{
+		ID:             "spot-only-dirb",
+		Symbol:         "BTCUSDT",
+		BaseCoin:       "BTC",
+		Exchange:       "bingx",
+		Direction:      "buy_spot_short",
+		Status:         models.SpotStatusActive,
+		SpotSize:       1,
+		FuturesSize:    1,
+		FuturesSide:    "short",
+		SpotEntryPrice: 100,
+		FuturesEntry:   100,
+		HedgeIntact:    true,
+	}
+
+	if err := engine.ClosePosition(pos, "test", false); err != nil {
+		t.Fatalf("ClosePosition Dir B spot-only: %v", err)
+	}
+	if spotExch.placeCalls != 1 {
+		t.Fatalf("spot place calls = %d, want 1", spotExch.placeCalls)
+	}
+	if !pos.SpotExitFilled || pos.SpotExitPrice != 101 {
+		t.Fatalf("spot exit not reconciled: filled=%v price=%.2f", pos.SpotExitFilled, pos.SpotExitPrice)
+	}
 }
 
 func TestClosePosition_ReusesPendingSpotExitOrderAfterQueryFailure(t *testing.T) {

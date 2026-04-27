@@ -76,6 +76,13 @@ type PlaceOrderParams struct {
 	ClientOid  string
 }
 
+// OrderPreflight is an optional interface for exchanges that support an order
+// validation probe. Callers must pass a non-marketable IOC order when the
+// implementation uses the live order endpoint.
+type OrderPreflight interface {
+	TestOrder(req PlaceOrderParams) error
+}
+
 // Order represents a pending order.
 type Order struct {
 	OrderID   string
@@ -378,21 +385,33 @@ type SpotMarginOrderStatus struct {
 	FeeDeducted float64
 }
 
+// SpotExchange is an optional interface for exchanges that support plain spot
+// trading without margin borrowing. Dir B can use this for buy-spot/short-futures
+// positions. AutoBorrow/AutoRepay fields are ignored by spot-only adapters.
+type SpotExchange interface {
+	// PlaceSpotMarginOrder places a buy or sell order on spot or spot margin.
+	PlaceSpotMarginOrder(params SpotMarginOrderParams) (orderID string, err error)
+
+	// GetSpotBBO returns the current best bid/offer for the spot market.
+	GetSpotBBO(symbol string) (BBO, error)
+
+	// SpotOrderRules returns the spot market's lot/notional rules for symbol.
+	// Uses the exchange's SPOT instruments endpoint (NOT futures contract metadata).
+	// Results are cached per symbol with a 5-minute TTL.
+	SpotOrderRules(symbol string) (*SpotOrderRules, error)
+}
+
 // SpotMarginExchange is an optional interface for exchanges that support
 // spot margin borrowing (borrow-sell-buyback-repay). Use type assertion to check.
 // BingX does not implement this interface.
 type SpotMarginExchange interface {
+	SpotExchange
+
 	// MarginBorrow borrows a coin on spot margin.
 	MarginBorrow(params MarginBorrowParams) error
 
 	// MarginRepay repays a borrowed coin (amount should include accrued interest).
 	MarginRepay(params MarginRepayParams) error
-
-	// PlaceSpotMarginOrder places a buy or sell order on spot margin.
-	PlaceSpotMarginOrder(params SpotMarginOrderParams) (orderID string, err error)
-
-	// GetSpotBBO returns the current best bid/offer for the spot market.
-	GetSpotBBO(symbol string) (BBO, error)
 
 	// GetMarginInterestRate returns the current borrow interest rate for a coin.
 	GetMarginInterestRate(coin string) (*MarginInterestRate, error)
@@ -410,11 +429,6 @@ type SpotMarginExchange interface {
 	// GetMarginInterestRateHistory returns historical hourly borrow rates for coin
 	// over [start, end]. Unsupported exchanges return ErrHistoricalBorrowNotSupported.
 	GetMarginInterestRateHistory(ctx context.Context, coin string, start, end time.Time) ([]MarginInterestRatePoint, error)
-
-	// SpotOrderRules returns the spot market's lot/notional rules for symbol.
-	// Uses the exchange's SPOT instruments endpoint (NOT futures contract metadata).
-	// Results are cached per symbol with a 5-minute TTL.
-	SpotOrderRules(symbol string) (*SpotOrderRules, error)
 }
 
 // SpotMarginOrderQuerier is an optional interface for exchanges that can

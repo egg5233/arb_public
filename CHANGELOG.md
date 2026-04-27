@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.34.12] - 2026-04-27
+
+### Fixed
+
+- Added a BingX futures entry preflight using a signed, non-marketable IOC probe on the live `/openApi/swap/v2/trade/order` endpoint, so temporary BingX API order disables are detected before either real arbitrage leg is placed.
+- Fixed planned allocator transfer sizing so donor min-withdraw constraints no longer cap a transfer below the remaining deficit.
+- Made PnL reconciliation refresh and apply close stats atomically to avoid stale-position races during concurrent reconciliation.
+
+### Added
+
+- Added strategy-priority SLO backend/dashboard visibility for the existing `/api/strategy-priority` endpoint.
+- Added spot-only Dir B plumbing for BingX behind the disabled-by-default spot-only exchange rollout flag.
+
 ## [0.34.11] - 2026-04-25
 
 ### Fixed

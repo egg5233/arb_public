@@ -8,7 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"arb/internal/api"
 	"arb/internal/models"
+	"arb/internal/strategy"
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
@@ -25,7 +27,7 @@ var spotEntryLockTTL = 5 * time.Minute
 // Gate.io have unified accounts where funds are shared.
 func needsMarginTransfer(exchName string) bool {
 	switch exchName {
-	case "binance", "bitget":
+	case "binance", "bitget", "bingx":
 		return true
 	default:
 		return false
@@ -56,10 +58,18 @@ func roundToFuturesStep(qty, stepSize float64, decimals int) (float64, string) {
 	return qty, utils.FormatSize(qty, decimals)
 }
 
+func (e *SpotEngine) ManualOpenWithOptions(symbol, exchName, direction string, opts api.ManualOpenOptions) error {
+	return e.openWithStrategyOptions(symbol, exchName, direction, opts, "sf_manual")
+}
+
 // ManualOpen executes a spot-futures arbitrage entry for the given symbol,
 // exchange, and direction. It runs synchronously (blocking) and returns an
 // error if any pre-check or execution step fails.
 func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
+	return e.manualOpen(symbol, exchName, direction, nil)
+}
+
+func (e *SpotEngine) manualOpen(symbol, exchName, direction string, strategyMeta *strategy.PositionStrategyMeta) error {
 	symbol = strings.ToUpper(strings.TrimSpace(symbol))
 	exchName = strings.ToLower(strings.TrimSpace(exchName))
 	direction = strings.TrimSpace(direction)
@@ -120,10 +130,19 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		return fmt.Errorf("%s is flagged for delist — refusing manual open (toggle DelistFilterEnabled off to override)", symbol)
 	}
 
-	// 1c. Check exchange supports SpotMarginExchange.
-	smExch, ok := e.spotMargin[exchName]
+	// 1c. Check exchange supports the selected spot leg. Dir A requires
+	// margin borrowing; Dir B can use plain spot trading.
+	var smExch exchange.SpotMarginExchange
+	if direction == "borrow_sell_long" {
+		var ok bool
+		smExch, ok = e.spotMargin[exchName]
+		if !ok {
+			return fmt.Errorf("exchange %s does not support spot margin", exchName)
+		}
+	}
+	spotExch, ok := e.getSpotExchange(exchName)
 	if !ok {
-		return fmt.Errorf("exchange %s does not support spot margin", exchName)
+		return fmt.Errorf("exchange %s does not support spot trading", exchName)
 	}
 	futExch, ok := e.exchanges[exchName]
 	if !ok {
@@ -164,6 +183,14 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 	// 1f. Check capacity.
 	if len(active) >= e.cfg.SpotFuturesMaxPositions {
 		return fmt.Errorf("at max capacity (%d/%d)", len(active), e.cfg.SpotFuturesMaxPositions)
+	}
+
+	perpPositions, err := e.db.GetActivePositions()
+	if err != nil {
+		return fmt.Errorf("failed to check perp positions: %w", err)
+	}
+	if leg, blocked := spotEntryBlockedByPerp(perpPositions, exchName, symbol); blocked {
+		return fmt.Errorf("cross-engine block: PP active on %s:%s (%s leg)", exchName, symbol, leg)
 	}
 
 	// 1f. Dry run check.
@@ -209,7 +236,15 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		} else {
 			// Dir B: USDT → spot account (plain spot buy, not margin)
 			e.log.Info("ManualOpen: transferring %s USDT to spot (%s separate accounts)", transferAmt, exchName)
-			if tErr := futExch.TransferToSpot("USDT", transferAmt); tErr != nil {
+			var tErr error
+			if mover, ok := spotExch.(interface {
+				TransferToSpotTrading(coin string, amount string) error
+			}); ok {
+				tErr = mover.TransferToSpotTrading("USDT", transferAmt)
+			} else {
+				tErr = futExch.TransferToSpot("USDT", transferAmt)
+			}
+			if tErr != nil {
 				e.log.Warn("ManualOpen: TransferToSpot(%s USDT): %v (may already have funds)", transferAmt, tErr)
 			}
 		}
@@ -299,6 +334,7 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 	} else {
 		entryPos.FuturesSide = "short"
 	}
+	applySpotStrategyMeta(entryPos, strategyMeta)
 
 	if err := requireEntryLock("capital reservation"); err != nil {
 		return err
@@ -344,7 +380,7 @@ func (e *SpotEngine) ManualOpen(symbol, exchName, direction string) error {
 		spotEntryPrice, futuresEntryPrice, spotFilledQty, futuresFilledQty, borrowAmount, err = e.executeBorrowSellLong(smExch, futExch, symbol, baseCoin, sizeStr, size, futStep, futMin, futDec, requireEntryLock, entryPos)
 		futuresSide = "long"
 	case "buy_spot_short":
-		spotEntryPrice, futuresEntryPrice, spotFilledQty, futuresFilledQty, err = e.executeBuySpotShort(smExch, futExch, symbol, sizeStr, size, plannedNotional, futStep, futMin, futDec, requireEntryLock, entryPos)
+		spotEntryPrice, futuresEntryPrice, spotFilledQty, futuresFilledQty, err = e.executeBuySpotShort(spotExch, futExch, symbol, sizeStr, size, plannedNotional, futStep, futMin, futDec, requireEntryLock, entryPos)
 		futuresSide = "short"
 	}
 
@@ -490,6 +526,7 @@ func (e *SpotEngine) executeBorrowSellLong(
 	if err != nil {
 		return 0, 0, 0, 0, 0, fmt.Errorf("margin sell (auto-borrow) failed: %w", err)
 	}
+	e.bindSpotStrategyOrder(pos, "spot_margin", spotOrderID)
 	e.log.Info("ManualOpen [borrow_sell_long] step 1: spot order placed: %s", spotOrderID)
 	if cpErr := e.persistPendingEntry(pos, spotOrderID); cpErr != nil {
 		return 0, 0, 0, 0, 0, e.abortAcceptedSpotEntry(smExch, futExch, pos, spotOrderID, symbol, size, cpErr)
@@ -534,6 +571,7 @@ func (e *SpotEngine) executeBorrowSellLong(
 		e.rollbackBorrowSell(smExch, symbol, baseCoin, spotFilledStr, buybackQuote, spotFilled)
 		return 0, 0, 0, 0, 0, fmt.Errorf("futures long failed: %w", err)
 	}
+	e.bindSpotStrategyOrder(pos, "futures", futOrderID)
 	e.log.Info("ManualOpen [borrow_sell_long] step 2: futures order placed: %s", futOrderID)
 
 	// Confirm futures fill.
@@ -582,7 +620,7 @@ func (e *SpotEngine) executeBorrowSellLong(
 
 // executeBuySpotShort handles Direction B: buy spot, short futures.
 func (e *SpotEngine) executeBuySpotShort(
-	smExch exchange.SpotMarginExchange,
+	spotExch exchange.SpotExchange,
 	futExch exchange.Exchange,
 	symbol, sizeStr string,
 	size, notionalUSDT float64,
@@ -602,7 +640,7 @@ func (e *SpotEngine) executeBuySpotShort(
 	// Futures leg is sized from actual spot fill via roundToFuturesStep, so alignment is safe.
 	quoteSizeStr := fmt.Sprintf("%.2f", notionalUSDT)
 	e.log.Info("ManualOpen [buy_spot_short] step 1: PlaceSpotMarginOrder BUY %s size=%s quote=%s", symbol, sizeStr, quoteSizeStr)
-	spotOrderID, err := smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
+	spotOrderID, err := spotExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
 		Symbol:    symbol,
 		Side:      exchange.SideBuy,
 		OrderType: "market",
@@ -612,13 +650,14 @@ func (e *SpotEngine) executeBuySpotShort(
 	if err != nil {
 		return 0, 0, 0, 0, fmt.Errorf("spot buy failed: %w", err)
 	}
+	e.bindSpotStrategyOrder(pos, "spot", spotOrderID)
 	e.log.Info("ManualOpen [buy_spot_short] step 1: spot order placed: %s", spotOrderID)
 	if cpErr := e.persistPendingEntry(pos, spotOrderID); cpErr != nil {
-		return 0, 0, 0, 0, e.abortAcceptedSpotEntry(smExch, futExch, pos, spotOrderID, symbol, size, cpErr)
+		return 0, 0, 0, 0, e.abortAcceptedSpotEntry(spotExch, futExch, pos, spotOrderID, symbol, size, cpErr)
 	}
 
 	// Confirm spot fill.
-	spotFilled, spotAvg, confirmed, confErr := e.confirmSpotFill(smExch, futExch, spotOrderID, symbol, size)
+	spotFilled, spotAvg, confirmed, confErr := e.confirmSpotFill(spotExch, futExch, spotOrderID, symbol, size)
 	if !confirmed {
 		return 0, 0, 0, 0, &pendingSpotEntryError{posID: pos.ID, orderID: spotOrderID, err: confErr}
 	}
@@ -631,14 +670,14 @@ func (e *SpotEngine) executeBuySpotShort(
 	// Track the net for SpotSize (what we can sell on exit) but use gross for futures
 	// leg sizing — the fee is negligible and doesn't break delta neutrality.
 	spotNetReceived := spotFilled
-	if querier, ok := smExch.(exchange.SpotMarginOrderQuerier); ok {
+	if querier, ok := spotExch.(exchange.SpotMarginOrderQuerier); ok {
 		if feeStatus, qErr := querier.GetSpotMarginOrder(spotOrderID, symbol); qErr == nil && feeStatus != nil && feeStatus.FeeDeducted > 0 {
 			spotNetReceived = spotFilled - feeStatus.FeeDeducted
 			// Floor to the spot LOT_SIZE step so the exit sell passes LOT_SIZE.
 			// Hardcoding 5dp (1e-5) previously caused DEGOUSDT (step=0.01) to
 			// store 1258.1406, which Binance later rejected on SELL with -1013.
 			qtyStep := 1e-5
-			if rules, rErr := smExch.SpotOrderRules(symbol); rErr == nil && rules != nil && rules.QtyStep > 0 {
+			if rules, rErr := spotExch.SpotOrderRules(symbol); rErr == nil && rules != nil && rules.QtyStep > 0 {
 				qtyStep = rules.QtyStep
 			}
 			spotNetReceived = utils.RoundToStep(spotNetReceived, qtyStep)
@@ -651,11 +690,11 @@ func (e *SpotEngine) executeBuySpotShort(
 	spotFilledStr := utils.FormatSize(spotFilled, 6)
 	if futQty <= 0 || (futMin > 0 && futQty < futMin) {
 		e.log.Error("ManualOpen [buy_spot_short] step 2: spot fill %.6f rounds to futures qty %.6f (step=%.6f min=%.6f) — too small, rolling back", spotFilled, futQty, futStep, futMin)
-		e.rollbackSpotOrder(smExch, symbol, exchange.SideSell, spotFilledStr, "", false)
+		e.rollbackSpotOrder(spotExch, symbol, exchange.SideSell, spotFilledStr, "", false)
 		return 0, 0, 0, 0, fmt.Errorf("spot fill %.6f too small for futures (step=%.6f min=%.6f)", spotFilled, futStep, futMin)
 	}
 	if err := requireEntryLock("futures short"); err != nil {
-		e.rollbackSpotOrder(smExch, symbol, exchange.SideSell, spotFilledStr, "", false)
+		e.rollbackSpotOrder(spotExch, symbol, exchange.SideSell, spotFilledStr, "", false)
 		return 0, 0, 0, 0, err
 	}
 	e.log.Info("ManualOpen [buy_spot_short] step 2: PlaceOrder futures SELL %s %s (spot=%.6f step=%.6f)", symbol, futQtyStr, spotFilled, futStep)
@@ -669,9 +708,10 @@ func (e *SpotEngine) executeBuySpotShort(
 	if err != nil {
 		// Rollback: sell the spot back.
 		e.log.Error("ManualOpen [buy_spot_short] step 2 FAILED: %v — rolling back spot buy", err)
-		e.rollbackSpotOrder(smExch, symbol, exchange.SideSell, spotFilledStr, "", false)
+		e.rollbackSpotOrder(spotExch, symbol, exchange.SideSell, spotFilledStr, "", false)
 		return 0, 0, 0, 0, fmt.Errorf("futures short failed: %w", err)
 	}
+	e.bindSpotStrategyOrder(pos, "futures", futOrderID)
 	e.log.Info("ManualOpen [buy_spot_short] step 2: futures order placed: %s", futOrderID)
 
 	// Confirm futures fill.
@@ -705,7 +745,7 @@ func (e *SpotEngine) executeBuySpotShort(
 	}
 	if futFilled <= 0 {
 		e.log.Error("ManualOpen [buy_spot_short] step 2: futures order got 0 fill — rolling back spot buy")
-		e.rollbackSpotOrder(smExch, symbol, exchange.SideSell, spotFilledStr, "", false)
+		e.rollbackSpotOrder(spotExch, symbol, exchange.SideSell, spotFilledStr, "", false)
 		return 0, 0, 0, 0, fmt.Errorf("futures short got 0 fill (order %s)", futOrderID)
 	}
 	e.log.Info("ManualOpen [buy_spot_short] step 2: futures fill=%.6f avg=%.6f", futFilled, futAvg)
@@ -839,14 +879,14 @@ func (e *pendingFuturesEntryError) Unwrap() error { return e.err }
 // Without a durable pending-entry checkpoint, immediately unwind the accepted
 // spot leg so restart recovery never depends on a record that was not saved.
 func (e *SpotEngine) abortAcceptedSpotEntry(
-	smExch exchange.SpotMarginExchange,
+	spotExch exchange.SpotExchange,
 	futExch exchange.Exchange,
 	pos *models.SpotFuturesPosition,
 	orderID, symbol string,
 	expectedQty float64,
 	persistErr error,
 ) error {
-	filledQty, filledAvg, confirmed, confErr := e.confirmSpotFill(smExch, futExch, orderID, symbol, expectedQty)
+	filledQty, filledAvg, confirmed, confErr := e.confirmSpotFill(spotExch, futExch, orderID, symbol, expectedQty)
 	recoveryAvg := filledAvg
 	if recoveryAvg <= 0 && pos.SpotSize > 0 && pos.NotionalUSDT > 0 {
 		recoveryAvg = pos.NotionalUSDT / pos.SpotSize
@@ -875,7 +915,7 @@ func (e *SpotEngine) abortAcceptedSpotEntry(
 		if reverseSide == exchange.SideBuy && recoveryAvg > 0 {
 			reverseQuote = utils.FormatSize(filledQty*recoveryAvg*1.02, 2)
 		}
-		reverseOrderID, err := smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
+		reverseOrderID, err := spotExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
 			Symbol:    symbol,
 			Side:      reverseSide,
 			OrderType: "market",
@@ -894,7 +934,7 @@ func (e *SpotEngine) abortAcceptedSpotEntry(
 				recoveryAvg,
 			)
 		}
-		cleanupFilled, _, cleanupConfirmed, cleanupErr := e.confirmSpotFill(smExch, futExch, reverseOrderID, symbol, filledQty)
+		cleanupFilled, _, cleanupConfirmed, cleanupErr := e.confirmSpotFill(spotExch, futExch, reverseOrderID, symbol, filledQty)
 		if !cleanupConfirmed {
 			return newManualRecoveryPendingEntryError(
 				pos,
@@ -1105,10 +1145,23 @@ func (e *SpotEngine) reconcilePendingEntry(pos *models.SpotFuturesPosition) {
 		}
 	}()
 
-	smExch, ok := e.spotMargin[pos.Exchange]
-	if !ok {
-		e.log.Error("pending entry %s: no SpotMarginExchange for %s", pos.ID, pos.Exchange)
-		return
+	var smExch exchange.SpotMarginExchange
+	var spotExch exchange.SpotExchange
+	if pos.Direction == "borrow_sell_long" {
+		var ok bool
+		smExch, ok = e.spotMargin[pos.Exchange]
+		if !ok {
+			e.log.Error("pending entry %s: no SpotMarginExchange for %s", pos.ID, pos.Exchange)
+			return
+		}
+		spotExch = smExch
+	} else {
+		var ok bool
+		spotExch, ok = e.getSpotExchange(pos.Exchange)
+		if !ok {
+			e.log.Error("pending entry %s: no SpotExchange for %s", pos.ID, pos.Exchange)
+			return
+		}
 	}
 	futExch, ok := e.exchanges[pos.Exchange]
 	if !ok {
@@ -1117,7 +1170,7 @@ func (e *SpotEngine) reconcilePendingEntry(pos *models.SpotFuturesPosition) {
 	}
 
 	if pos.PendingEntryOrderID != "" {
-		filled, avg, confirmed, confErr := e.confirmSpotFill(smExch, futExch, pos.PendingEntryOrderID, pos.Symbol, pos.SpotSize)
+		filled, avg, confirmed, confErr := e.confirmSpotFill(spotExch, futExch, pos.PendingEntryOrderID, pos.Symbol, pos.SpotSize)
 		if !confirmed {
 			e.log.Warn("pending entry %s: spot order %s still unconfirmed: %v", pos.ID, pos.PendingEntryOrderID, confErr)
 			return
@@ -1291,7 +1344,7 @@ func pendingEntryFuturesPosition(exch exchange.Exchange, symbol, side string) (f
 // shared WS cache, then fall back to the exchange's native spot margin order
 // query. The third return value distinguishes "unconfirmed" from a confirmed
 // zero fill.
-func (e *SpotEngine) confirmSpotFill(smExch exchange.SpotMarginExchange, exch exchange.Exchange, orderID, symbol string, expectedQty float64) (filledQty, avgPrice float64, confirmed bool, err error) {
+func (e *SpotEngine) confirmSpotFill(spotExch exchange.SpotExchange, exch exchange.Exchange, orderID, symbol string, expectedQty float64) (filledQty, avgPrice float64, confirmed bool, err error) {
 	// Wait a moment for the order to settle.
 	time.Sleep(2 * time.Second)
 
@@ -1315,9 +1368,9 @@ func (e *SpotEngine) confirmSpotFill(smExch exchange.SpotMarginExchange, exch ex
 		}
 	}
 
-	querier, ok := smExch.(exchange.SpotMarginOrderQuerier)
+	querier, ok := spotExch.(exchange.SpotMarginOrderQuerier)
 	if !ok {
-		err := fmt.Errorf("spot margin order query unsupported for %s", symbol)
+		err := fmt.Errorf("spot order query unsupported for %s", symbol)
 		e.log.Warn("confirmSpotFill: %s", err)
 		return 0, 0, false, err
 	}
@@ -1328,7 +1381,7 @@ func (e *SpotEngine) confirmSpotFill(smExch exchange.SpotMarginExchange, exch ex
 		return 0, 0, false, err
 	}
 	if status == nil {
-		err := fmt.Errorf("spot margin order %s not found", orderID)
+		err := fmt.Errorf("spot order %s not found", orderID)
 		e.log.Warn("confirmSpotFill: %v", err)
 		return 0, 0, false, err
 	}
@@ -1369,9 +1422,9 @@ func (e *SpotEngine) rollbackBorrow(smExch exchange.SpotMarginExchange, coin, am
 
 // rollbackSpotOrder attempts to reverse a spot order by placing an opposite market order.
 // quoteSizeStr is the USDT amount for market BUY orders (required by some exchanges like Bitget).
-func (e *SpotEngine) rollbackSpotOrder(smExch exchange.SpotMarginExchange, symbol string, side exchange.Side, sizeStr, quoteSizeStr string, autoRepay bool) {
+func (e *SpotEngine) rollbackSpotOrder(spotExch exchange.SpotExchange, symbol string, side exchange.Side, sizeStr, quoteSizeStr string, autoRepay bool) {
 	e.log.Info("ROLLBACK: reversing spot — %s %s %s (quote=%s autoRepay=%v)", side, symbol, sizeStr, quoteSizeStr, autoRepay)
-	oid, err := smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
+	oid, err := spotExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
 		Symbol:    symbol,
 		Side:      side,
 		OrderType: "market",
@@ -1503,23 +1556,35 @@ func (e *SpotEngine) ClosePosition(pos *models.SpotFuturesPosition, reason strin
 	if !ok {
 		return fmt.Errorf("exchange %s not found", pos.Exchange)
 	}
-	smExch, ok := e.spotMargin[pos.Exchange]
-	if !ok {
-		return fmt.Errorf("exchange %s does not support spot margin", pos.Exchange)
+	var smExch exchange.SpotMarginExchange
+	var spotExch exchange.SpotExchange
+	if pos.Direction == "borrow_sell_long" {
+		var ok bool
+		smExch, ok = e.spotMargin[pos.Exchange]
+		if !ok {
+			return fmt.Errorf("exchange %s does not support spot margin", pos.Exchange)
+		}
+		spotExch = smExch
+	} else {
+		var ok bool
+		spotExch, ok = e.getSpotExchange(pos.Exchange)
+		if !ok {
+			return fmt.Errorf("exchange %s does not support spot trading", pos.Exchange)
+		}
 	}
 
 	sizeStr := utils.FormatSize(pos.FuturesSize, 6)
 	spotSizeStr := utils.FormatSize(pos.SpotSize, 6)
 
 	if isEmergency {
-		return e.emergencyClose(pos, futExch, smExch, sizeStr, spotSizeStr)
+		return e.emergencyClose(pos, futExch, spotExch, sizeStr, spotSizeStr)
 	}
 
 	switch pos.Direction {
 	case "borrow_sell_long":
 		return e.closeDirectionA(pos, futExch, smExch, sizeStr, spotSizeStr)
 	case "buy_spot_short":
-		return e.closeDirectionB(pos, futExch, smExch, sizeStr, spotSizeStr)
+		return e.closeDirectionB(pos, futExch, spotExch, sizeStr, spotSizeStr)
 	default:
 		return fmt.Errorf("unknown direction %q", pos.Direction)
 	}
@@ -1819,7 +1884,7 @@ func (e *SpotEngine) closeDirectionA(
 func (e *SpotEngine) closeDirectionB(
 	pos *models.SpotFuturesPosition,
 	futExch exchange.Exchange,
-	smExch exchange.SpotMarginExchange,
+	spotExch exchange.SpotExchange,
 	futSizeStr, spotSizeStr string,
 ) error {
 	// Step 1: Close futures short (buy to close) — with retry
@@ -1864,7 +1929,7 @@ func (e *SpotEngine) closeDirectionB(
 		if err != nil {
 			// Exhausted retries — escalate to emergency market close for this leg
 			e.log.Error("ClosePosition [Dir B]: futures retry exhausted, escalating to emergency: %v", err)
-			return e.emergencyClose(pos, futExch, smExch, futSizeStr, spotSizeStr)
+			return e.emergencyClose(pos, futExch, spotExch, futSizeStr, spotSizeStr)
 		}
 		if futAvg <= 0 && futFilled > 0 {
 			if ob, obErr := futExch.GetOrderbook(pos.Symbol, 5); obErr == nil && len(ob.Bids) > 0 && len(ob.Asks) > 0 {
@@ -1892,7 +1957,7 @@ func (e *SpotEngine) closeDirectionB(
 		// quote-qty market buy is not aligned to stepSize, e.g. DEGOUSDT 1258.1406
 		// vs step=0.01).
 		var spotRules *exchange.SpotOrderRules
-		if rules, rulesErr := smExch.SpotOrderRules(pos.Symbol); rulesErr == nil && rules != nil {
+		if rules, rulesErr := spotExch.SpotOrderRules(pos.Symbol); rulesErr == nil && rules != nil {
 			spotRules = rules
 			remaining := remainingSpotExitQty(pos)
 			priceHint := pos.FuturesExit
@@ -1931,7 +1996,7 @@ func (e *SpotEngine) closeDirectionB(
 				}
 				remainingStr := utils.FormatSize(sellQty, 6)
 				var placeErr error
-				orderID, placeErr = smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
+				orderID, placeErr = spotExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
 					Symbol:    pos.Symbol,
 					Side:      exchange.SideSell,
 					OrderType: "market",
@@ -1948,7 +2013,7 @@ func (e *SpotEngine) closeDirectionB(
 				e.log.Warn("ClosePosition [Dir B]: reconciling existing spot exit order %s", orderID)
 			}
 
-			filled, avg, confirmed, confErr := e.confirmSpotFill(smExch, futExch, orderID, pos.Symbol, remainingSpotExitQty(pos))
+			filled, avg, confirmed, confErr := e.confirmSpotFill(spotExch, futExch, orderID, pos.Symbol, remainingSpotExitQty(pos))
 			if !confirmed {
 				return &pendingSpotExitError{orderID: orderID, err: confErr}
 			}
@@ -2009,7 +2074,7 @@ func (e *SpotEngine) closeDirectionB(
 func (e *SpotEngine) emergencyClose(
 	pos *models.SpotFuturesPosition,
 	futExch exchange.Exchange,
-	smExch exchange.SpotMarginExchange,
+	spotExch exchange.SpotExchange,
 	futSizeStr, spotSizeStr string,
 ) error {
 	e.log.Warn("EMERGENCY CLOSE: %s on %s — closing both legs in parallel", pos.Symbol, pos.Exchange)
@@ -2086,11 +2151,18 @@ func (e *SpotEngine) emergencyClose(
 		// with LOT_SIZE-unaligned SpotSize (e.g. DEGOUSDT 1258.1406, step=0.01)
 		// is rejected with -1013 and only heals later via non-emergency retry.
 		var spotRules *exchange.SpotOrderRules
-		if rules, rulesErr := smExch.SpotOrderRules(pos.Symbol); rulesErr == nil && rules != nil {
+		if rules, rulesErr := spotExch.SpotOrderRules(pos.Symbol); rulesErr == nil && rules != nil {
 			spotRules = rules
 			if isDust, eff := isSpotResidualDust(rules, remaining, pos.SpotEntryPrice); isDust {
 				if pos.Direction == "borrow_sell_long" {
-					bal, balErr := smExch.GetMarginBalance(pos.BaseCoin)
+					smExch, _ := spotExch.(exchange.SpotMarginExchange)
+					var bal *exchange.MarginBalance
+					var balErr error
+					if smExch != nil {
+						bal, balErr = smExch.GetMarginBalance(pos.BaseCoin)
+					} else {
+						balErr = fmt.Errorf("spot margin exchange unavailable")
+					}
 					borrowed := 0.0
 					if bal != nil {
 						borrowed = bal.Borrowed
@@ -2130,7 +2202,7 @@ func (e *SpotEngine) emergencyClose(
 		if spotSide == exchange.SideBuy {
 			quoteEst = utils.FormatSize(remaining*pos.SpotEntryPrice*1.02, 2)
 		}
-		orderID, err := smExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
+		orderID, err := spotExch.PlaceSpotMarginOrder(exchange.SpotMarginOrderParams{
 			Symbol:    pos.Symbol,
 			Side:      spotSide,
 			OrderType: "market",
@@ -2146,7 +2218,7 @@ func (e *SpotEngine) emergencyClose(
 		if cpErr := e.persistExitCheckpoint(pos); cpErr != nil {
 			e.log.Error("EMERGENCY: failed to checkpoint pending spot exit order %s: %v", orderID, cpErr)
 		}
-		filled, avg, confirmed, confErr := e.confirmSpotFill(smExch, futExch, orderID, pos.Symbol, remaining)
+		filled, avg, confirmed, confErr := e.confirmSpotFill(spotExch, futExch, orderID, pos.Symbol, remaining)
 		if !confirmed {
 			ch <- result{leg: "spot", err: &pendingSpotExitError{orderID: orderID, err: confErr}}
 			return
@@ -2245,6 +2317,10 @@ func (e *SpotEngine) emergencyClose(
 
 	// Repay residual borrow if Direction A (auto-repay should have handled most/all).
 	if pos.Direction == "borrow_sell_long" {
+		smExch, ok := spotExch.(exchange.SpotMarginExchange)
+		if !ok {
+			return fmt.Errorf("spot margin exchange unavailable for emergency repay on %s", pos.Exchange)
+		}
 		if mb, mbErr := smExch.GetMarginBalance(pos.BaseCoin); mbErr == nil && (mb.Borrowed+mb.Interest) > 0 {
 			residual := utils.FormatSize(mb.Borrowed+mb.Interest, 6)
 			e.log.Info("EMERGENCY: repaying residual borrow %s %s", residual, pos.BaseCoin)

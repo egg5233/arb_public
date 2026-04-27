@@ -33,4 +33,5 @@ type Opportunity struct {
 	Source        string            `json:"source"`         // "loris" or "coinglass"
 	Timestamp     time.Time         `json:"timestamp"`
 	Alternatives  []AlternativePair `json:"alternatives,omitempty"`
+	EVNetBpsH     float64           `json:"ev_net_bps_h,omitempty"`
 }

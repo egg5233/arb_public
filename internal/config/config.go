@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"runtime"
 	"strconv"
@@ -12,6 +13,45 @@ import (
 
 	"arb/internal/models"
 )
+
+type StrategyPriority string
+
+const (
+	StrategyPriorityPerpPerpFirst StrategyPriority = "perp_perp_first"
+	StrategyPriorityDirBFirst     StrategyPriority = "dir_b_first"
+	StrategyPriorityDirBOnly      StrategyPriority = "dir_b_only"
+	StrategyPriorityPerpPerpOnly  StrategyPriority = "perp_perp_only"
+)
+
+func NormalizeStrategyPriority(raw string) (StrategyPriority, bool) {
+	switch StrategyPriority(strings.TrimSpace(raw)) {
+	case StrategyPriorityPerpPerpFirst:
+		return StrategyPriorityPerpPerpFirst, true
+	case StrategyPriorityDirBFirst:
+		return StrategyPriorityDirBFirst, true
+	case StrategyPriorityDirBOnly:
+		return StrategyPriorityDirBOnly, true
+	case StrategyPriorityPerpPerpOnly:
+		return StrategyPriorityPerpPerpOnly, true
+	default:
+		return StrategyPriorityPerpPerpFirst, false
+	}
+}
+
+func ValidateExpectedHoldHours(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0) && v > 0
+}
+
+func parseBoolEnv(raw string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes":
+		return true, true
+	case "0", "false", "no":
+		return false, true
+	default:
+		return false, false
+	}
+}
 
 // normalizeChain maps chain name variants to a canonical form.
 func normalizeChain(chain string) string {
@@ -45,6 +85,9 @@ type Config struct {
 	AllowMixedIntervals     bool          // allow cross-interval pairs in ranker (default false)
 	DryRun                  bool          // if true, skip trade execution (log only)
 	TradFiSigned            bool          // true after Binance TradFi-Perps agreement is signed
+	EnableStrategyPriority  bool          // enable strategy-priority coordinator behavior (default false)
+	StrategyPriority        StrategyPriority
+	ExpectedHoldHours       float64 // expected hold window used by strategy-priority EV math (default 24)
 
 	// Depth-driven entry execution
 	EntryTimeoutSec int     // max seconds for depth fill loop (default 60)
@@ -186,27 +229,28 @@ type Config struct {
 	SpotArbChromePath string
 
 	// Spot-futures arbitrage engine
-	SpotFuturesEnabled            bool
-	SpotFuturesMaxPositions       int
-	SpotFuturesLeverage           int
-	SpotFuturesMonitorIntervalSec int
-	SpotFuturesMinNetYieldAPR     float64  // minimum net APR after costs (decimal, e.g. 0.10 = 10%)
-	SpotFuturesMaxBorrowAPR       float64  // maximum borrow APR for Direction A (decimal, e.g. 0.50 = 50%)
-	EnableBorrowSpikeDetection    bool     // if true, auto-exit on rapid borrow APR spikes (default: false)
-	BorrowSpikeWindowMin          int      // trailing window size for borrow spike detection (default: 60)
-	BorrowSpikeMultiplier         float64  // multiplier threshold for borrow spike detection (default: 2.0)
-	BorrowSpikeMinAbsolute        float64  // minimum absolute APR increase required to count as a spike (default: 0.10)
-	SpotFuturesExchanges          []string // exchanges to consider (empty = all SpotMargin-capable)
-	SpotFuturesScanIntervalMin    int      // discovery scan interval in minutes
-	SpotFuturesBorrowGraceMin     int      // minutes of negative yield before exit (default: 30)
-	SpotFuturesPriceExitPct       float64  // price move % to trigger normal exit (default: 20.0)
-	SpotFuturesPriceEmergencyPct  float64  // price move % to trigger emergency exit (default: 30.0)
-	SpotFuturesMarginExitPct      float64  // margin utilization % for normal exit (default: 85.0)
-	SpotFuturesMarginEmergencyPct float64  // margin utilization % for emergency exit (default: 95.0)
-	SpotFuturesLossCooldownHours  int      // hours to cool down after a losing trade (default: 4)
-	SpotFuturesAutoEnabled        bool     // enable automated spot-futures entry from discovery loop (default: false)
-	SpotFuturesDryRun             bool     // if true, log auto-entry decisions but skip execution (default: true)
-	SpotFuturesPersistenceScans   int      // consecutive scans a symbol must appear before auto-entry (default: 2)
+	SpotFuturesEnabled                 bool
+	SpotFuturesMaxPositions            int
+	SpotFuturesLeverage                int
+	SpotFuturesMonitorIntervalSec      int
+	SpotFuturesMinNetYieldAPR          float64  // minimum net APR after costs (decimal, e.g. 0.10 = 10%)
+	SpotFuturesMaxBorrowAPR            float64  // maximum borrow APR for Direction A (decimal, e.g. 0.50 = 50%)
+	EnableBorrowSpikeDetection         bool     // if true, auto-exit on rapid borrow APR spikes (default: false)
+	BorrowSpikeWindowMin               int      // trailing window size for borrow spike detection (default: 60)
+	BorrowSpikeMultiplier              float64  // multiplier threshold for borrow spike detection (default: 2.0)
+	BorrowSpikeMinAbsolute             float64  // minimum absolute APR increase required to count as a spike (default: 0.10)
+	SpotFuturesExchanges               []string // exchanges to consider (empty = all SpotMargin-capable)
+	SpotFuturesScanIntervalMin         int      // discovery scan interval in minutes
+	SpotFuturesBorrowGraceMin          int      // minutes of negative yield before exit (default: 30)
+	SpotFuturesPriceExitPct            float64  // price move % to trigger normal exit (default: 20.0)
+	SpotFuturesPriceEmergencyPct       float64  // price move % to trigger emergency exit (default: 30.0)
+	SpotFuturesMarginExitPct           float64  // margin utilization % for normal exit (default: 85.0)
+	SpotFuturesMarginEmergencyPct      float64  // margin utilization % for emergency exit (default: 95.0)
+	SpotFuturesLossCooldownHours       int      // hours to cool down after a losing trade (default: 4)
+	SpotFuturesAutoEnabled             bool     // enable automated spot-futures entry from discovery loop (default: false)
+	SpotFuturesDryRun                  bool     // if true, log auto-entry decisions but skip execution (default: true)
+	SpotFuturesPersistenceScans        int      // consecutive scans a symbol must appear before auto-entry (default: 2)
+	SpotFuturesEnableSpotOnlyExchanges bool     // allow Dir B on spot-only exchanges (default: false)
 
 	// Separate-account exchange support (Binance/Bitget)
 	SpotFuturesProfitTransferEnabled bool    // enable auto profit-to-margin transfers after exit (default: false)
@@ -378,6 +422,7 @@ type jsonSpotFutures struct {
 	AutoEnabled                *bool    `json:"auto_enabled"`
 	AutoDryRun                 *bool    `json:"auto_dry_run"`
 	PersistenceScans           *int     `json:"persistence_scans"`
+	EnableSpotOnlyExchanges    *bool    `json:"enable_spot_only_exchanges"`
 
 	ProfitTransferEnabled *bool    `json:"profit_transfer_enabled"`
 	CapitalSeparateUSDT   *float64 `json:"capital_separate_usdt"`
@@ -434,22 +479,25 @@ type jsonAI struct {
 }
 
 type jsonStrategy struct {
-	TopOpportunities    *int           `json:"top_opportunities"`
-	ScanMinutes         []int          `json:"scan_minutes"`
-	EntryScanMinute     *int           `json:"entry_scan_minute"`
-	ExitScanMinute      *int           `json:"exit_scan_minute"`
-	RotateScanMinute    *int           `json:"rotate_scan_minute"`
-	RebalanceScanMinute *int           `json:"rebalance_scan_minute"`
-	EnablePoolAllocator *bool          `json:"enable_pool_allocator"`
-	TopPairsPerSymbol   *int           `json:"top_pairs_per_symbol"`
-	AllocatorTimeoutMs  *int           `json:"allocator_timeout_ms"`
+	TopOpportunities    *int     `json:"top_opportunities"`
+	ScanMinutes         []int    `json:"scan_minutes"`
+	EntryScanMinute     *int     `json:"entry_scan_minute"`
+	ExitScanMinute      *int     `json:"exit_scan_minute"`
+	RotateScanMinute    *int     `json:"rotate_scan_minute"`
+	RebalanceScanMinute *int     `json:"rebalance_scan_minute"`
+	EnablePoolAllocator *bool    `json:"enable_pool_allocator"`
+	TopPairsPerSymbol   *int     `json:"top_pairs_per_symbol"`
+	AllocatorTimeoutMs  *int     `json:"allocator_timeout_ms"`
+	EnablePriority      *bool    `json:"enable_strategy_priority"`
+	StrategyPriority    *string  `json:"strategy_priority"`
+	ExpectedHoldHours   *float64 `json:"expected_hold_hours"`
 
-	RebalanceMinNetPnLUSDT *float64 `json:"rebalance_min_net_pnl_usdt"`
-	RebalanceDonorFloorPct *float64 `json:"rebalance_donor_floor_pct"`
-	Discovery           *jsonDiscovery `json:"discovery"`
-	Entry               *jsonEntry     `json:"entry"`
-	Exit                *jsonExit      `json:"exit"`
-	Rotation            *jsonRotation  `json:"rotation"`
+	RebalanceMinNetPnLUSDT *float64       `json:"rebalance_min_net_pnl_usdt"`
+	RebalanceDonorFloorPct *float64       `json:"rebalance_donor_floor_pct"`
+	Discovery              *jsonDiscovery `json:"discovery"`
+	Entry                  *jsonEntry     `json:"entry"`
+	Exit                   *jsonExit      `json:"exit"`
+	Rotation               *jsonRotation  `json:"rotation"`
 }
 
 type jsonDiscovery struct {
@@ -567,113 +615,117 @@ func detectChromePath() string {
 // Priority: env var > config.json > default value.
 func Load() *Config {
 	c := &Config{
-		MinHoldTime:                      16 * time.Hour,
-		MaxCostRatio:                     0.50,
-		MaxPositions:                     1,
-		Leverage:                         3,
-		SlippageBPS:                      50,
-		RebalanceScanMinute:              10,
-		EnablePoolAllocator:              false,
-		TopPairsPerSymbol:                10,
-		AllocatorTimeoutMs:               30000,
-		RebalanceMinNetPnLUSDT:           0.50,
-		RebalanceDonorFloorPct:           0.05,
-		TopOpportunities:                 25,
-		PriceGapFreeBPS:                  40,
-		MaxPriceGapBPS:                   200,
-		MaxGapRecoveryIntervals:          1.0,
-		EntryTimeoutSec:                  300,
-		MinChunkUSDT:                     10,
-		MarginL3Threshold:                0.50,
-		MarginL4Threshold:                0.80,
-		MarginL4Headroom:                 0.05,
-		MarginL5Threshold:                0.95,
-		L4ReduceFraction:                 0.30,
-		MarginSafetyMultiplier:           2.0,
-		EntryMarginHeadroom:              0.80,
-		WithdrawMinIntervalMs:            11000,
-		ExitDepthTimeoutSec:              300,
-		ExitMaxGapBPS:                    10.0,
-		RiskMonitorIntervalSec:           300,
-		EnableLiqTrendTracking:           false,
-		LiqProjectionMinutes:             15,
-		LiqWarningSlopeThresh:            0.002,
-		LiqCriticalSlopeThresh:           0.004,
-		LiqMinSamples:                    5,
-		MaxPerpPerpPct:                   0.60,
-		MaxSpotFuturesPct:                0.60,
-		MaxPerExchangePct:                0.60,
-		ReservationTTLSec:                300,
-		EnableExchangeHealthScoring:      false,
-		ExchHealthLatencyMs:              2000,
-		ExchHealthMinUptime:              0.95,
-		ExchHealthMinFillRate:            0.80,
-		ExchHealthMinScore:               0.50,
-		ExchHealthWindowMin:              60,
-		PersistLookback1h:                90 * time.Minute,
-		PersistMinCount1h:                1,
-		PersistLookback4h:                180 * time.Minute,
-		PersistMinCount4h:                1,
-		PersistLookback8h:                360 * time.Minute,
-		PersistMinCount8h:                1,
-		SpreadStabilityRatio1h:           0.5,
-		SpreadStabilityOIRank1h:          0,
-		EnableSpreadStabilityGate:        false,
-		SpreadVolatilityMaxCV:            0,
-		SpreadVolatilityMinSamples:       10,
-		SpreadStabilityStricterForAuto:   true,
-		SpreadStabilityAutoCVMultiplier:  0.7,
-		FundingWindowMin:                 30,
-		LossCooldownHours:                4.0,
-		BacktestDays:                     3,
-		DelistFilterEnabled:              true,
-		ContractRefreshInterval:          1 * time.Hour,
-		ScanMinutes:                      []int{10, 20, 30, 35, 40, 45, 50},
-		EntryScanMinute:                  40,
-		ExitScanMinute:                   30,
-		RotateScanMinute:                 35,
-		RotationThresholdBPS:             100,
-		RotationCooldownMin:              180,
-		EnableSpreadReversal:             true,
-		SpreadReversalTolerance:          1,
-		ZeroSpreadTolerance:              2,
-		ReEnterCooldownHours:             1.0,
-		RedisAddr:                        "localhost:6379",
-		RedisDB:                          2,
-		DashboardAddr:                    ":8080",
-		AIModel:                          "gpt-5.4",
-		AIMaxTokens:                      4096,
-		SpotArbSchedule:                  "15,35",
-		SpotArbChromePath:                detectChromePath(),
-		SpotFuturesMaxPositions:          1,
-		SpotFuturesLeverage:              3,
-		SpotFuturesMonitorIntervalSec:    60,
-		SpotFuturesMinNetYieldAPR:        0.10, // 10%
-		SpotFuturesMaxBorrowAPR:          0.50, // 50%
-		EnableBorrowSpikeDetection:       false,
-		BorrowSpikeWindowMin:             60,
-		BorrowSpikeMultiplier:            2.0,
-		BorrowSpikeMinAbsolute:           0.10,
-		SpotFuturesScanIntervalMin:       10,
-		SpotFuturesBorrowGraceMin:        30,
-		SpotFuturesPriceExitPct:          20.0,
-		SpotFuturesPriceEmergencyPct:     30.0,
-		SpotFuturesMarginExitPct:         85.0,
-		SpotFuturesMarginEmergencyPct:    95.0,
-		SpotFuturesLossCooldownHours:     4,
-		SpotFuturesDryRun:                true,
-		SpotFuturesPersistenceScans:      2,
-		SpotFuturesCapitalSeparate:       200,
-		SpotFuturesCapitalUnified:        500,
-		SpotFuturesScannerMode:           "native",
-		SpotFuturesEnableMinHold:         false,
-		SpotFuturesMinHoldHours:          8,
-		SpotFuturesEnableSettlementGuard: false,
-		SpotFuturesSettlementWindowMin:   10,
-		SpotFuturesEnablePriceGapGate:    false,
-		SpotFuturesMaxPriceGapPct:        0.5,
-		SpotFuturesEnableExitSpreadGate:  false,
-		SpotFuturesExitSpreadPct:         0.3,
+		MinHoldTime:                        16 * time.Hour,
+		MaxCostRatio:                       0.50,
+		MaxPositions:                       1,
+		Leverage:                           3,
+		SlippageBPS:                        50,
+		RebalanceScanMinute:                10,
+		EnablePoolAllocator:                false,
+		TopPairsPerSymbol:                  10,
+		AllocatorTimeoutMs:                 30000,
+		RebalanceMinNetPnLUSDT:             0.50,
+		RebalanceDonorFloorPct:             0.05,
+		TopOpportunities:                   25,
+		PriceGapFreeBPS:                    40,
+		MaxPriceGapBPS:                     200,
+		MaxGapRecoveryIntervals:            1.0,
+		EntryTimeoutSec:                    300,
+		MinChunkUSDT:                       10,
+		MarginL3Threshold:                  0.50,
+		MarginL4Threshold:                  0.80,
+		MarginL4Headroom:                   0.05,
+		MarginL5Threshold:                  0.95,
+		L4ReduceFraction:                   0.30,
+		MarginSafetyMultiplier:             2.0,
+		EntryMarginHeadroom:                0.80,
+		WithdrawMinIntervalMs:              11000,
+		ExitDepthTimeoutSec:                300,
+		ExitMaxGapBPS:                      10.0,
+		RiskMonitorIntervalSec:             300,
+		EnableLiqTrendTracking:             false,
+		LiqProjectionMinutes:               15,
+		LiqWarningSlopeThresh:              0.002,
+		LiqCriticalSlopeThresh:             0.004,
+		LiqMinSamples:                      5,
+		MaxPerpPerpPct:                     0.60,
+		MaxSpotFuturesPct:                  0.60,
+		MaxPerExchangePct:                  0.60,
+		ReservationTTLSec:                  300,
+		EnableExchangeHealthScoring:        false,
+		ExchHealthLatencyMs:                2000,
+		ExchHealthMinUptime:                0.95,
+		ExchHealthMinFillRate:              0.80,
+		ExchHealthMinScore:                 0.50,
+		ExchHealthWindowMin:                60,
+		PersistLookback1h:                  90 * time.Minute,
+		PersistMinCount1h:                  1,
+		PersistLookback4h:                  180 * time.Minute,
+		PersistMinCount4h:                  1,
+		PersistLookback8h:                  360 * time.Minute,
+		PersistMinCount8h:                  1,
+		SpreadStabilityRatio1h:             0.5,
+		SpreadStabilityOIRank1h:            0,
+		EnableSpreadStabilityGate:          false,
+		SpreadVolatilityMaxCV:              0,
+		SpreadVolatilityMinSamples:         10,
+		SpreadStabilityStricterForAuto:     true,
+		SpreadStabilityAutoCVMultiplier:    0.7,
+		FundingWindowMin:                   30,
+		LossCooldownHours:                  4.0,
+		BacktestDays:                       3,
+		DelistFilterEnabled:                true,
+		ContractRefreshInterval:            1 * time.Hour,
+		ScanMinutes:                        []int{10, 20, 30, 35, 40, 45, 50},
+		EntryScanMinute:                    40,
+		ExitScanMinute:                     30,
+		RotateScanMinute:                   35,
+		RotationThresholdBPS:               100,
+		RotationCooldownMin:                180,
+		EnableSpreadReversal:               true,
+		SpreadReversalTolerance:            1,
+		ZeroSpreadTolerance:                2,
+		ReEnterCooldownHours:               1.0,
+		EnableStrategyPriority:             false,
+		StrategyPriority:                   StrategyPriorityPerpPerpFirst,
+		ExpectedHoldHours:                  24,
+		RedisAddr:                          "localhost:6379",
+		RedisDB:                            2,
+		DashboardAddr:                      ":8080",
+		AIModel:                            "gpt-5.4",
+		AIMaxTokens:                        4096,
+		SpotArbSchedule:                    "15,35",
+		SpotArbChromePath:                  detectChromePath(),
+		SpotFuturesMaxPositions:            1,
+		SpotFuturesLeverage:                3,
+		SpotFuturesMonitorIntervalSec:      60,
+		SpotFuturesMinNetYieldAPR:          0.10, // 10%
+		SpotFuturesMaxBorrowAPR:            0.50, // 50%
+		EnableBorrowSpikeDetection:         false,
+		BorrowSpikeWindowMin:               60,
+		BorrowSpikeMultiplier:              2.0,
+		BorrowSpikeMinAbsolute:             0.10,
+		SpotFuturesScanIntervalMin:         10,
+		SpotFuturesBorrowGraceMin:          30,
+		SpotFuturesPriceExitPct:            20.0,
+		SpotFuturesPriceEmergencyPct:       30.0,
+		SpotFuturesMarginExitPct:           85.0,
+		SpotFuturesMarginEmergencyPct:      95.0,
+		SpotFuturesLossCooldownHours:       4,
+		SpotFuturesDryRun:                  true,
+		SpotFuturesPersistenceScans:        2,
+		SpotFuturesEnableSpotOnlyExchanges: false,
+		SpotFuturesCapitalSeparate:         200,
+		SpotFuturesCapitalUnified:          500,
+		SpotFuturesScannerMode:             "native",
+		SpotFuturesEnableMinHold:           false,
+		SpotFuturesMinHoldHours:            8,
+		SpotFuturesEnableSettlementGuard:   false,
+		SpotFuturesSettlementWindowMin:     10,
+		SpotFuturesEnablePriceGapGate:      false,
+		SpotFuturesMaxPriceGapPct:          0.5,
+		SpotFuturesEnableExitSpreadGate:    false,
+		SpotFuturesExitSpreadPct:           0.3,
 
 		// Phase 6: maintenance rate risk hardening defaults
 		SpotFuturesEnableMaintenanceGate: false,
@@ -705,7 +757,6 @@ func Load() *Config {
 		// Analytics defaults (off by default)
 		EnableAnalytics: false,
 		AnalyticsDBPath: "data/analytics.db",
-
 	}
 	// Price-Gap Tracker defaults (Phase 9, D-12 exception):
 	// paper mode default TRUE until live validated — master switch stays OFF per PG-OPS-06.
@@ -734,6 +785,16 @@ func (c *Config) RLock() { c.mu.RLock() }
 
 // RUnlock releases the config read lock.
 func (c *Config) RUnlock() { c.mu.RUnlock() }
+
+func (c *Config) EffectiveStrategyPriority() StrategyPriority {
+	if !c.EnableStrategyPriority {
+		return StrategyPriorityPerpPerpFirst
+	}
+	if mode, ok := NormalizeStrategyPriority(string(c.StrategyPriority)); ok {
+		return mode
+	}
+	return StrategyPriorityPerpPerpFirst
+}
 
 // isValidScannerMode returns true if mode is one of the accepted scanner modes.
 func isValidScannerMode(mode string) bool {
@@ -834,6 +895,25 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		}
 		if s.AllocatorTimeoutMs != nil && *s.AllocatorTimeoutMs > 0 {
 			c.AllocatorTimeoutMs = *s.AllocatorTimeoutMs
+		}
+		if s.EnablePriority != nil {
+			c.EnableStrategyPriority = *s.EnablePriority
+		}
+		if s.StrategyPriority != nil {
+			if mode, ok := NormalizeStrategyPriority(*s.StrategyPriority); ok {
+				c.StrategyPriority = mode
+			} else {
+				fmt.Fprintf(os.Stderr, "[config] WARNING: invalid strategy.strategy_priority %q; using %s\n", *s.StrategyPriority, StrategyPriorityPerpPerpFirst)
+				c.StrategyPriority = StrategyPriorityPerpPerpFirst
+			}
+		}
+		if s.ExpectedHoldHours != nil {
+			if ValidateExpectedHoldHours(*s.ExpectedHoldHours) {
+				c.ExpectedHoldHours = *s.ExpectedHoldHours
+			} else {
+				fmt.Fprintf(os.Stderr, "[config] WARNING: invalid strategy.expected_hold_hours %v; using 24\n", *s.ExpectedHoldHours)
+				c.ExpectedHoldHours = 24
+			}
 		}
 		if s.RebalanceMinNetPnLUSDT != nil && *s.RebalanceMinNetPnLUSDT >= 0 {
 			c.RebalanceMinNetPnLUSDT = *s.RebalanceMinNetPnLUSDT
@@ -1251,6 +1331,9 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if sf.PersistenceScans != nil && *sf.PersistenceScans > 0 {
 			c.SpotFuturesPersistenceScans = *sf.PersistenceScans
 		}
+		if sf.EnableSpotOnlyExchanges != nil {
+			c.SpotFuturesEnableSpotOnlyExchanges = *sf.EnableSpotOnlyExchanges
+		}
 		if sf.ProfitTransferEnabled != nil {
 			c.SpotFuturesProfitTransferEnabled = *sf.ProfitTransferEnabled
 		}
@@ -1564,6 +1647,17 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	strategy["enable_pool_allocator"] = c.EnablePoolAllocator
 	strategy["top_pairs_per_symbol"] = c.TopPairsPerSymbol
 	strategy["allocator_timeout_ms"] = c.AllocatorTimeoutMs
+	strategy["enable_strategy_priority"] = c.EnableStrategyPriority
+	mode, ok := NormalizeStrategyPriority(string(c.StrategyPriority))
+	if !ok {
+		mode = StrategyPriorityPerpPerpFirst
+	}
+	expectedHoldHours := c.ExpectedHoldHours
+	if !ValidateExpectedHoldHours(expectedHoldHours) {
+		expectedHoldHours = 24
+	}
+	strategy["strategy_priority"] = string(mode)
+	strategy["expected_hold_hours"] = expectedHoldHours
 	strategy["rebalance_min_net_pnl_usdt"] = c.RebalanceMinNetPnLUSDT
 	strategy["rebalance_donor_floor_pct"] = c.RebalanceDonorFloorPct
 
@@ -1734,6 +1828,7 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	sf["auto_enabled"] = c.SpotFuturesAutoEnabled
 	sf["auto_dry_run"] = c.SpotFuturesDryRun
 	sf["persistence_scans"] = c.SpotFuturesPersistenceScans
+	sf["enable_spot_only_exchanges"] = c.SpotFuturesEnableSpotOnlyExchanges
 	sf["profit_transfer_enabled"] = c.SpotFuturesProfitTransferEnabled
 	sf["capital_separate_usdt"] = keepNonZero(sf["capital_separate_usdt"], c.SpotFuturesCapitalSeparate, "spot_futures.capital_separate_usdt")
 	sf["capital_unified_usdt"] = keepNonZero(sf["capital_unified_usdt"], c.SpotFuturesCapitalUnified, "spot_futures.capital_unified_usdt")
@@ -1886,6 +1981,27 @@ func (c *Config) loadEnvOverrides() {
 			c.MinChunkUSDT = f
 		}
 	}
+	if v := os.Getenv("ENABLE_STRATEGY_PRIORITY"); v != "" {
+		if b, ok := parseBoolEnv(v); ok {
+			c.EnableStrategyPriority = b
+		} else {
+			fmt.Fprintf(os.Stderr, "[config] WARNING: invalid ENABLE_STRATEGY_PRIORITY %q; keeping %v\n", v, c.EnableStrategyPriority)
+		}
+	}
+	if v := os.Getenv("STRATEGY_PRIORITY"); v != "" {
+		if mode, ok := NormalizeStrategyPriority(v); ok {
+			c.StrategyPriority = mode
+		} else {
+			fmt.Fprintf(os.Stderr, "[config] WARNING: invalid STRATEGY_PRIORITY %q; keeping %s\n", v, c.StrategyPriority)
+		}
+	}
+	if v := os.Getenv("EXPECTED_HOLD_HOURS"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && ValidateExpectedHoldHours(f) {
+			c.ExpectedHoldHours = f
+		} else {
+			fmt.Fprintf(os.Stderr, "[config] WARNING: invalid EXPECTED_HOLD_HOURS %q; keeping %v\n", v, c.ExpectedHoldHours)
+		}
+	}
 
 	// Env vars override JSON for API keys
 	if v := os.Getenv("BINANCE_API_KEY"); v != "" {
@@ -1980,6 +2096,9 @@ func (c *Config) loadEnvOverrides() {
 	}
 	if v := os.Getenv("SPOT_FUTURES_ENABLE_BORROW_SPIKE_DETECTION"); v != "" {
 		c.EnableBorrowSpikeDetection = v == "1" || v == "true" || v == "yes"
+	}
+	if v := os.Getenv("SPOT_FUTURES_ENABLE_SPOT_ONLY_EXCHANGES"); v != "" {
+		c.SpotFuturesEnableSpotOnlyExchanges = v == "1" || v == "true" || v == "yes"
 	}
 	if v := os.Getenv("SPOT_FUTURES_BORROW_SPIKE_WINDOW_MIN"); v != "" {
 		if i, err := strconv.Atoi(v); err == nil {

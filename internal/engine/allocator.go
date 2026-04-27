@@ -356,7 +356,6 @@ type allocatorSelection struct {
 
 type exchNeedsMap map[string]float64
 
-
 func (e *Engine) runPoolAllocator(opps []models.Opportunity, balances map[string]rebalanceBalanceInfo, remainingSlots int) (*allocatorSelection, error) {
 	if e.lossLimiter != nil && e.cfg.EnableLossLimits {
 		if blocked, status := e.lossLimiter.CheckLimits(); blocked {
@@ -771,7 +770,6 @@ func allocatorUpperBound(candidates []allocatorCandidate, idx, slots int) float6
 	return sum
 }
 
-
 // buildTransferableCache computes per-exchange donor surplus identically to
 // the pool allocator's inline logic, and returns it as a PrefetchCache that
 // SimulateApprovalForPair can consume.
@@ -846,8 +844,6 @@ func computeAllocatorBaseValue(spread, entryNotional float64, longExch, shortExc
 	tradingFees := 2.0 * (feesA.Taker + feesB.Taker) / 100.0 * entryNotional
 	return grossFundingValue - tradingFees
 }
-
-
 
 func cloneFloatMap(src map[string]float64) map[string]float64 {
 	dst := make(map[string]float64, len(src))
@@ -1186,7 +1182,7 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 			if !entry.valid {
 				triedDonors[bestDonor] = true
 				donorBudget[bestDonor] = 0 // zero globally, matching executor
-				continue // skip this donor, try next
+				continue                   // skip this donor, try next
 			}
 			fee := entry.fee
 			minWd := entry.minWd
@@ -1454,7 +1450,6 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 	}
 }
 
-
 func (e *Engine) formatAllocatorSummary(sel *allocatorSelection) string {
 	if sel == nil {
 		return "nil"
@@ -1578,153 +1573,153 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 		// Sequential rebalance: deficits already computed, skip spot→futures phase.
 		crossDeficits = precomputedDeficits
 	} else {
-	// Sort recipients for deterministic iteration (matches dryRunTransferPlan).
-	sortedNeeds := make([]string, 0, len(needs))
-	for name := range needs {
-		sortedNeeds = append(sortedNeeds, name)
-	}
-	sort.Strings(sortedNeeds)
-	e.log.Debug("rebalance: sortedNeeds=%v needs=%v MSM=%.2f L4=%.4f", sortedNeeds, needs, e.cfg.MarginSafetyMultiplier, e.cfg.MarginL4Threshold)
-	for _, name := range sortedNeeds {
-		need := needs[name]
-		bal := balances[name]
-		targetFreeRatio := 1 - e.cfg.MarginL4Threshold
-		if targetFreeRatio <= 0 {
-			targetFreeRatio = 0.20
+		// Sort recipients for deterministic iteration (matches dryRunTransferPlan).
+		sortedNeeds := make([]string, 0, len(needs))
+		for name := range needs {
+			sortedNeeds = append(sortedNeeds, name)
 		}
-
-		e.log.Debug("rebalance: checking %s: need=%.2f futures=%.4f spot=%.8f total=%.4f isUnified=%v", name, need, bal.futures, bal.spot, bal.futuresTotal, func() bool { uc, ok := e.exchanges[name].(interface{ IsUnified() bool }); return ok && uc.IsUnified() }())
-		if bal.futures >= need {
-			isUnified := false
-			if uc, ok := e.exchanges[name].(interface{ IsUnified() bool }); ok && uc.IsUnified() {
-				isUnified = true
+		sort.Strings(sortedNeeds)
+		e.log.Debug("rebalance: sortedNeeds=%v needs=%v MSM=%.2f L4=%.4f", sortedNeeds, needs, e.cfg.MarginSafetyMultiplier, e.cfg.MarginL4Threshold)
+		for _, name := range sortedNeeds {
+			need := needs[name]
+			bal := balances[name]
+			targetFreeRatio := 1 - e.cfg.MarginL4Threshold
+			if targetFreeRatio <= 0 {
+				targetFreeRatio = 0.20
 			}
 
-			// Non-unified: try spot→futures ratio relief (existing logic)
-			if !isUnified && bal.spot > 0 && bal.futuresTotal > 0 {
-				projectedAvail := bal.futures - need
-				if projectedAvail < 0 {
-					projectedAvail = 0
+			e.log.Debug("rebalance: checking %s: need=%.2f futures=%.4f spot=%.8f total=%.4f isUnified=%v", name, need, bal.futures, bal.spot, bal.futuresTotal, func() bool { uc, ok := e.exchanges[name].(interface{ IsUnified() bool }); return ok && uc.IsUnified() }())
+			if bal.futures >= need {
+				isUnified := false
+				if uc, ok := e.exchanges[name].(interface{ IsUnified() bool }); ok && uc.IsUnified() {
+					isUnified = true
 				}
-				projectedRatio := 1 - projectedAvail/bal.futuresTotal
-				if projectedRatio >= e.cfg.MarginL4Threshold {
-					extra := (need - bal.futuresTotal*targetFreeRatio) / targetFreeRatio
-					if extra > bal.spot {
-						extra = bal.spot
+
+				// Non-unified: try spot→futures ratio relief (existing logic)
+				if !isUnified && bal.spot > 0 && bal.futuresTotal > 0 {
+					projectedAvail := bal.futures - need
+					if projectedAvail < 0 {
+						projectedAvail = 0
 					}
-					if extra >= 1.0 {
-						amtStr := fmt.Sprintf("%.4f", extra)
-						postRatio := 1 - (bal.futures+extra-need)/(bal.futuresTotal+extra)
-						e.log.Info("rebalance: %s spot->futures %s USDT (margin ratio relief, projected=%.2f post=%.2f L4=%.2f)", name, amtStr, projectedRatio, postRatio, e.cfg.MarginL4Threshold)
-						if !e.cfg.DryRun {
-							if err := e.exchanges[name].TransferToFutures("USDT", amtStr); err != nil {
-								e.log.Error("rebalance: %s spot->futures failed: %v", name, err)
-							} else {
-								bi := balances[name]
-								bi.futures += extra
-								bi.spot -= extra
-								bi.futuresTotal += extra
-								balances[name] = bi
-								bal = balances[name] // refresh local copy for L4 check below
-								result.LocalTransferHappened = true
+					projectedRatio := 1 - projectedAvail/bal.futuresTotal
+					if projectedRatio >= e.cfg.MarginL4Threshold {
+						extra := (need - bal.futuresTotal*targetFreeRatio) / targetFreeRatio
+						if extra > bal.spot {
+							extra = bal.spot
+						}
+						if extra >= 1.0 {
+							amtStr := fmt.Sprintf("%.4f", extra)
+							postRatio := 1 - (bal.futures+extra-need)/(bal.futuresTotal+extra)
+							e.log.Info("rebalance: %s spot->futures %s USDT (margin ratio relief, projected=%.2f post=%.2f L4=%.2f)", name, amtStr, projectedRatio, postRatio, e.cfg.MarginL4Threshold)
+							if !e.cfg.DryRun {
+								if err := e.exchanges[name].TransferToFutures("USDT", amtStr); err != nil {
+									e.log.Error("rebalance: %s spot->futures failed: %v", name, err)
+								} else {
+									bi := balances[name]
+									bi.futures += extra
+									bi.spot -= extra
+									bi.futuresTotal += extra
+									balances[name] = bi
+									bal = balances[name] // refresh local copy for L4 check below
+									result.LocalTransferHappened = true
+								}
 							}
 						}
 					}
+					// After spot relief attempt, fall through to L4 check below.
+					// Previously this was an unconditional 'continue' which skipped
+					// the L4 cross-exchange deficit check when spot > 0 but too small
+					// to actually fix the ratio. Bug: OKX with spot=0.001 entered
+					// this branch, skipped L4 check, and no crossDeficit was queued.
+					e.log.Debug("rebalance: %s spot-relief done (spot=%.8f), falling through to L4 check", name, bal.spot)
 				}
-				// After spot relief attempt, fall through to L4 check below.
-				// Previously this was an unconditional 'continue' which skipped
-				// the L4 cross-exchange deficit check when spot > 0 but too small
-				// to actually fix the ratio. Bug: OKX with spot=0.001 entered
-				// this branch, skipped L4 check, and no crossDeficit was queued.
-				e.log.Debug("rebalance: %s spot-relief done (spot=%.8f), falling through to L4 check", name, bal.spot)
+
+				// Unified account or no spot: check if post-trade ratio would breach L4.
+				// If so, queue a cross-exchange transfer for the ratio deficit.
+				if bal.futuresTotal > 0 {
+					actualMargin := need / e.cfg.MarginSafetyMultiplier
+					if actualMargin <= 0 {
+						actualMargin = need
+					}
+					projectedAvail := bal.futures - actualMargin
+					if projectedAvail < 0 {
+						projectedAvail = 0
+					}
+					projectedRatio := 1 - projectedAvail/bal.futuresTotal
+					e.log.Debug("rebalance: %s L4-check: need=%.2f actualMargin=%.2f futures=%.2f total=%.2f projAvail=%.2f projRatio=%.4f L4=%.4f",
+						name, need, actualMargin, bal.futures, bal.futuresTotal, projectedAvail, projectedRatio, e.cfg.MarginL4Threshold)
+					if projectedRatio >= e.cfg.MarginL4Threshold {
+						// Compute ratio deficit: how much extra needed so ratio < L4
+						targetRatio := e.rebalanceTargetRatio()
+						freeTarget := 1.0 - targetRatio
+						ratioDeficit := (freeTarget*bal.futuresTotal - bal.futures + actualMargin) / targetRatio
+						if ratioDeficit > 0 {
+							e.log.Info("rebalance: %s post-trade ratio=%.4f >= L4=%.4f, queueing cross-exchange deficit=%.2f",
+								name, projectedRatio, e.cfg.MarginL4Threshold, ratioDeficit)
+							crossDeficits = append(crossDeficits, rebalanceDeficit{name, ratioDeficit})
+						}
+					}
+				}
+				e.log.Debug("rebalance: %s sufficient-futures path done, continue", name)
+				continue
 			}
 
-			// Unified account or no spot: check if post-trade ratio would breach L4.
-			// If so, queue a cross-exchange transfer for the ratio deficit.
-			if bal.futuresTotal > 0 {
-				actualMargin := need / e.cfg.MarginSafetyMultiplier
-				if actualMargin <= 0 {
-					actualMargin = need
+			marginDeficit := need - bal.futures
+			if marginDeficit < 0 {
+				marginDeficit = 0
+			}
+			actualMargin := need / e.cfg.MarginSafetyMultiplier
+			if actualMargin <= 0 {
+				actualMargin = need
+			}
+			targetRatio := e.rebalanceTargetRatio()
+			freeTarget := 1.0 - targetRatio
+			var ratioDeficit float64
+			if freeTarget > 0 && bal.futuresTotal > 0 {
+				ratioDeficit = (freeTarget*bal.futuresTotal - bal.futures + actualMargin) / targetRatio
+				if ratioDeficit < 0 {
+					ratioDeficit = 0
 				}
-				projectedAvail := bal.futures - actualMargin
-				if projectedAvail < 0 {
-					projectedAvail = 0
+			}
+			transferAmt := marginDeficit
+			if ratioDeficit > transferAmt {
+				transferAmt = ratioDeficit
+			}
+			e.log.Debug("rebalance: deficit %s: need=%.2f futures=%.2f marginDef=%.2f ratioDef=%.2f transferAmt=%.2f", name, need, bal.futures, marginDeficit, ratioDeficit, transferAmt)
+			if bal.spot > 0 {
+				actualTransfer := transferAmt
+				if actualTransfer > bal.spot {
+					actualTransfer = bal.spot
 				}
-				projectedRatio := 1 - projectedAvail/bal.futuresTotal
-				e.log.Debug("rebalance: %s L4-check: need=%.2f actualMargin=%.2f futures=%.2f total=%.2f projAvail=%.2f projRatio=%.4f L4=%.4f",
-					name, need, actualMargin, bal.futures, bal.futuresTotal, projectedAvail, projectedRatio, e.cfg.MarginL4Threshold)
-				if projectedRatio >= e.cfg.MarginL4Threshold {
-					// Compute ratio deficit: how much extra needed so ratio < L4
-					targetRatio := e.rebalanceTargetRatio()
-					freeTarget := 1.0 - targetRatio
-					ratioDeficit := (freeTarget*bal.futuresTotal - bal.futures + actualMargin) / targetRatio
-					if ratioDeficit > 0 {
-						e.log.Info("rebalance: %s post-trade ratio=%.4f >= L4=%.4f, queueing cross-exchange deficit=%.2f",
-							name, projectedRatio, e.cfg.MarginL4Threshold, ratioDeficit)
-						crossDeficits = append(crossDeficits, rebalanceDeficit{name, ratioDeficit})
+				if actualTransfer < 1.0 {
+					e.log.Debug("rebalance: %s spot->futures skip (%.4f USDT below minimum)", name, actualTransfer)
+					if transferAmt > 0 {
+						crossDeficits = append(crossDeficits, rebalanceDeficit{name, transferAmt})
+					}
+					continue
+				}
+				postTotal := bal.futuresTotal + actualTransfer
+				postRatio := 1 - (bal.futures+actualTransfer-need)/postTotal
+				amtStr := fmt.Sprintf("%.4f", actualTransfer)
+				e.log.Info("rebalance: %s spot->futures %s USDT (same-exchange, instant, post-ratio=%.2f L4=%.2f)", name, amtStr, postRatio, e.cfg.MarginL4Threshold)
+				if !e.cfg.DryRun {
+					if err := e.exchanges[name].TransferToFutures("USDT", amtStr); err != nil {
+						e.log.Error("rebalance: %s spot->futures failed: %v", name, err)
+					} else {
+						transferAmt -= actualTransfer
+						bi := balances[name]
+						bi.futures += actualTransfer
+						bi.spot -= actualTransfer
+						bi.futuresTotal += actualTransfer // same-exchange relief: futures pool grows, keep PostBalances consistent with the other relief branch at 1150-1155
+						balances[name] = bi
+						result.LocalTransferHappened = true
 					}
 				}
 			}
-			e.log.Debug("rebalance: %s sufficient-futures path done, continue", name)
-			continue
-		}
-
-		marginDeficit := need - bal.futures
-		if marginDeficit < 0 {
-			marginDeficit = 0
-		}
-		actualMargin := need / e.cfg.MarginSafetyMultiplier
-		if actualMargin <= 0 {
-			actualMargin = need
-		}
-		targetRatio := e.rebalanceTargetRatio()
-		freeTarget := 1.0 - targetRatio
-		var ratioDeficit float64
-		if freeTarget > 0 && bal.futuresTotal > 0 {
-			ratioDeficit = (freeTarget*bal.futuresTotal - bal.futures + actualMargin) / targetRatio
-			if ratioDeficit < 0 {
-				ratioDeficit = 0
+			if transferAmt > 0 {
+				crossDeficits = append(crossDeficits, rebalanceDeficit{name, transferAmt})
 			}
 		}
-		transferAmt := marginDeficit
-		if ratioDeficit > transferAmt {
-			transferAmt = ratioDeficit
-		}
-		e.log.Debug("rebalance: deficit %s: need=%.2f futures=%.2f marginDef=%.2f ratioDef=%.2f transferAmt=%.2f", name, need, bal.futures, marginDeficit, ratioDeficit, transferAmt)
-		if bal.spot > 0 {
-			actualTransfer := transferAmt
-			if actualTransfer > bal.spot {
-				actualTransfer = bal.spot
-			}
-			if actualTransfer < 1.0 {
-				e.log.Debug("rebalance: %s spot->futures skip (%.4f USDT below minimum)", name, actualTransfer)
-				if transferAmt > 0 {
-					crossDeficits = append(crossDeficits, rebalanceDeficit{name, transferAmt})
-				}
-				continue
-			}
-			postTotal := bal.futuresTotal + actualTransfer
-			postRatio := 1 - (bal.futures+actualTransfer-need)/postTotal
-			amtStr := fmt.Sprintf("%.4f", actualTransfer)
-			e.log.Info("rebalance: %s spot->futures %s USDT (same-exchange, instant, post-ratio=%.2f L4=%.2f)", name, amtStr, postRatio, e.cfg.MarginL4Threshold)
-			if !e.cfg.DryRun {
-				if err := e.exchanges[name].TransferToFutures("USDT", amtStr); err != nil {
-					e.log.Error("rebalance: %s spot->futures failed: %v", name, err)
-				} else {
-					transferAmt -= actualTransfer
-					bi := balances[name]
-					bi.futures += actualTransfer
-					bi.spot -= actualTransfer
-					bi.futuresTotal += actualTransfer // same-exchange relief: futures pool grows, keep PostBalances consistent with the other relief branch at 1150-1155
-					balances[name] = bi
-					result.LocalTransferHappened = true
-				}
-			}
-		}
-		if transferAmt > 0 {
-			crossDeficits = append(crossDeficits, rebalanceDeficit{name, transferAmt})
-		}
-	}
 	} // end else (precomputedDeficits == nil)
 
 	if len(crossDeficits) == 0 {
@@ -1795,9 +1790,10 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				contribution = step.Amount
 				chain = step.Chain
 
-				if contribution > remaining {
-					contribution = remaining
-				}
+				// Planned steps are produced by dryRunTransferPlan after applying
+				// min-withdraw floors. Do not cap them back to the residual deficit:
+				// a later planned step may intentionally overfund a small tail so
+				// the executor stays in parity with the dry-run feasibility check.
 				if contribution > bestSurplus {
 					contribution = bestSurplus
 				}
