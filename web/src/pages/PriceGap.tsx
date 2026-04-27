@@ -13,6 +13,10 @@ interface PriceGapCandidate {
   threshold_bps: number;
   max_position_usdt: number;
   modeled_slippage_bps?: number;
+  // Phase 999.1 PG-DIR-01: bidirectional candidates fire on either sign of the
+  // spread. Empty/missing → defaults to 'pinned' (backward compat with pre-999.1
+  // config.json rows). Server normalizes via models.NormalizeDirection (Plan 02).
+  direction?: 'pinned' | 'bidirectional';
   disabled: boolean;
   reason?: string;
   disabled_at?: number;
@@ -246,6 +250,9 @@ const PriceGap: FC = () => {
   const [formThresholdBps, setFormThresholdBps] = useState(200);
   const [formMaxPositionUSDT, setFormMaxPositionUSDT] = useState(5000);
   const [formModeledSlippageBps, setFormModeledSlippageBps] = useState(5);
+  // Phase 999.1 PG-DIR-01: Direction radio toggle — defaults to 'pinned' for new
+  // candidates AND legacy candidates without the field (matches server NormalizeDirection).
+  const [formDirection, setFormDirection] = useState<'pinned' | 'bidirectional'>('pinned');
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
 
   // Flash highlight IDs (newly-entered rows)
@@ -458,6 +465,8 @@ const PriceGap: FC = () => {
       setFormThresholdBps(target.threshold_bps);
       setFormMaxPositionUSDT(target.max_position_usdt);
       setFormModeledSlippageBps(target.modeled_slippage_bps ?? 5);
+      // Phase 999.1 PG-DIR-01: legacy candidates without direction → 'pinned' default
+      setFormDirection(target.direction ?? 'pinned');
     } else {
       setFormSymbol('');
       setFormLongExch('binance');
@@ -465,6 +474,8 @@ const PriceGap: FC = () => {
       setFormThresholdBps(200);
       setFormMaxPositionUSDT(5000);
       setFormModeledSlippageBps(5);
+      // Phase 999.1 PG-DIR-01: new candidates default to 'pinned' (backward-compat behavior)
+      setFormDirection('pinned');
     }
     setEditorOpen({ mode, target });
   }, []);
@@ -478,6 +489,11 @@ const PriceGap: FC = () => {
     if (formThresholdBps <= 0 || formThresholdBps > 10000) errs.threshold = t('pricegap.candidates.errors.thresholdRange');
     if (formMaxPositionUSDT <= 0 || formMaxPositionUSDT > 500000) errs.maxPosition = t('pricegap.candidates.errors.maxPositionRange');
     if (formModeledSlippageBps < 0 || formModeledSlippageBps > 1000) errs.slippage = t('pricegap.candidates.errors.slippageRange');
+    // Phase 999.1 PG-DIR-01: defense-in-depth — server validator (Plan 02) rejects
+    // unknown values too, but local check matches Plan 03 i18n key for fast feedback.
+    if (formDirection !== 'pinned' && formDirection !== 'bidirectional') {
+      errs.direction = t('pricegap.candidates.modal.direction.validation.invalid');
+    }
     // Tuple collision (D-11): Add → reject any existing tuple match; Edit → reject if changed tuple matches a *different* row.
     const tuple = `${sym}|${formLongExch}|${formShortExch}`;
     const collides = candidates.some((c) => {
@@ -490,7 +506,7 @@ const PriceGap: FC = () => {
     });
     if (collides) errs.tuple = t('pricegap.candidates.errors.tupleCollision');
     return errs;
-  }, [formSymbol, formLongExch, formShortExch, formThresholdBps, formMaxPositionUSDT, formModeledSlippageBps, candidates, editorOpen, t]);
+  }, [formSymbol, formLongExch, formShortExch, formThresholdBps, formMaxPositionUSDT, formModeledSlippageBps, formDirection, candidates, editorOpen, t]);
 
   // Close modal on Esc — Phase 10 extends Phase-9 handler to cover editorOpen + deleteTarget
   useEffect(() => {
@@ -528,6 +544,9 @@ const PriceGap: FC = () => {
       threshold_bps: formThresholdBps,
       max_position_usdt: formMaxPositionUSDT,
       modeled_slippage_bps: formModeledSlippageBps,
+      // Phase 999.1 PG-DIR-01: explicit direction in payload (server NormalizeDirection
+      // also defaults empty → 'pinned' but we send canonical value for audit clarity).
+      direction: formDirection,
       // Phase-9 disable state lives in Redis keyed by symbol — preserve in-memory
       // mirror so the table re-render shows correct status until WS confirms.
       disabled: editorOpen?.target?.disabled ?? false,
@@ -554,7 +573,7 @@ const PriceGap: FC = () => {
     } finally {
       setModalBusy(false);
     }
-  }, [candidates, editorOpen, formSymbol, formLongExch, formShortExch, formThresholdBps, formMaxPositionUSDT, formModeledSlippageBps, postConfig, seed, validateLocalForm]);
+  }, [candidates, editorOpen, formSymbol, formLongExch, formShortExch, formThresholdBps, formMaxPositionUSDT, formModeledSlippageBps, formDirection, postConfig, seed, validateLocalForm]);
 
   // Delete handler — POSTs candidates filtered to exclude deleteTarget tuple.
   // On 409 with "active position" wording, surface friendly D-14 copy.
@@ -1398,8 +1417,45 @@ const PriceGap: FC = () => {
               <p className="text-red-400 text-xs mb-2">{formErrors.slippage}</p>
             )}
 
+            {/* Phase 999.1 PG-DIR-01: Direction radio toggle */}
+            <fieldset className="block mt-2">
+              <legend className="text-sm text-gray-300 mb-1">
+                {t('pricegap.candidates.modal.direction.label')}
+              </legend>
+              <div className="flex gap-4">
+                <label className="inline-flex items-center gap-2 text-sm text-gray-200">
+                  <input
+                    type="radio"
+                    name="pg-direction"
+                    value="pinned"
+                    checked={formDirection === 'pinned'}
+                    onChange={() => setFormDirection('pinned')}
+                    className="h-4 w-4"
+                  />
+                  <span>{t('pricegap.candidates.modal.direction.option.pinned')}</span>
+                </label>
+                <label className="inline-flex items-center gap-2 text-sm text-gray-200">
+                  <input
+                    type="radio"
+                    name="pg-direction"
+                    value="bidirectional"
+                    checked={formDirection === 'bidirectional'}
+                    onChange={() => setFormDirection('bidirectional')}
+                    className="h-4 w-4"
+                  />
+                  <span>{t('pricegap.candidates.modal.direction.option.bidirectional')}</span>
+                </label>
+              </div>
+              <p className="mt-1 text-xs text-gray-500">
+                {t('pricegap.candidates.modal.direction.help')}
+              </p>
+              {formErrors.direction && (
+                <p className="text-red-400 text-xs mt-1">{formErrors.direction}</p>
+              )}
+            </fieldset>
+
             {formErrors.tuple && (
-              <p className="text-red-400 text-xs mb-2">{formErrors.tuple}</p>
+              <p className="text-red-400 text-xs mb-2 mt-2">{formErrors.tuple}</p>
             )}
             {modalError && <p className="text-red-400 text-sm mb-2">{modalError}</p>}
 
