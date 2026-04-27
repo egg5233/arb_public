@@ -104,7 +104,7 @@ Plans:
 | 11. Auto-discovery Scanner | v2.1 | 0/? | Not started | — |
 | 12. Auto-promotion | v2.1 | 0/? | Not started | — |
 | 13. v2.0 Deferred Closure | v2.1 | 0/? | Not started | — |
-| 999.1. Bidirectional pricegap candidates | backlog | 6/6 | Complete   | 2026-04-27 |
+| 999.1. Bidirectional pricegap candidates | backlog | 6/6 | Complete    | 2026-04-27 |
 
 ## Backlog
 

@@ -4,7 +4,7 @@ milestone: v2.1
 milestone_name: Candidate Operations
 status: verifying
 stopped_at: Completed 999.1-06-PLAN.md
-last_updated: "2026-04-27T07:49:37.623Z"
+last_updated: "2026-04-27T14:10:42.439Z"
 last_activity: 2026-04-27
 progress:
   total_phases: 2
@@ -25,8 +25,8 @@ See: .planning/PROJECT.md (updated 2026-04-21 after v1.0 shipped)
 
 ## Current Position
 
-Phase: 999.1 (bidirectional-pricegap-candidates) — EXECUTING
-Plan: 6 of 6
+Phase: 999.1
+Plan: Not started
 Status: Phase complete — ready for verification
 Last activity: 2026-04-27
 
@@ -43,7 +43,7 @@ Progress (v2.0): [          ] 0%
 
 **Velocity (v1.0 baseline):**
 
-- Total plans completed: 45
+- Total plans completed: 51
 - Average duration: 14 min
 - Total execution time: ~5 hours
 
@@ -56,6 +56,7 @@ Progress (v2.0): [          ] 0%
 | 08 | 8 | - | - |
 | 09 | 11 | - | - |
 | 10 | 5 | - | - |
+| 999.1 | 6 | - | - |
 
 **Recent Trend:**
 
