@@ -4,6 +4,8 @@
 
 - ✅ **v1.0 Unified Arb Platform** — Phases 1–7 (shipped 2026-04-21). See `milestones/v1.0-ROADMAP.md`
 - ✅ **v2.0 Multi-Strategy Expansion** — Phases 8–9 (shipped 2026-04-25). See `milestones/v2.0-ROADMAP.md`
+- ✅ **v2.1 Candidate Operations** — Phases 10, 13, 999.1 shipped 2026-04-27 (PG-DISC-01/02/03 deferred to v2.2). See `milestones/v2.1-ROADMAP.md`
+- 📋 **v2.2 Auto-Discovery & Promotion** — Phases 11–12 (planned)
 
 ## Phases
 
@@ -42,50 +44,30 @@ Requirements: `.planning/milestones/v2.0-REQUIREMENTS.md`
 
 </details>
 
-### 🚧 v2.1 Candidate Operations (Planning)
+<details>
+<summary>✅ v2.1 Candidate Operations (Phases 10, 13, 999.1) — SHIPPED 2026-04-27</summary>
 
-**Goal:** Operationalize Strategy 4's candidate lifecycle — Dashboard CRUD for manual control + algorithmic auto-discovery + score-threshold auto-promotion. **Paper-only for the entire milestone**; no live capital flip until v2.2.
+- [x] Phase 10: Dashboard Candidate CRUD (5/5 plans) — PG-OPS-07 (2026-04-25)
+- [x] Phase 13: v2.0 Deferred Closure — PG-VAL-03, PG-OPS-08, PG-DEBT-01 (closed v0.34.10/v0.34.11, no GSD phase dir)
+- [x] Phase 999.1: Bidirectional pricegap candidates (6/6 plans) — PG-DIR-01 (2026-04-27, backlog promotion)
 
-**Constraints (locked):** paper-only, 6 existing exchanges, score-threshold auto-promotion (no review gate).
+Audit: `gaps_found` — 4/7 in-scope reqs satisfied. PG-DISC-01/02/03 (Phases 11+12 auto-discovery scanner + auto-promotion) explicitly deferred to v2.2; closing as tech debt mirrors v1.0 precedent. Bidirectional candidate mode (PG-DIR-01) added as bonus from backlog after Phase 10 operator feedback.
 
-- [x] **Phase 10: Dashboard Candidate CRUD** — Add/Edit/Delete modal in Price-Gap tab; round-trip via `/api/config` + i18n EN/zh-TW lockstep (PG-OPS-07) (completed 2026-04-25)
+Full detail: `.planning/milestones/v2.1-ROADMAP.md`
+Requirements: `.planning/milestones/v2.1-REQUIREMENTS.md`
+Audit: `.planning/milestones/v2.1-MILESTONE-AUDIT.md`
+
+</details>
+
+### 📋 v2.2 Auto-Discovery & Promotion (Planned)
+
+**Goal:** Algorithmic auto-discovery of pricegap candidates across 6 exchanges + score-threshold auto-promotion. Carries forward the deferred half of v2.1 "Candidate Operations".
+
+**Phases:**
 - [ ] **Phase 11: Auto-discovery Scanner** — Periodic scan across 6 exchanges; score by spread persistence + book depth + retreat depth; write to `pg:discovered:*` Redis keys (PG-DISC-01, PG-DISC-03)
 - [ ] **Phase 12: Auto-promotion** — Discovered candidates above `PriceGapAutoPromoteScore` threshold append to `cfg.PriceGapCandidates`; respect `PriceGapMaxCandidates` cap; Telegram + WS broadcast on promotion (PG-DISC-02)
-- [x] **Phase 13: v2.0 Deferred Closure** — closed 2026-04-25 in v0.34.10/v0.34.11. PG-OPS-08 = `go test` writing live config via SaveJSON absolute-path fallback (fixed v0.34.10). PG-VAL-03 = paper-mode realized slip overrides to ModeledSlipBps (fixed v0.34.11). PG-DEBT-01 = `cmd/bingxprobe/` deleted (v0.34.11; case-insensitive JSON decode bug it diagnosed already fixed in v0.34.6).
 
-Requirements: `.planning/REQUIREMENTS.md`
-
-### Phase 10: Dashboard Candidate CRUD
-
-**Goal:** Operator can Add/Edit/Delete `PriceGapCandidate` entries from the Price-Gap dashboard tab, with changes persisting to `config.json` via the existing `POST /api/config` round-trip and surfacing in the running tracker on the next scan tick — no manual `config.json` editing required.
-
-**Scope (PG-OPS-07):**
-- New "Add candidate" button in `web/src/pages/PriceGap.tsx`
-- Shared Add/Edit modal with 6 fields: `symbol`, `long_exch`, `short_exch`, `threshold_bps`, `max_position_usdt`, `modeled_slippage_bps`
-- Delete confirmation dialog with active-position safety check
-- Frontend + backend validation (defense-in-depth)
-- EN + zh-TW i18n keys added in lockstep under `priceGap.candidates.*`
-- Reuse existing `POST /api/config` endpoint and `SaveJSON` `.bak` backup flow
-- Existing per-candidate Disable/Re-enable buttons unchanged
-
-**Out of scope:**
-- Auto-discovery (Phase 11), auto-promotion (Phase 12)
-- Live capital deployment (v2.2)
-- pg-admin CLI parity for add/edit/delete
-- WebSocket broadcast for multi-operator sync (v3.0)
-
-**Canonical refs:** see `.planning/phases/10-dashboard-candidate-crud/10-CONTEXT.md` `<canonical_refs>` section.
-
-**Requirements addressed:** PG-OPS-07
-
-**Plans:** 5/5 plans complete
-
-Plans:
-- [x] 10-01-PLAN.md — Backend: extend priceGapUpdate struct + validation + active-position guard + Go unit tests
-- [x] 10-02-PLAN.md — i18n: add 23 pricegap.candidates.* keys to en.ts and zh-TW.ts in lockstep
-- [x] 10-03-PLAN.md — Frontend: Add/Edit modal + Delete confirm dialog + form state in PriceGap.tsx
-- [x] 10-04-PLAN.md — Tests: Vitest for modal/PG-OPS-08/i18n parity + Go test pinning tracker hot-reload
-- [x] 10-05-PLAN.md — Build + manual UAT (16-step checkpoint with operator sign-off)
+Constraints (carried from v2.1): paper-only until v2.3 sign-off, 6 existing exchanges, score-threshold auto-promotion (no review gate).
 
 ## Progress
 
@@ -101,30 +83,11 @@ Plans:
 | 8. Price-Gap Tracker Core | v2.0 | 8/8 | Complete | 2026-04-22 |
 | 9. Price-Gap Dashboard & Paper→Live Operations | v2.0 | 11/11 | Complete | 2026-04-25 |
 | 10. Dashboard Candidate CRUD | v2.1 | 5/5 | Complete    | 2026-04-25 |
-| 11. Auto-discovery Scanner | v2.1 | 0/? | Not started | — |
-| 12. Auto-promotion | v2.1 | 0/? | Not started | — |
-| 13. v2.0 Deferred Closure | v2.1 | 0/? | Not started | — |
-| 999.1. Bidirectional pricegap candidates | backlog | 6/6 | Complete    | 2026-04-27 |
+| 13. v2.0 Deferred Closure | v2.1 | n/a | Complete (direct commits) | 2026-04-25 |
+| 999.1. Bidirectional pricegap candidates | v2.1 | 6/6 | Complete    | 2026-04-27 |
+| 11. Auto-discovery Scanner | v2.2 | 0/? | Deferred from v2.1 | — |
+| 12. Auto-promotion | v2.2 | 0/? | Deferred from v2.1 | — |
 
 ## Backlog
 
-### Phase 999.1: Bidirectional pricegap candidates (PLANNED)
-
-**Goal:** Add `direction: "bidirectional" | "pinned"` field to `PriceGapCandidate`. `pinned` = configured-direction-only fire (now WITH positive-sign filter — closes latent bug where `barRing.allExceed` used `math.Abs` and silently fired bidirectional in detection). `bidirectional` = detector evaluates `|spread| ≥ T` and fires whichever sign crosses, swapping leg roles on the wire at fire time. Saves 50% config when symmetric pairs have edge in both directions; opt-in per candidate so noise-prone pairs stay pinned.
-
-**Origin:** Operator question 2026-04-27 during Phase 10 testing. Phase 8 D-08 currently mandates two entries for both directions; this phase makes that optional. Planned 2026-04-25 after research + inline locked decisions (A1 sign-filter, A2/A5 verification, default=pinned, FiredDirection+CandidateLongExch+CandidateShortExch observability).
-
-**Touches:** `internal/models/pricegap_interfaces.go` + `pricegap_position.go` (struct fields), `internal/pricegaptrader/{detector,execution,monitor,risk_gate}.go` (sign branch + role swap + role-blindness), `internal/api/pricegap_handlers.go` (validator), `web/src/pages/PriceGap.tsx` (modal radio), `web/src/i18n/{en,zh-TW}.ts` (lockstep keys).
-
-**Risks managed:** noise-side trades (opt-in only), per-exchange leg-role economics (operator controls per-candidate), observability (FiredDirection + configured tuple persisted), Phase 10 active-position guard tuple matching (CandidateLongExch/ShortExch fields).
-
-**Requirements:** [PG-DIR-01]
-**Plans:** 6/6 plans complete
-
-Plans:
-- [x] 999.1-01-PLAN.md — Backend struct fields + detector sign branch + executor leg-role swap + risk-gate role-blindness verification (Wave 1)
-- [x] 999.1-02-PLAN.md — Validator extension for `direction` field with enum check (Wave 1)
-- [x] 999.1-03-PLAN.md — i18n EN + zh-TW lockstep keys for `pricegap.candidates.modal.direction.*` (Wave 1)
-- [x] 999.1-04-PLAN.md — Frontend modal Direction radio toggle + form-state + client-side validation (Wave 2; depends on 01/02/03)
-- [x] 999.1-05-PLAN.md — End-to-end paper-mode test + backward-compat regression + i18n parity test (Wave 2; depends on 01/02/03/04)
-- [x] 999.1-06-PLAN.md — Full build + VERSION/CHANGELOG bump + brief operator UAT (Wave 3; autonomous: false; depends on 01-05)
+(empty — Phase 999.1 promoted into v2.1 and shipped 2026-04-27)

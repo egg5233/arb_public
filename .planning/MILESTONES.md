@@ -1,5 +1,26 @@
 # Milestones
 
+## v2.1 Candidate Operations (Shipped: 2026-04-27)
+
+**Phases completed:** 3 phases (10, 13, 999.1), 11 plans, 6 tasks
+**Releases:** v0.34.10 (PG-OPS-08), v0.34.11 (PG-VAL-03 + PG-DEBT-01), v0.35.0 (Phase 999.1)
+
+**Key accomplishments:**
+
+- **Phase 10 — Dashboard Candidate CRUD (PG-OPS-07):** Operators can Add/Edit/Delete `PriceGapCandidate` entries from the Price-Gap dashboard tab. POST /api/config validates server-side (regex symbol, exchange enum, range checks, duplicate-tuple) with an active-position safety guard that blocks delete OR tuple-change edits when a `pg:positions:active` row matches the removed tuple. EN + zh-TW i18n in lockstep. 17 Node-native frontend tests + 2 Go tests pin modal CRUD, PG-OPS-08 carryover invariant, i18n parity, and tracker hot-reload — zero new npm deps (lockdown honoured).
+- **Phase 13 — v2.0 Deferred Closure:** PG-VAL-03 paper-mode realized slip override → ModeledSlipBps (v0.34.11, commit d144c54). PG-OPS-08 dashboard auto-POST guard via SaveJSON absolute-path fallback (v0.34.10). PG-DEBT-01 `cmd/bingxprobe/` deleted (v0.34.11; case-insensitive JSON decode bug it diagnosed already fixed in v0.34.6). All three closed via direct commits, no GSD phase directory.
+- **Phase 999.1 — Bidirectional pricegap candidates (PG-DIR-01, backlog promotion):** `direction: "pinned" | "bidirectional"` field added to `PriceGapCandidate`. Pinned now sign-filters (closes latent bug — `barRing.allExceed` previously used `math.Abs` and silently fired wrong-side trades on inverse spreads — BREAKING note in CHANGELOG). Bidirectional fires on either sign with executor leg-role swap; observability fields `FiredDirection` + `CandidateLongExch` + `CandidateShortExch` persisted on positions. Dashboard modal Direction radio + 5 i18n keys (EN + zh-TW lockstep). 14 detector/executor TDD tests + 3 E2E paper-mode + 5 i18n parity tests.
+
+### Known Gaps (deferred to v2.2)
+
+- **PG-DISC-01** — Auto-discovery scanner (Phase 11) — never built
+- **PG-DISC-03** — Discovered candidates Redis audit trail (Phase 11) — never built
+- **PG-DISC-02** — Auto-promotion (Phase 12) — never built
+
+These are the headline "auto-discovery" half of "Candidate Operations". Closed as tech debt mirroring v1.0 precedent (22/24 reqs); `/gsd-audit-milestone v2.1` flagged the gap formally and `.planning/milestones/v2.1-MILESTONE-AUDIT.md` records the rationale. v2.2 "Auto-Discovery & Promotion" is in ROADMAP.md as Planned.
+
+---
+
 ## v2.0 Multi-Strategy Expansion (Shipped: 2026-04-25)
 
 **Phases completed:** 2 phases, 19 plans, 35 tasks
