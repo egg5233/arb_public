@@ -1,21 +1,22 @@
 // scanner_test.go — Plan 04 unit tests for the auto-discovery scanner.
 //
 // Coverage map (PLAN 11-04 Test 1 .. Test 15):
-//   Test 1  TestScanner_DefaultOff           — PriceGapDiscoveryEnabled=false → only enabled-flag write
-//   Test 2  TestScanner_UniverseWalk         — universe × cross-product cardinality
-//   Test 3  TestScanner_PersistenceGate      — 1-bar fail → 4-bar pass
-//   Test 4  TestScanner_BBOFreshnessGate     — stale BBO resets ring + reason=stale_bbo
-//   Test 5  TestScanner_DepthGate            — clearable < floor → reason=insufficient_depth
-//   Test 6  TestScanner_DenylistSymbol       — symbol-form denylist match
-//   Test 7  TestScanner_DenylistTuple        — symbol@exchange tuple match
-//   Test 8  TestScanner_BybitBlackout        — :04..:05:30 wall-clock window
-//   Test 9  TestScanner_SingletonSilentSkip  — only one listing → WriteSymbolNoCrossPair
-//   Test 10 TestScanner_GateThenMagnitude    — all-pass yields non-zero score + sub-scores
-//   Test 11 TestScanner_OneBarPumpRejected   — Pitfall 1 antidote
-//   Test 12 TestScanner_CanonicalSymbolJoin  — RESEARCH A1 normalization
-//   Test 13 (compile-time read-only)         — covered by scanner_static_test.go
-//   Test 14 TestScanner_CycleErrorBudget     — 5 consecutive errors → cycle aborted
-//   Test 15 TestScanner_SubScoreRecord       — D-03 sub-score persistence
+//
+//	Test 1  TestScanner_DefaultOff           — PriceGapDiscoveryEnabled=false → only enabled-flag write
+//	Test 2  TestScanner_UniverseWalk         — universe × cross-product cardinality
+//	Test 3  TestScanner_PersistenceGate      — 1-bar fail → 4-bar pass
+//	Test 4  TestScanner_BBOFreshnessGate     — stale BBO resets ring + reason=stale_bbo
+//	Test 5  TestScanner_DepthGate            — clearable < floor → reason=insufficient_depth
+//	Test 6  TestScanner_DenylistSymbol       — symbol-form denylist match
+//	Test 7  TestScanner_DenylistTuple        — symbol@exchange tuple match
+//	Test 8  TestScanner_BybitBlackout        — :04..:05:30 wall-clock window
+//	Test 9  TestScanner_SingletonSilentSkip  — only one listing → WriteSymbolNoCrossPair
+//	Test 10 TestScanner_GateThenMagnitude    — all-pass yields non-zero score + sub-scores
+//	Test 11 TestScanner_OneBarPumpRejected   — Pitfall 1 antidote
+//	Test 12 TestScanner_CanonicalSymbolJoin  — RESEARCH A1 normalization
+//	Test 13 (compile-time read-only)         — covered by scanner_static_test.go
+//	Test 14 TestScanner_CycleErrorBudget     — 5 consecutive errors → cycle aborted
+//	Test 15 TestScanner_SubScoreRecord       — D-03 sub-score persistence
 package pricegaptrader
 
 import (
@@ -88,15 +89,15 @@ func (f *fakeRegistryReader) List() []models.PriceGapCandidate {
 // fakeTele captures every TelemetryWriter call so tests can assert exact
 // counts and the contents of CycleSummary.
 type fakeTele struct {
-	mu              sync.Mutex
-	enabledFlags    []bool
-	cycles          []CycleSummary
-	noCrossPair     int
-	cycleFailed     int
-	writeCycleErr   error
-	writeFlagErr    error
-	writeNoPairErr  error
-	writeFailErr    error
+	mu             sync.Mutex
+	enabledFlags   []bool
+	cycles         []CycleSummary
+	noCrossPair    int
+	cycleFailed    int
+	writeCycleErr  error
+	writeFlagErr   error
+	writeNoPairErr error
+	writeFailErr   error
 }
 
 func (f *fakeTele) WriteCycle(_ context.Context, s CycleSummary) error {
