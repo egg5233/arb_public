@@ -484,6 +484,36 @@ func main() {
 		// SetBroadcaster(nil) and SetNotifier(nil) revert to Noops.
 		pgTracker.SetBroadcaster(apiSrv)
 		pgTracker.SetNotifier(tg)
+
+		// Phase 11 (Plan 11-05 / PG-DISC-03) — Auto-Discovery Scanner +
+		// Telemetry bootstrap. Telemetry is ALWAYS constructed when the
+		// price-gap subsystem is up so the REST endpoints can render the
+		// OFF state (the dashboard widget needs to know "scanner is
+		// disabled" vs "scanner has never run yet"). The Scanner goroutine
+		// is only constructed when the operator has opted in via
+		// cfg.PriceGapDiscoveryEnabled.
+		pgTelemetry := pricegaptrader.NewTelemetry(
+			db,
+			apiSrv, // *Server satisfies pricegaptrader.DiscoveryBroadcaster via BroadcastPriceGapDiscoveryEvent
+			cfg,
+			utils.NewLogger("pg-telemetry"),
+		)
+		apiSrv.SetDiscoveryTelemetry(pgTelemetry)
+		if cfg.PriceGapDiscoveryEnabled {
+			pgScanner := pricegaptrader.NewScanner(
+				cfg,
+				pgRegistry, // RegistryReader (read-only) — Plan 04 contract
+				exchanges,
+				pgTelemetry,
+				utils.NewLogger("pg-scanner"),
+			)
+			pgTracker.SetScanner(pgScanner)
+			log.Info("[phase-11] discovery scanner enabled — scanLoop will start with Tracker (interval=%ds)",
+				cfg.PriceGapDiscoveryIntervalSec)
+		} else {
+			log.Info("[phase-11] discovery scanner disabled — set price_gap_discovery_enabled=true in config.json to enable")
+		}
+
 		pgTracker.Start()
 		log.Info("Price-gap tracker started (candidates=%d, budget=$%.0f)",
 			len(cfg.PriceGapCandidates), cfg.PriceGapBudget)
