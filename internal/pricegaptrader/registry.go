@@ -115,6 +115,12 @@ func (r *Registry) List() []models.PriceGapCandidate {
 // source identifies the caller for the audit trail. Plan 03 callers use
 // the bounded enumeration {"dashboard-handler", "pg-admin", "scanner-promote"}.
 func (r *Registry) Add(ctx context.Context, source string, c models.PriceGapCandidate) error {
+	// Path-level lock first (cross-instance serialization), then cfg.mu
+	// (per-instance). Order matters: path → cfg ensures no two Registry
+	// instances pointing at the same CONFIG_FILE can interleave a
+	// reload-from-disk → mutate → save sequence.
+	releasePath := r.cfg.LockConfigFile()
+	defer releasePath()
 	r.cfg.Lock()
 	defer r.cfg.Unlock()
 
@@ -150,6 +156,12 @@ func (r *Registry) Add(ctx context.Context, source string, c models.PriceGapCand
 // is invalid. The replacement is persisted through SaveJSONWithBakRing; on
 // failure the in-memory mutation is rolled back.
 func (r *Registry) Update(ctx context.Context, source string, idx int, c models.PriceGapCandidate) error {
+	// Path-level lock first (cross-instance serialization), then cfg.mu
+	// (per-instance). Order matters: path → cfg ensures no two Registry
+	// instances pointing at the same CONFIG_FILE can interleave a
+	// reload-from-disk → mutate → save sequence.
+	releasePath := r.cfg.LockConfigFile()
+	defer releasePath()
 	r.cfg.Lock()
 	defer r.cfg.Unlock()
 
@@ -177,6 +189,12 @@ func (r *Registry) Update(ctx context.Context, source string, idx int, c models.
 // invalid. Persisted via SaveJSONWithBakRing; on failure the in-memory
 // slice is restored.
 func (r *Registry) Delete(ctx context.Context, source string, idx int) error {
+	// Path-level lock first (cross-instance serialization), then cfg.mu
+	// (per-instance). Order matters: path → cfg ensures no two Registry
+	// instances pointing at the same CONFIG_FILE can interleave a
+	// reload-from-disk → mutate → save sequence.
+	releasePath := r.cfg.LockConfigFile()
+	defer releasePath()
 	r.cfg.Lock()
 	defer r.cfg.Unlock()
 
@@ -208,6 +226,12 @@ func (r *Registry) Delete(ctx context.Context, source string, idx int) error {
 //
 // On persist failure the in-memory slice is restored.
 func (r *Registry) Replace(ctx context.Context, source string, next []models.PriceGapCandidate) error {
+	// Path-level lock first (cross-instance serialization), then cfg.mu
+	// (per-instance). Order matters: path → cfg ensures no two Registry
+	// instances pointing at the same CONFIG_FILE can interleave a
+	// reload-from-disk → mutate → save sequence.
+	releasePath := r.cfg.LockConfigFile()
+	defer releasePath()
 	r.cfg.Lock()
 	defer r.cfg.Unlock()
 

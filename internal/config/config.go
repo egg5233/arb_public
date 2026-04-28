@@ -1974,6 +1974,54 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	return os.WriteFile(filePath, out, 0644)
 }
 
+// configFileLocks serializes SaveJSONWithBakRing across multiple *Config
+// instances pointing at the same on-disk file (process-local cross-instance
+// race surface — e.g., dashboard daemon + pg-admin imported into a single
+// test binary). Keyed by absolute filesystem path.
+//
+// For true multi-process safety, callers must layer an OS-level advisory
+// lock (flock) on top — Plan 03's pg-admin OS-Exec adds that. Until then,
+// the in-process map is sufficient because the live deployment runs the
+// dashboard daemon + pg-admin in the same process (per ARCHITECTURE.md
+// "Single server, runs on one machine under systemd").
+var (
+	configFileLocksMu sync.Mutex
+	configFileLocks   = map[string]*sync.Mutex{}
+)
+
+func acquireConfigFileLock(absPath string) *sync.Mutex {
+	configFileLocksMu.Lock()
+	m, ok := configFileLocks[absPath]
+	if !ok {
+		m = &sync.Mutex{}
+		configFileLocks[absPath] = m
+	}
+	configFileLocksMu.Unlock()
+	m.Lock()
+	return m
+}
+
+// LockConfigFile acquires the path-level sync.Mutex for the resolved
+// CONFIG_FILE (or "config.json" in cwd) so cross-instance read-modify-write
+// sequences (Registry's reload-from-disk → mutate → save) are serialized at
+// the path-level. The returned func MUST be deferred or called explicitly to
+// release. Safe under cfg.mu — internal locks are independent.
+//
+// Used by *pricegaptrader.Registry mutators for cross-instance race safety
+// against multiple *Config instances pointing at the same file.
+func (c *Config) LockConfigFile() (release func()) {
+	path := "config.json"
+	if p := os.Getenv("CONFIG_FILE"); p != "" {
+		path = p
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	m := acquireConfigFileLock(abs)
+	return m.Unlock
+}
+
 // SaveJSONWithBakRing writes the current runtime config to disk using an
 // atomic-rename pattern (tmp→fsync→rename), then captures a timestamped backup
 // (`config.json.bak.{unix_ts}`) and prunes the ring to the newest 5 entries.
