@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.35.2] - 2026-04-28
+
+### Added
+
+- Replaced the legacy installer with a root-friendly Ubuntu/Debian one-click `install.sh` that installs Go 1.26+, Node.js 22, Redis, clones/updates the repo, creates a safe dry-run config when absent, builds frontend before the Go binary, installs a systemd service, and only starts the service when `ARB_START=1` is explicitly set.
+
 ## [0.35.1] - 2026-04-27
 
 ### Removed
