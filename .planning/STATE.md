@@ -2,12 +2,12 @@
 gsd_state_version: 1.0
 milestone: v2.2
 milestone_name: Auto-Discovery & Live Strategy 4
-status: defining_requirements
-stopped_at: Milestone v2.2 started — requirements pending
+status: roadmap_complete
+stopped_at: Roadmap complete — awaiting /gsd-plan-phase 11
 last_updated: "2026-04-28T00:00:00.000Z"
 last_activity: 2026-04-28
 progress:
-  total_phases: 0
+  total_phases: 6
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -21,27 +21,29 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-28 after v2.2 milestone start)
 
 **Core value:** "I deposit USDT, select my risk preference, and the system automatically finds opportunities across multiple strategies, opens positions, collects yield, exits when profitable, and I can see exactly how much each position earned — with capital shifting between strategies as opportunities shift."
-**Current focus:** Milestone v2.2 — Auto-Discovery & Live Strategy 4 (defining requirements)
+**Current focus:** Milestone v2.2 — Auto-Discovery & Live Strategy 4 (roadmap complete, awaiting Phase 11 planning)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 11 — Auto-Discovery Scanner + Chokepoint + Telemetry (Not started)
 Plan: —
-Status: Defining requirements
-Last activity: 2026-04-28 — Milestone v2.2 started
+Status: Roadmap complete; awaiting `/gsd-plan-phase 11`
+Last activity: 2026-04-28 — v2.2 roadmap committed (6 phases: 11, 12, 14, 15, 16, 17)
 
-**v2.2 scope tracks:**
+**v2.2 phase structure (6 phases, 14 reqs, 100% coverage):**
 
-1. Strategy 4 live capital — conservative ramp (100 → 500 → 1000 USDT/leg), Telegram per fill, daily reconcile, drawdown circuit breaker
-2. Auto-discovery scanner (PG-DISC-01) — surfaces candidates with score + reasoning
-3. Auto-promotion (PG-DISC-02) — score-gated append to `cfg.PriceGapCandidates`, capped, persisted
-4. Discovery telemetry (PG-DISC-03) — observability for scanner + promotion decisions
-5. Paper-mode bug closure — `realized_slippage_bps`, paper_mode auto-flip, promote `bingxprobe`
-6. v1.0 tech-debt full sweep — Phase 07 VERIFICATION/VALIDATION + Nyquist Wave-0 (01/03/04/06) + browser confirmations (02/03/05/06)
+1. Phase 11 — Auto-Discovery Scanner + Chokepoint + Telemetry (PG-DISC-01, PG-DISC-03, PG-DISC-04)
+2. Phase 12 — Auto-Promotion (PG-DISC-02)
+3. Phase 14 — Daily Reconcile + Live Ramp Controller (PG-LIVE-01, PG-LIVE-03)
+4. Phase 15 — Drawdown Circuit Breaker (PG-LIVE-02)
+5. Phase 16 — Paper-Mode Cleanup + Dashboard Consolidation (PG-FIX-01, PG-FIX-02, DEV-01, PG-OPS-09)
+6. Phase 17 — v1.0 Tech-Debt Sweep (DEBT-V1-01, DEBT-V1-02, DEBT-V1-03)
 
 Progress (v2.2): [          ] 0%
 
-Phase numbering continues from v2.1 (next phase = 14; Phase 11+12 reserved per original deferred numbering plan).
+**Phase ordering:** Validate-first (Architecture research) chosen over money-safe-first (Pitfalls). Hard constraint (PG-DISC-04 chokepoint must land before scanner is write-permitted) satisfied by co-locating chokepoint with scanner read-only build in Phase 11. Reconcile + Ramp consecutive in Phase 14. Tech-debt LAST per Pitfall 7.
+
+**Phase numbering:** Reused 11+12 from v2.1 deferred-numbering plan; 13 already consumed by v2.1 closure; v2.2 continues at 14–17.
 
 ## Performance Metrics
 
@@ -114,107 +116,34 @@ Phase numbering continues from v2.1 (next phase = 14; Phase 11+12 reserved per o
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
-- [v2.0 Roadmap]: Two phases — backend tracker core (Phase 8) then dashboard + paper→live operations (Phase 9); split at Go/React boundary is the natural seam and lets Phase 8 be verified headlessly via logs + Redis before UI work
-- [v2.0 Roadmap]: `PG-OPS-06` (config switch) stays in Phase 8 — the switch must exist before the tracker can run; dashboard UI round-trip for the toggle lives in Phase 9 via the general `PG-OPS-01` tab wiring
-- [v2.0 Roadmap]: Paper mode (`PG-OPS-04`) lives in Phase 9 — it is a dashboard toggle that gates real order placement inside the tracker; the tracker in Phase 8 honors the flag but the UX is Phase 9
-- [v2.0 Roadmap]: All 5 risk gates (PG-RISK-01..05) bundled into Phase 8 because they are pre-entry invariants; no trade should ever execute without them, so they ship with the entry path
-- [v2.0 Roadmap]: v1.0 tech debt (DEBT-01..03) explicitly deferred from v2.0 roadmap per PROJECT.md priority — not worth blocking Strategy 4 on retrospective docs
-- [v2.0 Scoping]: Phase 0/1/round-2 complete in `/tmp/phase0-pricegap/`; 5 known-good candidates shortlist at T=200; real round-trip cost 55–90 bps (2× Phase 0 model) — this informs PG-RISK-03's 2× slippage trigger
-- [v2.0 Scoping]: Initial live budget $5k, $1-3k per-leg caps — PG-RISK-05 enforces per-candidate notional from config
+- [v2.2 Roadmap]: Validate-first phase ordering (Architecture research) chosen over money-safe-first (Pitfalls research). Scanner + telemetry calibrate against paper data BEFORE live capital is ramped; chokepoint co-located with scanner read-only build in Phase 11 to satisfy PG-DISC-04 hard constraint without delaying validation work.
+- [v2.2 Roadmap]: Phase numbers 11+12 reused from v2.1 deferred-numbering plan; 13 already consumed by v2.1 closure; v2.2 continues at 14–17. Six phases total: 11 (scanner+chokepoint+telemetry), 12 (auto-promotion), 14 (reconcile+ramp), 15 (breaker), 16 (paper-bug+dashboard consolidation), 17 (tech-debt).
+- [v2.2 Roadmap]: Reconcile (PG-LIVE-03) co-located with Ramp (PG-LIVE-01) in Phase 14 — ramp's clean-day signal depends on reconcile output; consecutive-phase compromise rejected in favor of single-phase delivery.
+- [v2.2 Roadmap]: v1.0 tech-debt sweep (Phase 17) sequenced LAST per Pitfall 7. Re-exercising stale paths during retrospective is risky; live capital + chokepoint + breaker must be stable first. Surfaced regressions spawn separate Phase 999.x hot-fix mini-phases per v2.1 precedent.
+- [v2.2 Roadmap]: Paper-mode bug closure (PG-FIX-01, PG-FIX-02), DEV-01, and dashboard consolidation (PG-OPS-09) bundled in Phase 16. PG-OPS-09 surfaces ALL Strategy 4 config in one tab — natural co-delivery with paper-mode fix because both touch dashboard wiring.
 
-v1.0 decisions below (retained for reference):
+v2.0 + v1.0 decisions retained (truncated for brevity — see git history for full list):
 
-- [Roadmap]: Spot-futures expansion before operational safety -- user Priority 1
-- [Roadmap]: PP-04 grouped with analytics (Phase 4) not safety (Phase 3) -- it is a dashboard/data feature
-- [Roadmap]: Phase 3 has no dependency on Phases 1-2 -- can be pulled forward if needed
-- [Phase 01]: OKX cross-margin borrows via tdMode=cross + ccy=USDT (Futures mode implicit) instead of autoLoan API
-- [Phase 03-01]: Cooldown logic uses injectable time parameter for deterministic testing
-- [Phase 03-01]: Notifier does not gate on config -- callers check EnablePerpTelegram before calling
-- [Phase 03-02]: Fail-open on Redis query errors -- loss event query failure does not block entries
-- [Phase 03-03]: Safety tab uses emerald color to distinguish from amber-colored Global Risk tab
-- [Phase 03-03]: VERSION bumped to 0.26.0 to cover all Phase 3 operational safety work
-- [Phase 04]: Pure-Go SQLite via modernc.org/sqlite -- no CGO dependency, single binary preserved
-- [Phase 04]: Perp-perp 50/50 PnL split across exchanges for fair attribution in exchange metrics
-- [Phase 04]: Analytics routes always registered (return 503 when disabled) to avoid frontend 404s
-- [Phase 04]: SnapshotWriter uses non-blocking buffered channel (100) — analytics never blocks trading
-- [Phase 04]: BasisGainLoss formula: reconciledPnL - reconciledFunding - rotationPnL + totalFees
-- [Phase 04]: Analytics tab uses same pattern as Safety tab (no sub-tabs) in Config strategy toggle bar
-- [Phase 05]: New allocation JSON section in config -- groups all Phase 5 fields together
-- [Phase 05]: ComputeEffectiveAllocation is a pure function (not method) for easy unit testing
-- [Phase 05]: SizeMultiplier applied only in EffectiveCapitalPerLeg derivation, not during profile application
-- [Phase 05]: Use GetHistory(200)/GetSpotHistory(200) for trailing APR instead of nonexistent GetClosedPositions
-- [Phase 05]: Server gets allocator via SetCapitalAllocator setter, matching existing DI pattern
-- [Phase 05]: Minimum 3 trades per strategy before performance-weighted allocation tilt
-- [Phase 05]: Direct fetch in Overview useEffect for allocation data instead of threading through App props
-- [Phase 05]: Violet color scheme for allocation tab to distinguish from risk (amber) and safety (emerald)
-- [Phase 06]: GetMaintenanceRate kept as optional interface (maintenanceRateProvider), not on Exchange interface -- BingX excluded
-- [Phase 06]: OKX/Bitget MaintenanceRate=0 in LoadAllContracts (fetched on demand); Gate.io populates inline
-- [Phase 06]: Lazy cache initialization in getMaintenanceRate() avoids SpotEngine constructor changes
-- [Phase 06]: Used isSeparateAccount() for capital-per-leg selection in maintenance gate -- consistent with existing codebase pattern
-- [Phase 06]: Cross-engine dispatch via callback function type (not interface) for health monitor spot-futures actions
-- [Phase 06]: Fail-open on GetActiveSpotPositions Redis error in health monitor -- perp-perp continues
-- [Phase 06]: L4 selects largest spot position by NotionalUSDT; L5 includes ALL spot positions
-- [Phase 06]: lookupMaintenanceRateForDisplay() reuses existing getMaintenanceRate() with planned notional from config
-- [Phase 06]: Maintenance rate column after Net APR / before Gap; color thresholds 10%/5% for visual risk assessment
-- [Phase 07]: Maintenance gate toggle placed in sf-general tab (top-level engine feature, not exit-specific)
-- [Phase 07]: Server-side validation matches config.go applyJSON: MaintenanceDefault 0 < val < 1.0, CacheTTL >= 1
-- [Phase 08]: Plan 08-01: ExitReason is string enum (not int) for readable Redis JSON; colocated domain types split across two files (position data vs behavioural contract)
-- [Phase 08]: Token-based pg lock API (AcquirePriceGapLock returns token) with compare-and-delete release via reused releaseLockScript
-- [Phase 08]: priceGapLockPrefix=arb:locks:pg: — sub-prefix under existing arb:locks: root, distinct from perp-perp arb:locks:<sym> (T-08-08)
-- [Phase 08]: Plan 08-03: DelistChecker interface added to internal/models (IsDelisted bool) to preserve D-02 boundary — *discovery.Scanner satisfies it
-- [Phase 08]: Plan 08-03: pkg/exchange.BBO has no UpdatedAt — wall-clock gap between successive samples used as staleness gate instead of BBO timestamp
-- [Phase 08]: Plan 04: preEntry composes 6 gates in fixed D-17 order; TestRiskGate_OrderingInvariant locks blame-attribution
-- [Phase 08]: Plan 04: Gate-concentration cap (PG-RISK-01) only evaluates when the current candidate has a Gate leg; pre-existing gate positions can't retroactively block non-gate requests
-- [Phase 08]: Plan 04: Fail-open on Redis disable-flag read error (Phase 03-02 precedent); WARN log + proceed to other 5 gates
-- [Phase 08]: Idempotent startMonitor via atomic seq token (not reflect-based closure-pointer identity) — flaky under -race
-- [Phase 08]: Optional vwapReader interface for exit PnL — production adapters skip, tests opt-in via stubExchange.GetOrderVwap
-- [Phase 08]: Strict > 2x exec-quality rule (not >=) + divide-by-zero guard on mean(modeled)
-- [Phase 08]: Conservative orphan policy: any err OR zero-total leg -> ExitReasonOrphan (prefer safety over re-enrolling ghost positions)
-- [Phase 08]: Tracker startup goes AFTER SpotEngine (D-03); shutdown goes BEFORE SpotEngine (reverse order) so db+exchanges are live while monitors wind down
-- [Phase 08]: PriceGapEnabled=false guarantees zero pg:* writes (PG-OPS-06); enforced by if-guard in cmd/main.go + TestPriceGapEnabled_DefaultOff_NoTrackerInstantiated
-- [Phase 08]: First tick offset 7s to avoid Bybit :04-:05:30 blackout on fresh boot; subsequent ticks run on steady PriceGapPollIntervalSec cadence
-- [Phase 08]: Phase 8 closes at v0.33.0; pg-admin CLI is the sole operator reversal path for PG-RISK-03 until Phase 9 dashboard ships
-- [Phase 09]: Phase 9 Plan 02: IsCandidateDisabled → 4-tuple with JSON {reason, disabled_at}; legacy plain-string readable for backward compat (Pitfall 6).
-- [Phase 09]: Flat price_gap_paper_mode root field accepted alongside nested price_gap.paper_mode; nested wins on conflict. SaveJSON persists both flags through the existing .bak writer.
-- [Phase 09]: isMutatingEndpoint extended to /api/pricegap/candidate/ so POST disable/enable enforce auth even when DashboardPassword is unset (T-09-06 hardening).
-- [Phase 09]: Paper mode ships as a single chokepoint at ex.PlaceOrder; pos.Mode stamped once at entry, monitor reads pos.Mode only (Pitfall 2 immutability).
-- [Phase 09]: Synth fill price = mid ± (modeled/2)/10_000 so realized slippage is non-zero and the Phase 8 pipeline is exercised (Pitfall 7).
-- [Phase 09]: PG-VAL-02 rolling metrics aggregator is a PURE function with caller-supplied clock; cumulative 24h/7d/30d windows; handler (not library) pads zero-activity rows from cfg.PriceGapCandidates
-- [Phase 09]: D-24 simplification confirmed: pg:history alone suffices for metrics — no pg:slippage:* read path introduced (Plan 09-01 D-23 bridge stamped Modeled/RealizedSlipBps onto every history row)
-- [Phase 09]: Plan 06 aligned risk_gate.go Reason strings with Plan 04 Telegram allowlist; per_position_cap gate gets no Telegram alert by design
-- [Phase 09]: Gap-closure #1: rate-limited non-fire reason logger surfaces detector.Reason under cfg.PriceGapDebugLog (default OFF); 60s cooldown per (symbol, reason); .Info level for journalctl visibility
-- [Phase 10]: Plan 10-01: pointer-to-slice (*[]PriceGapCandidate) on priceGapUpdate so nil = untouched and [] = intentional delete-all (Pitfall 2)
-- [Phase 10]: Plan 10-01: D-13 disable-flag preservation requires no handler-side code — Redis state is keyed on Symbol alone (pg:candidate:disabled:<symbol>), survives any tuple-change edit by design
-- [Phase 10]: Plan 10-01: active-position guard returns HTTP 409 (not 400) — semantically a conflict with current world state; tuple-change edits guarded via prev∖next set difference (Pitfall 4 orphan path)
-- [Phase 10]: Plan 10-02: i18n flat-dotted keys (NOT nested objects) per RESEARCH Pitfall 5; structural lockstep via Record<TranslationKey,string> typing on zh-TW.ts is stronger than grep-diff (caught at typecheck not at lint)
-- [Phase 10]: Plan 10-02: zh-TW typography uses fullwidth ：，？ (U+FF1A/FF0C/FF1F) inside Chinese values per existing convention; ASCII punctuation in plan was Rule-1 fixed to match
-- [Phase 10]: Plan 10-03: adapted to real PriceGapCandidate TS shape (disabled/reason/disabled_at, not enabled/disabled_reason as plan assumed) — Save handler preserves these in in-memory mirror until WS confirms
-- [Phase 10]: Plan 10-03: added 2 new lockstep i18n keys (pricegap.candidates.row.{edit,delete}) for table-row buttons rather than splitting interpolated modal.edit.title — preserves Plan 02 lockstep convention and gives clean zh-TW labels
-- [Phase 10]: Plan 10-03: ESC handler EXTENDED in place (single useEffect with 4-state early-return) rather than added parallel — preserves 0-new-useEffect invariant that PG-OPS-08 acceptance grep depends on
-- [Phase 10]: Plan 10-04: Vitest unavailable per npm lockdown — used Node 22 native test runner (node --test --experimental-strip-types) as fallback per plan §<action> step 6; 17 tests pass, zero new deps
-- [Phase 10]: Plan 10-04: PG-OPS-08 invariant double-locked — 10-03 had one-shot AST scan; 10-04 adds continuous regression test (Tests 2-6) using brace-balanced JS-style scan re-run on every test invocation
-- [Phase 10]: Plan 10-04: Tracker hot-reload double-locked — static regex assertion on tracker.go struct fields catches future Pitfall-1 cache refactors; dynamic CandidateSnapshotForTest helper proves per-tick read-through
+- [v2.0 Roadmap]: Two phases — backend tracker core (Phase 8) then dashboard + paper→live operations (Phase 9)
+- [v2.0 Roadmap]: All 5 risk gates (PG-RISK-01..05) bundled into Phase 8 because they are pre-entry invariants
+- [v2.0 Roadmap]: v1.0 tech debt (DEBT-01..03) explicitly deferred — closed in v2.2 Phase 17
+- [v2.0 Scoping]: 5 known-good candidates shortlist at T=200; real round-trip cost 55–90 bps (2× Phase 0 model)
+- [Phase 09]: Paper mode ships as a single chokepoint at ex.PlaceOrder; pos.Mode stamped once at entry, monitor reads pos.Mode only (Pitfall 2 immutability)
 - [Phase 999.1]: PG-DIR-01: Direction is a behavior property excluded from PriceGapCandidate.ID() — preserves Phase 10 D-11/D-13/D-14 identity invariants
 - [Phase 999.1]: PG-DIR-01: Pinned mode receives a positive-sign filter (latent Phase-8 bug closure); CHANGELOG warns operators about behavior change
-- [Phase 999.1]: PG-DIR-01: Lock key + posID + CandidateLongExch use CONFIGURED tuple; LongExchange/ShortExchange use WIRE-SIDE roles for close-path correctness
-- [Phase 999.1]: Plan 02: validator stays pure (slice-of-strings); NormalizeDirection moves to caller for single mutation point
-- [Phase 999.1]: Plan 04: formDirection sibling useState (matches existing scattered form* hooks); ?? 'pinned' fallback in Edit pre-populate matches server NormalizeDirection
-- [Phase 999.1-bidirectional-pricegap-candidates]: PriceGap.test.tsx skipped per plan Step B fallback (no React DOM test infra under npm lockdown); modal render deferred to Plan 06 UAT
-- [Phase 999.1]: Plan 06: VERSION bump 0.34.11 → 0.35.0 (minor) — actual base diverged from plan-template 0.33.x assumption due to rolling Phase-13/Phase-8 hardening; preserved minor-bump intent
 
 ### Pending Todos
 
-None yet. Next action: define v2.2 requirements (this workflow), then create roadmap, then `/gsd-plan-phase 14` (or first v2.2 phase number from roadmap).
+- `/gsd-plan-phase 11` — decompose Phase 11 (Auto-Discovery Scanner + Chokepoint + Telemetry) into executable plans
 
 ### Blockers/Concerns
 
-- `internal/pricegaptrader/` is a NEW module — strict boundary, must not import `internal/engine/` or `internal/spotengine/`. Plan-phase must enforce this at design time.
-- Redis namespace `pg:*` must not collide with existing perp-perp or spot-futures keys.
-- Startup wiring: tracker goroutine must respect `PriceGapEnabled` flag and shut down cleanly on SIGTERM like existing engines.
-- Exchange adapter reuse only — no new adapter methods; if a method is missing, raise before adding.
-- npm lockdown still in force — Phase 9 dashboard work uses existing Recharts/React stack only (`npm ci` only, no new deps).
-- Live trading risk: every Phase 8 change lands behind `PriceGapEnabled=false`. No code path affecting perp-perp or spot-futures may be touched.
-- Phase 9 UAT blocked by detector observability gap (tracker.go:287 silent non-fire + no BBO subscription path). Phase 9.1 candidate.
+- `internal/pricegaptrader/` module-boundary rule still applies to all v2.2 work — no imports of `internal/engine/` or `internal/spotengine/`.
+- Redis namespace `pg:*` extends to `pg:scan:*`, `pg:promote:*`, `pg:ramp:*`, `pg:reconcile:*`, `pg:breaker:*` — must not collide with existing pg keys.
+- All v2.2 features default OFF (`PriceGapDiscoveryEnabled`, `PriceGapAutoPromote`, `PriceGapLiveCapital` etc).
+- npm lockdown still in force — Phase 16 dashboard consolidation uses existing Recharts/React only (`npm ci` only).
+- Live trading risk: every Phase 11–17 change lands behind config flag. Perp-perp + spot-futures + Strategy 4 paper engines must remain undisturbed during ramp + breaker work (Phases 14–15).
+- CandidateRegistry chokepoint MUST land before scanner is write-permitted (Phase 11 plan-phase decomposition must order this correctly within the phase).
 
 ### Quick Tasks Completed
 
@@ -226,6 +155,6 @@ None yet. Next action: define v2.2 requirements (this workflow), then create roa
 ## Session Continuity
 
 Last session: 2026-04-28T00:00:00.000Z
-Stopped at: Milestone v2.2 started — requirements pending
+Stopped at: Roadmap complete — awaiting `/gsd-plan-phase 11`
 Resume file: None
-Next command: Continue `/gsd-new-milestone` workflow → research → REQUIREMENTS.md → ROADMAP.md
+Next command: `/gsd-plan-phase 11` to decompose Phase 11 into executable plans

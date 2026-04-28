@@ -84,29 +84,27 @@
 
 ## Traceability
 
-Filled by roadmap step.
-
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| PG-DISC-01 | TBD | Pending |
-| PG-DISC-02 | TBD | Pending |
-| PG-DISC-03 | TBD | Pending |
-| PG-DISC-04 | TBD | Pending |
-| PG-LIVE-01 | TBD | Pending |
-| PG-LIVE-02 | TBD | Pending |
-| PG-LIVE-03 | TBD | Pending |
-| PG-OPS-09 | TBD | Pending |
-| PG-FIX-01 | TBD | Pending |
-| PG-FIX-02 | TBD | Pending |
-| DEV-01 | TBD | Pending |
-| DEBT-V1-01 | TBD | Pending |
-| DEBT-V1-02 | TBD | Pending |
-| DEBT-V1-03 | TBD | Pending |
+| PG-DISC-01 | Phase 11 | Pending |
+| PG-DISC-02 | Phase 12 | Pending |
+| PG-DISC-03 | Phase 11 | Pending |
+| PG-DISC-04 | Phase 11 | Pending |
+| PG-LIVE-01 | Phase 14 | Pending |
+| PG-LIVE-02 | Phase 15 | Pending |
+| PG-LIVE-03 | Phase 14 | Pending |
+| PG-OPS-09 | Phase 16 | Pending |
+| PG-FIX-01 | Phase 16 | Pending |
+| PG-FIX-02 | Phase 16 | Pending |
+| DEV-01 | Phase 16 | Pending |
+| DEBT-V1-01 | Phase 17 | Pending |
+| DEBT-V1-02 | Phase 17 | Pending |
+| DEBT-V1-03 | Phase 17 | Pending |
 
 **Coverage:**
 - v2.2 requirements: 14 total
-- Mapped to phases: 0 (pending roadmap)
-- Unmapped: 14 ⚠️
+- Mapped to phases: 14 (100%)
+- Unmapped: 0 ✓
 
 ---
 
@@ -128,4 +126,4 @@ v2.2 ships when:
 ---
 
 *Requirements defined: 2026-04-28*
-*Last updated: 2026-04-28 — initial v2.2 definition*
+*Last updated: 2026-04-28 — Roadmap step assigned phases (Phase 11/12/14/15/16/17)*
