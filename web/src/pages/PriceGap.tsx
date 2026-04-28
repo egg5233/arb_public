@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, type FC } from 'react';
 import { useLocale } from '../i18n/index.ts';
+import { DiscoverySection } from '../components/Discovery/DiscoverySection.tsx';
 
 // ─── Data shapes ──────────────────────────────────────────────────────────
 // Mirror the Go response shapes from internal/api/pricegap_handlers.go
@@ -763,6 +764,12 @@ const PriceGap: FC = () => {
           <div className="mt-2 text-red-400 text-xs">{toggleError}</div>
         )}
       </div>
+
+      {/* Phase 11 — Discovery sub-section (PG-DISC-03).
+          Read-only scanner status + cycle stats + score history + why-rejected
+          breakdown.  Self-contained component so Phase 16 (PG-OPS-09) can
+          lift it to a top-level tab without restructuring this page. */}
+      <DiscoverySection />
 
       {/* Section 2: Candidates */}
       <div className={panelCls}>
