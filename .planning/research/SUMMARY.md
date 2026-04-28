@@ -1,180 +1,198 @@
-# Project Research Summary
+# v2.2 Research Summary — Auto-Discovery & Live Strategy 4
 
-**Project:** Funding Rate Arbitrage -- Unified Capital Allocation, Backtesting, Metrics, Paper Trading
-**Domain:** Multi-Strategy Crypto Arbitrage (Perp-Perp + Spot-Futures)
-**Researched:** 2026-04-01
+**Synthesized:** 2026-04-28
+**Sources:** STACK.md, FEATURES.md, ARCHITECTURE-v2.2.md, PITFALLS.md
+**Milestone goal:** Promote Strategy 4 from paper to live capital + ship deferred auto-discovery + close paper-mode bugs + clear v1.0 tech debt.
 **Confidence:** HIGH
+
+> Note: prior content here was the 2026-04-01 v1.0 summary; replaced for v2.2.
+
+---
 
 ## Executive Summary
 
-This milestone extends a live, production-proven funding rate arbitrage system (6 exchanges, two strategy engines) with four capabilities: unified capital allocation, performance analytics, backtesting, and paper trading. The existing codebase is well-structured -- two engines share exchange adapters via a clean 35-method interface, a capital allocator already exists with Redis-backed Reserve/Commit/Release lifecycle, and historical data fetching scaffolding is in place. The recommended approach builds incrementally on this foundation rather than introducing new frameworks or architectural paradigms.
+v2.2 promotes Strategy 4 from paper observation to live capital and ships the auto-discovery pipeline deferred twice from v2.0/v2.1 — all additive inside `internal/pricegaptrader/`, **zero new Go dependencies, zero new npm dependencies**.
 
-The most critical prerequisite is completing the spot-futures engine across all 5 margin exchanges (currently only Bybit works end-to-end). The v0.22.44-v0.22.49 bug sequence proved that each exchange has unique margin API quirks that only surface during real execution. Until both engines are stable, analytics data is unreliable and capital allocation decisions are uninformed. After engine stabilization, the build order follows a clear dependency chain: analytics storage (SQLite) enables performance metrics, which inform capital allocation weights, which enable paper trading validation, which enables backtesting. Attempting to skip this chain -- particularly activating capital allocation without performance data -- is the most likely path to capital misallocation.
+The primary risk is the **three-writer race** on `cfg.PriceGapCandidates` (operator dashboard + pg-admin CLI + new auto-promotion goroutine), which requires a `CandidateRegistry` chokepoint to land BEFORE the scanner is write-permitted.
 
-The stack additions are minimal and high-confidence: SQLite via ncruces/go-sqlite3 (CGo-free, fast) for persistent analytics, Recharts + Lightweight Charts for dashboard visualization, and gonum for statistical computations. No external services (Prometheus, PostgreSQL, InfluxDB) are needed -- the system is single-server, single-user. Paper trading is implemented via Exchange interface wrapping (the most important architectural pattern), not engine-level branching. Backtesting reuses live strategy logic via historical data replay, avoiding the common pitfall of divergent backtest/live codebases.
-
-## Key Findings
-
-### Recommended Stack
-
-The existing stack (Go 1.26, Redis 7.4, React 19, Vite 7) is unchanged. Four additions are recommended, totaling 2 new Go dependencies and 2 new npm packages. The key decision is SQLite over Redis TimeSeries for analytics: Redis 7.4 does not include the TimeSeries module (requires 8+), and SQLite provides richer SQL aggregation for the queries this system needs ("PnL by strategy by exchange by date range"). Prometheus is explicitly rejected -- three external services for a single-user system is architectural mismatch.
-
-**Core additions:**
-- **ncruces/go-sqlite3 (v0.33+):** Persistent analytics, trade history, backtest data -- CGo-free via Wasm, 314% faster reads than modernc/sqlite, cross-compiles cleanly
-- **gonum (v0.17.0):** Statistical computations (Sharpe ratio, standard deviation, correlation) -- de facto Go numerics library, no real alternative
-- **Recharts (3.8.1):** General dashboard charts (PnL curves, allocation pie, bar charts) -- React-native, SVG-based, idiomatic with existing React 19 setup
-- **Lightweight Charts (5.1.0):** Financial time-series (funding rate history, backtest equity curves) -- TradingView's Canvas-based library, handles dense tick data that SVG chokes on
-
-**Critical note:** npm packages must be added via controlled lockfile update per project security policy. Neither depends on the compromised axios package.
-
-### Expected Features
-
-**Must have (table stakes):**
-- Spot-futures full lifecycle on all 5 margin exchanges (currently Bybit only -- Priority 1 blocker)
-- Auto-borrow/auto-repay working on all exchanges (exchange-native bots handle this transparently)
-- Per-position PnL breakdown (funding earned, borrow cost, entry/exit basis, fees, net)
-- APR calculation for perp-perp positions (spot-futures already has it)
-- Circuit breaker for exchange-wide failures (identified as missing in CONCERNS.md)
-- Telegram notifications for perp engine critical events (spot engine already has this)
-
-**Should have (differentiators):**
-- Unified capital allocation driving both strategies (infrastructure exists, needs activation with performance data)
-- Risk preference profiles (conservative/balanced/aggressive as config overlays)
-- Strategy-level performance comparison (perp-perp vs spot-futures)
-- Cumulative PnL charts over time
-- Paper trading mode via Exchange interface wrapping
-- Historical funding rate replay (backtesting)
-
-**Defer (v2+):**
-- Cross-exchange spot-futures (borrow on exchange A, hedge on B) -- fundamentally different architecture, needs its own engine
-- Dynamic capital rebalancing -- needs performance data that does not exist yet
-- A/B config comparison -- useful but depends on paper trading infrastructure
-- AI/ML rate prediction -- academic research shows funding rates are regime-shifting; simple thresholds outperform overfit models
-
-### Architecture Approach
-
-The system evolves from "two independent engines with optional shared caps" to "a layered strategy orchestration with unified capital management." The key architectural pattern is interface-based mode selection: paper trading is implemented by wrapping real Exchange adapters with a SimulatedExchange at the composition root (cmd/main.go), so all downstream engine code is identical in live and paper mode. The capital allocator should be promoted from `internal/risk/` to its own `internal/capital/` package, reflecting that it is a resource manager, not a risk check. Backtesting reuses live discovery ranker and risk approval logic via a replay loop, avoiding the anti-pattern of a monolithic backtester with divergent strategy code.
-
-**Major components (new or promoted):**
-1. **internal/analytics/** -- SQLite-backed trade event recording, PnL decomposition, time-series aggregation
-2. **internal/capital/** -- Promoted from risk/allocator.go; adds per-strategy budget computation, risk profile integration, and future rebalancing
-3. **internal/simulator/** -- Exchange interface wrapper for paper mode; uses live market data, simulates fills with configurable slippage
-4. **internal/backtest/** -- Historical data replay through live ranker/risk logic; results stored in analytics SQLite
-5. **internal/risk/profiles.go** -- Named risk preference bundles as config overlays, hot-switchable via dashboard
-6. **internal/risk/circuit_breaker.go** -- Per-exchange circuit state (closed/half-open/open) based on consecutive API failures
-
-### Critical Pitfalls
-
-1. **Building analytics before both engines are stable** -- Analytics on unreliable spot-futures data leads to bad capital allocation decisions. Complete spot-futures on all 5 exchanges first, then build cross-strategy metrics.
-2. **Activating capital allocator without performance data** -- Static 50/50 splits without feedback lock capital in underperforming strategies. Collect 2-4 weeks of per-strategy data before enabling dynamic allocation.
-3. **Exchange API quirks in spot-futures expansion** -- v0.22.44-49 proved each exchange has unique margin behaviors. Per-exchange integration testing with small capital is mandatory; use 6-agent parallel audit pattern.
-4. **Time-series storage bolt-on** -- Hacking PnL history into Redis lists breaks when data grows. SQLite decision must be made upfront, not retrofitted.
-5. **Overfitting backtest parameters** -- Limited historical funding data + many parameters = classic overfitting. Use backtesting for sanity checks, not optimization. Walk-forward validation, half-Kelly max.
-
-## Implications for Roadmap
-
-Based on research, suggested phase structure:
-
-### Phase 1: Engine Stabilization and Operational Safety
-**Rationale:** Both engines must be stable before any analytics or allocation work has value. The spot-futures engine only works on Bybit. The perp engine lacks Telegram alerts and circuit breakers. This is the foundation everything else depends on.
-**Delivers:** Spot-futures full lifecycle on all 5 margin exchanges; circuit breaker for exchange failures; Telegram notifications for perp engine; healthcheck endpoint.
-**Addresses:** Table stakes features (spot-futures lifecycle, auto-borrow/repay, circuit breaker, notifications)
-**Avoids:** Pitfall 1 (analytics on unstable engine), Pitfall 3 (exchange API quirks -- mitigated by per-exchange testing)
-
-### Phase 2: Analytics Foundation
-**Rationale:** Performance data must exist before capital allocation can be informed. SQLite store, PnL decomposition, and dashboard charts are prerequisites for everything that follows.
-**Delivers:** SQLite analytics store (trade events, daily performance); per-position PnL breakdown in dashboard; APR for perp-perp; strategy-level comparison; cumulative PnL charts.
-**Uses:** ncruces/go-sqlite3, Recharts, Lightweight Charts
-**Implements:** internal/analytics/ (event-sourced trade recording), dashboard chart components
-**Avoids:** Pitfall 4 (time-series bolt-on -- storage designed upfront), basis drag masking (PnL decomposition explicitly breaks down all cost components)
-
-### Phase 3: Capital Allocation Activation
-**Rationale:** With 2-4 weeks of analytics data from Phase 2, the allocator can be activated with informed weights. Risk profiles bundle parameters into user-friendly presets. Daily loss limits add a safety net.
-**Delivers:** Capital allocator promoted to internal/capital/ and activated for production; risk preference profiles (conservative/balanced/aggressive); daily/weekly loss limits; allocator dashboard with allocation visualization.
-**Uses:** gonum (for correlation analysis between strategies), Recharts (allocation pie chart)
-**Implements:** internal/capital/ (promoted), internal/risk/profiles.go, loss limit checks
-**Avoids:** Pitfall 2 (allocator without performance data -- Phase 2 provides the data)
-
-### Phase 4: Paper Trading
-**Rationale:** Paper trading validates strategy changes before risking real capital. It depends on analytics (to record paper results) and benefits from the allocator (to simulate capital constraints). The Exchange interface wrapping pattern is the architectural centerpiece.
-**Delivers:** SimulatedExchange wrapper with live market data and simulated fills; Redis key prefixing for state isolation; dashboard paper mode toggle with [PAPER] badge; paper trade history in analytics.
-**Uses:** Existing Exchange interface, Redis prefix isolation
-**Implements:** internal/simulator/ (Exchange wrapper), cmd/main.go mode selection
-**Avoids:** Unrealistic paper simulation (uses live BBO + configurable slippage, deducts fees, applies real funding rates)
-
-### Phase 5: Backtesting
-**Rationale:** Backtesting requires analytics storage (Phase 2), benefits from paper trading's simulation patterns (Phase 4), and reuses live ranker/risk logic. It is the capstone that ties everything together.
-**Delivers:** Historical funding rate replay engine; backtest CLI (cmd/backtest/); backtest comparison page in dashboard; statistical analysis (Sharpe ratio, max drawdown, win rate).
-**Uses:** gonum/stat, Lightweight Charts (equity curves), SQLite (data cache + results)
-**Implements:** internal/backtest/ (replay runner)
-**Avoids:** Overfitting (walk-forward validation, sanity-check approach, not optimization)
-
-### Phase 6: Cross-Exchange Spot-Futures (Future Milestone)
-**Rationale:** Fundamentally different architecture (two margin pools, coordinated execution/exit). Requires stable single-exchange spot-futures and unified capital allocation. Separate engine, not an extension of spotengine.
-**Delivers:** internal/crossengine/ with cross-exchange borrow-hedge execution.
-**Implements:** New engine package with coordinated two-phase execution and dual-exchange monitoring.
-**Avoids:** Monolithic spotengine with cross-exchange branches
-
-### Phase Ordering Rationale
-
-- **Dependency chain:** Engine stability (Phase 1) enables reliable analytics data (Phase 2), which informs capital allocation (Phase 3), which can be validated via paper trading (Phase 4), which shares simulation patterns with backtesting (Phase 5).
-- **Grouping logic:** Phases 1-2 are about making the existing system production-complete. Phases 3-5 add new capabilities that build on each other. Phase 6 is a separate track that requires Phases 1-3 to be complete.
-- **Pitfall avoidance:** The ordering directly addresses the two critical pitfalls -- analytics before engine stability and allocation before performance data. By forcing the dependency chain, the roadmap structurally prevents these mistakes.
-- **Parallel opportunities within phases:** Phase 1 can parallelize circuit breaker, Telegram, and per-exchange spot-futures work. Phase 2 can parallelize SQLite store and dashboard charts. These do not need to be sequential.
-
-### Research Flags
-
-Phases likely needing deeper research during planning:
-- **Phase 1 (Spot-Futures Expansion):** Each of the 4 remaining exchanges (Binance, Gate.io, Bitget, OKX) has unique margin API behaviors. Per-exchange API research is mandatory. Use `/local-api-docs` skill and 6-agent audit pattern.
-- **Phase 4 (Paper Trading):** The SimulatedExchange fill model needs careful design -- how to model slippage, partial fills, and funding accrual timing. Review existing `cmd/simtrade/` proof of concept.
-- **Phase 6 (Cross-Exchange Spot-Futures):** Novel architecture with no existing codebase pattern. Needs dedicated architecture research for coordinated two-phase execution and rollback.
-
-Phases with standard patterns (skip deep research):
-- **Phase 2 (Analytics):** SQLite integration, event sourcing, and dashboard charting are well-documented patterns. Stack decisions are already made.
-- **Phase 3 (Capital Allocation):** The allocator infrastructure exists. This is activation + config overlay work, not greenfield architecture.
-- **Phase 5 (Backtesting):** Architecture is defined (replay through live logic). Implementation is straightforward once Phases 2 and 4 are complete.
-
-## Confidence Assessment
-
-| Area | Confidence | Notes |
-|------|------------|-------|
-| Stack | HIGH | All versions verified against pkg.go.dev and npm registry within 3 days. Alternatives benchmarked with rationale. No speculative dependencies. |
-| Features | MEDIUM-HIGH | Table stakes validated against 5 exchange-native bots (Binance, Bitget, Pionex, OKX, Gate.io). Differentiators assessed against TradesViz, CoinGlass, 3Commas. Some features (risk profiles, backtesting) lack direct comparable in funding arb domain. |
-| Architecture | HIGH | Recommendations derived from direct codebase analysis (allocator.go, exchange interface, cmd/main.go composition root). Patterns (interface wrapping, event sourcing) are standard Go idioms already proven in the codebase. |
-| Pitfalls | HIGH | Critical pitfalls validated by project history (v0.22.44-49 bug sequence, Binance PM revert). Moderate pitfalls sourced from academic research (ScienceDirect regime-shifting study) and industry guides. |
-
-**Overall confidence:** HIGH
-
-### Gaps to Address
-
-- **Per-exchange margin API surface for spot-futures:** Only Bybit is proven. Binance, Gate.io, Bitget, and OKX each need dedicated API investigation during Phase 1 planning. The v0.22.44-49 history suggests 3-5 adapter bugs per exchange.
-- **Paper trading fill model fidelity:** Research identifies the need for realistic slippage but does not specify exact parameters. Calibrate slippage model against real trade data from live engine during Phase 4.
-- **Backtest data coverage:** Loris API historical data availability and granularity not verified beyond what backtest.go currently uses. Validate date range and resolution during Phase 5 planning.
-- **Risk profile parameter interactions:** Parameters are interdependent (low leverage + high threshold = zero entries). Each profile needs validation against historical data before exposure to users.
-- **npm lockfile update process:** Both charting libraries need controlled addition to package-lock.json. The exact process for safe lockfile update under the axios security lockdown needs to be defined before Phase 2 frontend work begins.
-
-## Sources
-
-### Primary (HIGH confidence)
-- Codebase analysis: `internal/risk/allocator.go`, `internal/engine/`, `internal/spotengine/`, `cmd/main.go`, `internal/discovery/backtest.go` -- architecture and existing capability assessment
-- Project history: v0.22.44-v0.22.49 bug sequence, CONCERNS.md, PROJECT.md, ARCHITECTURE.md -- pitfalls and operational experience
-- [ncruces/go-sqlite3 on pkg.go.dev](https://pkg.go.dev/github.com/ncruces/go-sqlite3) (v0.33.2, 2026-03-29) -- SQLite driver selection
-- [gonum on pkg.go.dev](https://pkg.go.dev/gonum.org/v1/gonum) (v0.17.0, 2025-12-29) -- statistics library
-- [Binance Funding Rate Arbitrage Bot FAQ](https://www.binance.com/en/support/faq/f330e17d6fc04679b9b21d6f9350e787) -- feature expectations, spread control
-- [Bitget Reverse Arbitrage Mode](https://www.bitget.com/news/detail/12560605130294) -- reverse carry trade expectations
-- [ScienceDirect: Risk and Return Profiles of Funding Rate Arbitrage](https://www.sciencedirect.com/science/article/pii/S2096720925000818) -- regime-shifting rates, overfitting risk
-
-### Secondary (MEDIUM confidence)
-- [PixelPlex Crypto Arbitrage Bot Development 2026](https://pixelplex.io/blog/crypto-arbitrage-bot-development/) -- circuit breaker, notification, sizing best practices
-- [3Commas Risk Management Guide](https://3commas.io/blog/ai-trading-bot-risk-management-guide) -- daily loss limits, paper trading recommendations
-- [Amberdata Funding Rate Arbitrage Guide](https://blog.amberdata.io/the-ultimate-guide-to-funding-rate-arbitrage-amberdata) -- PnL decomposition methodology
-- [Recharts GitHub releases](https://github.com/recharts/recharts/releases) (v3.8.1), [Lightweight Charts npm](https://www.npmjs.com/package/lightweight-charts) (v5.1.0) -- charting library selection
-- [Pionex Spot-Futures Arbitrage Bot](https://www.pionex.com/blog/pionex-arbitrage-bot/) -- feature baseline for exchange-native bots
-
-### Tertiary (LOW confidence)
-- [Paper trading simulation in Go](https://medium.com/@krishnan.priyanshu/simulating-a-paper-trading-platform-with-golang-c89a8f369803) -- basic reference for fill simulation patterns
-- [Kelly Criterion for position sizing](https://blog.traderspost.io/article/kelly-criterion-position-sizing-automated-trading) -- theoretical basis for half-Kelly recommendation
+Secondary risks: ramp-counter loss across systemd restarts (binary drift monitor fires routinely), and the drawdown breaker must measure **REALIZED PnL only in rolling 24h** — not calendar-day MTM — to avoid funding-settlement false trips.
 
 ---
-*Research completed: 2026-04-01*
-*Ready for roadmap: yes*
+
+## Stack Additions
+
+**Net additions: ZERO** — every v2.2 feature composes from existing dependencies.
+
+- Go: `redis/go-redis/v9` v9.18.0, `modernc.org/sqlite` v1.48.1, `gorilla/websocket` v1.5.3, `miniredis/v2` v2.37.0 — all already in `go.mod`
+- Frontend: Recharts 3.8.1 + React 19.2.x — sufficient for telemetry dashboards
+- No new `pkg/exchange` interface methods needed; existing `GetSpotBBO(symbol)` is sufficient for the auto-discovery scanner (klines NOT required because the existing 4-bar persistence detector builds bars from BBO samples)
+
+**Pre-flight smoke for every plan:** `go mod verify && go build ./... && cd web && npm ci`
+
+---
+
+## Feature Categorization
+
+### Auto-Discovery Scanner (PG-DISC-01)
+- **Table stakes:** Bounded universe (cap 20 symbols × 6 exchanges = 120 BBOs/cycle), ≥4-bar persistence, BBO freshness gate, depth probe, default OFF
+- **Differentiators:** Score history visualization, score-vs-realized-fill calibration view
+- **Anti-features:** N×N pair scan every cycle (rate-limit hostile), per-tick scoring, single-bar promotion
+- **Size:** M
+
+### Auto-Promotion (PG-DISC-02)
+- **Table stakes:** Score gate, max-cap (default 12), persisted via SaveJSON, idempotent dedupe (incl. v0.35.0 `direction` field), active-position guard on demote (Phase 10 reuse), observation streak ≥6 cycles before promotion clears
+- **Differentiators:** Telegram + WS broadcast on promote/demote
+- **Anti-features:** Auto-promotion → immediate trade firing (preserve soak period), auto-tuning threshold from PnL (sample size too small)
+- **Size:** M
+
+### Discovery Telemetry (PG-DISC-03)
+- **Table stakes:** Scanner cycle stats in Redis, dashboard tab/section, score history per candidate, why-rejected breakdown
+- **Differentiators:** Promote/demote event timeline
+- **Anti-features:** Real-time per-tick streaming (use existing WS hub batching)
+- **Size:** S
+
+### Strategy 4 Live Capital + Ramp Controller
+- **Table stakes:** Discrete stages (100 → 500 → 1000 USDT/leg), 7-clean-days signal sourced from reconcile, `min(stage, hard_ceiling)` enforced at sizing site, Redis-persisted ramp state (5 explicit fields), idempotent daily evaluation
+- **Differentiators:** Asymmetric ratchet (loss day resets clean-day counter to 0 + demotes one stage), Telegram on stage advance/revert
+- **Anti-features:** Continuous-curve ramp, in-memory ramp counter (loses across systemd restarts), gating that lives outside `risk_gate.go`
+- **Size:** L (highest-stakes phase)
+
+### Drawdown Circuit Breaker
+- **Table stakes:** REALIZED PnL only, rolling 24h window, suppress during Bybit `:04-:05:30` blackout, two-strike rule, human-gated recovery via sticky `PaperModeStickyUntil`
+- **Differentiators:** Telegram critical alert + WS, automatic auto-disable of any open candidate
+- **Anti-features:** Calendar-day boundary, MTM trigger, auto-recovery without operator confirmation
+- **Size:** M
+
+### Daily PnL Reconcile
+- **Table stakes:** Per-CLOSED-position keyed by `(position_id, version)`, exchange close-timestamp (not local clock), reuse perp-perp 3-retry pattern, run 30+ min after UTC 00:00
+- **Differentiators:** Daily summary digest, anomaly flagging (large slippage, missing close)
+- **Anti-features:** Including open positions in daily PnL, local-clock window, single-attempt fetch
+- **Size:** S–M
+
+### Telegram Per-Fill Alerts
+- **Table stakes:** Dedicated `pricegap_fill` bucket isolated from L4/L5/breaker critical alerts, ONE entry-complete + ONE exit-complete per position (not per slice), async worker, critical bypass path retained
+- **Differentiators:** Per-fill rate-limit, batched digest if rate exceeded
+- **Anti-features:** Fire from paper executions (drowns signal), share rate limit with critical alerts
+- **Size:** S
+
+### Paper-Mode Bug Closure
+- **Items:** `realized_slippage_bps` zero-fix (Phase 9 Pitfall 7 formula bug), paper_mode auto-flip diagnose+fix (DevTools capture + handler audit), promote `cmd/bingxprobe/` → `make probe-bingx` target
+- **Constraint:** Don't regress the Phase 9 chokepoint pattern (paper mode = single chokepoint at `ex.PlaceOrder`, `pos.Mode` immutable after entry)
+- **Size:** S
+
+### v1.0 Tech-Debt Sweep
+- **Items:** Phase 07 VERIFICATION.md + VALIDATION.md (SF-RISK-01); Nyquist Wave-0 for phases 01, 03, 04, 06; browser confirmations for 02, 03, 05, 06
+- **Constraint:** Surfaced regressions during retrospective review treated as separate hot-fix mini-phases (Phase 999.1 precedent)
+- **Size:** L (volume), low complexity per item
+
+---
+
+## Architecture Integration
+
+**Module boundary preserved:** all 6 new components live as new files inside `internal/pricegaptrader/`:
+- `scanner.go` (PG-DISC-01)
+- `promotion.go` (PG-DISC-02)
+- `telemetry.go` (PG-DISC-03)
+- `ramp.go` (live ramp controller)
+- `breaker.go` (drawdown circuit breaker)
+- `reconcile.go` (daily PnL reconcile)
+
+**No new top-level packages.** Boundary rule (no `internal/engine` / `internal/spotengine` imports) preserved.
+
+**Concurrency invariants preserved:**
+- Tracker single-owner errgroup
+- `cfg.mu.Lock()` + `SaveJSON()` for all candidate mutations (same path as Phase 10 dashboard CRUD)
+- Per-symbol Redis lock retained
+- Active-position guard reused for auto-demote
+- Startup order unchanged (Scanner → RiskMon → HealthMon → API → Engine → SpotEngine → PriceGapTracker conditional)
+- Bybit `:04-:05:30` blackout still respected
+- Live ramp gates via `risk_gate.go` extension (gate #7), NOT a new authorization path
+
+**Redis namespacing (all under existing `pg:`):**
+- `pg:disc:*` (discovery scanner state)
+- `pg:promote:*` (promotion events)
+- `pg:scan:*` (scan cycle metrics)
+- `pg:ramp:*` (ramp controller state)
+- `pg:reconcile:daily:{date}` (daily reconcile output)
+- `pg:breaker:trips` (breaker event log)
+
+**Config additions (zero-value-safe defaults):**
+- `PriceGapDiscoveryIntervalSec`
+- `PriceGapAutoPromoteScore` (threshold, calibrate against paper data)
+- `PriceGapMaxCandidates` (default 12)
+- `PriceGapRampTier` (current stage)
+- `PriceGapDrawdownLimitUSDT`
+- `Source` discriminator on each `PriceGapCandidate` (manual / scanner / cli)
+- `PaperModeStickyUntil` (sticky flag for breaker recovery gate)
+
+---
+
+## Watch Out For (Top Pitfalls)
+
+1. **Three-writer race on `cfg.PriceGapCandidates`** — operator dashboard, pg-admin CLI, and new auto-promotion goroutine all mutate the same slice. Without a `CandidateRegistry` chokepoint, `.bak` rotation and tuple-dedupe become race-prone. **Fix:** chokepoint phase MUST land before scanner is write-permitted.
+
+2. **Ramp counter loss across restarts** — binary drift monitor + systemd `Restart=on-failure` fire routinely. Ramp clean-day counter MUST be Redis-persisted with explicit fields, not in-memory.
+
+3. **Drawdown breaker false trips** — calendar-day boundary causes 00:00 UTC noise; MTM trigger fires on funding-rate distortion + basis revert. Use REALIZED PnL only + rolling 24h window. Suppress during Bybit blackout.
+
+4. **Auto-demote silently orphans live positions** — auto-demoter must honor `pg:positions:active` guard like Phase 10 manual delete. Otherwise an "unhealthy" candidate gets removed while a live position is still open.
+
+5. **Telegram alert flooding** — high-frequency fills + critical L4/L5 alerts share one bucket. Separate `pricegap_fill` from critical, async worker, per-position aggregation (one entry-complete + one exit-complete).
+
+6. **Paper-mode auto-flip regression** — fixing the `paper_mode=false` flip mustn't break the Phase 9 chokepoint pattern (`pos.Mode` stamped at entry, never re-read).
+
+7. **Tech-debt closure surfacing latent bugs during live ramp** — Nyquist Wave-0 + browser confirms re-exercise stale paths. Sequence AFTER live capital is stable. Treat surfaced regressions as separate hot-fix phases.
+
+---
+
+## OPEN QUESTION for Roadmapper: Phase Ordering Disagreement
+
+Architecture and Pitfalls disagree. This synthesis surfaces both; roadmap step resolves.
+
+| Ordering | Sequence | Advantage | Risk |
+|----------|----------|-----------|------|
+| **Pitfalls (money-safe first)** | Live capital + ramp + breaker + reconcile (P14) → Chokepoint (P15) → Scanner + Telemetry (P16) → Auto-Promote (P17) | Live capital protected by chokepoint before any automated write; existing static candidates ride live ramp without scanner risk | Discovery scoring unvalidated when live ramp starts; calibration data not gathered before live capital |
+| **Architecture (validate first)** | Scanner + Telemetry (P14) → Auto-Promote (P15) → Reconcile (P16) → Live Ramp (P17) → Breaker (P18) → Tech-debt (P19) | Scanner scoring calibrated against paper data before any live capital risk; zero live risk in P14 | If P15 chokepoint slips/regresses, auto-promotion could arrive before race protection lands |
+
+**Hard constraints from research (apply regardless of ordering):**
+- Reconcile + Ramp must be in the same phase (ramp's clean-day signal depends on reconcile output)
+- CandidateRegistry chokepoint must land BEFORE scanner is write-permitted
+- v1.0 tech-debt sweep is LAST (per Pitfall 7)
+- Paper-mode bug closure can run parallel/independent
+- 7-day soak between conservative ramp stages is non-negotiable
+
+---
+
+## Confidence
+
+Overall: **HIGH**
+
+| Area | Confidence | Reason |
+|------|------------|--------|
+| Stack (zero new deps) | HIGH | All recommendations are reuses; no speculation |
+| Module boundary preservation | HIGH | All 6 components fit inside `internal/pricegaptrader/` |
+| Redis schema additions | HIGH | Pattern matches existing `internal/database/locks.go` |
+| Frontend lockdown compliance | HIGH | Recharts already covers all proposed visuals |
+| Phase ordering | MEDIUM | Two valid orderings; roadmap step decides |
+
+**Items deferred to plan-phase (not blocking roadmap):**
+- Exact `PriceGapAutoPromoteScore` threshold — calibrate against 3+ days of paper-mode `pg:history` data
+- Whether `BroadcastEvent` in `internal/api` is exported or needs wiring through tracker
+- `PaperModeStickyUntil` exact field definition + dashboard enforcement
+- Scanner universe: OKX + BingX exclusion must be explicit (deferred per PROJECT.md)
+- Daily reconcile timing relative to Bybit `:04-:05:30` blackout (00:30 UTC proposed; cross-check with funding settlement windows)
+- `EnableAnalytics` requirement for intraday drawdown signal — fallback if OFF must be documented
+
+---
+
+## Summary for Requirements Step
+
+**6 phases recommended.** Phase numbering continues from v2.1 (next = 14). Phases 11+12 numbers reserved per original deferred-numbering plan; deferred numbers may be reused by roadmapper if cleaner.
+
+**Track shape:**
+- 3 phases for new feature pipeline (scanner / promotion / live capital + ramp + reconcile + breaker, possibly grouped per ordering choice)
+- 1 phase for paper-mode bug closure (parallelizable)
+- 1 phase for v1.0 tech-debt sweep (sequenced last)
+- 1 phase for chokepoint serialization (precedes scanner write-permit)
+
+Roadmapper resolves the open ordering question using the table above + the milestone-level priority signal from PROJECT.md (Strategy 4 live = Priority 1 alongside auto-discovery).
