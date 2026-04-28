@@ -2,26 +2,29 @@
 
 ## What This Is
 
-A multi-strategy arbitrage platform that monitors funding rate differentials and cross-exchange price dislocations across 6 exchanges (Binance, Bybit, Gate.io, Bitget, OKX, BingX) and executes delta-neutral positions. **v1.0 shipped** a unified platform with two working engines (perp-perp + spot-futures), performance analytics, unified capital allocation with risk profiles, and spot-futures risk hardening. **v2.0** evolves the platform toward a third engine (cross-exchange price-gap arbitrage) and addresses v1.0's accumulated documentation/verification tech debt.
+A multi-strategy arbitrage platform that monitors funding rate differentials and cross-exchange price dislocations across 6 exchanges (Binance, Bybit, Gate.io, Bitget, OKX, BingX) and executes delta-neutral positions. **v1.0** shipped a unified platform with two working engines (perp-perp + spot-futures), performance analytics, unified capital allocation, and spot-futures risk hardening. **v2.0** added a third engine (cross-exchange price-gap arbitrage) as a paper-mode tracker. **v2.1** shipped dashboard candidate CRUD and bidirectional candidate mode. **v2.2** promotes Strategy 4 from paper to live capital with conservative ramp, ships the deferred auto-discovery + auto-promotion pipeline, closes paper-mode bugs, and clears v1.0 tech debt completely.
 
 ## Core Value
 
 "I deposit USDT, select my risk preference, and the system automatically finds opportunities across multiple strategies, opens positions, collects yield, exits when profitable, and I can see exactly how much each position earned — with capital shifting between strategies as opportunities shift."
 
-## Current Milestone: v2.0 Multi-Strategy Expansion
+## Current Milestone: v2.2 Auto-Discovery & Live Strategy 4
 
-**Goal:** Ship Strategy 4 (cross-exchange price-gap arbitrage) as a minimal live tracker, validate edge over 4–8 weeks, and address v1.0's accumulated documentation tech-debt.
+**Goal:** Promote Strategy 4 from paper observation to live capital with a conservative ramp, ship the deferred auto-discovery + auto-promotion pipeline (Phases 11+12 from v2.1 backlog), close out remaining paper-mode bugs, and clear v1.0 tech debt completely.
 
 **Target features:**
-- Minimal price-gap tracker (`internal/pricegaptrader/`): static candidate config, delta-neutral IOC entry/exit, Gate concentration cap, hard denylist layer, exec-quality override, paper mode → $5k live budget
-- Live validation gate (4–8 weeks) to decide upgrade to full Gated Discovery (D) architecture
-- v1.0 tech-debt cleanup: Phase 07 retrospective VERIFICATION.md + Nyquist Wave-0 validations for phases 01/03/04/06
+- Strategy 4 live capital — conservative ramp: 100 USDT/leg → 500 USDT/leg after 7 clean days → hard ceiling 1000 USDT/leg for v2.2. Telegram alert per fill, daily PnL reconcile.
+- Auto-discovery scanner (PG-DISC-01) — surfaces candidates from market data with score + reasoning. Default OFF behind config switch.
+- Auto-promotion (PG-DISC-02) — score ≥ `PriceGapAutoPromoteScore` auto-appends to `cfg.PriceGapCandidates`, capped by new `PriceGapMaxCandidates` (default 12). Persisted to `config.json`. Telegram + WS broadcast on promote/demote.
+- Discovery telemetry (PG-DISC-03) — scanner cycle metrics, candidate score history, dashboard visibility.
+- Paper-mode bug closure — fix `realized_slippage_bps` machine-zero, diagnose paper_mode auto-flip on dashboard load, promote `cmd/bingxprobe/` to `make probe-bingx`.
+- v1.0 tech-debt full sweep — Phase 07 retrospective VERIFICATION.md + VALIDATION.md (SF-RISK-01); Nyquist Wave-0 for phases 01/03/04/06; browser confirmations for phases 02/03/05/06.
 
 **Key context:**
-- Phase 0/1/round-2 scoping complete (`/tmp/phase0-pricegap/`)
-- Codex design review complete (dispatch task `4ecfbf85`) — (D) adopted as target, MVP-first as v2.0 scope
-- Edge universe narrow (~5 pairs, SOON-dominated, Gate-centric) → live validation before scale-up is non-negotiable
-- Phase numbering continues from v1.0 → v2.0 starts at **Phase 8**
+- Strategy 4 has been in paper mode since v2.0 (2026-04-25) — observation window has 3+ days of data; live ramp is gated on conservative caps, not just promotion alone.
+- Auto-discovery deferred twice (v2.1 → v2.2). Phase numbering continues from v2.1 → v2.2 starts at **Phase 14** (Phases 11+12 reused per original deferred numbering, 13 already used by v2.1 closure).
+- v1.0 tech debt has carried through v2.0 + v2.1; this milestone closes it.
+- Live trading risk: existing perp-perp + spot-futures + Strategy 4 paper engines must remain undisturbed.
 
 ## Requirements
 
@@ -65,21 +68,31 @@ A multi-strategy arbitrage platform that monitors funding rate differentials and
 - ✓ Strategy-weighted allocation based on recent performance — v1.0 (CA-03)
 - ✓ Dynamic rebalancing when a strategy has no opportunities — v1.0 (CA-04)
 
-### Active (v2.0 candidates)
+### Active (v2.2 candidates)
 
-**Strategy 4 — Cross-Exchange Price-Gap Arbitrage (Priority 1)**
-- [x] Minimal price-gap tracker (Phase 8, v0.33.0): `internal/pricegaptrader/` with delta-neutral IOC entry/exit, 5-gate pre-entry risk (Gate concentration, max concurrent, kline staleness, delist veto, budget), 4h max-hold + T/2 reversion exit, exec-quality auto-disable, startup rehydration, pg-admin CLI for reversal. Default OFF per PG-OPS-06. Paper mode + live budget come in Phase 9.
-- [ ] Phase 9: Dashboard UI, paper mode, Telegram alerts, rolling metrics (PG-OPS-01..05, PG-VAL-01..02)
-- [ ] Validate edge on live data for 4–8 weeks (gate to (D) full architecture)
-- [ ] (Deferred) Full (D) Gated Discovery architecture: scanner + registry + state machine — see `/tmp/phase0-pricegap/STRATEGY_DESIGN.md`
+**Strategy 4 Live Capital (Priority 1)**
+- [ ] Conservative ramp budget controller — start 100 USDT/leg, scale to 500 USDT/leg after 7 clean days, hard ceiling 1000 USDT/leg for v2.2
+- [ ] Telegram alert per Strategy 4 live fill (entry + exit, both legs)
+- [ ] Daily PnL reconcile job for Strategy 4 live positions
+- [ ] Drawdown circuit breaker — auto-revert to paper if daily loss exceeds threshold
 
-**v1.0 Tech Debt (Priority 2)**
+**Auto-Discovery & Promotion (Priority 1)**
+- [ ] PG-DISC-01 — Auto-discovery scanner surfaces candidates with score + reasoning. Default OFF.
+- [ ] PG-DISC-02 — Auto-promotion to `cfg.PriceGapCandidates` with score gate + max cap. Persisted to `config.json`. WS + Telegram on promote/demote.
+- [ ] PG-DISC-03 — Discovery telemetry: scanner cycle metrics, candidate score history, dashboard observability.
+
+**Paper-Mode Bug Closure (Priority 2)**
+- [ ] Fix `realized_slippage_bps` machine-zero in paper mode (formula bug)
+- [ ] Diagnose + fix dashboard auto-POST flipping `paper_mode=false` on page load
+- [ ] Promote `cmd/bingxprobe/` to `make probe-bingx`
+
+**v1.0 Tech Debt — Full Sweep (Priority 2)**
 - [ ] Phase 07 retrospective VERIFICATION.md + VALIDATION.md (SF-RISK-01)
 - [ ] Nyquist Wave-0 validations for phases 01, 03, 04, 06
 - [ ] Browser confirmations for phases 02, 03, 05, 06 (human_needed verif cleanup)
 
-**Documentation / Observability (Priority 3)**
-- [ ] `/gsd-docs-update` pass to refresh CHANGELOG / ARCHITECTURE post-v1.0 (CLAUDE.local.md is hand-owned — do not re-bloat)
+**Documentation (Priority 3)**
+- [ ] `/gsd-docs-update` pass to refresh CHANGELOG / ARCHITECTURE post-v2.2 (CLAUDE.local.md remains hand-owned)
 
 ### Out of Scope
 
@@ -130,5 +143,18 @@ A multi-strategy arbitrage platform that monitors funding rate differentials and
 
 This document evolves at phase transitions and milestone boundaries.
 
+**After each phase transition** (via `/gsd-transition`):
+1. Requirements invalidated? → Move to Out of Scope with reason
+2. Requirements validated? → Move to Validated with phase reference
+3. New requirements emerged? → Add to Active
+4. Decisions to log? → Add to Key Decisions
+5. "What This Is" still accurate? → Update if drifted
+
+**After each milestone** (via `/gsd-complete-milestone`):
+1. Full review of all sections
+2. Core Value check — still the right priority?
+3. Audit Out of Scope — reasons still valid?
+4. Update Context with current state
+
 ---
-*Last updated: 2026-04-25 — v2.0 shipped + v2.1 Candidate Operations scaffolded (paper-only, auto-discovery + auto-promotion across 6 existing exchanges, no operator review gate).*
+*Last updated: 2026-04-28 — v2.2 Auto-Discovery & Live Strategy 4 milestone started. v2.1 Candidate Operations shipped 2026-04-27 (Phases 10, 13, 999.1).*

@@ -1,43 +1,47 @@
 ---
 gsd_state_version: 1.0
-milestone: v2.1
-milestone_name: Candidate Operations
-status: verifying
-stopped_at: Completed 999.1-06-PLAN.md
-last_updated: "2026-04-27T15:26:20.999Z"
-last_activity: 2026-04-27
+milestone: v2.2
+milestone_name: Auto-Discovery & Live Strategy 4
+status: defining_requirements
+stopped_at: Milestone v2.2 started — requirements pending
+last_updated: "2026-04-28T00:00:00.000Z"
+last_activity: 2026-04-28
 progress:
-  total_phases: 2
-  completed_phases: 2
-  total_plans: 11
-  completed_plans: 11
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-04-21 after v1.0 shipped)
+See: .planning/PROJECT.md (updated 2026-04-28 after v2.2 milestone start)
 
 **Core value:** "I deposit USDT, select my risk preference, and the system automatically finds opportunities across multiple strategies, opens positions, collects yield, exits when profitable, and I can see exactly how much each position earned — with capital shifting between strategies as opportunities shift."
-**Current focus:** Phase 999.1 — bidirectional-pricegap-candidates
+**Current focus:** Milestone v2.2 — Auto-Discovery & Live Strategy 4 (defining requirements)
 
 ## Current Position
 
-Phase: 999.1
-Plan: Not started
-Status: Phase complete — ready for verification
-Last activity: 2026-04-27
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-04-28 — Milestone v2.2 started
 
-v1.0 shipped: 7 phases, 21 plans, 381 commits over 30 days (2026-03-23 → 2026-04-21). Audit: tech_debt — documentation/verification gaps carried forward as v2.0 backlog (DEBT-01..03, deferred).
+**v2.2 scope tracks:**
 
-**v2.0 phase structure:**
+1. Strategy 4 live capital — conservative ramp (100 → 500 → 1000 USDT/leg), Telegram per fill, daily reconcile, drawdown circuit breaker
+2. Auto-discovery scanner (PG-DISC-01) — surfaces candidates with score + reasoning
+3. Auto-promotion (PG-DISC-02) — score-gated append to `cfg.PriceGapCandidates`, capped, persisted
+4. Discovery telemetry (PG-DISC-03) — observability for scanner + promotion decisions
+5. Paper-mode bug closure — `realized_slippage_bps`, paper_mode auto-flip, promote `bingxprobe`
+6. v1.0 tech-debt full sweep — Phase 07 VERIFICATION/VALIDATION + Nyquist Wave-0 (01/03/04/06) + browser confirmations (02/03/05/06)
 
-- Phase 8: Price-Gap Tracker Core (backend) — PG-01..05, PG-RISK-01..05, PG-OPS-06 (11 reqs)
-- Phase 9: Price-Gap Dashboard & Paper→Live Operations (frontend + validation) — PG-OPS-01..05, PG-VAL-01..02 (7 reqs)
+Progress (v2.2): [          ] 0%
 
-Progress (v2.0): [          ] 0%
+Phase numbering continues from v2.1 (next phase = 14; Phase 11+12 reserved per original deferred numbering plan).
 
 ## Performance Metrics
 
@@ -200,7 +204,7 @@ v1.0 decisions below (retained for reference):
 
 ### Pending Todos
 
-None yet. Next action: `/gsd-plan-phase 8` to decompose Phase 8 into executable plans.
+None yet. Next action: define v2.2 requirements (this workflow), then create roadmap, then `/gsd-plan-phase 14` (or first v2.2 phase number from roadmap).
 
 ### Blockers/Concerns
 
@@ -221,7 +225,7 @@ None yet. Next action: `/gsd-plan-phase 8` to decompose Phase 8 into executable 
 
 ## Session Continuity
 
-Last session: 2026-04-27T07:49:33.344Z
-Stopped at: Completed 999.1-06-PLAN.md
+Last session: 2026-04-28T00:00:00.000Z
+Stopped at: Milestone v2.2 started — requirements pending
 Resume file: None
-Next command: Operator runs 16-step UAT against /tmp/arb-phase10 → reports `approved` or divergences → resume executor to write 10-05-SUMMARY.md
+Next command: Continue `/gsd-new-milestone` workflow → research → REQUIREMENTS.md → ROADMAP.md
