@@ -55,9 +55,9 @@ type Tracker struct {
 	// `monitors` is the legacy Stop()-path keyed by posID. `monitorHandles` adds
 	// a seq token so the exit-cleanup defer in monitorPosition can detect
 	// "my entry was replaced by a newer startMonitor" and skip delete.
-	monMu           sync.Mutex
-	monitors        map[string]context.CancelFunc
-	monitorHandles  map[string]monitorHandle
+	monMu          sync.Mutex
+	monitors       map[string]context.CancelFunc
+	monitorHandles map[string]monitorHandle
 
 	// Circuit breaker — consecutive PlaceOrder failures across any leg (D-10).
 	failMu   sync.Mutex
@@ -92,6 +92,26 @@ type Tracker struct {
 	// lines. Only consulted when cfg.PriceGapDebugLog is ON (caller gates).
 	debugLogMu       sync.Mutex
 	lastNoFireLogged map[string]time.Time
+
+	// Phase 11 / Plan 11-05 — auto-discovery scanner integration.
+	//
+	// scanner is nil when cfg.PriceGapDiscoveryEnabled=false at construction
+	// time (cmd/main.go gates the construction). When non-nil, Tracker.Start
+	// launches scanLoop alongside tickLoop; subscribeUniverse pre-warms BBO
+	// subscriptions for every (universe-symbol, exchange) tuple (Pitfall 5).
+	scanner ScanRunner
+	// scanFirstTickOffset / scanInterval are exposed for tests so the loop
+	// can fire quickly without waiting the production 13s + 300s. Defaults
+	// are set in NewTracker.
+	scanFirstTickOffset time.Duration
+	scanInterval        time.Duration
+}
+
+// ScanRunner is the narrow Scanner interface the Tracker depends on so the
+// Tracker test suite can inject a fake. Production wires *Scanner from
+// Plan 04 (its RunCycle method satisfies this).
+type ScanRunner interface {
+	RunCycle(ctx context.Context, now time.Time)
 }
 
 // NewTracker constructs a Tracker with injected dependencies. The store and
@@ -104,20 +124,32 @@ func NewTracker(
 	cfg *config.Config,
 ) *Tracker {
 	return &Tracker{
-		exchanges:        exchanges,
-		db:               db,
-		delist:           delist,
-		cfg:              cfg,
-		log:              utils.NewLogger("pg-tracker"),
-		stopCh:           make(chan struct{}),
-		bars:             make(map[string]*candidateBars),
-		monitors:         make(map[string]context.CancelFunc),
-		monitorHandles:   make(map[string]monitorHandle),
-		entryInFlight:    make(map[string]bool),
-		broadcaster:      NoopBroadcaster{},
-		notifier:         NoopNotifier{},
-		lastNoFireLogged: make(map[string]time.Time),
+		exchanges:           exchanges,
+		db:                  db,
+		delist:              delist,
+		cfg:                 cfg,
+		log:                 utils.NewLogger("pg-tracker"),
+		stopCh:              make(chan struct{}),
+		bars:                make(map[string]*candidateBars),
+		monitors:            make(map[string]context.CancelFunc),
+		monitorHandles:      make(map[string]monitorHandle),
+		entryInFlight:       make(map[string]bool),
+		broadcaster:         NoopBroadcaster{},
+		notifier:            NoopNotifier{},
+		lastNoFireLogged:    make(map[string]time.Time),
+		scanFirstTickOffset: 13 * time.Second, // 13s — offset off Bybit blackout boundary, distinct from tickLoop's 7s
+		scanInterval:        0,                // 0 means use cfg.PriceGapDiscoveryIntervalSec at runtime
 	}
+}
+
+// SetScanner attaches the Phase 11 auto-discovery scanner. cmd/main.go calls
+// this only when cfg.PriceGapDiscoveryEnabled=true, so a nil scanner is the
+// default-OFF path (no scanLoop, no subscribeUniverse, byte-for-byte
+// isolation from the existing tickLoop). Passing nil deactivates the loop;
+// safe to call before Start() and a no-op afterward (scanLoop is launched
+// at most once at Start time).
+func (t *Tracker) SetScanner(s ScanRunner) {
+	t.scanner = s
 }
 
 // CandidateSnapshotForTest returns len(t.cfg.PriceGapCandidates) — a test
@@ -284,11 +316,96 @@ func (t *Tracker) Start() {
 	t.log.Info("Price-gap tracker starting (candidates=%d, budget=$%.0f, enabled=%v)",
 		len(t.cfg.PriceGapCandidates), t.cfg.PriceGapBudget, t.cfg.PriceGapEnabled)
 	t.subscribeCandidates()
+	if t.scanner != nil {
+		// Phase 11 Pitfall 5: pre-warm BBO subscriptions for every
+		// (universe-symbol, exchange) tuple BEFORE scanLoop fires its first
+		// cycle so the scanner's GetBBO reads see live data.
+		t.subscribeUniverse()
+	}
 	t.rehydrate()
 	t.wg.Add(1)
 	go t.tickLoop()
 	t.wg.Add(1)
 	go t.assertBBOLiveness()
+	if t.scanner != nil {
+		t.wg.Add(1)
+		go t.scanLoop()
+		t.log.Info("pricegap: discovery scanLoop started (interval=%ds)",
+			t.cfg.PriceGapDiscoveryIntervalSec)
+	}
+}
+
+// subscribeUniverse fans out SubscribeSymbol for every cfg.PriceGapDiscoveryUniverse
+// entry across every supported exchange (Phase 11 Pitfall 5 mitigation).
+//
+// The scanner reads BBO/Depth via Exchange.GetBBO/GetDepth; if a symbol is
+// not subscribed at the WS layer, those reads return ok=false and the
+// scanner records ReasonSampleError. Pre-warming guarantees the first cycle
+// after Start() sees live data instead of an empty book.
+//
+// Fail-soft: SubscribeSymbol returning false is logged once and the loop
+// continues — singletons (only one listing) are silent-skipped at the
+// scanner layer anyway (D-08).
+func (t *Tracker) subscribeUniverse() {
+	for _, sym := range t.cfg.PriceGapDiscoveryUniverse {
+		for exchID, ex := range t.exchanges {
+			if !ex.SubscribeSymbol(sym) {
+				t.log.Warn("pricegap: scanner subscribe returned false for %s@%s — symbol may not list there (silent-skipped at scanner)",
+					sym, exchID)
+			}
+		}
+	}
+}
+
+// scanLoop runs the auto-discovery scanner at cfg.PriceGapDiscoveryIntervalSec
+// cadence (Plan 11-05).
+//
+// Startup offset (Pitfall 2 / Bybit blackout): t.scanFirstTickOffset = 13s
+// pushes the first cycle past the Bybit :04..:05:30 window on fresh starts.
+// The offset is deliberately distinct from tickLoop's 7s so the two loops
+// don't fire at the same instant and stress identical BBO reads.
+//
+// Bounded RunCycle ctx (T-11-29 mitigation): each cycle gets a context
+// deadline of the cycle interval so a hung scanner can't block the loop's
+// stop signal. context.Background() is used as the parent — the scanner's
+// internal Redis writes have their own per-call deadlines.
+//
+// Race-free shutdown: respects t.stopCh on every iteration; ticker.Stop is
+// invoked before return.
+func (t *Tracker) scanLoop() {
+	defer t.wg.Done()
+
+	interval := t.scanInterval
+	if interval <= 0 {
+		intervalSec := t.cfg.PriceGapDiscoveryIntervalSec
+		if intervalSec <= 0 {
+			intervalSec = 300
+		}
+		interval = time.Duration(intervalSec) * time.Second
+	}
+	firstTick := time.After(t.scanFirstTickOffset)
+	var ticker *time.Ticker
+
+	runOnce := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), interval)
+		defer cancel()
+		t.scanner.RunCycle(ctx, time.Now())
+	}
+
+	for {
+		select {
+		case <-t.stopCh:
+			if ticker != nil {
+				ticker.Stop()
+			}
+			return
+		case <-firstTick:
+			ticker = time.NewTicker(interval)
+			runOnce()
+		case <-chanTick(ticker):
+			runOnce()
+		}
+	}
 }
 
 // assertBBOLiveness runs once ~priceGapBBOAssertionGrace after Start(). For
@@ -398,7 +515,8 @@ func chanTick(tk *time.Ticker) <-chan time.Time {
 }
 
 // runTick evaluates every configured candidate for one poll cycle:
-//   detectOnce → if fired, preEntry gates → if approved, openPair + startMonitor.
+//
+//	detectOnce → if fired, preEntry gates → if approved, openPair + startMonitor.
 //
 // Circuit-breaker respect: when the execution circuit is open (5+ consecutive
 // PlaceOrder failures per D-10), we skip the entire tick so no new orders
@@ -467,4 +585,3 @@ func (t *Tracker) runTick(now time.Time) {
 		}
 	}
 }
-

@@ -490,3 +490,13 @@ func (s *Server) BroadcastPriceGapEvent(evt pricegaptrader.PriceGapEvent) {
 func (s *Server) BroadcastPriceGapCandidateUpdate(upd pricegaptrader.PriceGapCandidateUpdate) {
 	s.hub.Broadcast("pg_candidate_update", upd)
 }
+
+// BroadcastPriceGapDiscoveryEvent forwards a Phase 11 auto-discovery scanner
+// event (pg_scan_cycle / pg_scan_metrics / pg_scan_score) to the dashboard
+// WS clients. Plan 11-05 wires this from the Telemetry writer.
+//
+// The eventType string becomes the WS message type so the frontend can
+// dispatch on a single key. payload is JSON-marshalled by the Hub.
+func (s *Server) BroadcastPriceGapDiscoveryEvent(eventType string, payload interface{}) {
+	s.hub.Broadcast(eventType, payload)
+}
