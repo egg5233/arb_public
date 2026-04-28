@@ -2397,6 +2397,18 @@ func (c *Config) populateRaw(raw map[string]interface{}, overrides map[string]Ex
 	priceGap["discovery_min_depth_usdt"] = c.PriceGapDiscoveryMinDepthUSDT
 	priceGap["auto_promote_score"] = c.PriceGapAutoPromoteScore
 	priceGap["max_candidates"] = c.PriceGapMaxCandidates
+
+	// Phase 11 Plan 02 (PG-DISC-04): Registry chokepoint is now the
+	// authoritative writer for cfg.PriceGapCandidates. Persist whatever the
+	// in-memory slice currently is so dashboard handler / pg-admin / Registry
+	// mutations all round-trip through SaveJSONWithBakRing (and SaveJSON).
+	// Empty slice writes `[]` so a Replace-with-empty correctly clears the
+	// on-disk array (Pitfall 2 in Phase 9 Plan 02 lineage).
+	if c.PriceGapCandidates == nil {
+		priceGap["candidates"] = []models.PriceGapCandidate{}
+	} else {
+		priceGap["candidates"] = c.PriceGapCandidates
+	}
 }
 
 func (c *Config) loadEnvOverrides() {
