@@ -211,6 +211,14 @@ func main() {
 	apiSrv.SetPermissions(permResults)
 	apiSrv.SetExchangeScorer(scorer)
 	apiSrv.SetCapitalAllocator(allocator)
+
+	// Phase 11 (PG-DISC-04 / Plan 11-03 hard-cut): construct exactly one
+	// *pricegaptrader.Registry instance. The dashboard server routes POST
+	// /api/config candidate updates through this Registry instead of writing
+	// cfg.PriceGapCandidates directly. The Phase 12 scanner will receive the
+	// same instance as a RegistryReader (read-only) for promotion gating.
+	pgRegistry := pricegaptrader.NewRegistry(cfg, db.PriceGapAudit(), utils.NewLogger("pg-registry"))
+	apiSrv.SetRegistry(pgRegistry)
 	eng := engine.NewEngine(exchanges, scanner, riskMgr, riskMon, healthMon, db, apiSrv, cfg, allocator)
 	eng.SetContracts(allContracts)
 

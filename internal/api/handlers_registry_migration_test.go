@@ -22,14 +22,14 @@ import (
 // fakeCandidateRegistry is a CandidateRegistry double that captures Replace
 // calls so the migration tests can assert exactly what handlers.go forwards.
 type fakeCandidateRegistry struct {
-	mu          sync.Mutex
-	replaceCnt  int
-	lastSource  string
-	lastNext    []models.PriceGapCandidate
-	replaceErr  error
-	addCnt      int
-	deleteCnt   int
-	updateCnt   int
+	mu         sync.Mutex
+	replaceCnt int
+	lastSource string
+	lastNext   []models.PriceGapCandidate
+	replaceErr error
+	addCnt     int
+	deleteCnt  int
+	updateCnt  int
 }
 
 // Compile-time satisfaction — handlers.go's CandidateRegistry interface.
@@ -149,14 +149,14 @@ func TestPostConfigCandidates_ActivePositionGuard_RegistryNotCalled(t *testing.T
 
 	// Seed an active position matching one of the seeded candidates so the
 	// guard fires on a delete-all attempt.
-	pos := models.PriceGapPosition{
+	pos := &models.PriceGapPosition{
 		ID:            "test-pos-1",
 		Symbol:        "BTCUSDT",
 		LongExchange:  "binance",
 		ShortExchange: "bybit",
 		Status:        "open",
 	}
-	if err := s.db.SaveActivePriceGapPosition(&pos); err != nil {
+	if err := s.db.SavePriceGapPosition(pos); err != nil {
 		t.Fatalf("seed active position: %v", err)
 	}
 

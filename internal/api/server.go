@@ -15,6 +15,25 @@ import (
 	"arb/pkg/utils"
 )
 
+// CandidateRegistry is the chokepoint contract Server holds onto for
+// cfg.PriceGapCandidates mutations (Plan 11-03 / PG-DISC-04). Production wires
+// this to *pricegaptrader.Registry; tests inject a fake that captures Replace
+// calls. Methods mirror the four mutators on *pricegaptrader.Registry plus
+// the RegistryReader pair so handlers can read snapshot state without
+// touching cfg directly.
+//
+// Defined in the api package (rather than imported from pricegaptrader)
+// because tests in this package need a fake double — moving the interface
+// here keeps that fake at api-package scope without an extra import-cycle.
+type CandidateRegistry interface {
+	Add(ctx context.Context, source string, c models.PriceGapCandidate) error
+	Update(ctx context.Context, source string, idx int, c models.PriceGapCandidate) error
+	Delete(ctx context.Context, source string, idx int) error
+	Replace(ctx context.Context, source string, next []models.PriceGapCandidate) error
+	Get(idx int) (models.PriceGapCandidate, bool)
+	List() []models.PriceGapCandidate
+}
+
 // Server is the Dashboard HTTP/WebSocket server.
 type Server struct {
 	db                     *database.Client
@@ -40,6 +59,11 @@ type Server struct {
 	configNotifier         *config.ConfigNotifier
 	analyticsStore         *analytics.Store
 	allocator              *risk.CapitalAllocator
+	// registry is the chokepoint for cfg.PriceGapCandidates mutations
+	// (Plan 11-03 / PG-DISC-04). Wired in cmd/main.go via SetRegistry from
+	// the single *pricegaptrader.Registry instance shared with the tracker.
+	// Tests use the fake CandidateRegistry to capture Replace calls.
+	registry CandidateRegistry
 }
 
 // ManualOpenOptions carries dashboard-only manual entry overrides.
@@ -355,6 +379,15 @@ func (s *Server) SetAnalyticsStore(store *analytics.Store) {
 // SetCapitalAllocator injects the capital allocator for the allocation API endpoint.
 func (s *Server) SetCapitalAllocator(allocator *risk.CapitalAllocator) {
 	s.allocator = allocator
+}
+
+// SetRegistry injects the *pricegaptrader.Registry chokepoint that owns all
+// cfg.PriceGapCandidates mutations (Plan 11-03 / PG-DISC-04). cmd/main.go
+// constructs exactly one Registry instance and shares it with the tracker;
+// the api server forwards POST /api/config candidate updates here via
+// CandidateRegistry.Replace with source="dashboard-handler".
+func (s *Server) SetRegistry(reg CandidateRegistry) {
+	s.registry = reg
 }
 
 // ConfigNotifier returns the shared ConfigNotifier so that other

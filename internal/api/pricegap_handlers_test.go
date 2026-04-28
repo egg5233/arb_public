@@ -51,23 +51,32 @@ func newPriceGapTestServer(t *testing.T) (*Server, *miniredis.Miniredis, string,
 	}
 
 	cfg := &config.Config{
-		DashboardPassword: "test-pw", // enable auth
-		PriceGapEnabled:   true,
-		PriceGapPaperMode: true,
-		PriceGapBudget:    5000,
+		DashboardPassword:     "test-pw", // enable auth
+		PriceGapEnabled:       true,
+		PriceGapPaperMode:     true,
+		PriceGapBudget:        5000,
+		PriceGapMaxCandidates: 12, // Plan 11-01 default — Registry checks against this
 		PriceGapCandidates: []models.PriceGapCandidate{
 			{Symbol: "BTCUSDT", LongExch: "binance", ShortExch: "bybit", ThresholdBps: 25, MaxPositionUSDT: 500},
 			{Symbol: "SOONUSDT", LongExch: "binance", ShortExch: "bybit", ThresholdBps: 25, MaxPositionUSDT: 500},
 		},
 	}
 
+	// Plan 11-03 hard-cut: dashboard handler routes candidate writes through
+	// *pricegaptrader.Registry. Wire a real Registry against the sandboxed
+	// CONFIG_FILE so the round-trip exercises the production path
+	// (validate → handler → Registry → SaveJSONWithBakRing → Redis audit).
+	logger := utils.NewLogger("test")
+	registry := pricegaptrader.NewRegistry(cfg, db.PriceGapAudit(), logger)
+
 	s := &Server{
 		db:             db,
 		cfg:            cfg,
 		hub:            NewHub(),
-		log:            utils.NewLogger("test"),
+		log:            logger,
 		auth:           newAuthStore(nil), // in-memory sessions (no Redis TTL dependency)
 		configNotifier: config.NewConfigNotifier(),
+		registry:       registry,
 	}
 
 	// Run the hub so Broadcast calls don't block on a nil-channel write.
@@ -482,8 +491,8 @@ func TestHandlePriceGapMetrics_Empty(t *testing.T) {
 		t.Fatalf("status=%d, want 200 (body=%s)", w.Code, w.Body.String())
 	}
 	var resp struct {
-		OK   bool                                `json:"ok"`
-		Data []pricegaptrader.CandidateMetrics   `json:"data"`
+		OK   bool                              `json:"ok"`
+		Data []pricegaptrader.CandidateMetrics `json:"data"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)

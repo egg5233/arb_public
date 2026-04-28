@@ -1600,6 +1600,15 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	// Price-gap tracker config apply (Phase 9 Plan 02). Accepts either the
 	// nested "price_gap" block or the flat "price_gap_paper_mode" shortcut.
 	// Nested form wins when both are supplied.
+	//
+	// Plan 11-03 / PG-DISC-04 hard-cut: candidate writes route through
+	// s.registry.Replace (the *pricegaptrader.Registry chokepoint) instead of
+	// `s.cfg.PriceGapCandidates = next`. Validation + active-position guard
+	// still run here under s.cfg.Lock(); the Replace call is deferred until
+	// AFTER s.cfg.Unlock() to avoid deadlocking on Registry's internal lock
+	// acquisition (T-11-24).
+	var pendingCandidates []models.PriceGapCandidate
+	pendingCandidatesSet := false
 	if pg := upd.PriceGap; pg != nil {
 		if pg.Enabled != nil {
 			s.cfg.PriceGapEnabled = *pg.Enabled
@@ -1645,7 +1654,10 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusConflict, Response{Error: blocker})
 				return
 			}
-			s.cfg.PriceGapCandidates = next
+			// Plan 11-03 hard-cut: capture validated slice locally; the
+			// Registry.Replace call happens after s.cfg.Unlock() below.
+			pendingCandidates = next
+			pendingCandidatesSet = true
 		}
 	}
 	if upd.PriceGapPaperMode != nil && (upd.PriceGap == nil || upd.PriceGap.PaperMode == nil) {
@@ -1802,6 +1814,30 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("save config.json: %v (Redis saved OK)", err)
 	}
 	s.cfg.Unlock()
+
+	// Plan 11-03 / PG-DISC-04 hard-cut: route candidate updates through the
+	// *pricegaptrader.Registry chokepoint AFTER releasing s.cfg's lock so
+	// Registry can acquire its own internal lock (T-11-24). Validation and
+	// the active-position guard already ran above under s.cfg.Lock(), so
+	// Registry.Replace is invoked with a pre-validated, normalised slice and
+	// expects only persistence + audit (Plan 02 contract).
+	if pendingCandidatesSet {
+		if s.registry == nil {
+			s.log.Error("PriceGapCandidates updated but registry not wired; dropping candidate change")
+			writeJSON(w, http.StatusInternalServerError, Response{Error: "registry not wired"})
+			return
+		}
+		if err := s.registry.Replace(r.Context(), "dashboard-handler", pendingCandidates); err != nil {
+			s.log.Error("registry.Replace: %v", err)
+			writeJSON(w, http.StatusInternalServerError, Response{Error: fmt.Sprintf("registry replace: %v", err)})
+			return
+		}
+		// Refresh snapshot now that Registry has applied the new candidates
+		// in-memory + on-disk (so the response reflects post-Replace state).
+		s.cfg.RLock()
+		snapshot = s.buildConfigResponse()
+		s.cfg.RUnlock()
+	}
 
 	// Notify all subscribers (engine, scanner, etc.) that config has changed.
 	s.configNotifier.Notify()
