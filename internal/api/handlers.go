@@ -15,6 +15,7 @@ import (
 	"arb/internal/config"
 	"arb/internal/database"
 	"arb/internal/models"
+	"arb/internal/pricegaptrader"
 	"arb/internal/risk"
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
@@ -1630,7 +1631,9 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 				next[i].LongExch = strings.ToLower(strings.TrimSpace(next[i].LongExch))
 				next[i].ShortExch = strings.ToLower(strings.TrimSpace(next[i].ShortExch))
 			}
-			if errs := validatePriceGapCandidates(next); len(errs) > 0 {
+			// Plan 11-03 / T-11-19: shared validator with cmd/pg-admin so
+			// the dashboard and CLI can never drift on candidate rules.
+			if errs := pricegaptrader.ValidateCandidates(next); len(errs) > 0 {
 				s.cfg.Unlock()
 				writeJSON(w, http.StatusBadRequest, Response{Error: strings.Join(errs, "; ")})
 				return

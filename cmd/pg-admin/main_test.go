@@ -1,8 +1,7 @@
 package main
 
 import (
-	"io"
-	"os"
+	"bytes"
 	"strings"
 	"testing"
 	"time"
@@ -26,16 +25,10 @@ func newTestClient(t *testing.T) (*database.Client, *miniredis.Miniredis) {
 	return db, mr
 }
 
-// captureStdout redirects os.Stdout for the duration of fn, returns bytes written.
-func captureStdout(fn func()) string {
-	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-	fn()
-	w.Close()
-	os.Stdout = old
-	b, _ := io.ReadAll(r)
-	return string(b)
+// captureBuffers returns two buffers usable as stdout/stderr in the
+// io.Writer-based cmd* helpers (Plan 11-03 refactor).
+func captureBuffers() (*bytes.Buffer, *bytes.Buffer) {
+	return &bytes.Buffer{}, &bytes.Buffer{}
 }
 
 // TestPgAdmin_EnableClearsFlag — pre-seed disabled flag, cmdEnable wipes it.
@@ -45,15 +38,16 @@ func TestPgAdmin_EnableClearsFlag(t *testing.T) {
 	// Seed: pg:candidate:disabled:SOON = "auto:exec_quality"
 	mr.Set("pg:candidate:disabled:SOON", "auto:exec_quality")
 
-	out := captureStdout(func() {
-		cmdEnable(db, "SOON")
-	})
+	stdout, stderr := captureBuffers()
+	if rc := cmdEnable(db, "SOON", stdout, stderr); rc != 0 {
+		t.Fatalf("cmdEnable rc=%d, stderr=%q", rc, stderr.String())
+	}
 
 	if mr.Exists("pg:candidate:disabled:SOON") {
 		t.Fatalf("expected disabled flag cleared, still present")
 	}
-	if !strings.Contains(out, "enabled") {
-		t.Fatalf("expected stdout to contain 'enabled', got: %q", out)
+	if !strings.Contains(stdout.String(), "enabled") {
+		t.Fatalf("expected stdout to contain 'enabled', got: %q", stdout.String())
 	}
 }
 
@@ -61,9 +55,10 @@ func TestPgAdmin_EnableClearsFlag(t *testing.T) {
 func TestPgAdmin_DisableSetsFlag(t *testing.T) {
 	db, mr := newTestClient(t)
 
-	out := captureStdout(func() {
-		cmdDisable(db, "DRIFT", "manual test")
-	})
+	stdout, stderr := captureBuffers()
+	if rc := cmdDisable(db, "DRIFT", "manual test", stdout, stderr); rc != 0 {
+		t.Fatalf("cmdDisable rc=%d, stderr=%q", rc, stderr.String())
+	}
 
 	v, err := mr.Get("pg:candidate:disabled:DRIFT")
 	if err != nil {
@@ -72,6 +67,7 @@ func TestPgAdmin_DisableSetsFlag(t *testing.T) {
 	if !strings.Contains(v, "manual test") {
 		t.Fatalf("expected reason 'manual test' in value, got: %q", v)
 	}
+	out := stdout.String()
 	if !strings.Contains(out, "DRIFT") || !strings.Contains(out, "manual test") {
 		t.Fatalf("expected stdout with 'DRIFT' and 'manual test', got: %q", out)
 	}
@@ -81,14 +77,15 @@ func TestPgAdmin_DisableSetsFlag(t *testing.T) {
 func TestPgAdmin_PositionsList_Empty(t *testing.T) {
 	db, _ := newTestClient(t)
 
-	out := captureStdout(func() {
-		cmdPositionsList(db)
-	})
+	stdout, stderr := captureBuffers()
+	if rc := cmdPositionsList(db, stdout, stderr); rc != 0 {
+		t.Fatalf("cmdPositionsList rc=%d, stderr=%q", rc, stderr.String())
+	}
 
+	out := stdout.String()
 	if !strings.Contains(out, "(no active positions)") {
 		t.Fatalf("expected '(no active positions)' in output, got: %q", out)
 	}
-	// Ensure no tabular data rows: only header line + empty marker
 	for _, line := range strings.Split(out, "\n") {
 		if strings.Contains(line, "pg_") {
 			t.Fatalf("unexpected position row: %q", line)
@@ -114,10 +111,12 @@ func TestPgAdmin_PositionsList_OnePosition(t *testing.T) {
 		t.Fatalf("SavePriceGapPosition: %v", err)
 	}
 
-	out := captureStdout(func() {
-		cmdPositionsList(db)
-	})
+	stdout, stderr := captureBuffers()
+	if rc := cmdPositionsList(db, stdout, stderr); rc != 0 {
+		t.Fatalf("cmdPositionsList rc=%d, stderr=%q", rc, stderr.String())
+	}
 
+	out := stdout.String()
 	for _, want := range []string{
 		"pg_SOON_binance_gate_1700000000",
 		"SOON",
