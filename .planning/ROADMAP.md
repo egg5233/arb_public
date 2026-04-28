@@ -74,7 +74,7 @@ Phase numbers reuse 11 + 12 from the v2.1 deferred-numbering plan; 13 was consum
 
 **Phases:**
 
-- [ ] **Phase 11: Auto-Discovery Scanner + Chokepoint + Telemetry** — Read-only scanner with score, BBO freshness, depth probe, denylist; CandidateRegistry chokepoint serializing all writers; telemetry surfaced to dashboard. Default OFF.
+- [x] **Phase 11: Auto-Discovery Scanner + Chokepoint + Telemetry** — Read-only scanner with score, BBO freshness, depth probe, denylist; CandidateRegistry chokepoint serializing all writers; telemetry surfaced to dashboard. Default OFF. (completed 2026-04-28)
 - [ ] **Phase 12: Auto-Promotion** — Score-gated auto-promotion through chokepoint with cap, dedupe, observation streak, active-position guard, Telegram + WS broadcast.
 - [ ] **Phase 14: Daily Reconcile + Live Ramp Controller** — Daily PnL reconcile keyed by close-timestamp + ramp controller with Redis-persisted clean-day counter, asymmetric ratchet, hard-ceiling sizing guard.
 - [ ] **Phase 15: Drawdown Circuit Breaker** — Realized-PnL rolling-24h breaker with two-strike rule, Bybit-blackout suppression, sticky paper-mode flag, human-gated recovery.
@@ -94,12 +94,12 @@ Phase numbers reuse 11 + 12 from the v2.1 deferred-numbering plan; 13 was consum
   4. The scanner is read-only — it can compute scores but cannot mutate `cfg.PriceGapCandidates`. Default-OFF behaviour verified: scanner does not run with `PriceGapDiscoveryEnabled=false`.
   5. Symbol normalization (canonical `BTCUSDT` form) verified via cross-exchange BBO join test for a known-good pair.
 **Plans**: 6 plans
-- [ ] 11-01-PLAN.md — Config schema (8 fields) + RegistryReader interface + Plan 01 unit tests
-- [ ] 11-02-PLAN.md — *Registry chokepoint (Add/Update/Delete/Replace) + .bak.{ts} ring + concurrent-writer integration test
-- [ ] 11-03-PLAN.md — Hard-cut migration: handlers.go + pg-admin onto Registry; shared validate.go
-- [ ] 11-04-PLAN.md — Scanner core (gates + 0-100 magnitude scoring + read-only static check)
-- [ ] 11-05-PLAN.md — Telemetry (pg:scan:* + WS) + REST endpoints + cmd/arb bootstrap wiring
-- [ ] 11-06-PLAN.md — Discovery dashboard UI (6 components + hook + i18n lockstep + visual + live-BBO checkpoints)
+- [x] 11-01-PLAN.md — Config schema (8 fields) + RegistryReader interface + Plan 01 unit tests
+- [x] 11-02-PLAN.md — *Registry chokepoint (Add/Update/Delete/Replace) + .bak.{ts} ring + concurrent-writer integration test
+- [x] 11-03-PLAN.md — Hard-cut migration: handlers.go + pg-admin onto Registry; shared validate.go
+- [x] 11-04-PLAN.md — Scanner core (gates + 0-100 magnitude scoring + read-only static check)
+- [x] 11-05-PLAN.md — Telemetry (pg:scan:* + WS) + REST endpoints + cmd/arb bootstrap wiring
+- [x] 11-06-PLAN.md — Discovery dashboard UI (6 components + hook + i18n lockstep + visual + live-BBO checkpoints)
 **UI hint**: yes
 
 ### Phase 12: Auto-Promotion
@@ -183,7 +183,7 @@ Phase numbers reuse 11 + 12 from the v2.1 deferred-numbering plan; 13 was consum
 | 10. Dashboard Candidate CRUD | v2.1 | 5/5 | Complete | 2026-04-25 |
 | 13. v2.0 Deferred Closure | v2.1 | n/a | Complete (direct commits) | 2026-04-25 |
 | 999.1. Bidirectional pricegap candidates | v2.1 | 6/6 | Complete | 2026-04-27 |
-| 11. Auto-Discovery Scanner + Chokepoint + Telemetry | v2.2 | 0/5 | Not started | — |
+| 11. Auto-Discovery Scanner + Chokepoint + Telemetry | v2.2 | 6/6 | Complete    | 2026-04-28 |
 | 12. Auto-Promotion | v2.2 | 0/? | Not started | — |
 | 14. Daily Reconcile + Live Ramp Controller | v2.2 | 0/? | Not started | — |
 | 15. Drawdown Circuit Breaker | v2.2 | 0/? | Not started | — |
