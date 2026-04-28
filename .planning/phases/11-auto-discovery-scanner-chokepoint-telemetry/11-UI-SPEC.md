@@ -1,7 +1,8 @@
 ---
 phase: 11
 slug: auto-discovery-scanner-chokepoint-telemetry
-status: draft
+status: approved
+reviewed_at: 2026-04-28
 shadcn_initialized: false
 preset: none
 created: 2026-04-28
