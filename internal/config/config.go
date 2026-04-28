@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -12,6 +13,50 @@ import (
 
 	"arb/internal/models"
 )
+
+// Phase 11 (PG-DISC-01) schema regexes — compiled once. Universe entries must
+// be canonical-form perp symbols (uppercase A-Z + 0-9, length 2-20, USDT
+// suffix). Denylist entries optionally tag a single exchange via "@<lower>".
+var (
+	priceGapUniverseRE = regexp.MustCompile(`^[A-Z0-9]{2,20}USDT$`)
+	priceGapDenylistRE = regexp.MustCompile(`^[A-Z0-9]{2,20}USDT(@[a-z]+)?$`)
+)
+
+// validatePriceGapDiscovery verifies the Phase 11 auto-discovery schema (D-05,
+// D-07, D-13, RESEARCH §Security V5). Returns the first violation as an error;
+// callers (config-load entry points, unit tests) are expected to surface the
+// error or fail-fast to prevent the scanner from running on malformed input.
+func validatePriceGapDiscovery(c *Config) error {
+	if len(c.PriceGapDiscoveryUniverse) > 20 {
+		return fmt.Errorf("PriceGapDiscoveryUniverse exceeds 20 entries (got %d)", len(c.PriceGapDiscoveryUniverse))
+	}
+	for i, sym := range c.PriceGapDiscoveryUniverse {
+		if !priceGapUniverseRE.MatchString(sym) {
+			return fmt.Errorf("PriceGapDiscoveryUniverse[%d]=%q invalid (expected canonical BTCUSDT form)", i, sym)
+		}
+	}
+	for i, entry := range c.PriceGapDiscoveryDenylist {
+		if !priceGapDenylistRE.MatchString(entry) {
+			return fmt.Errorf("PriceGapDiscoveryDenylist[%d]=%q invalid (expected SYMBOL or SYMBOL@exchange)", i, entry)
+		}
+	}
+	if c.PriceGapDiscoveryIntervalSec < 60 {
+		return fmt.Errorf("PriceGapDiscoveryIntervalSec=%d below floor 60", c.PriceGapDiscoveryIntervalSec)
+	}
+	if c.PriceGapDiscoveryThresholdBps < 10 {
+		return fmt.Errorf("PriceGapDiscoveryThresholdBps=%d below floor 10", c.PriceGapDiscoveryThresholdBps)
+	}
+	if c.PriceGapDiscoveryMinDepthUSDT < 0 {
+		return fmt.Errorf("PriceGapDiscoveryMinDepthUSDT=%d negative", c.PriceGapDiscoveryMinDepthUSDT)
+	}
+	if c.PriceGapAutoPromoteScore < 50 || c.PriceGapAutoPromoteScore > 100 {
+		return fmt.Errorf("PriceGapAutoPromoteScore=%d outside [50,100]", c.PriceGapAutoPromoteScore)
+	}
+	if c.PriceGapMaxCandidates < 1 || c.PriceGapMaxCandidates > 50 {
+		return fmt.Errorf("PriceGapMaxCandidates=%d outside [1,50]", c.PriceGapMaxCandidates)
+	}
+	return nil
+}
 
 func parseBoolEnv(raw string) (bool, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
@@ -293,6 +338,20 @@ type Config struct {
 	PriceGapPollIntervalSec      int                        // D-22 default 30 (D-05)
 	PriceGapCandidates           []models.PriceGapCandidate // D-22, PG-05
 	PriceGapDebugLog             bool                       // D-09-gap1 default false; gates non-fire reason logging in tracker.runTick (Phase 9 gap-closure Gap #1)
+
+	// ---------------------------------------------------------------------------
+	// Phase 11: Auto-discovery scanner schema (PG-DISC-01) — default OFF
+	// ---------------------------------------------------------------------------
+	PriceGapDiscoveryEnabled      bool     // D-11-default OFF master switch
+	PriceGapDiscoveryUniverse     []string // D-05 ≤20 entries, canonical BTCUSDT form
+	PriceGapDiscoveryDenylist     []string // D-07 symbol or symbol@exchange tuples
+	PriceGapDiscoveryIntervalSec  int      // default 300 (5min); floor 60
+	PriceGapDiscoveryThresholdBps int      // default 100; floor 10
+	PriceGapDiscoveryMinDepthUSDT int      // default 1000; floor 0
+
+	// Phase 11 schema (Phase 12 acts on these — D-15 displays them now).
+	PriceGapAutoPromoteScore int // default 60; server floor 50, ceiling 100
+	PriceGapMaxCandidates    int // default 12; range 1-50
 }
 
 // ---------- Nested JSON config structs ----------
@@ -332,6 +391,17 @@ type jsonPriceGap struct {
 	PollIntervalSec      *int                       `json:"poll_interval_sec,omitempty"`
 	Candidates           []models.PriceGapCandidate `json:"candidates,omitempty"`
 	DebugLog             *bool                      `json:"debug_log,omitempty"` // D-09-gap1: gates non-fire reason logging in tracker.runTick
+
+	// Phase 11 (PG-DISC-01) — auto-discovery scanner schema. All pointer-optional
+	// so that omission preserves defaults; D-22 safe-off semantics maintained.
+	DiscoveryEnabled      *bool    `json:"discovery_enabled,omitempty"`
+	DiscoveryUniverse     []string `json:"discovery_universe,omitempty"`
+	DiscoveryDenylist     []string `json:"discovery_denylist,omitempty"`
+	DiscoveryIntervalSec  *int     `json:"discovery_interval_sec,omitempty"`
+	DiscoveryThresholdBps *int     `json:"discovery_threshold_bps,omitempty"`
+	DiscoveryMinDepthUSDT *int     `json:"discovery_min_depth_usdt,omitempty"`
+	AutoPromoteScore      *int     `json:"auto_promote_score,omitempty"`
+	MaxCandidates         *int     `json:"max_candidates,omitempty"`
 }
 
 type jsonAnalytics struct {
@@ -723,6 +793,14 @@ func Load() *Config {
 	// Price-Gap Tracker defaults (Phase 9, D-12 exception):
 	// paper mode default TRUE until live validated — master switch stays OFF per PG-OPS-06.
 	c.PriceGapPaperMode = true
+
+	// Phase 11 auto-discovery scanner defaults (PG-DISC-01) — master switch OFF
+	// by default. Field defaults survive process restart (operator owns config.json).
+	c.PriceGapDiscoveryIntervalSec = 300  // 5min cadence (floor 60s)
+	c.PriceGapDiscoveryThresholdBps = 100 // ≈ MaxPriceGapBPS / 2 (floor 10)
+	c.PriceGapDiscoveryMinDepthUSDT = 1000
+	c.PriceGapAutoPromoteScore = 60 // headroom above server floor 50
+	c.PriceGapMaxCandidates = 12    // PG-RISK-04 cap below 50
 
 	// Load from JSON file
 	c.loadJSON()
@@ -1374,6 +1452,49 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		if pg.DebugLog != nil {
 			c.PriceGapDebugLog = *pg.DebugLog
 		}
+
+		// Phase 11 auto-discovery scanner schema (PG-DISC-01).
+		// Default-then-override pattern: ensure defaults exist before applying
+		// any overrides so a partial config.json block leaves safe values intact.
+		if c.PriceGapDiscoveryIntervalSec == 0 {
+			c.PriceGapDiscoveryIntervalSec = 300
+		}
+		if c.PriceGapDiscoveryThresholdBps == 0 {
+			c.PriceGapDiscoveryThresholdBps = 100
+		}
+		if c.PriceGapDiscoveryMinDepthUSDT == 0 {
+			c.PriceGapDiscoveryMinDepthUSDT = 1000
+		}
+		if c.PriceGapAutoPromoteScore == 0 {
+			c.PriceGapAutoPromoteScore = 60
+		}
+		if c.PriceGapMaxCandidates == 0 {
+			c.PriceGapMaxCandidates = 12
+		}
+		if pg.DiscoveryEnabled != nil {
+			c.PriceGapDiscoveryEnabled = *pg.DiscoveryEnabled
+		}
+		if len(pg.DiscoveryUniverse) > 0 {
+			c.PriceGapDiscoveryUniverse = pg.DiscoveryUniverse
+		}
+		if len(pg.DiscoveryDenylist) > 0 {
+			c.PriceGapDiscoveryDenylist = pg.DiscoveryDenylist
+		}
+		if pg.DiscoveryIntervalSec != nil {
+			c.PriceGapDiscoveryIntervalSec = *pg.DiscoveryIntervalSec
+		}
+		if pg.DiscoveryThresholdBps != nil {
+			c.PriceGapDiscoveryThresholdBps = *pg.DiscoveryThresholdBps
+		}
+		if pg.DiscoveryMinDepthUSDT != nil {
+			c.PriceGapDiscoveryMinDepthUSDT = *pg.DiscoveryMinDepthUSDT
+		}
+		if pg.AutoPromoteScore != nil {
+			c.PriceGapAutoPromoteScore = *pg.AutoPromoteScore
+		}
+		if pg.MaxCandidates != nil {
+			c.PriceGapMaxCandidates = *pg.MaxCandidates
+		}
 	}
 
 	// Telegram
@@ -1804,6 +1925,20 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	priceGap["enabled"] = c.PriceGapEnabled
 	priceGap["paper_mode"] = c.PriceGapPaperMode
 	priceGap["debug_log"] = c.PriceGapDebugLog // D-09-gap1 (Phase 9 gap-closure Gap #1)
+
+	// Phase 11 auto-discovery scanner schema (PG-DISC-01).
+	priceGap["discovery_enabled"] = c.PriceGapDiscoveryEnabled
+	if len(c.PriceGapDiscoveryUniverse) > 0 {
+		priceGap["discovery_universe"] = c.PriceGapDiscoveryUniverse
+	}
+	if len(c.PriceGapDiscoveryDenylist) > 0 {
+		priceGap["discovery_denylist"] = c.PriceGapDiscoveryDenylist
+	}
+	priceGap["discovery_interval_sec"] = c.PriceGapDiscoveryIntervalSec
+	priceGap["discovery_threshold_bps"] = c.PriceGapDiscoveryThresholdBps
+	priceGap["discovery_min_depth_usdt"] = c.PriceGapDiscoveryMinDepthUSDT
+	priceGap["auto_promote_score"] = c.PriceGapAutoPromoteScore
+	priceGap["max_candidates"] = c.PriceGapMaxCandidates
 
 	out, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
