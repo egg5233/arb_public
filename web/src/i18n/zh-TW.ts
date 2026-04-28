@@ -873,6 +873,52 @@ const zhTW: Record<TranslationKey, string> = {
   'pricegap.candidates.confirmDelete.cancel': '取消',
   'pricegap.candidates.row.edit': '編輯',
   'pricegap.candidates.row.delete': '刪除',
+
+  // Phase 11 — Discovery sub-section (PG-DISC-03)
+  'pricegap.discovery.title': '自動發現掃描器',
+  'pricegap.discovery.subtitle': '唯讀掃描器依設定的標的池對 Strategy 4 候選排序。',
+  'pricegap.discovery.scannerOn': '掃描中',
+  'pricegap.discovery.scannerOff': '掃描器已停用',
+  'pricegap.discovery.scannerErrored': '掃描器發生錯誤',
+
+  'pricegap.discovery.banner.disabled.heading': '自動發現已停用',
+  'pricegap.discovery.banner.disabled.body': '在 `config.json` 中將 `PriceGapDiscoveryEnabled` 設為 `true` 即可啟動掃描器。下一個週期將自動填入資料。',
+  'pricegap.discovery.banner.error.heading': '上一週期掃描器回報錯誤',
+  'pricegap.discovery.banner.error.body': '{n} 個行情讀取於 {exchanges} 失敗。本次週期資料可能不完整。',
+
+  'pricegap.discovery.cycle.title': '週期統計',
+  'pricegap.discovery.cycle.lastRun': '上次執行',
+  'pricegap.discovery.cycle.nextRunIn': '下次執行於',
+  'pricegap.discovery.cycle.candidatesSeen': '已掃描',
+  'pricegap.discovery.cycle.accepted': '通過',
+  'pricegap.discovery.cycle.rejected': '拒絕',
+  'pricegap.discovery.cycle.errors': '錯誤',
+  'pricegap.discovery.cycle.duration': '耗時',
+  'pricegap.discovery.cycle.never': '從未',
+
+  'pricegap.discovery.scoreHistory.title': '分數歷史（7天）',
+  'pricegap.discovery.scoreHistory.symbolSelector': '標的',
+  'pricegap.discovery.scoreHistory.thresholdBand': '自動升級門檻',
+  'pricegap.discovery.scoreHistory.empty': '尚無分數歷史 — 掃描器尚未對此標的產生週期資料。',
+  'pricegap.discovery.scoreHistory.noUniverse': '請於 `config.json` 設定 `PriceGapDiscoveryUniverse` 以填入標的清單。',
+  'pricegap.discovery.scoreHistory.selectPrompt': '選擇標的',
+  'pricegap.discovery.scoreHistory.loading': '載入中…',
+
+  'pricegap.discovery.whyRejected.title': '拒絕原因（上一週期）',
+  'pricegap.discovery.whyRejected.empty': '上一週期沒有拒絕記錄。',
+  'pricegap.discovery.whyRejected.colReason': '原因',
+  'pricegap.discovery.whyRejected.colCount': '次數',
+  'pricegap.discovery.whyRejected.reason.insufficient_persistence': '持續性不足 4 根 K 棒',
+  'pricegap.discovery.whyRejected.reason.stale_bbo': 'BBO 過期（超過 90 秒）',
+  'pricegap.discovery.whyRejected.reason.insufficient_depth': '深度低於門檻',
+  'pricegap.discovery.whyRejected.reason.denylist': '黑名單比對',
+  'pricegap.discovery.whyRejected.reason.bybit_blackout': 'Bybit 維護時段',
+  'pricegap.discovery.whyRejected.reason.symbol_not_listed_long': '多單方向未上架',
+  'pricegap.discovery.whyRejected.reason.symbol_not_listed_short': '空單方向未上架',
+  'pricegap.discovery.whyRejected.reason.sample_error': '取樣錯誤',
+
+  'pricegap.discovery.timeline.title': '升級／降級時間線',
+  'pricegap.discovery.timeline.placeholder': '升級與降級事件將於 Phase 12（自動升級）上線後顯示於此。',
 };
 
 export default zhTW;

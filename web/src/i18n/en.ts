@@ -872,6 +872,52 @@ const en = {
   'pricegap.candidates.confirmDelete.cancel': 'Cancel',
   'pricegap.candidates.row.edit': 'Edit',
   'pricegap.candidates.row.delete': 'Delete',
+
+  // Phase 11 — Discovery sub-section (PG-DISC-03)
+  'pricegap.discovery.title': 'Discovery Scanner',
+  'pricegap.discovery.subtitle': 'Read-only scanner ranks Strategy 4 candidates by score across the configured universe.',
+  'pricegap.discovery.scannerOn': 'Scanner ON',
+  'pricegap.discovery.scannerOff': 'Scanner OFF',
+  'pricegap.discovery.scannerErrored': 'Scanner errored',
+
+  'pricegap.discovery.banner.disabled.heading': 'Discovery is disabled',
+  'pricegap.discovery.banner.disabled.body': 'Set `PriceGapDiscoveryEnabled = true` in `config.json` to start the scanner. The section will populate on the next cycle.',
+  'pricegap.discovery.banner.error.heading': 'Scanner reported errors in the last cycle',
+  'pricegap.discovery.banner.error.body': '{n} ticker reads failed across {exchanges}. Cycle output may be incomplete.',
+
+  'pricegap.discovery.cycle.title': 'Cycle Stats',
+  'pricegap.discovery.cycle.lastRun': 'Last run',
+  'pricegap.discovery.cycle.nextRunIn': 'Next run in',
+  'pricegap.discovery.cycle.candidatesSeen': 'Candidates seen',
+  'pricegap.discovery.cycle.accepted': 'Accepted',
+  'pricegap.discovery.cycle.rejected': 'Rejected',
+  'pricegap.discovery.cycle.errors': 'Errors',
+  'pricegap.discovery.cycle.duration': 'Duration',
+  'pricegap.discovery.cycle.never': 'Never',
+
+  'pricegap.discovery.scoreHistory.title': 'Score History (7d)',
+  'pricegap.discovery.scoreHistory.symbolSelector': 'Symbol',
+  'pricegap.discovery.scoreHistory.thresholdBand': 'Auto-promote threshold',
+  'pricegap.discovery.scoreHistory.empty': 'No score history yet — scanner has not produced cycles for this symbol.',
+  'pricegap.discovery.scoreHistory.noUniverse': 'Configure `PriceGapDiscoveryUniverse` in `config.json` to populate the symbol list.',
+  'pricegap.discovery.scoreHistory.selectPrompt': 'Select a symbol',
+  'pricegap.discovery.scoreHistory.loading': 'Loading…',
+
+  'pricegap.discovery.whyRejected.title': 'Why Rejected (last cycle)',
+  'pricegap.discovery.whyRejected.empty': 'No rejections in the last cycle.',
+  'pricegap.discovery.whyRejected.colReason': 'Reason',
+  'pricegap.discovery.whyRejected.colCount': 'Count',
+  'pricegap.discovery.whyRejected.reason.insufficient_persistence': 'Persistence < 4 bars',
+  'pricegap.discovery.whyRejected.reason.stale_bbo': 'BBO stale (>90s)',
+  'pricegap.discovery.whyRejected.reason.insufficient_depth': 'Depth below floor',
+  'pricegap.discovery.whyRejected.reason.denylist': 'Denylist match',
+  'pricegap.discovery.whyRejected.reason.bybit_blackout': 'Bybit blackout window',
+  'pricegap.discovery.whyRejected.reason.symbol_not_listed_long': 'Not listed (long leg)',
+  'pricegap.discovery.whyRejected.reason.symbol_not_listed_short': 'Not listed (short leg)',
+  'pricegap.discovery.whyRejected.reason.sample_error': 'Sample error',
+
+  'pricegap.discovery.timeline.title': 'Promote / Demote Timeline',
+  'pricegap.discovery.timeline.placeholder': 'Promote and demote events will appear here once Phase 12 (auto-promotion) ships.',
 } as const;
 
 export type TranslationKey = keyof typeof en;
