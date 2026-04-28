@@ -24,6 +24,25 @@ import (
 // uppercase alphanumerics ending in USDT.
 var canonicalSymbolRE = regexp.MustCompile(`^[A-Z0-9]+USDT$`)
 
+// pathSymbolRE is the bounded form of canonicalSymbolRE used by REST handlers
+// for path parameters (Plan 11-05 / T-11-33 mitigation). The bound `{2,20}USDT`
+// matches the same surface Plan 01 enforces at config load — uppercase
+// alphanumerics, length 2..20 chars before the USDT suffix. The bound prevents
+// pathological-length symbol values from reaching Redis as part of a key.
+var pathSymbolRE = regexp.MustCompile(`^[A-Z0-9]{2,20}USDT$`)
+
+// ValidateSymbol enforces canonical USDT-perp symbol form for path parameters
+// routed to /api/pg/discovery/scores/{symbol}. The regex matches the same
+// canonical form Plan 01 enforces at config load, with an explicit length
+// bound so a malicious operator can't push a multi-megabyte string into a
+// Redis key namespace (T-11-33 mitigation).
+func ValidateSymbol(s string) error {
+	if !pathSymbolRE.MatchString(s) {
+		return fmt.Errorf("symbol %q does not match canonical form ^[A-Z0-9]{2,20}USDT$", s)
+	}
+	return nil
+}
+
 // allowedExch is the closed enum of exchange identifiers the price-gap engine
 // supports today (D-06). Phase 10 ships paper-only against the same 6 CEXes
 // the rest of the platform talks to.

@@ -126,3 +126,40 @@ func TestValidateCandidates_CollatesAllErrors(t *testing.T) {
 		t.Fatalf("expected ≥3 collated errors, got %d: %v", len(errs), errs)
 	}
 }
+
+// ---- Plan 11-05: ValidateSymbol path-parameter regex (T-11-33 mitigation) ----
+
+func TestValidateSymbol(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{"happy_BTC", "BTCUSDT", false},
+		{"happy_alphanumeric", "BTC1USDT", false},
+		{"happy_short_2chars", "QIUSDT", false},
+		{"happy_max_20chars_base", "AAAAAAAAAAAAAAAAAAAAUSDT", false}, // 20 base + USDT
+		{"reject_lowercase", "btcusdt", true},
+		{"reject_hyphen", "BTC-USDT", true},
+		{"reject_empty", "", true},
+		{"reject_no_base", "USDT", true},
+		{"reject_only_one_char_base", "AUSDT", true},           // need min 2 base chars
+		{"reject_too_long", "AAAAAAAAAAAAAAAAAAAAAUSDT", true}, // 21 base chars exceeds bound
+		{"reject_redis_injection", "BTCUSDT\r\nFLUSHALL", true},
+		{"reject_unicode", "BTCUSDТ", true}, // last char is Cyrillic Te
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateSymbol(tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("ValidateSymbol(%q)=nil want error", tc.input)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("ValidateSymbol(%q)=%v want nil", tc.input, err)
+				}
+			}
+		})
+	}
+}

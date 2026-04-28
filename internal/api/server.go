@@ -10,6 +10,7 @@ import (
 	"arb/internal/config"
 	"arb/internal/database"
 	"arb/internal/models"
+	"arb/internal/pricegaptrader"
 	"arb/internal/risk"
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
@@ -64,6 +65,20 @@ type Server struct {
 	// the single *pricegaptrader.Registry instance shared with the tracker.
 	// Tests use the fake CandidateRegistry to capture Replace calls.
 	registry CandidateRegistry
+
+	// telemetry is the read-side surface for the Phase 11 auto-discovery
+	// scanner (Plan 11-05 / PG-DISC-03). cmd/main.go constructs exactly one
+	// *pricegaptrader.Telemetry instance and shares it with the Scanner
+	// (write path) and the api Server (read path). Nil in unit tests that
+	// don't exercise the discovery routes — handlers return 503 in that case.
+	telemetry DiscoveryTelemetryReader
+}
+
+// DiscoveryTelemetryReader is the narrow read-side surface the discovery
+// handlers consume. *pricegaptrader.Telemetry satisfies it.
+type DiscoveryTelemetryReader interface {
+	GetState(ctx context.Context) (pricegaptrader.StateResponse, error)
+	GetScores(ctx context.Context, symbol string) (pricegaptrader.ScoresResponse, error)
 }
 
 // ManualOpenOptions carries dashboard-only manual entry overrides.
@@ -171,6 +186,10 @@ func (s *Server) Start() {
 	mux.HandleFunc("GET /api/pricegap/metrics", s.cors(s.authMiddleware(s.handlePriceGapMetrics)))
 	mux.HandleFunc("POST /api/pricegap/candidate/{symbol}/disable", s.cors(s.authMiddleware(s.handlePriceGapCandidateDisable)))
 	mux.HandleFunc("POST /api/pricegap/candidate/{symbol}/enable", s.cors(s.authMiddleware(s.handlePriceGapCandidateEnable)))
+
+	// Phase 11 auto-discovery scanner — Plan 11-05 REST surface (PG-DISC-03)
+	mux.HandleFunc("GET /api/pg/discovery/state", s.cors(s.authMiddleware(s.handlePgDiscoveryState)))
+	mux.HandleFunc("GET /api/pg/discovery/scores/{symbol}", s.cors(s.authMiddleware(s.handlePgDiscoveryScores)))
 
 	// Capital allocation
 	mux.HandleFunc("/api/allocation", s.cors(s.authMiddleware(s.handleGetAllocation)))
@@ -388,6 +407,18 @@ func (s *Server) SetCapitalAllocator(allocator *risk.CapitalAllocator) {
 // CandidateRegistry.Replace with source="dashboard-handler".
 func (s *Server) SetRegistry(reg CandidateRegistry) {
 	s.registry = reg
+}
+
+// SetDiscoveryTelemetry injects the Phase 11 auto-discovery telemetry reader
+// (Plan 11-05 / PG-DISC-03). cmd/main.go constructs exactly one
+// *pricegaptrader.Telemetry instance and shares it with the Scanner (write
+// path) and the api Server (read path) so the GET /api/pg/discovery/state
+// and /scores/{symbol} endpoints report a coherent view of the same writer.
+//
+// Passing nil leaves the discovery routes returning 503; the rest of the
+// dashboard is unaffected.
+func (s *Server) SetDiscoveryTelemetry(t DiscoveryTelemetryReader) {
+	s.telemetry = t
 }
 
 // ConfigNotifier returns the shared ConfigNotifier so that other
