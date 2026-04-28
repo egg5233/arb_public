@@ -1,47 +1,131 @@
-# Requirements — v2.1 Candidate Operations
+# Requirements — v2.2 Auto-Discovery & Live Strategy 4
 
-Strategy 4 candidate lifecycle: manual control via dashboard, algorithmic auto-discovery, auto-promotion. **Paper-mode only for the entire milestone** — no live capital flip until v2.2 after observation.
+**Defined:** 2026-04-28
+**Core Value:** "I deposit USDT, select my risk preference, and the system automatically finds opportunities across multiple strategies, opens positions, collects yield, exits when profitable, and I can see exactly how much each position earned — with capital shifting between strategies as opportunities shift."
+
+---
 
 ## Constraints (locked at milestone start)
 
-- All work in paper mode (`PriceGapPaperMode=true`); zero real exchange `PlaceOrder` calls from new code
-- Auto-discovery scope: 6 existing exchanges (Binance, Bybit, Gate.io, Bitget, OKX, BingX) — no `coinglass` source
-- Auto-promotion: score-threshold-based, no human-in-the-loop review
+- Live trading risk: changes must not break perp-perp, spot-futures, or pricegap-paper engines
+- Module boundary: all new code lives inside `internal/pricegaptrader/` — no imports of `internal/engine` or `internal/spotengine`
+- Redis namespace: all new keys under existing `pg:*` prefix
+- npm lockdown still in force — no new frontend dependencies; Recharts/React only via `npm ci`
+- Strategy 4 live capital hard ceiling for v2.2: 1000 USDT/leg
+- All new behavior gated by config flags, default OFF
+- Phase numbering continues from v2.1 (next phase = 14; phase 11+12 numbers reserved per original deferred-numbering plan)
 
-## Requirements
+---
 
-### Dashboard CRUD (Phase 10)
+## v2.2 Requirements
 
-- [x] **PG-OPS-07** — Price-Gap tab gains Add/Edit/Delete candidate modal. Fields: `symbol`, `long_exch`, `short_exch`, `threshold_bps`, `max_position_usdt`, `modeled_slippage_bps`. Posts to `/api/config` and persists to `config.json` via existing `SaveJSON` path. EN + zh-TW locale keys in lockstep. Existing Disable/Re-enable buttons unchanged.
+### Auto-Discovery & Promotion
 
-### Auto-discovery (Phase 11)
+- [ ] **PG-DISC-01**: Auto-discovery scanner polls a bounded universe (≤20 symbols × 6 exchanges) on configurable interval, applies ≥4-bar persistence detector + BBO freshness gate + depth probe, computes a per-candidate score, and writes scanner cycle output to `pg:scan:*` Redis keys. Default OFF via `PriceGapDiscoveryEnabled`. Scanner is read-only until PG-DISC-04 (CandidateRegistry chokepoint) lands.
+- [ ] **PG-DISC-02**: Auto-promotion controller appends candidates with score ≥ `PriceGapAutoPromoteScore` (new config field) to `cfg.PriceGapCandidates` via the chokepoint, capped by `PriceGapMaxCandidates` (new config field, default 12), persisted via SaveJSON with `.bak` rotation. Idempotent dedupe (incl. v0.35.0 `direction` field). Observation streak ≥6 cycles required before promotion clears. Auto-demote honors `pg:positions:active` guard (Phase 10 reuse). Promote/demote events emit Telegram critical alert + WS broadcast.
+- [ ] **PG-DISC-03**: Discovery telemetry surfaces scanner cycle stats, score history per candidate, why-rejected breakdown, and promote/demote event timeline in the dashboard (new section under PG-OPS-09 tab) using existing Recharts components. Read path uses `pg:scan:*` and `pg:promote:*` Redis keys via existing WS hub batching.
+- [ ] **PG-DISC-04**: `CandidateRegistry` chokepoint serializes all writers (operator dashboard CRUD from Phase 10, pg-admin CLI, scanner auto-promotion, scanner auto-demote) through one mutex + atomic file write + timestamped `.bak` ring. Required prerequisite before scanner is write-permitted (PG-DISC-02 cannot land until PG-DISC-04 ships).
 
-- [ ] **PG-DISC-01** — Periodic scanner reads BBO + depth across all listed perp pairs on the 6 exchanges. Computes per-pair score from: spread persistence (≥4 consecutive 1m bars above T), top-of-book size ≥ configurable threshold, retreat depth (size available within X bps of mid for both legs).
-- [ ] **PG-DISC-03** — Discovered candidates written to `pg:discovered:<symbol>:<longExch>:<shortExch>` Redis hash with score, sample window, last-seen timestamp. Audit trail even though promotion is automatic. Pruned after configurable TTL if not re-observed.
+### Strategy 4 Live Capital
 
-### Auto-promotion (Phase 12)
+- [ ] **PG-LIVE-01**: Conservative ramp controller gates Strategy 4 live capital through discrete stages — 100 USDT/leg → 500 USDT/leg after 7 clean days → hard ceiling 1000 USDT/leg for v2.2. Ramp state Redis-persisted with 5 explicit fields (current stage, clean-day counter, last evaluation timestamp, last-loss-day timestamp, demote count). Asymmetric ratchet: any loss day resets the clean-day counter to 0 and demotes one stage. `min(stage_size, hard_ceiling)` enforced at the sizing call site, not only at stage transitions. Idempotent daily evaluation. Gate integrated into `risk_gate.go` as gate #7.
+- [ ] **PG-LIVE-02**: Drawdown circuit breaker monitors Strategy 4 daily REALIZED PnL on a rolling 24h window (NOT calendar-day, NOT MTM). When realized PnL drops below `PriceGapDrawdownLimitUSDT` (new config field), breaker fires: auto-revert live → paper via sticky `PaperModeStickyUntil` flag, auto-disable any open candidate, Telegram critical alert + WS broadcast, log to `pg:breaker:trips`. Suppress evaluation during Bybit `:04-:05:30` blackout. Two-strike rule (require breach + confirmation tick before firing). Recovery requires explicit operator action — sticky flag does not auto-clear.
+- [ ] **PG-LIVE-03**: Daily PnL reconcile job runs 30+ minutes after UTC 00:00 (deliberately offset from Bybit blackout + funding settlement windows). Aggregates closed Strategy 4 positions keyed by `(position_id, version)` using exchange close-timestamp (not local clock), reuses perp-perp 3-retry pattern. Output to `pg:reconcile:daily:{date}` Redis keys. Provides clean-day signal to PG-LIVE-01. Anomaly flagging on large slippage / missing close timestamps.
 
-- [ ] **PG-DISC-02** — Discovered candidates with score ≥ `PriceGapAutoPromoteScore` are appended to `cfg.PriceGapCandidates` (and persisted to `config.json` via SaveJSON). Promotion respects `PriceGapMaxCandidates` cap (new config field, default 12). Auto-disable from PG-RISK-03 (v2.0) handles demotion. Promotion events emit Telegram alert + WS broadcast.
+### Operations
 
-### v2.0 Deferred Closure (Phase 13)
+- [ ] **PG-OPS-09**: New top-level "Price-Gap" dashboard tab consolidates ALL Strategy 4 configuration in one place — paper-mode toggle, ramp tier display, breaker threshold input, scanner config (interval, universe size, score threshold), `PriceGapMaxCandidates`, `PriceGapAutoPromoteScore`, plus the existing candidate CRUD UI from Phase 10 and bidirectional mode from Phase 999.1. Sits alongside Exchanges / Perp-Perp / Spot-Futures. Existing Strategy 4 config controls in other tabs migrate or proxy to the new tab.
 
-- [x] **PG-VAL-03** — Fix `realized_slippage_bps` calc so paper-mode rows show non-zero realized slip (Pitfall 7 intent). Decision: store absolute slip vs. mid-at-decision, OR add stochastic noise to synth fills. Pick one + regression test. (closed v0.34.11, commit d144c54)
-- [x] **PG-OPS-08** — Audit dashboard mount/focus/visibility paths for any auto-POST. Reproduce 2026-04-25 07:47 incident with DevTools Network capture. Land a guard so dashboard load never POSTs `/api/config` without a click. (closed v0.34.10)
-- [x] **PG-DEBT-01** — `cmd/bingxprobe/` — promote to a documented `make probe-bingx` target with optional `--symbol` flag, OR delete after confirming the BingX bug pattern is unlikely to recur. (deleted v0.34.11)
+### Paper-Mode Bug Closure
 
-## Out of Scope (for v2.1)
+- [ ] **PG-FIX-01**: Fix `realized_slippage_bps` machine-zero in paper mode. Phase 9 synth-fill formula computes delta vs modeled (Pitfall 7 documented in v2.0 retrospective); fix produces non-zero realized slippage so paper-mode metrics exercise the full Phase 8 pipeline.
+- [ ] **PG-FIX-02**: Diagnose + fix dashboard auto-POST that flipped `paper_mode=false` on page load (one-time observation during v2.0 UAT). Capture via DevTools Network panel, audit POST handler chain, enforce sticky paper flag respect across all writers. Must NOT regress the Phase 9 chokepoint pattern (`pos.Mode` stamped at entry, immutable).
 
-- Live capital deployment of Strategy 4 — explicitly deferred to v2.2 after live observation window
-- CoinGlass-sourced auto-discovery — current scraper pipeline retained for spot-futures only
-- Operator-review gate on promotion — auto-promotion is decided per `#3 / 自動晉升`
-- Unified capital pool across perp-perp + spot-futures + price-gap — v3.0 territory
+### Developer Experience
+
+- [ ] **DEV-01**: Promote `cmd/bingxprobe/` debug utility into a `make probe-bingx` Makefile target so it's reproducible and discoverable for ops teams.
+
+### v1.0 Tech Debt
+
+- [ ] **DEBT-V1-01**: Write retrospective VERIFICATION.md + VALIDATION.md for v1.0 Phase 07 (SF-RISK-01 maintenance gate dashboard wiring). Code has been live since v0.29.0; this closes the unsatisfied verification requirement that classified v1.0 as `tech_debt`.
+- [ ] **DEBT-V1-02**: Generate Nyquist Wave-0 validation tests for v1.0 Phases 01 (spot-futures expansion), 03 (operational safety), 04 (analytics), and 06 (spot-futures risk hardening). Code is live; validation docs are the gap.
+- [ ] **DEBT-V1-03**: Run human_needed UI browser confirmations for v1.0 Phases 02 (spot-futures automation), 03 (operational safety dashboard), 05 (capital allocation), and 06 (risk hardening). Cleans up deferred verification entries; surfaced regressions become hot-fix mini-phases (Phase 999.1 precedent).
+
+---
+
+## v2.3+ Requirements (deferred)
+
+### Operational Notifications (deferred per user, 2026-04-28)
+
+- **PG-LIVE-04**: Telegram per-fill alerts with dedicated `pricegap_fill` bucket isolated from L4/L5/breaker critical alerts, per-position aggregation (one entry-complete + one exit-complete), async worker, critical bypass retained. Surfaced in research; descoped from v2.2.
+
+### Discovery Calibration
+
+- **PG-DISC-05**: Score-vs-realized-fill calibration view in dashboard — empirical comparison of scanner score versus actual fill quality for promoted candidates. Differentiator from FEATURES research.
+
+---
+
+## Out of Scope
+
+| Feature | Reason |
+|---------|--------|
+| Strategy 4 live capital beyond 1000 USDT/leg | Hard ceiling for v2.2 conservative ramp; revisit in v2.3 after live observation |
+| OKX + BingX in Strategy 4 universe | Already deferred per PROJECT.md; continues for v2.2 |
+| Cross-exchange spot-futures | Different architecture; v3.0 territory |
+| Auto-tune `PriceGapAutoPromoteScore` from PnL | Sample size too small; manual calibration with operator review |
+| Per-tick scanner scoring | Anti-feature; rate-limit hostile + creates noise |
+| Continuous-curve ramp | Anti-feature; obscures cause/effect; discrete stages preferred |
+| Auto-recovery from drawdown breaker | Sticky paper flag does not auto-clear; operator action required |
+| Telegram fill alerts in paper mode | Drowns critical alert signal; paper events stay silent |
+| New Go module dependencies | Zero-new-deps target per Stack research; revisit only if a blocker |
+| New npm packages | npm lockdown in force; only `npm ci` permitted |
+
+---
+
+## Traceability
+
+Filled by roadmap step.
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| PG-DISC-01 | TBD | Pending |
+| PG-DISC-02 | TBD | Pending |
+| PG-DISC-03 | TBD | Pending |
+| PG-DISC-04 | TBD | Pending |
+| PG-LIVE-01 | TBD | Pending |
+| PG-LIVE-02 | TBD | Pending |
+| PG-LIVE-03 | TBD | Pending |
+| PG-OPS-09 | TBD | Pending |
+| PG-FIX-01 | TBD | Pending |
+| PG-FIX-02 | TBD | Pending |
+| DEV-01 | TBD | Pending |
+| DEBT-V1-01 | TBD | Pending |
+| DEBT-V1-02 | TBD | Pending |
+| DEBT-V1-03 | TBD | Pending |
+
+**Coverage:**
+- v2.2 requirements: 14 total
+- Mapped to phases: 0 (pending roadmap)
+- Unmapped: 14 ⚠️
+
+---
 
 ## Success Criteria
 
-The milestone is complete when:
+v2.2 ships when:
 
-1. Operator can Add/Edit/Delete pricegap candidates from the Dashboard without editing `config.json` manually
-2. Auto-discovery scanner runs continuously and writes scored candidates to `pg:discovered:*` Redis keys
-3. Candidates above the auto-promote score threshold appear in `cfg.PriceGapCandidates` automatically and the tracker starts paper-trading them on the next tick
-4. The 3 v2.0 deferred items are closed (or explicitly re-deferred with rationale)
-5. Zero real exchange `PlaceOrder` calls fired from any new v2.1 code path (paper-only constraint)
+1. Strategy 4 has executed at least one live entry+exit cycle at 100 USDT/leg with full reconciliation
+2. Auto-discovery scanner has run for ≥7 days with telemetry showing scoring + rejection breakdown
+3. CandidateRegistry chokepoint serializes 3 writers (dashboard, pg-admin, scanner) without observed race
+4. Drawdown breaker has been exercised (synthetic test fire) and recovery path validated
+5. Daily reconcile produces a complete daily summary for Strategy 4 positions
+6. Price-Gap dashboard tab consolidates all Strategy 4 config; legacy controls in other tabs migrate or proxy
+7. Phase 07 VERIFICATION.md + VALIDATION.md committed; Nyquist Wave-0 tests pass for phases 01/03/04/06; browser confirms recorded for phases 02/03/05/06
+8. Paper-mode bugs (PG-FIX-01, PG-FIX-02) closed with regression tests
+9. `make probe-bingx` works end-to-end
+10. v1.0 tech-debt classification cleared from milestone audit
+
+---
+
+*Requirements defined: 2026-04-28*
+*Last updated: 2026-04-28 — initial v2.2 definition*
