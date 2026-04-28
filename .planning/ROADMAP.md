@@ -93,12 +93,13 @@ Phase numbers reuse 11 + 12 from the v2.1 deferred-numbering plan; 13 was consum
   3. The CandidateRegistry chokepoint compiles in and replaces all existing direct mutations of `cfg.PriceGapCandidates` from the dashboard handler and pg-admin CLI; concurrent writes from those two paths produce zero lost mutations in the integration test.
   4. The scanner is read-only — it can compute scores but cannot mutate `cfg.PriceGapCandidates`. Default-OFF behaviour verified: scanner does not run with `PriceGapDiscoveryEnabled=false`.
   5. Symbol normalization (canonical `BTCUSDT` form) verified via cross-exchange BBO join test for a known-good pair.
-**Plans**: 5 plans
+**Plans**: 6 plans
 - [ ] 11-01-PLAN.md — Config schema (8 fields) + RegistryReader interface + Plan 01 unit tests
 - [ ] 11-02-PLAN.md — *Registry chokepoint (Add/Update/Delete/Replace) + .bak.{ts} ring + concurrent-writer integration test
 - [ ] 11-03-PLAN.md — Hard-cut migration: handlers.go + pg-admin onto Registry; shared validate.go
-- [ ] 11-04-PLAN.md — Scanner (gates + 0-100 magnitude) + Telemetry (pg:scan:* + WS) + REST endpoints
-- [ ] 11-05-PLAN.md — Discovery dashboard UI (6 components + hook + i18n lockstep + visual checkpoint)
+- [ ] 11-04-PLAN.md — Scanner core (gates + 0-100 magnitude scoring + read-only static check)
+- [ ] 11-05-PLAN.md — Telemetry (pg:scan:* + WS) + REST endpoints + cmd/arb bootstrap wiring
+- [ ] 11-06-PLAN.md — Discovery dashboard UI (6 components + hook + i18n lockstep + visual + live-BBO checkpoints)
 **UI hint**: yes
 
 ### Phase 12: Auto-Promotion
