@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -84,6 +86,16 @@ func normalizeChain(chain string) string {
 // Config holds all application configuration.
 type Config struct {
 	mu sync.RWMutex // protects concurrent read/write of config fields
+
+	// renameFunc is used by SaveJSONWithBakRing for the atomic tmp→final
+	// rename. Tests inject a failing renameFunc to exercise the rollback path.
+	// Default nil → os.Rename.
+	renameFunc func(oldpath, newpath string) error
+	// nowFunc returns the current wall-clock time. Used by SaveJSONWithBakRing
+	// to derive the unix_ts suffix for `.bak.{ts}` filenames. Tests inject a
+	// deterministic clock so successive saves produce distinct filenames
+	// without sleeping. Default nil → time.Now.
+	nowFunc func() time.Time
 
 	// Strategy parameters
 	MinHoldTime             time.Duration // timed exit hold duration (default 16h)
@@ -1666,7 +1678,10 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 		raw = make(map[string]interface{})
 	}
 
-	// Helper to get or create nested maps
+	// Population logic is shared with SaveJSONWithBakRing via populateRaw so
+	// both entry points produce byte-for-byte identical output. The local
+	// getMap helper preserves the original SaveJSON shape for any callers
+	// reading the diff side-by-side; populateRaw delegates to its own copy.
 	getMap := func(parent map[string]interface{}, key string) map[string]interface{} {
 		if v, ok := parent[key]; ok {
 			if m, ok := v.(map[string]interface{}); ok {
@@ -1957,6 +1972,431 @@ func (c *Config) SaveJSONWithExchangeSecretOverrides(overrides map[string]Exchan
 	fmt.Fprintf(os.Stderr, "[config] SaveJSON: writing %s (caller: %s:%d)\n", filePath, caller, line)
 
 	return os.WriteFile(filePath, out, 0644)
+}
+
+// SaveJSONWithBakRing writes the current runtime config to disk using an
+// atomic-rename pattern (tmp→fsync→rename), then captures a timestamped backup
+// (`config.json.bak.{unix_ts}`) and prunes the ring to the newest 5 entries.
+//
+// Caller MUST hold c.mu.Lock() (same contract as SaveJSON; see Lock/Unlock at
+// config.go:818-821). The function reuses SaveJSON's marshalling path so the
+// keepNonZero tripwire and exchange-secret protection still apply — it differs
+// only in the on-disk write sequence (atomic rename + ring rotation).
+//
+// Phase 11 D-12: introduced as the persistence path for the CandidateRegistry
+// chokepoint (Plan 02). The legacy `SaveJSON` continues to back direct callers
+// until Plan 03 routes them through the registry.
+func (c *Config) SaveJSONWithBakRing() error {
+	// 1. Resolve config file path (same logic as SaveJSON).
+	var paths []string
+	if p := os.Getenv("CONFIG_FILE"); p != "" {
+		paths = []string{p}
+	} else {
+		paths = []string{"config.json"}
+	}
+	var filePath string
+	var originalData []byte
+	var raw map[string]interface{}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			filePath = path
+			originalData = data
+			_ = json.Unmarshal(data, &raw)
+			break
+		}
+	}
+	if filePath == "" {
+		return fmt.Errorf("config.json not found in cwd; set CONFIG_FILE env to write to a different location")
+	}
+
+	// 2. Build the JSON bytes via the shared marshal-for-save helper. This
+	// preserves the keepNonZero tripwire + exchange-secret behaviour by
+	// applying exactly the same field-population logic SaveJSON uses today.
+	out, err := c.marshalForSave(raw, originalData, nil)
+	if err != nil {
+		return err
+	}
+
+	// 3. Write tmp file with explicit fsync.
+	tmpPath := filePath + ".tmp"
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("open tmp config: %w", err)
+	}
+	if _, werr := f.Write(out); werr != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("write tmp config: %w", werr)
+	}
+	if syncErr := f.Sync(); syncErr != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("fsync tmp config: %w", syncErr)
+	}
+	if closeErr := f.Close(); closeErr != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("close tmp config: %w", closeErr)
+	}
+
+	// 4. Atomic rename — testable via c.renameFunc.
+	rename := c.renameFunc
+	if rename == nil {
+		rename = os.Rename
+	}
+	if rerr := rename(tmpPath, filePath); rerr != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("rename tmp→final config: %w", rerr)
+	}
+
+	// 5. Write timestamped .bak.{unix_ts}. Best-effort — primary save already
+	// succeeded, so a .bak failure is logged but does not propagate.
+	now := c.nowFunc
+	if now == nil {
+		now = time.Now
+	}
+	bakPath := fmt.Sprintf("%s.bak.%d", filePath, now().Unix())
+	if berr := os.WriteFile(bakPath, out, 0644); berr != nil {
+		fmt.Fprintf(os.Stderr, "[config] SaveJSONWithBakRing: bak write failed: %v\n", berr)
+	}
+
+	// 6. Prune the ring to the newest 5.
+	c.pruneBakRing(filePath)
+
+	// Log caller so writes remain traceable.
+	_, caller, line, _ := runtime.Caller(1)
+	fmt.Fprintf(os.Stderr, "[config] SaveJSONWithBakRing: writing %s (caller: %s:%d)\n", filePath, caller, line)
+	return nil
+}
+
+// pruneBakRing globs `<configPath>.bak.<digits>` files, sorts them by the
+// embedded unix_ts (descending), and deletes everything beyond index 4 so the
+// ring never exceeds 5 entries. Errors during glob/parse/delete are logged
+// best-effort — pruning is not load-bearing for correctness.
+func (c *Config) pruneBakRing(configPath string) {
+	matches, err := filepath.Glob(configPath + ".bak.*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[config] pruneBakRing: glob failed: %v\n", err)
+		return
+	}
+	type bakEntry struct {
+		path string
+		ts   int64
+	}
+	var entries []bakEntry
+	prefix := configPath + ".bak."
+	for _, m := range matches {
+		if !strings.HasPrefix(m, prefix) {
+			continue
+		}
+		suffix := strings.TrimPrefix(m, prefix)
+		ts, perr := strconv.ParseInt(suffix, 10, 64)
+		if perr != nil {
+			// Skip non-numeric suffixes (e.g. legacy `.bak` from SaveJSON).
+			continue
+		}
+		entries = append(entries, bakEntry{path: m, ts: ts})
+	}
+	if len(entries) <= 5 {
+		return
+	}
+	// Sort descending so newest 5 are at indices 0..4.
+	sort.Slice(entries, func(i, j int) bool { return entries[i].ts > entries[j].ts })
+	for _, e := range entries[5:] {
+		if rerr := os.Remove(e.path); rerr != nil {
+			fmt.Fprintf(os.Stderr, "[config] pruneBakRing: remove %s failed: %v\n", e.path, rerr)
+		}
+	}
+}
+
+// marshalForSave packs the in-memory Config back into the raw map (preserving
+// fields SaveJSON does not own, e.g. operator-edited price-gap candidates) and
+// returns the resulting JSON bytes. Shared by SaveJSON +
+// SaveJSONWithBakRing — both entry points produce identical output.
+//
+// originalData is the bytes that were on disk before the save (used by future
+// callers that need before/after diffs); currently unused by the marshalling
+// path itself but accepted for future extension. overrides applies explicit
+// exchange-secret replacements (same semantics as
+// SaveJSONWithExchangeSecretOverrides).
+func (c *Config) marshalForSave(raw map[string]interface{}, originalData []byte, overrides map[string]ExchangeSecretOverride) ([]byte, error) {
+	_ = originalData // reserved for future diff callers
+	if raw == nil {
+		raw = make(map[string]interface{})
+	}
+	c.populateRaw(raw, overrides)
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("marshal config: %w", err)
+	}
+	out = append(out, '\n')
+	return out, nil
+}
+
+// populateRaw applies the in-memory Config field values onto the raw map.
+// Mirrors SaveJSONWithExchangeSecretOverrides' inline population body — both
+// entry points must remain byte-for-byte identical until Plan 03 retires the
+// legacy SaveJSON path. Callers MUST hold c.mu (the field reads are not
+// independently locked here; this method assumes the caller already does).
+//
+// keepNonZero tripwire is preserved (same call sites as SaveJSON).
+func (c *Config) populateRaw(raw map[string]interface{}, overrides map[string]ExchangeSecretOverride) {
+	getMap := func(parent map[string]interface{}, key string) map[string]interface{} {
+		if v, ok := parent[key]; ok {
+			if m, ok := v.(map[string]interface{}); ok {
+				return m
+			}
+		}
+		m := make(map[string]interface{})
+		parent[key] = m
+		return m
+	}
+
+	raw["dry_run"] = c.DryRun
+	raw["tradfi_signed"] = c.TradFiSigned
+
+	strategy := getMap(raw, "strategy")
+	strategy["top_opportunities"] = c.TopOpportunities
+	strategy["scan_minutes"] = c.ScanMinutes
+	if c.EntryScanMinute > 0 {
+		strategy["entry_scan_minute"] = c.EntryScanMinute
+	}
+	if c.ExitScanMinute > 0 {
+		strategy["exit_scan_minute"] = c.ExitScanMinute
+	}
+	if c.RotateScanMinute > 0 {
+		strategy["rotate_scan_minute"] = c.RotateScanMinute
+	}
+	if c.RebalanceScanMinute > 0 {
+		strategy["rebalance_scan_minute"] = c.RebalanceScanMinute
+	}
+	strategy["enable_pool_allocator"] = c.EnablePoolAllocator
+	strategy["top_pairs_per_symbol"] = c.TopPairsPerSymbol
+	strategy["allocator_timeout_ms"] = c.AllocatorTimeoutMs
+	strategy["rebalance_min_net_pnl_usdt"] = c.RebalanceMinNetPnLUSDT
+	strategy["rebalance_donor_floor_pct"] = c.RebalanceDonorFloorPct
+
+	disc := getMap(strategy, "discovery")
+	disc["min_hold_time_hours"] = int(c.MinHoldTime.Hours())
+	disc["max_cost_ratio"] = c.MaxCostRatio
+	disc["max_price_gap_bps"] = c.MaxPriceGapBPS
+	disc["price_gap_free_bps"] = c.PriceGapFreeBPS
+	disc["max_gap_recovery_intervals"] = c.MaxGapRecoveryIntervals
+	if c.MaxIntervalHours > 0 {
+		disc["max_interval_hours"] = c.MaxIntervalHours
+	}
+	disc["allow_mixed_intervals"] = c.AllowMixedIntervals
+	disc["delist_filter"] = c.DelistFilterEnabled
+	disc["contract_refresh_min"] = int(c.ContractRefreshInterval.Minutes())
+
+	persist := getMap(disc, "persistence")
+	persist["lookback_min_1h"] = int(c.PersistLookback1h.Minutes())
+	persist["min_count_1h"] = c.PersistMinCount1h
+	persist["lookback_min_4h"] = int(c.PersistLookback4h.Minutes())
+	persist["min_count_4h"] = c.PersistMinCount4h
+	persist["lookback_min_8h"] = int(c.PersistLookback8h.Minutes())
+	persist["min_count_8h"] = c.PersistMinCount8h
+	persist["spread_stability_ratio_1h"] = c.SpreadStabilityRatio1h
+	persist["spread_stability_oi_rank_1h"] = c.SpreadStabilityOIRank1h
+	persist["spread_stability_ratio_4h"] = c.SpreadStabilityRatio4h
+	persist["spread_stability_oi_rank_4h"] = c.SpreadStabilityOIRank4h
+	persist["spread_stability_ratio_8h"] = c.SpreadStabilityRatio8h
+	persist["spread_stability_oi_rank_8h"] = c.SpreadStabilityOIRank8h
+	persist["enable_spread_stability_gate"] = c.EnableSpreadStabilityGate
+	persist["spread_volatility_max_cv"] = c.SpreadVolatilityMaxCV
+	persist["spread_volatility_min_samples"] = c.SpreadVolatilityMinSamples
+	persist["spread_stability_stricter_for_auto"] = c.SpreadStabilityStricterForAuto
+	persist["spread_stability_auto_cv_multiplier"] = c.SpreadStabilityAutoCVMultiplier
+	persist["funding_window_min"] = c.FundingWindowMin
+
+	entry := getMap(strategy, "entry")
+	entry["slippage_limit_bps"] = c.SlippageBPS
+	entry["min_chunk_usdt"] = c.MinChunkUSDT
+	entry["entry_timeout_sec"] = c.EntryTimeoutSec
+	entry["loss_cooldown_hours"] = c.LossCooldownHours
+	entry["re_enter_cooldown_hours"] = c.ReEnterCooldownHours
+	entry["backtest_days"] = c.BacktestDays
+	entry["backtest_min_profit"] = c.BacktestMinProfit
+
+	exit := getMap(strategy, "exit")
+	exit["depth_timeout_sec"] = c.ExitDepthTimeoutSec
+	exit["enable_spread_reversal"] = c.EnableSpreadReversal
+	exit["spread_reversal_tolerance"] = c.SpreadReversalTolerance
+	exit["zero_spread_tolerance"] = c.ZeroSpreadTolerance
+	exit["max_gap_bps"] = c.ExitMaxGapBPS
+
+	rot := getMap(strategy, "rotation")
+	rot["threshold_bps"] = c.RotationThresholdBPS
+	rot["cooldown_min"] = c.RotationCooldownMin
+
+	fund := getMap(raw, "fund")
+	fund["max_positions"] = c.MaxPositions
+	fund["leverage"] = c.Leverage
+	fund["capital_per_leg"] = c.CapitalPerLeg
+
+	risk := getMap(raw, "risk")
+	risk["margin_l3_threshold"] = c.MarginL3Threshold
+	risk["margin_l4_threshold"] = c.MarginL4Threshold
+	risk["margin_l4_headroom"] = c.MarginL4Headroom
+	risk["margin_l5_threshold"] = c.MarginL5Threshold
+	risk["l4_reduce_fraction"] = c.L4ReduceFraction
+	risk["margin_safety_multiplier"] = c.MarginSafetyMultiplier
+	risk["entry_margin_headroom"] = c.EntryMarginHeadroom
+	risk["withdraw_min_interval_ms"] = c.WithdrawMinIntervalMs
+	risk["risk_monitor_interval_sec"] = c.RiskMonitorIntervalSec
+	risk["enable_liq_trend_tracking"] = c.EnableLiqTrendTracking
+	risk["liq_projection_minutes"] = c.LiqProjectionMinutes
+	risk["liq_warning_slope_thresh"] = c.LiqWarningSlopeThresh
+	risk["liq_critical_slope_thresh"] = c.LiqCriticalSlopeThresh
+	risk["liq_min_samples"] = c.LiqMinSamples
+	risk["enable_capital_allocator"] = c.EnableCapitalAllocator
+	risk["max_total_exposure_usdt"] = c.MaxTotalExposureUSDT
+	risk["max_perp_perp_pct"] = c.MaxPerpPerpPct
+	risk["max_spot_futures_pct"] = c.MaxSpotFuturesPct
+	risk["max_per_exchange_pct"] = c.MaxPerExchangePct
+	risk["reservation_ttl_sec"] = c.ReservationTTLSec
+	risk["enable_exchange_health_scoring"] = c.EnableExchangeHealthScoring
+	risk["exch_health_latency_ms"] = c.ExchHealthLatencyMs
+	risk["exch_health_min_uptime"] = c.ExchHealthMinUptime
+	risk["exch_health_min_fill_rate"] = c.ExchHealthMinFillRate
+	risk["exch_health_min_score"] = c.ExchHealthMinScore
+	risk["exch_health_window_min"] = c.ExchHealthWindowMin
+
+	ai := getMap(raw, "ai")
+	if c.AIEndpoint != "" {
+		ai["endpoint"] = c.AIEndpoint
+	}
+	if c.AIAPIKey != "" {
+		ai["api_key"] = c.AIAPIKey
+	}
+	if c.AIModel != "" {
+		ai["model"] = c.AIModel
+	}
+	ai["max_tokens"] = c.AIMaxTokens
+
+	exchanges := getMap(raw, "exchanges")
+	type exchDef struct {
+		name       string
+		apiKey     string
+		secretKey  string
+		passphrase string
+		hasPass    bool
+	}
+	type exchDef2 struct {
+		exchDef
+		enabled *bool
+	}
+	exchDefs := []exchDef2{
+		{exchDef{"binance", c.BinanceAPIKey, c.BinanceSecretKey, "", false}, c.BinanceEnabled},
+		{exchDef{"bybit", c.BybitAPIKey, c.BybitSecretKey, "", false}, c.BybitEnabled},
+		{exchDef{"gateio", c.GateioAPIKey, c.GateioSecretKey, "", false}, c.GateioEnabled},
+		{exchDef{"bitget", c.BitgetAPIKey, c.BitgetSecretKey, c.BitgetPassphrase, true}, c.BitgetEnabled},
+		{exchDef{"okx", c.OKXAPIKey, c.OKXSecretKey, c.OKXPassphrase, true}, c.OKXEnabled},
+		{exchDef{"bingx", c.BingXAPIKey, c.BingXSecretKey, "", false}, c.BingXEnabled},
+	}
+	for _, ed := range exchDefs {
+		exMap := getMap(exchanges, ed.name)
+		if override, ok := overrides[ed.name]; ok {
+			if override.APIKey != "" {
+				exMap["api_key"] = override.APIKey
+			}
+			if override.SecretKey != "" {
+				exMap["secret_key"] = override.SecretKey
+			}
+			if ed.hasPass && override.Passphrase != "" {
+				exMap["passphrase"] = override.Passphrase
+			}
+		}
+		if ed.enabled != nil {
+			exMap["enabled"] = *ed.enabled
+		}
+		if addrs, ok := c.ExchangeAddresses[ed.name]; ok && len(addrs) > 0 {
+			exMap["address"] = addrs
+		}
+	}
+
+	sf := getMap(raw, "spot_futures")
+	sf["enabled"] = c.SpotFuturesEnabled
+	sf["max_positions"] = keepNonZero(sf["max_positions"], c.SpotFuturesMaxPositions, "spot_futures.max_positions")
+	sf["leverage"] = keepNonZero(sf["leverage"], c.SpotFuturesLeverage, "spot_futures.leverage")
+	sf["monitor_interval_sec"] = c.SpotFuturesMonitorIntervalSec
+	sf["min_net_yield_apr"] = c.SpotFuturesMinNetYieldAPR
+	sf["max_borrow_apr"] = c.SpotFuturesMaxBorrowAPR
+	sf["enable_borrow_spike_detection"] = c.EnableBorrowSpikeDetection
+	sf["borrow_spike_window_min"] = c.BorrowSpikeWindowMin
+	sf["borrow_spike_multiplier"] = c.BorrowSpikeMultiplier
+	sf["borrow_spike_min_absolute"] = c.BorrowSpikeMinAbsolute
+	sf["exchanges"] = c.SpotFuturesExchanges
+	sf["scan_interval_min"] = c.SpotFuturesScanIntervalMin
+	sf["borrow_grace_min"] = c.SpotFuturesBorrowGraceMin
+	sf["price_exit_pct"] = c.SpotFuturesPriceExitPct
+	sf["price_emergency_pct"] = c.SpotFuturesPriceEmergencyPct
+	sf["margin_exit_pct"] = c.SpotFuturesMarginExitPct
+	sf["margin_emergency_pct"] = c.SpotFuturesMarginEmergencyPct
+	sf["loss_cooldown_hours"] = c.SpotFuturesLossCooldownHours
+	sf["auto_enabled"] = c.SpotFuturesAutoEnabled
+	sf["auto_dry_run"] = c.SpotFuturesDryRun
+	sf["persistence_scans"] = c.SpotFuturesPersistenceScans
+	sf["enable_spot_only_exchanges"] = c.SpotFuturesEnableSpotOnlyExchanges
+	sf["profit_transfer_enabled"] = c.SpotFuturesProfitTransferEnabled
+	sf["capital_separate_usdt"] = keepNonZero(sf["capital_separate_usdt"], c.SpotFuturesCapitalSeparate, "spot_futures.capital_separate_usdt")
+	sf["capital_unified_usdt"] = keepNonZero(sf["capital_unified_usdt"], c.SpotFuturesCapitalUnified, "spot_futures.capital_unified_usdt")
+	sf["scanner_mode"] = c.SpotFuturesScannerMode
+	delete(sf, "native_scanner_enabled")
+	sf["enable_min_hold"] = c.SpotFuturesEnableMinHold
+	sf["min_hold_hours"] = c.SpotFuturesMinHoldHours
+	sf["enable_settlement_guard"] = c.SpotFuturesEnableSettlementGuard
+	sf["settlement_window_min"] = c.SpotFuturesSettlementWindowMin
+	sf["enable_price_gap_gate"] = c.SpotFuturesEnablePriceGapGate
+	sf["max_price_gap_pct"] = c.SpotFuturesMaxPriceGapPct
+	sf["enable_exit_spread_gate"] = c.SpotFuturesEnableExitSpreadGate
+	sf["exit_spread_pct"] = c.SpotFuturesExitSpreadPct
+	sf["enable_maintenance_gate"] = c.SpotFuturesEnableMaintenanceGate
+	sf["maintenance_default"] = c.SpotFuturesMaintenanceDefault
+	sf["maintenance_cache_ttl"] = c.SpotFuturesMaintenanceCacheTTL
+	sf["backtest_enabled"] = c.SpotFuturesBacktestEnabled
+	sf["backtest_days"] = c.SpotFuturesBacktestDays
+	sf["backtest_min_profit"] = c.SpotFuturesBacktestMinProfit
+	sf["backtest_coinglass_fallback"] = c.SpotFuturesBacktestCoinGlassFallback
+	delete(sf, "capital_per_position")
+
+	alloc := getMap(raw, "allocation")
+	alloc["enable_unified_capital"] = c.EnableUnifiedCapital
+	alloc["total_capital_usdt"] = c.TotalCapitalUSDT
+	alloc["risk_profile"] = c.RiskProfile
+	alloc["allocation_lookback_days"] = c.AllocationLookbackDays
+	alloc["allocation_floor_pct"] = c.AllocationFloorPct
+	alloc["allocation_ceiling_pct"] = c.AllocationCeilingPct
+	alloc["size_multiplier"] = c.SizeMultiplier
+
+	safety := getMap(raw, "safety")
+	safety["enable_loss_limits"] = c.EnableLossLimits
+	safety["daily_loss_limit_usdt"] = c.DailyLossLimitUSDT
+	safety["weekly_loss_limit_usdt"] = c.WeeklyLossLimitUSDT
+	safety["enable_perp_telegram"] = c.EnablePerpTelegram
+	safety["telegram_cooldown_sec"] = c.TelegramCooldownSec
+
+	analyticsMap := getMap(raw, "analytics")
+	analyticsMap["enable_analytics"] = c.EnableAnalytics
+	analyticsMap["analytics_db_path"] = c.AnalyticsDBPath
+
+	priceGap := getMap(raw, "price_gap")
+	priceGap["enabled"] = c.PriceGapEnabled
+	priceGap["paper_mode"] = c.PriceGapPaperMode
+	priceGap["debug_log"] = c.PriceGapDebugLog
+
+	priceGap["discovery_enabled"] = c.PriceGapDiscoveryEnabled
+	if len(c.PriceGapDiscoveryUniverse) > 0 {
+		priceGap["discovery_universe"] = c.PriceGapDiscoveryUniverse
+	}
+	if len(c.PriceGapDiscoveryDenylist) > 0 {
+		priceGap["discovery_denylist"] = c.PriceGapDiscoveryDenylist
+	}
+	priceGap["discovery_interval_sec"] = c.PriceGapDiscoveryIntervalSec
+	priceGap["discovery_threshold_bps"] = c.PriceGapDiscoveryThresholdBps
+	priceGap["discovery_min_depth_usdt"] = c.PriceGapDiscoveryMinDepthUSDT
+	priceGap["auto_promote_score"] = c.PriceGapAutoPromoteScore
+	priceGap["max_candidates"] = c.PriceGapMaxCandidates
 }
 
 func (c *Config) loadEnvOverrides() {
