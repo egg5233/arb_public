@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.35.4] - 2026-04-29
+
+### Fixed
+
+- Reverted the partial-entry after-the-fact top-up lifecycle so depth-fill recovery no longer leaves `entry_topup_pending` positions for later repair.
+- Kept the pre-entry effective order capacity and rebalance transfer sizing fixes so Bybit UTA raw available balance no longer suppresses required funding.
+
 ## [0.35.3] - 2026-04-29
 
 ### Fixed
