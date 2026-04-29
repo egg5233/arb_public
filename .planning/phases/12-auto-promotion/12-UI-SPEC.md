@@ -1,10 +1,11 @@
 ---
 phase: 12
 slug: auto-promotion
-status: draft
+status: approved
 shadcn_initialized: false
 preset: none
 created: 2026-04-29
+reviewed_at: 2026-04-29
 ---
 
 # Phase 12 — UI Design Contract
