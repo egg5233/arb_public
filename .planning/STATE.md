@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.2
 milestone_name: Auto-Discovery & Live Strategy 4
 status: executing
-stopped_at: Phase 12 context gathered
-last_updated: "2026-04-29T01:41:59.001Z"
-last_activity: 2026-04-28
+stopped_at: Phase 12 UI-SPEC approved
+last_updated: "2026-04-29T09:20:24.549Z"
+last_activity: 2026-04-29 -- Phase 12 planning complete
 progress:
   total_phases: 5
   completed_phases: 1
-  total_plans: 6
+  total_plans: 10
   completed_plans: 6
-  percent: 100
+  percent: 60
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-28 after v2.2 milestone start)
 
 **Core value:** "I deposit USDT, select my risk preference, and the system automatically finds opportunities across multiple strategies, opens positions, collects yield, exits when profitable, and I can see exactly how much each position earned — with capital shifting between strategies as opportunities shift."
-**Current focus:** Phase 11 — auto-discovery-scanner-chokepoint-telemetry
+**Current focus:** Phase 12 — auto-promotion
 
 ## Current Position
 
-Phase: 12
-Plan: Not started
-Status: Executing Phase 11
-Last activity: 2026-04-28
+Phase: 12 (auto-promotion) — EXECUTING
+Plan: 1 of 4
+Status: Ready to execute
+Last activity: 2026-04-29 -- Phase 12 planning complete
 
 **v2.2 phase structure (6 phases, 14 reqs, 100% coverage):**
 
@@ -155,7 +155,7 @@ v2.0 + v1.0 decisions retained (truncated for brevity — see git history for fu
 
 ## Session Continuity
 
-Last session: 2026-04-29T01:41:58.997Z
-Stopped at: Phase 12 context gathered
-Resume file: .planning/phases/12-auto-promotion/12-CONTEXT.md
+Last session: 2026-04-29T03:23:00.769Z
+Stopped at: Phase 12 UI-SPEC approved
+Resume file: .planning/phases/12-auto-promotion/12-UI-SPEC.md
 Next command: `/gsd-plan-phase 11` to decompose Phase 11 into executable plans
