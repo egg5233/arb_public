@@ -46,6 +46,9 @@ What is **out of scope** for this phase: scanner score formula changes, registry
 - **D-16:** **Synchronous controller call at end of `Scanner.RunCycle()`**: scanner finishes computing `CycleSummary`, then calls `controller.Apply(ctx, summary)` before returning. Single goroutine, no channel plumbing, no race with another scanner cycle starting. Controller does NOT spawn its own goroutine.
 - **D-17:** **Scanner constructor swap**: scanner takes `*Registry` (full mutator type) instead of `RegistryReader` starting in Phase 12. The `RegistryReader` interface stays in the codebase — it remains the type used by any future read-only consumers (e.g., Phase 16 dashboard render path) — but the scanner no longer needs the compile-time block now that the controller is the legitimate writer in the same package. Phase 11's `scanner_static_test.go` no-mutation assertion is updated to verify scanner-the-package only mutates through `Registry.Add`/`Delete`, not direct `cfg.PriceGapCandidates` field access.
 
+### Direction Policy
+- **D-18:** **Direction is pinned to `"bidirectional"`** for every `Registry.Add` / `Registry.Delete` call the controller makes. Today's scanner is bidirectional-only (`internal/pricegaptrader/scanner.go:162` uses `models.PriceGapDirectionBidirectional`); `CycleRecord` does **not** gain a `Direction` field — Phase 11's `CycleRecord` contract is preserved. The 4-tuple `candidateKey` (D-01) remains `(symbol, longExch, shortExch, "bidirectional")` for streak counters, the Telegram cooldown key (D-13), `pg:promote:events` payload (D-10), and the `pg_promote_event` WS broadcast (D-11). Concrete consequences for the planning agent: 12-01 must NOT read `rec.Direction` or `c.Direction` (those reads were the audit's contract drift) — pass the string literal `"bidirectional"` at Registry.Add call sites; 12-02 keeps `direction` in the cooldown key + Telegram message format but with a constant value; 12-04 may render the direction badge as static metadata rather than per-row variability. If a future phase introduces `long_only` / `short_only` universes, that's a v2.3+ phase that adds a successor decision and a CycleRecord schema bump — not a Claude's-discretion item here. Settled 2026-04-29 in a gap session after the Wave 2/3 audit identified Direction drift across 12-01..12-04.
+
 ### Claude's Discretion
 - Exact field names + JSON encoding of `pg:promote:events` entries (the schema list above is the contract; nullable/optional fields and field ordering are Claude's call).
 - Exact REST route under `/api/pg/discovery/*` for the events seed (single combined state endpoint vs separate `/promote-events` route).
@@ -135,6 +138,7 @@ What is **out of scope** for this phase: scanner score formula changes, registry
 <deferred>
 ## Deferred Ideas
 
+- **Mixed-direction universes (per-symbol `long_only` / `short_only`)** — pinned to `"bidirectional"` in D-18 because today's scanner is bidirectional-only. Revisit when scanner gains directional-mode-per-symbol; that successor phase adds a `CycleRecord.Direction` field and replaces D-18.
 - **Auto-displace lowest-scored promoted candidate when cap full** — explicitly rejected (D-09); creates "why did my candidate disappear?" confusion. Revisit only if cap-full is sustained at scale.
 - **Hysteresis demote threshold** (lower demote threshold than promote) — rejected in D-04 in favor of symmetric streak; revisit if real-world flap proves to be a problem.
 - **Manual-only demote mode** — rejected in D-06; would leave stale promoted candidates after universe shifts.

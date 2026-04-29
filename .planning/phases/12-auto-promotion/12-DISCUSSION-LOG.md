@@ -145,3 +145,23 @@ The following areas were either explicitly deferred to planning-time judgment or
 ## Deferred Ideas
 
 Captured in CONTEXT.md `<deferred>` section — see that file for the full list with rejection rationale per item.
+
+---
+
+## Gap Session 2026-04-29 — Direction-at-Promote Policy
+
+> Surfaced after Wave 2/3 audit found cross-cutting Direction drift across 12-01..12-04. Settled before 12-01 replan. Existing decisions D-01..D-17 untouched; D-18 added.
+
+### Q9: Where does `direction` come from when the controller calls Registry.Add / Registry.Delete?
+
+| Option | Description | Selected |
+|--------|-------------|----------|
+| Pin to `"bidirectional"` | Hardcode constant; today's scanner is bidir-only (`scanner.go:162`); no CycleRecord schema change; smallest blast radius | ✓ |
+| Add `Direction` field to CycleRecord | Phase 11 contract bump; scanner emits per-symbol direction; future-proofs mixed universes | |
+| Asymmetric: pin promote, read demote from `cfg.PriceGapCandidates` | Two direction sources in the controller; avoids CycleRecord change at the cost of split logic | |
+| Drop direction from `candidateKey` entirely | Reduce 4-tuple to 3-tuple; contradicts D-01; needs Registry default | |
+
+**User's choice:** Pin to `"bidirectional"`
+**Notes:** Smallest blast radius; preserves Phase 11 `CycleRecord` contract; locks 12-02/03/04 surface (Telegram cooldown key, WS payload, UI badges) to a constant value. Mixed-direction universes deferred to v2.3+ successor phase.
+
+**Outcome:** D-18 added to CONTEXT.md `<decisions>` § Direction Policy. Deferred entry added for mixed-direction universes. 12-01 replan must remove `rec.Direction` / `c.Direction` reads and pass the `"bidirectional"` literal at Registry.Add call sites; 12-02/03/04 audit-pass should confirm direction stays constant in Telegram cooldown keys, WS payloads, and UI cards.
