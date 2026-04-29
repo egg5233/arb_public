@@ -2,12 +2,203 @@ package bybit
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"testing"
 	"time"
 )
+
+func TestGetFuturesBalanceUsesAccountLevelFields(t *testing.T) {
+	tests := []struct {
+		name                string
+		account             map[string]string
+		coinEquity          string
+		availableToWithdraw string
+		withdrawal          string
+		withdrawalOK        bool
+		wantTotal           float64
+		wantAvailable       float64
+		wantFrozen          float64
+		wantMarginRatio     float64
+		wantMaxTransferOut  float64
+		wantAuthoritative   bool
+	}{
+		{
+			name: "zero totalAvailableBalance does not fallback to coin equity or availableToWithdraw zero",
+			account: map[string]string{
+				"accountMMRate":          "0.20",
+				"totalAvailableBalance":  "0",
+				"totalMarginBalance":     "500",
+				"totalInitialMargin":     "125",
+				"totalMaintenanceMargin": "25",
+				"totalEquity":            "600",
+			},
+			coinEquity:          "400",
+			availableToWithdraw: "0",
+			withdrawalOK:        false,
+			wantTotal:           500,
+			wantAvailable:       0,
+			wantFrozen:          125,
+			wantMarginRatio:     0.20,
+			wantMaxTransferOut:  0,
+			wantAuthoritative:   false,
+		},
+		{
+			name: "zero totalAvailableBalance does not fallback to coin equity when availableToWithdraw empty",
+			account: map[string]string{
+				"accountMMRate":          "0.25",
+				"totalAvailableBalance":  "0",
+				"totalMarginBalance":     "800",
+				"totalInitialMargin":     "200",
+				"totalMaintenanceMargin": "40",
+				"totalEquity":            "900",
+			},
+			coinEquity:          "700",
+			availableToWithdraw: "",
+			withdrawalOK:        false,
+			wantTotal:           800,
+			wantAvailable:       0,
+			wantFrozen:          200,
+			wantMarginRatio:     0.25,
+			wantMaxTransferOut:  0,
+			wantAuthoritative:   false,
+		},
+		{
+			name: "available uses totalAvailableBalance even when coin equity is zero",
+			account: map[string]string{
+				"accountMMRate":          "",
+				"totalAvailableBalance":  "77.25",
+				"totalMarginBalance":     "88",
+				"totalInitialMargin":     "11",
+				"totalMaintenanceMargin": "4.4",
+				"totalEquity":            "99",
+			},
+			coinEquity:          "0",
+			availableToWithdraw: "0",
+			withdrawal:          "12.5",
+			withdrawalOK:        true,
+			wantTotal:           88,
+			wantAvailable:       77.25,
+			wantFrozen:          11,
+			wantMarginRatio:     0.05,
+			wantMaxTransferOut:  12.5,
+			wantAuthoritative:   true,
+		},
+		{
+			name: "total falls back to totalEquity only when totalMarginBalance is missing",
+			account: map[string]string{
+				"accountMMRate":          "0.09",
+				"totalAvailableBalance":  "7",
+				"totalMarginBalance":     "",
+				"totalInitialMargin":     "3",
+				"totalMaintenanceMargin": "2",
+				"totalEquity":            "99.5",
+			},
+			coinEquity:          "1000",
+			availableToWithdraw: "1000",
+			withdrawalOK:        false,
+			wantTotal:           99.5,
+			wantAvailable:       7,
+			wantFrozen:          3,
+			wantMarginRatio:     0.09,
+			wantMaxTransferOut:  0,
+			wantAuthoritative:   false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/v5/account/wallet-balance":
+					if r.URL.Query().Get("accountType") != "UNIFIED" {
+						t.Fatalf("accountType = %q, want UNIFIED", r.URL.Query().Get("accountType"))
+					}
+					if r.URL.Query().Get("coin") != "USDT" {
+						t.Fatalf("coin = %q, want USDT", r.URL.Query().Get("coin"))
+					}
+
+					account := map[string]interface{}{
+						"accountMMRate":          tc.account["accountMMRate"],
+						"totalAvailableBalance":  tc.account["totalAvailableBalance"],
+						"totalMarginBalance":     tc.account["totalMarginBalance"],
+						"totalInitialMargin":     tc.account["totalInitialMargin"],
+						"totalMaintenanceMargin": tc.account["totalMaintenanceMargin"],
+						"totalEquity":            tc.account["totalEquity"],
+						"coin": []map[string]string{{
+							"coin":                "USDT",
+							"equity":              tc.coinEquity,
+							"availableToWithdraw": tc.availableToWithdraw,
+							"locked":              "999",
+						}},
+					}
+					json.NewEncoder(w).Encode(map[string]interface{}{
+						"retCode": 0,
+						"retMsg":  "OK",
+						"result": map[string]interface{}{
+							"list": []map[string]interface{}{account},
+						},
+					})
+				case "/v5/account/withdrawal":
+					if !tc.withdrawalOK {
+						json.NewEncoder(w).Encode(map[string]interface{}{
+							"retCode": 10001,
+							"retMsg":  "withdrawal unavailable",
+							"result":  map[string]interface{}{},
+						})
+						return
+					}
+					json.NewEncoder(w).Encode(map[string]interface{}{
+						"retCode": 0,
+						"retMsg":  "OK",
+						"result": map[string]interface{}{
+							"availableWithdrawal": tc.withdrawal,
+						},
+					})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+
+			adapter := &Adapter{
+				client: &Client{
+					baseURL:    srv.URL,
+					apiKey:     "test",
+					secretKey:  "test",
+					recvWindow: "5000",
+					httpClient: http.DefaultClient,
+				},
+			}
+
+			got, err := adapter.GetFuturesBalance()
+			if err != nil {
+				t.Fatalf("GetFuturesBalance: %v", err)
+			}
+
+			assertFloatEqual(t, "Total", got.Total, tc.wantTotal)
+			assertFloatEqual(t, "Available", got.Available, tc.wantAvailable)
+			assertFloatEqual(t, "Frozen", got.Frozen, tc.wantFrozen)
+			assertFloatEqual(t, "MarginRatio", got.MarginRatio, tc.wantMarginRatio)
+			assertFloatEqual(t, "MaxTransferOut", got.MaxTransferOut, tc.wantMaxTransferOut)
+			if got.Currency != "USDT" {
+				t.Fatalf("Currency = %q, want USDT", got.Currency)
+			}
+			if got.MaxTransferOutAuthoritative != tc.wantAuthoritative {
+				t.Fatalf("MaxTransferOutAuthoritative = %v, want %v", got.MaxTransferOutAuthoritative, tc.wantAuthoritative)
+			}
+		})
+	}
+}
+
+func assertFloatEqual(t *testing.T, name string, got, want float64) {
+	t.Helper()
+	if math.Abs(got-want) > 1e-12 {
+		t.Fatalf("%s = %v, want %v", name, got, want)
+	}
+}
 
 // TestMaintenanceRateNormalization_Bybit verifies that Bybit maintenanceMargin
 // is correctly divided by 100 (Bybit returns percentage: "0.5" = 0.5% = 0.005 decimal).

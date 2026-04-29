@@ -905,8 +905,8 @@ func (e *Engine) enforceBalance(pos *models.ArbitragePosition, longSize, shortSi
 }
 
 // reconcilePartialPosition checks a StatusPartial position against the exchange
-// and either promotes it to StatusActive (both legs present), closes one-sided
-// exposure, or marks it closed (both legs flat).
+// and either tops up the missing/smaller leg, promotes it to StatusActive
+// (both legs present), or marks it closed (both legs flat).
 func (e *Engine) reconcilePartialPosition(pos *models.ArbitragePosition) {
 	longExch, lok := e.exchanges[pos.LongExchange]
 	shortExch, sok := e.exchanges[pos.ShortExchange]
@@ -936,24 +936,102 @@ func (e *Engine) reconcilePartialPosition(pos *models.ArbitragePosition) {
 
 	if longActual == 0 || shortActual == 0 {
 		e.log.Warn("reconcilePartial %s: one-sided (long=%.6f short=%.6f)", pos.ID, longActual, shortActual)
-		if longActual > 0 {
-			rem := e.closeFullyWithRetry(longExch, pos.Symbol, exchange.SideSell, longActual)
-			if rem > 0 {
-				e.log.Error("ORPHAN: %s long %.6f on %s after partial close", pos.Symbol, rem, pos.LongExchange)
-				return
+		if shortActual > longActual {
+			refPrice := pos.LongEntry
+			if refPrice <= 0 {
+				if bbo, ok := longExch.GetBBO(pos.Symbol); ok && bbo.Ask > 0 {
+					refPrice = bbo.Ask
+				}
+			}
+			fill, avg, err := e.retrySecondLeg(longExch, pos.LongExchange, pos.Symbol, exchange.SideBuy, shortActual-longActual, refPrice, pos.LongExchange, pos.ShortExchange)
+			if err != nil {
+				e.log.Error("reconcilePartial %s: long top-up state unknown: %v", pos.ID, err)
+			}
+			if fill > 0 {
+				longActual += fill
+				if avg > 0 {
+					pos.LongEntry = avg
+				}
+			}
+		} else {
+			refPrice := pos.ShortEntry
+			if refPrice <= 0 {
+				if bbo, ok := shortExch.GetBBO(pos.Symbol); ok && bbo.Bid > 0 {
+					refPrice = bbo.Bid
+				}
+			}
+			fill, avg, err := e.retrySecondLeg(shortExch, pos.ShortExchange, pos.Symbol, exchange.SideSell, longActual-shortActual, refPrice, pos.LongExchange, pos.ShortExchange)
+			if err != nil {
+				e.log.Error("reconcilePartial %s: short top-up state unknown: %v", pos.ID, err)
+			}
+			if fill > 0 {
+				shortActual += fill
+				if avg > 0 {
+					pos.ShortEntry = avg
+				}
 			}
 		}
-		if shortActual > 0 {
-			rem := e.closeFullyWithRetry(shortExch, pos.Symbol, exchange.SideBuy, shortActual)
-			if rem > 0 {
-				e.log.Error("ORPHAN: %s short %.6f on %s after partial close", pos.Symbol, rem, pos.ShortExchange)
-				return
-			}
+		if longActual == 0 || shortActual == 0 {
+			pos.LongSize = longActual
+			pos.ShortSize = shortActual
+			pos.FailureReason = "entry_topup_pending"
+			pos.FailureStage = "entry_topup_pending"
+			pos.UpdatedAt = time.Now().UTC()
+			_ = e.db.SavePosition(pos)
+			e.api.BroadcastPositionUpdate(pos)
+			return
 		}
-		e.markPartialClosed(pos, "partial_one_sided", "entry_failed: one-sided partial")
-		return
 	}
 
+	if math.Abs(longActual-shortActual) > 1e-9 {
+		if longActual > shortActual {
+			excess := longActual - shortActual
+			refPrice := pos.ShortEntry
+			if refPrice <= 0 {
+				if bbo, ok := shortExch.GetBBO(pos.Symbol); ok && bbo.Bid > 0 {
+					refPrice = bbo.Bid
+				}
+			}
+			fill, avg, err := e.retrySecondLeg(shortExch, pos.ShortExchange, pos.Symbol, exchange.SideSell, excess, refPrice, pos.LongExchange, pos.ShortExchange)
+			if err != nil {
+				e.log.Error("reconcilePartial %s: short top-up state unknown: %v", pos.ID, err)
+			}
+			if fill > 0 {
+				shortActual += fill
+				if avg > 0 {
+					pos.ShortEntry = avg
+				}
+			}
+		} else {
+			excess := shortActual - longActual
+			refPrice := pos.LongEntry
+			if refPrice <= 0 {
+				if bbo, ok := longExch.GetBBO(pos.Symbol); ok && bbo.Ask > 0 {
+					refPrice = bbo.Ask
+				}
+			}
+			fill, avg, err := e.retrySecondLeg(longExch, pos.LongExchange, pos.Symbol, exchange.SideBuy, excess, refPrice, pos.LongExchange, pos.ShortExchange)
+			if err != nil {
+				e.log.Error("reconcilePartial %s: long top-up state unknown: %v", pos.ID, err)
+			}
+			if fill > 0 {
+				longActual += fill
+				if avg > 0 {
+					pos.LongEntry = avg
+				}
+			}
+		}
+		if math.Abs(longActual-shortActual) > 1e-9 {
+			pos.LongSize = longActual
+			pos.ShortSize = shortActual
+			pos.FailureReason = "entry_topup_pending"
+			pos.FailureStage = "entry_topup_pending"
+			pos.UpdatedAt = time.Now().UTC()
+			_ = e.db.SavePosition(pos)
+			e.api.BroadcastPositionUpdate(pos)
+			return
+		}
+	}
 	minFill := math.Min(longActual, shortActual)
 	trimOK := true
 	postLong := longActual

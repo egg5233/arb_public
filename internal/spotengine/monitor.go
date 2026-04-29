@@ -30,6 +30,9 @@ func (e *SpotEngine) monitorLoop() {
 		case <-e.stopCh:
 			return
 		case <-ticker.C:
+			if !e.spotFuturesEnabled() {
+				continue
+			}
 			e.monitorTick()
 		case <-e.configChangedMon:
 			newInterval := time.Duration(e.cfg.SpotFuturesMonitorIntervalSec) * time.Second
@@ -37,6 +40,10 @@ func (e *SpotEngine) monitorLoop() {
 				newInterval = 60 * time.Second
 			}
 			ticker.Reset(newInterval)
+			if !e.spotFuturesEnabled() {
+				e.log.Info("spot-futures disabled; monitor loop paused")
+				continue
+			}
 			e.log.Info("spot-futures monitor config updated, interval now %s", newInterval)
 			e.monitorTick()
 		}

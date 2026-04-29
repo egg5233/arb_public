@@ -429,6 +429,160 @@ func TestGetClosePnL_GateIO_QuantoMultiplierAppliedToCloseSize(t *testing.T) {
 	}
 }
 
+func TestGetUnifiedBalanceSingleCurrencyPreservesZeroAvailableMargin(t *testing.T) {
+	bal := getGateUnifiedBalanceForTest(t, map[string]interface{}{
+		"mode":                            "single_currency",
+		"unified_account_total_equity":    "",
+		"total_available_margin":          "",
+		"total_maintenance_margin":        "0",
+		"unified_account_total_liability": "0",
+		"balances": map[string]interface{}{
+			"USDT": map[string]interface{}{
+				"equity":           "100",
+				"available":        "75",
+				"available_margin": "0",
+				"mm":               "5",
+				"margin_balance":   "100",
+			},
+		},
+	})
+
+	if bal.Total != 100 {
+		t.Fatalf("Total = %v, want 100", bal.Total)
+	}
+	if bal.Available != 0 {
+		t.Fatalf("Available = %v, want 0; available_margin=\"0\" must not fall back to available", bal.Available)
+	}
+	if bal.MarginRatio != 0.05 {
+		t.Fatalf("MarginRatio = %v, want 0.05", bal.MarginRatio)
+	}
+}
+
+func TestGetUnifiedBalanceMultiCurrencyPreservesZeroTotalAvailableMargin(t *testing.T) {
+	for _, mode := range []string{"multi_currency", "portfolio"} {
+		t.Run(mode, func(t *testing.T) {
+			bal := getGateUnifiedBalanceForTest(t, map[string]interface{}{
+				"mode":                            mode,
+				"unified_account_total_equity":    "100",
+				"total_available_margin":          "0",
+				"total_maintenance_margin":        "10",
+				"unified_account_total_liability": "0",
+				"balances": map[string]interface{}{
+					"USDT": map[string]interface{}{
+						"equity":    "100",
+						"available": "80",
+					},
+				},
+			})
+
+			if bal.Available != 0 {
+				t.Fatalf("Available = %v, want 0; total_available_margin=\"0\" must not fall back to balances.USDT.available", bal.Available)
+			}
+			if bal.MarginRatio != 0.1 {
+				t.Fatalf("MarginRatio = %v, want 0.1", bal.MarginRatio)
+			}
+		})
+	}
+}
+
+func TestGetUnifiedBalanceFallsBackOnlyWhenPrimaryAvailableFieldMissingOrEmpty(t *testing.T) {
+	tests := []struct {
+		name string
+		body map[string]interface{}
+		want float64
+	}{
+		{
+			name: "single empty available_margin",
+			body: map[string]interface{}{
+				"mode":                         "single_currency",
+				"unified_account_total_equity": "",
+				"total_available_margin":       "",
+				"balances": map[string]interface{}{
+					"USDT": map[string]interface{}{
+						"equity":           "100",
+						"available":        "75",
+						"available_margin": "",
+					},
+				},
+			},
+			want: 75,
+		},
+		{
+			name: "single missing available_margin",
+			body: map[string]interface{}{
+				"mode":                         "single_currency",
+				"unified_account_total_equity": "",
+				"total_available_margin":       "",
+				"balances": map[string]interface{}{
+					"USDT": map[string]interface{}{
+						"equity":    "100",
+						"available": "76",
+					},
+				},
+			},
+			want: 76,
+		},
+		{
+			name: "multi empty total_available_margin",
+			body: map[string]interface{}{
+				"mode":                         "multi_currency",
+				"unified_account_total_equity": "100",
+				"total_available_margin":       "",
+				"balances": map[string]interface{}{
+					"USDT": map[string]interface{}{
+						"available": "80",
+					},
+				},
+			},
+			want: 80,
+		},
+		{
+			name: "multi missing total_available_margin",
+			body: map[string]interface{}{
+				"mode":                         "multi_currency",
+				"unified_account_total_equity": "100",
+				"balances": map[string]interface{}{
+					"USDT": map[string]interface{}{
+						"available": "81",
+					},
+				},
+			},
+			want: 81,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bal := getGateUnifiedBalanceForTest(t, tt.body)
+			if bal.Available != tt.want {
+				t.Fatalf("Available = %v, want %v", bal.Available, tt.want)
+			}
+		})
+	}
+}
+
+func getGateUnifiedBalanceForTest(t *testing.T, body map[string]interface{}) *exchange.Balance {
+	t.Helper()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v4/unified/accounts" {
+			http.NotFound(w, r)
+			return
+		}
+		json.NewEncoder(w).Encode(body)
+	}))
+	defer srv.Close()
+
+	adapter := &Adapter{
+		client: NewClientWithBase(srv.URL + "/api/v4"),
+	}
+	bal, err := adapter.getUnifiedBalance()
+	if err != nil {
+		t.Fatalf("getUnifiedBalance: %v", err)
+	}
+	return bal
+}
+
 // TestMaintenanceRate_GateIO_BoundsCheck verifies that invalid rates are rejected.
 func TestMaintenanceRate_GateIO_BoundsCheck(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

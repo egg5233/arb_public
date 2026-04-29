@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.35.3] - 2026-04-29
+
+### Fixed
+
+- Fixed perp-perp rebalance and risk sizing to use effective order capacity when an exchange reports a lower `MaxTransferOut` than raw available balance, preventing Bybit UTA entries from being misclassified as fully funded without a transfer.
+- Preserved partial entry evidence and changed partial depth-fill recovery to keep topping up the missing or smaller leg instead of immediately rolling back filled exposure.
+- Corrected exchange balance parsing for Binance, Bitget, Bybit, Gate.io, OKX, and BingX so adapter tests cover zero-valued API fields and exchange-specific available-margin semantics.
+- Paused spot-futures discovery and monitoring loops while `SpotFuturesEnabled` is disabled.
+
 ## [0.35.2] - 2026-04-28
 
 ### Added

@@ -235,7 +235,7 @@ func (e *Engine) rebalancePass1(
 			approvedCaseA[opp.LongExchange] += longNeed
 			approvedCaseA[opp.ShortExchange] += shortNeed
 			delete(remaining, opp.Symbol) // disjoint-set invariant
-			pass1UsedSlots++             // case-(a) consumes a slot (entry scan opens)
+			pass1UsedSlots++              // case-(a) consumes a slot (entry scan opens)
 			e.log.Debug("rebalance: pass1 case(a) approved %s %s/%s reserved long=%.2f short=%.2f",
 				opp.Symbol, opp.LongExchange, opp.ShortExchange, longNeed, shortNeed)
 
@@ -400,8 +400,7 @@ func (e *Engine) postTransferReplayFilter(
 		projected[step.From] = e.projectTransferStepOnBalance(step, src)
 
 		dst := projected[step.To]
-		dst.futures += step.Amount
-		dst.futuresTotal += step.Amount
+		dst = creditRebalanceFuturesCapacity(dst, step.Amount)
 		projected[step.To] = dst
 	}
 

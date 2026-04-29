@@ -173,6 +173,44 @@ func (e *Engine) replayProjectedRatioOK(bal rebalanceBalanceInfo, margin float64
 	return ok
 }
 
+func rebalanceEffectiveOrderAvailable(bal rebalanceBalanceInfo) float64 {
+	available := bal.futures
+	if bal.maxTransferOutAuthoritative {
+		if bal.maxTransferOut < available {
+			available = bal.maxTransferOut
+		}
+	} else if bal.maxTransferOut > 0 && bal.maxTransferOut < available {
+		available = bal.maxTransferOut
+	}
+	if available < 0 {
+		return 0
+	}
+	return available
+}
+
+func creditRebalanceFuturesCapacity(bal rebalanceBalanceInfo, amount float64) rebalanceBalanceInfo {
+	if amount <= 0 {
+		return bal
+	}
+	bal.futures += amount
+	bal.futuresTotal += amount
+	if bal.maxTransferOutAuthoritative || bal.maxTransferOut > 0 {
+		bal.maxTransferOut += amount
+	}
+	return bal
+}
+
+func debitRebalanceFuturesCapacity(bal rebalanceBalanceInfo, amount float64) rebalanceBalanceInfo {
+	if amount <= 0 {
+		return bal
+	}
+	bal.futures = math.Max(0, bal.futures-amount)
+	if bal.maxTransferOut > 0 {
+		bal.maxTransferOut = math.Max(0, bal.maxTransferOut-amount)
+	}
+	return bal
+}
+
 // canReserveAllocatorChoice reports whether both legs of the choice still
 // have enough futures capacity in the working balance map. Mirrors the
 // allocator's own needs accounting where requiredMargin is added to EACH
@@ -187,7 +225,7 @@ func (e *Engine) canReserveAllocatorChoice(work map[string]rebalanceBalanceInfo,
 	long = e.replayUsableAllocatorBalance(c.longExchange, long)
 	short = e.replayUsableAllocatorBalance(c.shortExchange, short)
 	longNeed, shortNeed := c.marginNeeds()
-	if long.futures < longNeed || short.futures < shortNeed {
+	if rebalanceEffectiveOrderAvailable(long) < longNeed || rebalanceEffectiveOrderAvailable(short) < shortNeed {
 		return false
 	}
 	longMargin := longNeed
@@ -206,8 +244,8 @@ func (e *Engine) replayUsableAllocatorBalance(name string, bal rebalanceBalanceI
 	if bal.spot <= 0 {
 		return bal
 	}
-	bal.futures += bal.spot
-	bal.futuresTotal += bal.spot
+	spot := bal.spot
+	bal = creditRebalanceFuturesCapacity(bal, spot)
 	bal.spot = 0
 	return bal
 }
@@ -218,8 +256,8 @@ func (e *Engine) reserveAllocatorChoice(work map[string]rebalanceBalanceInfo, c 
 	long := work[c.longExchange]
 	short := work[c.shortExchange]
 	longNeed, shortNeed := c.marginNeeds()
-	long.futures -= longNeed
-	short.futures -= shortNeed
+	long = debitRebalanceFuturesCapacity(long, longNeed)
+	short = debitRebalanceFuturesCapacity(short, shortNeed)
 	work[c.longExchange] = long
 	work[c.shortExchange] = short
 }
@@ -242,8 +280,7 @@ func (e *Engine) applyPendingFundingIntent(work map[string]rebalanceBalanceInfo,
 		return
 	}
 	bal := work[exch]
-	bal.futures += p.amount
-	bal.futuresTotal += p.amount
+	bal = creditRebalanceFuturesCapacity(bal, p.amount)
 	work[exch] = bal
 }
 
@@ -1009,7 +1046,7 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 			isUnified = true
 		}
 		if !isUnified && sim[exch].spot > 0 {
-			if sim[exch].futures >= need {
+			if rebalanceEffectiveOrderAvailable(sim[exch]) >= need {
 				// Executor path: futures sufficient, check ratio relief only (allocator.go:1103-1113)
 				if sim[exch].futuresTotal <= 0 {
 					continue // no total = no ratio concern
@@ -1030,9 +1067,8 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 					}
 					if extra >= 1.0 {
 						b := sim[exch]
-						b.futures += extra
+						b = creditRebalanceFuturesCapacity(b, extra)
 						b.spot -= extra
-						b.futuresTotal += extra
 						sim[exch] = b
 						e.log.Debug("dryRun: spot→futures %s: %.2f (ratio relief)", exch, extra)
 					}
@@ -1040,7 +1076,7 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 			} else {
 				// Executor path: futures insufficient, use max(marginDeficit, ratioDeficit)
 				// to match executor at allocator.go:1171, 1188, 1193.
-				marginDef := need - sim[exch].futures
+				marginDef := need - rebalanceEffectiveOrderAvailable(sim[exch])
 				if marginDef < 0 {
 					marginDef = 0
 				}
@@ -1064,9 +1100,8 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 				}
 				if localMove >= 1.0 {
 					b := sim[exch]
-					b.futures += localMove
+					b = creditRebalanceFuturesCapacity(b, localMove)
 					b.spot -= localMove
-					b.futuresTotal += localMove
 					sim[exch] = b
 					e.log.Debug("dryRun: spot→futures %s: %.2f (deficit cover)", exch, localMove)
 				}
@@ -1086,7 +1121,7 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 		need := needs[exch]
 
 		// Compute deficit for cross-exchange transfer.
-		avail := sim[exch].futures
+		avail := rebalanceEffectiveOrderAvailable(sim[exch])
 		marginDeficit := need - avail
 		if marginDeficit < 0 {
 			marginDeficit = 0
@@ -1109,8 +1144,8 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 			deficit = ratioDeficit
 		}
 
-		e.log.Debug("dryRun: recipient %s starts: need=%.4f futures=%.4f futuresTotal=%.4f marginDeficit=%.4f ratioDeficit=%.4f transferNeed=%.4f",
-			exch, need, sim[exch].futures, sim[exch].futuresTotal, marginDeficit, ratioDeficit, deficit)
+		e.log.Debug("dryRun: recipient %s starts: need=%.4f futures=%.4f effectiveAvail=%.4f futuresTotal=%.4f maxTransferOut=%.4f marginDeficit=%.4f ratioDeficit=%.4f transferNeed=%.4f",
+			exch, need, sim[exch].futures, avail, sim[exch].futuresTotal, sim[exch].maxTransferOut, marginDeficit, ratioDeficit, deficit)
 
 		moveCount := 0
 		totalNetForRecipient := 0.0
@@ -1263,6 +1298,9 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 					if movedToSpot > 0 {
 						d := sim[bestDonor]
 						d.futures -= movedToSpot
+						if d.maxTransferOut > 0 {
+							d.maxTransferOut = math.Max(0, d.maxTransferOut-movedToSpot)
+						}
 						d.spot += movedToSpot
 						sim[bestDonor] = d
 						e.log.Debug("dryRun: donor %s futures→spot %.2f (need=%.2f)", bestDonor, movedToSpot, requiredSpot)
@@ -1351,6 +1389,9 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 			if donorIsUnified {
 				d := sim[bestDonor]
 				d.futures -= move + fee
+				if d.maxTransferOut > 0 {
+					d.maxTransferOut = math.Max(0, d.maxTransferOut-move-fee)
+				}
 				d.futuresTotal -= move + fee
 				sim[bestDonor] = d
 			} else {
@@ -1361,8 +1402,7 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 				sim[bestDonor] = d
 			}
 			r := sim[exch]
-			r.futures += move
-			r.futuresTotal += move
+			r = creditRebalanceFuturesCapacity(r, move)
 			sim[exch] = r
 
 			steps = append(steps, transferStep{
@@ -1407,10 +1447,10 @@ func (e *Engine) dryRunTransferPlan(choices []allocatorChoice, balances map[stri
 			shortMargin = shortNeed
 		}
 		lb := sim[c.longExchange]
-		lb.futures -= longMargin
+		lb = debitRebalanceFuturesCapacity(lb, longMargin)
 		sim[c.longExchange] = lb
 		sb := sim[c.shortExchange]
-		sb.futures -= shortMargin
+		sb = debitRebalanceFuturesCapacity(sb, shortMargin)
 		sim[c.shortExchange] = sb
 	}
 
@@ -1588,8 +1628,12 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				targetFreeRatio = 0.20
 			}
 
-			e.log.Debug("rebalance: checking %s: need=%.2f futures=%.4f spot=%.8f total=%.4f isUnified=%v", name, need, bal.futures, bal.spot, bal.futuresTotal, func() bool { uc, ok := e.exchanges[name].(interface{ IsUnified() bool }); return ok && uc.IsUnified() }())
-			if bal.futures >= need {
+			effectiveAvail := rebalanceEffectiveOrderAvailable(bal)
+			e.log.Debug("rebalance: checking %s: need=%.2f futures=%.4f effectiveAvail=%.4f spot=%.8f total=%.4f maxTransferOut=%.4f isUnified=%v", name, need, bal.futures, effectiveAvail, bal.spot, bal.futuresTotal, bal.maxTransferOut, func() bool {
+				uc, ok := e.exchanges[name].(interface{ IsUnified() bool })
+				return ok && uc.IsUnified()
+			}())
+			if effectiveAvail >= need {
 				isUnified := false
 				if uc, ok := e.exchanges[name].(interface{ IsUnified() bool }); ok && uc.IsUnified() {
 					isUnified = true
@@ -1616,9 +1660,8 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 									e.log.Error("rebalance: %s spot->futures failed: %v", name, err)
 								} else {
 									bi := balances[name]
-									bi.futures += extra
+									bi = creditRebalanceFuturesCapacity(bi, extra)
 									bi.spot -= extra
-									bi.futuresTotal += extra
 									balances[name] = bi
 									bal = balances[name] // refresh local copy for L4 check below
 									result.LocalTransferHappened = true
@@ -1664,7 +1707,7 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				continue
 			}
 
-			marginDeficit := need - bal.futures
+			marginDeficit := need - rebalanceEffectiveOrderAvailable(bal)
 			if marginDeficit < 0 {
 				marginDeficit = 0
 			}
@@ -1708,9 +1751,8 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 					} else {
 						transferAmt -= actualTransfer
 						bi := balances[name]
-						bi.futures += actualTransfer
+						bi = creditRebalanceFuturesCapacity(bi, actualTransfer)
 						bi.spot -= actualTransfer
-						bi.futuresTotal += actualTransfer // same-exchange relief: futures pool grows, keep PostBalances consistent with the other relief branch at 1150-1155
 						balances[name] = bi
 						result.LocalTransferHappened = true
 					}
@@ -2053,6 +2095,9 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 					if updatedDonorBal.futures < 0 {
 						updatedDonorBal.futures = 0
 					}
+					if updatedDonorBal.maxTransferOut > 0 {
+						updatedDonorBal.maxTransferOut = math.Max(0, updatedDonorBal.maxTransferOut-movedToSpot)
+					}
 					updatedDonorBal.futuresTotal -= movedToSpot
 					if updatedDonorBal.futuresTotal < 0 {
 						updatedDonorBal.futuresTotal = 0
@@ -2180,6 +2225,9 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 			surplus[bestDonor] -= netAmount + fee
 			bi := balances[bestDonor]
 			bi.futures -= iterFuturesDebit
+			if bi.maxTransferOut > 0 {
+				bi.maxTransferOut = math.Max(0, bi.maxTransferOut-iterFuturesDebit)
+			}
 			bi.spot -= iterSpotDebit
 			bi.futuresTotal -= iterFuturesTotalDebit
 			if bi.spot < 0 {
@@ -2301,6 +2349,9 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 				// PostBalances (aliased to balances) reflects reality.
 				bi := balances[bw.donor]
 				bi.futures += bw.debitFutures
+				if bi.maxTransferOutAuthoritative || bi.maxTransferOut > 0 {
+					bi.maxTransferOut += bw.debitFutures
+				}
 				bi.spot += bw.debitSpot
 				bi.futuresTotal += bw.debitFuturesTotal
 				balances[bw.donor] = bi
@@ -2379,6 +2430,12 @@ func (e *Engine) executeRebalanceFundingPlan(needs map[string]float64, balances 
 		if excessFutures != 0 || excessSpot != 0 || excessFuturesTotal != 0 {
 			bi := balances[bw.donor]
 			bi.futures += excessFutures
+			if bi.maxTransferOutAuthoritative || bi.maxTransferOut > 0 {
+				bi.maxTransferOut += excessFutures
+				if bi.maxTransferOut < 0 {
+					bi.maxTransferOut = 0
+				}
+			}
 			bi.spot += excessSpot
 			bi.futuresTotal += excessFuturesTotal
 			balances[bw.donor] = bi

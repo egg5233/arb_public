@@ -18,8 +18,12 @@ type parityStubbedExchange struct {
 	name string
 }
 
-func (s *parityStubbedExchange) Name() string                                           { return s.name }
-func (s *parityStubbedExchange) SetMetricsCallback(fn exchange.MetricsCallback)         {}
+func (s *parityStubbedExchange) Name() string                                   { return s.name }
+func (s *parityStubbedExchange) SetMetricsCallback(fn exchange.MetricsCallback) {}
+func (s *parityStubbedExchange) GetWithdrawFee(coin, chain string) (float64, float64, error) {
+	return 0, 1, nil
+}
+func (s *parityStubbedExchange) WithdrawFeeInclusive() bool { return false }
 
 // parityUnifiedExchange implements IsUnified() = true so rebalanceAvailable returns futures only.
 type parityUnifiedExchange struct {
@@ -27,17 +31,21 @@ type parityUnifiedExchange struct {
 	name string
 }
 
-func (s *parityUnifiedExchange) Name() string                                           { return s.name }
-func (s *parityUnifiedExchange) SetMetricsCallback(fn exchange.MetricsCallback)         {}
-func (s *parityUnifiedExchange) IsUnified() bool                                        { return true }
+func (s *parityUnifiedExchange) Name() string                                   { return s.name }
+func (s *parityUnifiedExchange) SetMetricsCallback(fn exchange.MetricsCallback) {}
+func (s *parityUnifiedExchange) IsUnified() bool                                { return true }
+func (s *parityUnifiedExchange) GetWithdrawFee(coin, chain string) (float64, float64, error) {
+	return 0, 1, nil
+}
+func (s *parityUnifiedExchange) WithdrawFeeInclusive() bool { return false }
 
 // newParityEngine builds a minimal Engine for buildTransferableCache tests.
 func newParityEngine(t *testing.T, exchanges map[string]exchange.Exchange) *Engine {
 	t.Helper()
 	cfg := &config.Config{
-		MarginL4Threshold:  0.80,
-		MarginL5Threshold:  0.95,
-		MarginL4Headroom:   0.05,
+		MarginL4Threshold: 0.80,
+		MarginL5Threshold: 0.95,
+		MarginL4Headroom:  0.05,
 	}
 	return &Engine{
 		cfg:       cfg,
@@ -283,5 +291,65 @@ func TestBuildTransferableCache_SingleDonorSingleRecipient(t *testing.T) {
 	// donor receiving: the only other entry is "donor" itself; donor has no other donors.
 	if got := cache.TransferablePerExchange["donor"]; got != 0 {
 		t.Errorf("donor transferable to self-pool = %.4f, want 0 (recipient not in balances = 0 surplus)", got)
+	}
+}
+
+func TestDryRunTransferPlanUsesMaxTransferOutForRecipientDeficit(t *testing.T) {
+	exchanges := map[string]exchange.Exchange{
+		"binance": &parityStubbedExchange{name: "binance"},
+		"bybit":   &parityUnifiedExchange{name: "bybit"},
+		"gateio":  &parityUnifiedExchange{name: "gateio"},
+	}
+	e := newParityEngine(t, exchanges)
+	e.cfg.MarginSafetyMultiplier = 2
+	e.cfg.ExchangeAddresses = map[string]map[string]string{
+		"bybit": {"BEP20": "test-address"},
+	}
+
+	choice := allocatorChoice{
+		symbol:              "PTBUSDT",
+		longExchange:        "bybit",
+		shortExchange:       "gateio",
+		requiredMargin:      200,
+		longRequiredMargin:  200,
+		shortRequiredMargin: 200,
+		entryNotional:       300,
+	}
+	balances := map[string]rebalanceBalanceInfo{
+		"binance": {
+			futures:        300,
+			futuresTotal:   320,
+			maxTransferOut: 300,
+		},
+		"bybit": {
+			futures:                     225.43,
+			futuresTotal:                225.43,
+			maxTransferOut:              52.60,
+			maxTransferOutAuthoritative: true,
+			hasPositions:                true,
+		},
+		"gateio": {
+			futures:      232.10,
+			futuresTotal: 410,
+			hasPositions: true,
+		},
+	}
+
+	result := e.dryRunTransferPlan([]allocatorChoice{choice}, balances, map[string]feeEntry{})
+	if !result.Feasible {
+		t.Fatalf("dryRunTransferPlan was infeasible")
+	}
+	var bybitStep *transferStep
+	for i := range result.Steps {
+		if result.Steps[i].To == "bybit" {
+			bybitStep = &result.Steps[i]
+			break
+		}
+	}
+	if bybitStep == nil {
+		t.Fatalf("expected a transfer step to bybit when maxTransferOut is below required margin")
+	}
+	if bybitStep.Amount < 140 || bybitStep.Amount > 150 {
+		t.Fatalf("bybit transfer amount = %.4f, want about 147.4", bybitStep.Amount)
 	}
 }

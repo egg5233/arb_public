@@ -1,6 +1,7 @@
 package bitget
 
 import (
+	"arb/pkg/exchange"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -129,4 +130,114 @@ func TestMaintenanceRate_Bitget_BoundsCheck(t *testing.T) {
 	if rate != 0 {
 		t.Errorf("negative rate should return 0, got %v", rate)
 	}
+}
+
+func TestGetFuturesBalance_PreservesZeroCrossedMaxAvailable(t *testing.T) {
+	bal := getBitgetFuturesBalanceForTest(t, map[string]interface{}{
+		"accountEquity":       "100",
+		"available":           "75",
+		"crossedMaxAvailable": "0",
+		"locked":              "3",
+		"crossedRiskRate":     "0.12",
+		"maxTransferOut":      "60",
+	})
+
+	if bal.Available != 0 {
+		t.Fatalf("Available = %v, want 0; crossedMaxAvailable=\"0\" must not fall back to available", bal.Available)
+	}
+	if bal.Total != 100 {
+		t.Fatalf("Total = %v, want 100", bal.Total)
+	}
+	if bal.Frozen != 3 {
+		t.Fatalf("Frozen = %v, want 3", bal.Frozen)
+	}
+}
+
+func TestGetFuturesBalance_FallsBackWhenCrossedMaxAvailableMissingOrEmpty(t *testing.T) {
+	tests := []struct {
+		name string
+		data map[string]interface{}
+		want float64
+	}{
+		{
+			name: "empty crossedMaxAvailable",
+			data: map[string]interface{}{
+				"accountEquity":       "100",
+				"available":           "75",
+				"crossedMaxAvailable": "",
+				"locked":              "3",
+			},
+			want: 75,
+		},
+		{
+			name: "missing crossedMaxAvailable",
+			data: map[string]interface{}{
+				"accountEquity": "100",
+				"available":     "76",
+				"locked":        "3",
+			},
+			want: 76,
+		},
+		{
+			name: "missing crossedMaxAvailable preserves zero available",
+			data: map[string]interface{}{
+				"accountEquity": "100",
+				"available":     "0",
+				"locked":        "3",
+			},
+			want: 0,
+		},
+		{
+			name: "empty crossedMaxAvailable preserves zero available",
+			data: map[string]interface{}{
+				"accountEquity":       "100",
+				"available":           "0",
+				"crossedMaxAvailable": "",
+				"locked":              "3",
+			},
+			want: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bal := getBitgetFuturesBalanceForTest(t, tt.data)
+			if bal.Available != tt.want {
+				t.Fatalf("Available = %v, want %v", bal.Available, tt.want)
+			}
+		})
+	}
+}
+
+func getBitgetFuturesBalanceForTest(t *testing.T, data map[string]interface{}) *exchange.Balance {
+	t.Helper()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v2/mix/account/account" {
+			http.NotFound(w, r)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"code": "00000",
+			"msg":  "success",
+			"data": data,
+		})
+	}))
+	defer srv.Close()
+
+	adapter := &Adapter{
+		client: &Client{
+			apiKey:     "test",
+			secretKey:  "test",
+			passphrase: "test",
+			baseURL:    srv.URL,
+			httpClient: srv.Client(),
+		},
+	}
+
+	bal, err := adapter.GetFuturesBalance()
+	if err != nil {
+		t.Fatalf("GetFuturesBalance: %v", err)
+	}
+	return bal
 }

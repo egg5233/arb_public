@@ -775,7 +775,14 @@ func (a *Adapter) getUnifiedBalance() (*exchange.Balance, error) {
 	}
 
 	equity, _ := strconv.ParseFloat(resp.UnifiedAccountTotalEquity, 64)
-	availableMargin, _ := strconv.ParseFloat(resp.TotalAvailableMargin, 64)
+	parseIfPresent := func(s string) (float64, bool) {
+		if strings.TrimSpace(s) == "" {
+			return 0, false
+		}
+		v, _ := strconv.ParseFloat(s, 64)
+		return v, true
+	}
+	availableMargin, availableSet := parseIfPresent(resp.TotalAvailableMargin)
 	topLevelMM, _ := strconv.ParseFloat(resp.TotalMaintenanceMargin, 64)
 
 	var marginRatio float64
@@ -786,11 +793,12 @@ func (a *Adapter) getUnifiedBalance() (*exchange.Balance, error) {
 			if equity <= 0 {
 				equity, _ = strconv.ParseFloat(usdtBal.Equity, 64)
 			}
-			if availableMargin <= 0 {
-				availableMargin, _ = strconv.ParseFloat(usdtBal.AvailableMargin, 64)
-				if availableMargin <= 0 {
-					availableMargin, _ = strconv.ParseFloat(usdtBal.Available, 64)
-				}
+			if v, ok := parseIfPresent(usdtBal.AvailableMargin); ok {
+				availableMargin = v
+				availableSet = true
+			} else if v, ok := parseIfPresent(usdtBal.Available); ok {
+				availableMargin = v
+				availableSet = true
 			}
 			mm, _ := strconv.ParseFloat(usdtBal.MM, 64)
 			mb, _ := strconv.ParseFloat(usdtBal.MarginBalance, 64)
@@ -804,8 +812,11 @@ func (a *Adapter) getUnifiedBalance() (*exchange.Balance, error) {
 			if equity <= 0 {
 				equity, _ = strconv.ParseFloat(usdtBal.Equity, 64)
 			}
-			if availableMargin <= 0 {
-				availableMargin, _ = strconv.ParseFloat(usdtBal.Available, 64)
+			if !availableSet {
+				if v, ok := parseIfPresent(usdtBal.Available); ok {
+					availableMargin = v
+					availableSet = true
+				}
 			}
 		}
 		if equity > 0 && topLevelMM > 0 {

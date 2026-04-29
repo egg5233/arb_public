@@ -18,8 +18,8 @@ var _ models.RiskChecker = (*Manager)(nil)
 // PrefetchCache holds pre-fetched exchange data (balances, orderbooks) to avoid
 // redundant API calls when approving multiple opportunities in a batch.
 type PrefetchCache struct {
-	Balances               map[string]*exchange.Balance   // exchange name -> futures balance
-	Orderbooks             map[string]*exchange.Orderbook // "exchange:symbol" -> orderbook
+	Balances                map[string]*exchange.Balance   // exchange name -> futures balance
+	Orderbooks              map[string]*exchange.Orderbook // "exchange:symbol" -> orderbook
 	TransferablePerExchange map[string]float64             // exchange name -> max USDT receivable from other exchanges
 	ActivePositions         []*models.ArbitragePosition    // pre-fetched active positions (avoid repeated DB calls in batch)
 }
@@ -359,6 +359,9 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 				if spotBal, err := pair.exch.GetSpotBalance(); err == nil && spotBal.Available > 0 {
 					pair.bal.Available += spotBal.Available
 					pair.bal.Total += spotBal.Available
+					if pair.bal.MaxTransferOutAuthoritative || pair.bal.MaxTransferOut > 0 {
+						pair.bal.MaxTransferOut += spotBal.Available
+					}
 					m.log.Debug("approval dryRun %s: added spot %.2f to %s (avail now=%.2f)", opp.Symbol, spotBal.Available, pair.name, pair.bal.Available)
 				}
 			}
@@ -378,10 +381,11 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 					wouldExceedL4 = postRatio >= m.cfg.MarginL4Threshold
 				}
 
-				if pair.bal.Available < bufferedNeed || wouldExceedL4 {
+				orderAvailable := EffectiveOrderAvailable(pair.bal)
+				if orderAvailable < bufferedNeed || wouldExceedL4 {
 					if topUp, ok := cache.TransferablePerExchange[pair.name]; ok && topUp > 0 {
 						// Compute margin buffer deficit.
-						deficit := bufferedNeed - pair.bal.Available
+						deficit := bufferedNeed - orderAvailable
 						if deficit < 0 {
 							deficit = 0
 						}
@@ -404,6 +408,9 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 						if actualTopUp > 0 {
 							pair.bal.Available += actualTopUp
 							pair.bal.Total += actualTopUp
+							if pair.bal.MaxTransferOutAuthoritative || pair.bal.MaxTransferOut > 0 {
+								pair.bal.MaxTransferOut += actualTopUp
+							}
 							approvalTopUp[pair.name] += actualTopUp
 						}
 					}
@@ -416,9 +423,19 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	}
 
 	// Subtract already-reserved margin from prior approvals in the same batch.
-	effectiveLongAvail := longBal.Available
-	effectiveShortAvail := shortBal.Available
+	rawLongAvail := longBal.Available
+	rawShortAvail := shortBal.Available
+	effectiveLongAvail := EffectiveOrderAvailable(longBal)
+	effectiveShortAvail := EffectiveOrderAvailable(shortBal)
 	if reserved != nil {
+		rawLongAvail -= reserved[opp.LongExchange]
+		rawShortAvail -= reserved[opp.ShortExchange]
+		if rawLongAvail < 0 {
+			rawLongAvail = 0
+		}
+		if rawShortAvail < 0 {
+			rawShortAvail = 0
+		}
 		effectiveLongAvail -= reserved[opp.LongExchange]
 		effectiveShortAvail -= reserved[opp.ShortExchange]
 		if effectiveLongAvail < 0 {
@@ -486,7 +503,8 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	safetyPct := (safetyMultiplier - 1) * 100
 	longMarginPerLeg := (size * longMid) / float64(leverage)
 	longMarginWithBuffer := longMarginPerLeg * safetyMultiplier
-	if effectiveLongAvail < longMarginWithBuffer {
+	const marginCheckEpsilon = 1e-6
+	if effectiveLongAvail+marginCheckEpsilon < longMarginWithBuffer {
 		reason := fmt.Sprintf("insufficient margin buffer on %s: need %.2f (including %.0f%% safety buffer), have %.2f", opp.LongExchange, longMarginWithBuffer, safetyPct, effectiveLongAvail)
 		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
 		return pricedCapitalRejection(reason, size, longMid, longMarginWithBuffer, 0), nil
@@ -496,7 +514,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 
 	// Post-trade margin ratio projection (long leg — short leg checked after shortOB fetch)
 	if longBal.Total > 0 {
-		projectedAvail := effectiveLongAvail - longMarginPerLeg
+		projectedAvail := rawLongAvail - longMarginPerLeg
 		if projectedAvail < 0 {
 			projectedAvail = 0
 		}
@@ -548,7 +566,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 	// Short-leg margin check (deferred from above — needed shortMid)
 	shortMarginPerLeg := (size * shortMid) / float64(leverage)
 	shortMarginWithBuffer := shortMarginPerLeg * safetyMultiplier
-	if effectiveShortAvail < shortMarginWithBuffer {
+	if effectiveShortAvail+marginCheckEpsilon < shortMarginWithBuffer {
 		reason := fmt.Sprintf("insufficient margin buffer on %s: need %.2f (including %.0f%% safety buffer), have %.2f", opp.ShortExchange, shortMarginWithBuffer, safetyPct, effectiveShortAvail)
 		m.log.Debug("approval rejected %s: %s", opp.Symbol, reason)
 		// Use midPrice (= longMid, the sizing reference) so Pass 1 rescue's
@@ -559,7 +577,7 @@ func (m *Manager) approveInternal(opp models.Opportunity, reserved map[string]fl
 
 	// Post-trade margin ratio projection (short leg)
 	if shortBal.Total > 0 {
-		projectedAvail := effectiveShortAvail - shortMarginPerLeg
+		projectedAvail := rawShortAvail - shortMarginPerLeg
 		if projectedAvail < 0 {
 			projectedAvail = 0
 		}

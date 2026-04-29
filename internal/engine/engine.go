@@ -2601,16 +2601,22 @@ func (e *Engine) queryAvgFillPrice(exch exchange.Exchange, orderID string) float
 
 // retrySecondLeg retries the second leg of a trade with escalating slippage.
 // Attempts 0-1 use normal slippage, 2-3 use double slippage. If IOC attempts
-// fail, switches to market orders and retries until filled or margin error.
-// The goal: once leg 1 is filled, leg 2 MUST be filled to match.
-func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol string, side exchange.Side, remainingSize float64, refPrice float64) (filled float64, avgPrice float64, err error) {
+// fail, switches to market orders and retries. On margin errors, it reduces
+// only the next order size, not the total target, so smaller fills keep topping
+// up until the first leg is matched or no tradeable size remains.
+func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol string, side exchange.Side, remainingSize float64, refPrice float64, longExchange string, shortExchange string) (filled float64, avgPrice float64, err error) {
 	baseSlippage := e.cfg.SlippageBPS / 10000.0
 	var totalFilled, totalNotional float64
+	targetRemaining := remainingSize
+	orderSize := remainingSize
 
 	// Phase 1: IOC with escalating slippage (attempts 0-3).
-	for attempt := 0; attempt < 4 && remainingSize > 0; attempt++ {
+	for attempt := 0; attempt < 4 && targetRemaining > 0; attempt++ {
 		if attempt > 0 {
 			time.Sleep(200 * time.Millisecond)
+		}
+		if orderSize <= 0 || orderSize > targetRemaining {
+			orderSize = targetRemaining
 		}
 
 		bbo, ok := exch.GetBBO(symbol)
@@ -2636,7 +2642,7 @@ func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol 
 			orderPrice = bbo.Bid * (1 - slippage)
 		}
 
-		sizeStr := e.formatSize(exchName, symbol, remainingSize)
+		sizeStr := e.formatSize(exchName, symbol, orderSize)
 		params := exchange.PlaceOrderParams{
 			Symbol:    symbol,
 			Side:      side,
@@ -2652,7 +2658,14 @@ func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol 
 		if err != nil {
 			e.log.Warn("retrySecondLeg[IOC-%d] %s %s: PlaceOrder failed: %v", attempt, exchName, symbol, err)
 			if isMarginError(err) {
-				e.log.Error("retrySecondLeg: margin error on %s, aborting", exchName)
+				downsized := e.downsizeSecondLegAfterMarginReject(longExchange, shortExchange, symbol, orderSize, refPrice)
+				if downsized > 0 && downsized < orderSize {
+					e.log.Warn("retrySecondLeg: margin error on %s, downsizing next %s order %.6f -> %.6f (target remaining %.6f)",
+						exchName, symbol, orderSize, downsized, targetRemaining)
+					orderSize = downsized
+					continue
+				}
+				e.log.Error("retrySecondLeg: margin error on %s, no smaller tradeable size", exchName)
 				goto done
 			}
 			continue
@@ -2682,9 +2695,13 @@ func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol 
 			}
 			totalFilled += filledQty
 			totalNotional += filledQty * avgPrice
-			remainingSize -= filledQty
+			targetRemaining -= filledQty
+			if targetRemaining < 0 {
+				targetRemaining = 0
+			}
+			orderSize = targetRemaining
 			e.log.Info("retrySecondLeg[IOC-%d] %s %s: filled=%.6f avg=%.6f remaining=%.6f",
-				attempt, exchName, symbol, filledQty, avgPrice, remainingSize)
+				attempt, exchName, symbol, filledQty, avgPrice, targetRemaining)
 		} else {
 			e.log.Info("retrySecondLeg[IOC-%d] %s %s: no fill", attempt, exchName, symbol)
 		}
@@ -2692,12 +2709,15 @@ func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol 
 
 	// Phase 2: Market order ??keep retrying until fully filled.
 	// Leg 1 is already open, we MUST match it.
-	for mktAttempt := 0; remainingSize > 0 && mktAttempt < 10; mktAttempt++ {
+	for mktAttempt := 0; targetRemaining > 0 && mktAttempt < 10; mktAttempt++ {
 		if mktAttempt > 0 {
 			time.Sleep(500 * time.Millisecond)
 		}
+		if orderSize <= 0 || orderSize > targetRemaining {
+			orderSize = targetRemaining
+		}
 
-		sizeStr := e.formatSize(exchName, symbol, remainingSize)
+		sizeStr := e.formatSize(exchName, symbol, orderSize)
 		e.log.Info("retrySecondLeg[MKT-%d] %s %s: MARKET size=%s", mktAttempt, exchName, symbol, sizeStr)
 
 		orderID, err := exch.PlaceOrder(exchange.PlaceOrderParams{
@@ -2709,6 +2729,13 @@ func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol 
 		if err != nil {
 			e.log.Warn("retrySecondLeg[MKT-%d] %s %s: PlaceOrder failed: %v", mktAttempt, exchName, symbol, err)
 			if isMarginError(err) {
+				downsized := e.downsizeSecondLegAfterMarginReject(longExchange, shortExchange, symbol, orderSize, refPrice)
+				if downsized > 0 && downsized < orderSize {
+					e.log.Warn("retrySecondLeg: market margin error on %s, downsizing next %s order %.6f -> %.6f (target remaining %.6f)",
+						exchName, symbol, orderSize, downsized, targetRemaining)
+					orderSize = downsized
+					continue
+				}
 				e.log.Error("retrySecondLeg: margin error on %s, aborting market retries", exchName)
 				break
 			}
@@ -2739,9 +2766,13 @@ func (e *Engine) retrySecondLeg(exch exchange.Exchange, exchName string, symbol 
 			}
 			totalFilled += filledQty
 			totalNotional += filledQty * avgPrice
-			remainingSize -= filledQty
+			targetRemaining -= filledQty
+			if targetRemaining < 0 {
+				targetRemaining = 0
+			}
+			orderSize = targetRemaining
 			e.log.Info("retrySecondLeg[MKT-%d] %s %s: filled=%.6f avg=%.6f remaining=%.6f",
-				mktAttempt, exchName, symbol, filledQty, avgPrice, remainingSize)
+				mktAttempt, exchName, symbol, filledQty, avgPrice, targetRemaining)
 		} else {
 			e.log.Info("retrySecondLeg[MKT-%d] %s %s: no fill", mktAttempt, exchName, symbol)
 		}
@@ -2752,6 +2783,33 @@ done:
 		avgPrice = totalNotional / totalFilled
 	}
 	return totalFilled, avgPrice, nil
+}
+
+func (e *Engine) downsizeSecondLegAfterMarginReject(longExchange, shortExchange, symbol string, currentSize, refPrice float64) float64 {
+	if currentSize <= 0 || refPrice <= 0 {
+		return 0
+	}
+	downsized := e.commonTradeableSize(longExchange, shortExchange, symbol, currentSize*0.5)
+	if downsized <= 0 || downsized >= currentSize {
+		return 0
+	}
+	if e.cfg != nil && e.cfg.MinChunkUSDT > 0 && downsized*refPrice < e.cfg.MinChunkUSDT {
+		return 0
+	}
+	if e.contracts != nil {
+		minSize := 0.0
+		for _, exchName := range []string{longExchange, shortExchange} {
+			if exContracts, ok := e.contracts[exchName]; ok {
+				if ci, ok := exContracts[symbol]; ok && ci.MinSize > minSize {
+					minSize = ci.MinSize
+				}
+			}
+		}
+		if minSize > 0 && downsized < minSize {
+			return 0
+		}
+	}
+	return downsized
 }
 
 func (e *Engine) preflightBingXEntryOrder(exch exchange.Exchange, exchName, symbol string, side exchange.Side, refPrice float64, size string) error {
@@ -3075,27 +3133,22 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 	const minPositionUSDT = 10.0
 
 	// Per-leg notional check: use each leg's actual fill price
+	if longFilled > 0 && longAvg <= 0 {
+		longAvg = rollbackBBOPrice(longExch, opp.Symbol, exchange.SideBuy, longBBO.Ask)
+	}
+	if shortFilled > 0 && shortAvg <= 0 {
+		shortAvg = rollbackBBOPrice(shortExch, opp.Symbol, exchange.SideSell, shortBBO.Bid)
+	}
 	longNotional := longFilled * longAvg
 	shortNotional := shortFilled * shortAvg
 	if longNotional < minPositionUSDT || shortNotional < minPositionUSDT {
 		// Too small to keep ??close whatever filled.
 		e.log.Warn("IOC fills too small for %s (long=$%.2f short=$%.2f), aborting", posID, longNotional, shortNotional)
-		if longFilled > 0 {
-			rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
-			if rem > 0 {
-				e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s ??manual intervention needed", opp.Symbol, exchange.SideSell, rem, longExch.Name())
-			}
+		reason := fmt.Sprintf("IOC fills below minimum (%s: long=%.6f short=%.6f)", opp.Symbol, longFilled, shortFilled)
+		if err := e.closeAndRecordFailedEntryRollback(pos, reason, "depth_fill", longExch, shortExch, longFilled, shortFilled, longAvg, shortAvg); err != nil {
+			return err
 		}
-		if shortFilled > 0 {
-			rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
-			if rem > 0 {
-				e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s ??manual intervention needed", opp.Symbol, exchange.SideBuy, rem, shortExch.Name())
-			}
-		}
-		pos.Status = models.StatusClosed
-		pos.UpdatedAt = time.Now().UTC()
-		_ = e.db.SavePosition(pos)
-		return fmt.Errorf("IOC fills below minimum (%s: long=%.6f short=%.6f)", opp.Symbol, longFilled, shortFilled)
+		return fmt.Errorf("%s", reason)
 	}
 
 	// Trim excess from the larger leg.
@@ -3151,6 +3204,8 @@ func (e *Engine) executeTrade(opp models.Opportunity, size float64, price float6
 	pos.EntryNotional = math.Max(pos.LongEntry*pos.LongSize, pos.ShortEntry*pos.ShortSize)
 
 	pos.Status = models.StatusActive
+	pos.FailureReason = ""
+	pos.FailureStage = ""
 	pos.UpdatedAt = time.Now().UTC()
 	if err := e.db.SavePosition(pos); err != nil {
 		return fmt.Errorf("save active position: %w", err)
@@ -3215,10 +3270,11 @@ func (e *Engine) refetchMarginCappedSize(exch exchange.Exchange, longExchange, s
 	if err != nil {
 		return 0, nil, err
 	}
-	downsized := (liveBal.Available * leverage) / price
+	available := risk.EffectiveOrderAvailable(liveBal)
+	downsized := (available * leverage) / price
 	downsized = e.commonTradeableSize(longExchange, shortExchange, symbol, downsized)
 	if downsized <= 0 || downsized >= currentSize || downsized < minSize || downsized*price < minChunkUSDT {
-		return 0, liveBal, fmt.Errorf("refetched size below minimum (avail=%.2f price=%.6f)", liveBal.Available, price)
+		return 0, liveBal, fmt.Errorf("refetched size below minimum (effectiveAvail=%.2f rawAvail=%.2f maxTransferOut=%.2f price=%.6f)", available, liveBal.Available, liveBal.MaxTransferOut, price)
 	}
 	return downsized, liveBal, nil
 }
@@ -3613,9 +3669,11 @@ fillLoop:
 			continue
 		}
 		{
-			// Max affordable size per leg = (available * leverage) / price
-			maxLongSize := (cachedLongBal.Available * leverage) / askPrice
-			maxShortSize := (cachedShortBal.Available * leverage) / bidPrice
+			// Max affordable size per leg = (effective available * leverage) / price
+			longAvail := risk.EffectiveOrderAvailable(cachedLongBal)
+			shortAvail := risk.EffectiveOrderAvailable(cachedShortBal)
+			maxLongSize := (longAvail * leverage) / askPrice
+			maxShortSize := (shortAvail * leverage) / bidPrice
 			affordableSize := math.Min(maxLongSize, maxShortSize)
 
 			if affordableSize < size {
@@ -3623,14 +3681,14 @@ fillLoop:
 				affordableSize = e.commonTradeableSize(opp.LongExchange, opp.ShortExchange, opp.Symbol, affordableSize)
 				if affordableSize > 0 && affordableSize*bidPrice >= e.cfg.MinChunkUSDT {
 					e.log.Info("depth tick: margin cap %s size %.6f ??%.6f (longAvail=%.2f shortAvail=%.2f)",
-						opp.Symbol, size, affordableSize, cachedLongBal.Available, cachedShortBal.Available)
+						opp.Symbol, size, affordableSize, longAvail, shortAvail)
 					size = affordableSize
 					// Re-format sizes after capping
 					shortSizeStr = e.formatSize(opp.ShortExchange, opp.Symbol, size)
 					longSizeStr = e.formatSize(opp.LongExchange, opp.Symbol, size)
 				} else {
 					e.log.Warn("depth tick: insufficient margin for %s min chunk (longAvail=%.2f shortAvail=%.2f), skipping tick",
-						opp.Symbol, cachedLongBal.Available, cachedShortBal.Available)
+						opp.Symbol, longAvail, shortAvail)
 					continue
 				}
 			}
@@ -3649,6 +3707,73 @@ fillLoop:
 				e.discovery.SetReEnterCooldown(opp.Symbol, 30*time.Minute)
 			}
 			break fillLoop
+		}
+
+		if confirmedShort > confirmedLong {
+			topUpSize := e.commonTradeableSize(opp.LongExchange, opp.ShortExchange, opp.Symbol, confirmedShort-confirmedLong)
+			if topUpSize <= 0 || topUpSize*askPrice < e.cfg.MinChunkUSDT {
+				reason := fmt.Sprintf("entry long top-up below minimum (%s: long=%.6f short=%.6f need=%.6f)",
+					opp.Symbol, confirmedLong, confirmedShort, confirmedShort-confirmedLong)
+				if err := e.saveEntryPartialForTopUp(pos, reason, longExch, shortExch, confirmedLong, confirmedShort, longVWAP, shortVWAP); err != nil {
+					return err
+				}
+				return errPartialEntry
+			}
+			e.log.Warn("depth fill: %s short-heavy imbalance long=%.6f short=%.6f, topping up long %.6f",
+				opp.Symbol, confirmedLong, confirmedShort, topUpSize)
+			topFilled, topAvg, topErr := e.retrySecondLeg(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, topUpSize, askPrice, opp.LongExchange, opp.ShortExchange)
+			if topErr != nil {
+				reason := fmt.Sprintf("entry long top-up fill unknown (%s: long=%.6f short=%.6f err=%v)",
+					opp.Symbol, confirmedLong+topFilled, confirmedShort, topErr)
+				if err := e.saveEntryPartialForTopUp(pos, reason, longExch, shortExch, confirmedLong+topFilled, confirmedShort, longVWAP, shortVWAP); err != nil {
+					return err
+				}
+				return errPartialEntry
+			}
+			if topFilled > 0 {
+				if topAvg <= 0 {
+					topAvg = askPrice
+				}
+				longVWAP = (longVWAP*confirmedLong + topAvg*topFilled) / (confirmedLong + topFilled)
+				confirmedLong += topFilled
+				longConsecFails = 0
+				continue
+			}
+			longConsecFails++
+			continue
+		}
+		if confirmedLong > confirmedShort {
+			topUpSize := e.commonTradeableSize(opp.LongExchange, opp.ShortExchange, opp.Symbol, confirmedLong-confirmedShort)
+			if topUpSize <= 0 || topUpSize*bidPrice < e.cfg.MinChunkUSDT {
+				reason := fmt.Sprintf("entry short top-up below minimum (%s: long=%.6f short=%.6f need=%.6f)",
+					opp.Symbol, confirmedLong, confirmedShort, confirmedLong-confirmedShort)
+				if err := e.saveEntryPartialForTopUp(pos, reason, longExch, shortExch, confirmedLong, confirmedShort, longVWAP, shortVWAP); err != nil {
+					return err
+				}
+				return errPartialEntry
+			}
+			e.log.Warn("depth fill: %s long-heavy imbalance long=%.6f short=%.6f, topping up short %.6f",
+				opp.Symbol, confirmedLong, confirmedShort, topUpSize)
+			topFilled, topAvg, topErr := e.retrySecondLeg(shortExch, opp.ShortExchange, opp.Symbol, exchange.SideSell, topUpSize, bidPrice, opp.LongExchange, opp.ShortExchange)
+			if topErr != nil {
+				reason := fmt.Sprintf("entry short top-up fill unknown (%s: long=%.6f short=%.6f err=%v)",
+					opp.Symbol, confirmedLong, confirmedShort+topFilled, topErr)
+				if err := e.saveEntryPartialForTopUp(pos, reason, longExch, shortExch, confirmedLong, confirmedShort+topFilled, longVWAP, shortVWAP); err != nil {
+					return err
+				}
+				return errPartialEntry
+			}
+			if topFilled > 0 {
+				if topAvg <= 0 {
+					topAvg = bidPrice
+				}
+				shortVWAP = (shortVWAP*confirmedShort + topAvg*topFilled) / (confirmedShort + topFilled)
+				confirmedShort += topFilled
+				shortConsecFails = 0
+				continue
+			}
+			shortConsecFails++
+			continue
 		}
 
 		// On INSUFFICIENT errors, invalidate cache to force fresh balance next tick
@@ -3797,22 +3922,6 @@ fillLoop:
 					}
 				}
 
-				if matchSize < shortFilled {
-					// Top-up failed ??rollback as last resort
-					e.log.Warn("depth tick: top-up failed (matchSize=%.6f < shortFilled=%.6f), rolling back on %s",
-						matchSize, shortFilled, opp.ShortExchange)
-					rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
-					if rem > 0 {
-						e.log.Error("ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.ShortExchange)
-						e.telegram.Send("?? ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.ShortExchange)
-						shortFilled = rem
-						longFilled = 0
-						abortFillLoop = true
-					} else {
-						shortConsecFails++
-						continue
-					}
-				}
 			}
 			longSizeStr := e.formatSize(opp.LongExchange, opp.Symbol, matchSize)
 			e.log.Info("depth-fill %s: placing BUY order on %s size=%s price=%s (IOC)", opp.Symbol, opp.LongExchange, longSizeStr, longPriceStr)
@@ -3831,7 +3940,7 @@ fillLoop:
 					lastBalCheck = time.Time{}
 				}
 				e.log.Warn("depth tick: long IOC failed after short filled %.6f, retrying second leg: %v", shortFilled, err)
-				retryFilled, retryAvg, retryErr := e.retrySecondLeg(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, matchSize, askPrice)
+				retryFilled, retryAvg, retryErr := e.retrySecondLeg(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, matchSize, askPrice, opp.LongExchange, opp.ShortExchange)
 				if retryFilled > 0 {
 					longFilled = retryFilled
 					longAvg = retryAvg
@@ -3855,21 +3964,6 @@ fillLoop:
 					_ = e.db.SavePosition(pos)
 					return errPartialEntry
 				}
-				if retryFilled <= 0 {
-					rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
-					if rem > 0 {
-						e.log.Error("ORPHAN EXPOSURE: %s rollback incomplete, %.6f still open on %s", opp.Symbol, rem, opp.ShortExchange)
-						e.telegram.Send("?? ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.ShortExchange)
-						// Preserve surviving exposure so VWAP accumulation accounts for it.
-						// Do NOT overwrite shortAvg ??it holds the original fill price.
-						shortFilled = rem
-						longFilled = 0
-						abortFillLoop = true
-					} else {
-						longConsecFails++
-						continue
-					}
-				}
 			} else {
 				e.recordAPISuccess(opp.LongExchange)
 				var longCFErr error
@@ -3889,7 +3983,7 @@ fillLoop:
 				}
 				if longFilled == 0 {
 					e.log.Warn("depth tick: long confirmFill got 0 after short filled %.6f, retrying second leg", shortFilled)
-					retryFilled, retryAvg, retryErr := e.retrySecondLeg(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, matchSize, askPrice)
+					retryFilled, retryAvg, retryErr := e.retrySecondLeg(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, matchSize, askPrice, opp.LongExchange, opp.ShortExchange)
 					if retryFilled > 0 {
 						longFilled = retryFilled
 						longAvg = retryAvg
@@ -3911,33 +4005,6 @@ fillLoop:
 						_ = e.db.SavePosition(pos)
 						return errPartialEntry
 					}
-					if retryFilled <= 0 {
-						rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, shortFilled)
-						if rem > 0 {
-							e.log.Error("ORPHAN EXPOSURE: %s rollback incomplete, %.6f still open on %s", opp.Symbol, rem, opp.ShortExchange)
-							e.telegram.Send("?? ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.ShortExchange)
-							shortFilled = rem
-							longFilled = 0
-							abortFillLoop = true
-						} else {
-							longConsecFails++
-							continue
-						}
-					}
-				}
-			}
-			if longFilled > 0 && longFilled < shortFilled {
-				excess := shortFilled - longFilled
-				e.log.Info("depth tick: trimming short excess %.6f", excess)
-				rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, excess)
-				if rem > 0 {
-					e.log.Warn("trim incomplete: %s %.6f remaining on %s", opp.Symbol, rem, opp.ShortExchange)
-					e.telegram.Send("?? TRIM INCOMPLETE: %s %.6f on %s", opp.Symbol, rem, opp.ShortExchange)
-					// shortFilled = matched portion + un-closable remainder
-					shortFilled = longFilled + rem
-					abortFillLoop = true
-				} else {
-					shortFilled = longFilled // only count matched portion
 				}
 			}
 		} else {
@@ -4078,21 +4145,6 @@ fillLoop:
 					}
 				}
 
-				if matchSize < longFilled {
-					e.log.Warn("depth tick: top-up failed (matchSize=%.6f < longFilled=%.6f), rolling back on %s",
-						matchSize, longFilled, opp.LongExchange)
-					rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
-					if rem > 0 {
-						e.log.Error("ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.LongExchange)
-						e.telegram.Send("?? ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.LongExchange)
-						longFilled = rem
-						shortFilled = 0
-						abortFillLoop = true
-					} else {
-						longConsecFails++
-						continue
-					}
-				}
 			}
 			shortSizeStr := e.formatSize(opp.ShortExchange, opp.Symbol, matchSize)
 			e.log.Info("depth-fill %s: placing SELL order on %s size=%s price=%s (IOC)", opp.Symbol, opp.ShortExchange, shortSizeStr, shortPriceStr)
@@ -4111,7 +4163,7 @@ fillLoop:
 					lastBalCheck = time.Time{}
 				}
 				e.log.Warn("depth tick: short IOC failed after long filled %.6f, retrying second leg: %v", longFilled, err)
-				retryFilled, retryAvg, retryErr := e.retrySecondLeg(shortExch, opp.ShortExchange, opp.Symbol, exchange.SideSell, matchSize, bidPrice)
+				retryFilled, retryAvg, retryErr := e.retrySecondLeg(shortExch, opp.ShortExchange, opp.Symbol, exchange.SideSell, matchSize, bidPrice, opp.LongExchange, opp.ShortExchange)
 				if retryFilled > 0 {
 					shortFilled = retryFilled
 					shortAvg = retryAvg
@@ -4134,21 +4186,6 @@ fillLoop:
 					_ = e.db.SavePosition(pos)
 					return errPartialEntry
 				}
-				if retryFilled <= 0 {
-					rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
-					if rem > 0 {
-						e.log.Error("ORPHAN EXPOSURE: %s rollback incomplete, %.6f still open on %s", opp.Symbol, rem, opp.LongExchange)
-						e.telegram.Send("?? ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.LongExchange)
-						// Preserve surviving exposure so VWAP accumulation accounts for it.
-						// Do NOT overwrite longAvg ??it holds the original fill price.
-						longFilled = rem
-						shortFilled = 0
-						abortFillLoop = true
-					} else {
-						shortConsecFails++
-						continue
-					}
-				}
 			} else {
 				e.recordAPISuccess(opp.ShortExchange)
 				var shortCFErr error
@@ -4168,7 +4205,7 @@ fillLoop:
 				}
 				if shortFilled == 0 {
 					e.log.Warn("depth tick: short confirmFill got 0 after long filled %.6f, retrying second leg", longFilled)
-					retryFilled, retryAvg, retryErr := e.retrySecondLeg(shortExch, opp.ShortExchange, opp.Symbol, exchange.SideSell, matchSize, bidPrice)
+					retryFilled, retryAvg, retryErr := e.retrySecondLeg(shortExch, opp.ShortExchange, opp.Symbol, exchange.SideSell, matchSize, bidPrice, opp.LongExchange, opp.ShortExchange)
 					if retryFilled > 0 {
 						shortFilled = retryFilled
 						shortAvg = retryAvg
@@ -4190,33 +4227,6 @@ fillLoop:
 						_ = e.db.SavePosition(pos)
 						return errPartialEntry
 					}
-					if retryFilled <= 0 {
-						rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, longFilled)
-						if rem > 0 {
-							e.log.Error("ORPHAN EXPOSURE: %s rollback incomplete, %.6f still open on %s", opp.Symbol, rem, opp.LongExchange)
-							e.telegram.Send("?? ORPHAN EXPOSURE: %s rollback incomplete, %.6f on %s", opp.Symbol, rem, opp.LongExchange)
-							longFilled = rem
-							shortFilled = 0
-							abortFillLoop = true
-						} else {
-							shortConsecFails++
-							continue
-						}
-					}
-				}
-			}
-			if shortFilled > 0 && shortFilled < longFilled {
-				excess := longFilled - shortFilled
-				e.log.Info("depth tick: trimming long excess %.6f", excess)
-				rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, excess)
-				if rem > 0 {
-					e.log.Warn("trim incomplete: %s %.6f remaining on %s", opp.Symbol, rem, opp.LongExchange)
-					e.telegram.Send("?? TRIM INCOMPLETE: %s %.6f on %s", opp.Symbol, rem, opp.LongExchange)
-					// longFilled = matched portion + un-closable remainder
-					longFilled = shortFilled + rem
-					abortFillLoop = true
-				} else {
-					longFilled = shortFilled // only count matched portion
 				}
 			}
 		}
@@ -4276,28 +4286,16 @@ fillLoop:
 	shortNotional := confirmedShort * shortVWAP
 	if longNotional < minPositionUSDT || shortNotional < minPositionUSDT {
 		e.log.Warn("depth fill too small for %s (long=$%.2f short=$%.2f), aborting", posID, longNotional, shortNotional)
-		if confirmedLong > 0 {
-			rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, confirmedLong)
-			if rem > 0 {
-				e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s ??manual intervention needed", opp.Symbol, exchange.SideSell, rem, longExch.Name())
-			}
-		}
-		if confirmedShort > 0 {
-			rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, confirmedShort)
-			if rem > 0 {
-				e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s ??manual intervention needed", opp.Symbol, exchange.SideBuy, rem, shortExch.Name())
-			}
-		}
 		reason := fmt.Sprintf("depth fills below minimum (%s: long=%.6f short=%.6f)", opp.Symbol, confirmedLong, confirmedShort)
-		pos.Status = models.StatusClosed
-		pos.FailureReason = reason
-		pos.FailureStage = "depth_fill"
-		pos.ExitReason = "entry_failed: " + reason
-		pos.UpdatedAt = time.Now().UTC()
-		e.log.Info("[reconcile-debug] AddToHistory %s: LongTotalFees=%.6f ShortTotalFees=%.6f LongFunding=%.6f ShortFunding=%.6f LongClosePnL=%.6f ShortClosePnL=%.6f HasReconciled=%v",
-			pos.ID, pos.LongTotalFees, pos.ShortTotalFees, pos.LongFunding, pos.ShortFunding, pos.LongClosePnL, pos.ShortClosePnL, pos.HasReconciled)
-		_ = e.db.AddToHistory(pos)
-		_ = e.db.SavePosition(pos)
+		if confirmedLong > 0 || confirmedShort > 0 {
+			if err := e.saveEntryPartialForTopUp(pos, reason, longExch, shortExch, confirmedLong, confirmedShort, longVWAP, shortVWAP); err != nil {
+				return err
+			}
+			return errPartialEntry
+		}
+		if err := e.closeAndRecordFailedEntryRollback(pos, reason, "depth_fill", longExch, shortExch, confirmedLong, confirmedShort, longVWAP, shortVWAP); err != nil {
+			return err
+		}
 		return fmt.Errorf("%s", reason)
 	}
 
@@ -4345,6 +4343,15 @@ fillLoop:
 		_ = e.db.AddToHistory(pos)
 		e.api.BroadcastPositionUpdate(pos)
 		return fmt.Errorf("checkpoint save failed, rolled back to flat: %w", ckErr)
+	}
+
+	if math.Abs(confirmedLong-confirmedShort) > 1e-9 {
+		reason := fmt.Sprintf("entry top-up pending (%s: long=%.6f short=%.6f)",
+			opp.Symbol, confirmedLong, confirmedShort)
+		if err := e.saveEntryPartialForTopUp(pos, reason, longExch, shortExch, confirmedLong, confirmedShort, longVWAP, shortVWAP); err != nil {
+			return err
+		}
+		return errPartialEntry
 	}
 
 	// Trim excess from the larger leg ??track actual post-trim sizes
@@ -4418,6 +4425,8 @@ fillLoop:
 	pos.Slippage = slippageV2
 
 	pos.Status = models.StatusActive
+	pos.FailureReason = ""
+	pos.FailureStage = ""
 	pos.UpdatedAt = time.Now().UTC()
 	var saveErr error
 	for attempt := 1; attempt <= 3; attempt++ {
