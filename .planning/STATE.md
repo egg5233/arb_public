@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v2.2
 milestone_name: Auto-Discovery & Live Strategy 4
 status: executing
-stopped_at: Phase 11 UI-SPEC approved
-last_updated: "2026-04-28T16:40:11.032Z"
+stopped_at: Phase 12 context gathered
+last_updated: "2026-04-29T01:41:59.001Z"
 last_activity: 2026-04-28
 progress:
   total_phases: 5
@@ -155,7 +155,7 @@ v2.0 + v1.0 decisions retained (truncated for brevity — see git history for fu
 
 ## Session Continuity
 
-Last session: 2026-04-28T12:24:06.748Z
-Stopped at: Phase 11 UI-SPEC approved
-Resume file: .planning/phases/11-auto-discovery-scanner-chokepoint-telemetry/11-UI-SPEC.md
+Last session: 2026-04-29T01:41:58.997Z
+Stopped at: Phase 12 context gathered
+Resume file: .planning/phases/12-auto-promotion/12-CONTEXT.md
 Next command: `/gsd-plan-phase 11` to decompose Phase 11 into executable plans
