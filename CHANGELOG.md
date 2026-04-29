@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.35.5] - 2026-04-29
+
+### Fixed
+
+- Added endpoint-specific BingX signed REST throttling so balance, transfer, withdraw, and order APIs respect their documented per-second limits under concurrent entry/rebalance activity.
+- Fixed BingX entry preflight probes so non-marketable IOC checks stay above BingX minimum order value and far-price floors while remaining safely away from the live top of book.
+- Preserved specific entry abort reasons in trade history, including BingX preflight errors, stale depth, unavailable balances, margin caps, and circuit-breaker exits instead of collapsing them into generic depth-fill failures.
+- Simplified trade history reason display by removing the separate failure-reason column and renaming the exit reason label to reason.
+- Added UTF-8 graphify refresh wrappers to avoid Windows console encoding failures during code graph refreshes.
+
 ## [0.35.4] - 2026-04-29
 
 ### Fixed
