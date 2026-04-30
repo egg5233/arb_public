@@ -62,10 +62,19 @@ func (NoopBroadcaster) BroadcastPriceGapCandidateUpdate(PriceGapCandidateUpdate)
 // All methods MUST be nil-receiver-safe on the implementation side; Plan 04
 // guarantees this for *notify.TelegramNotifier (nil-receiver returns early,
 // nil-pos guarded on Entry/Exit).
+//
+// Phase 14 (Plan 14-02 + Plan 14-04) extends the interface with two reconcile
+// methods. NotifyPriceGapDailyDigest is the routine UTC-00:30 summary;
+// NotifyPriceGapReconcileFailure is the critical-path Telegram dispatch
+// triggered by the 3-retry loop in Reconciler.RunForDate. Plan 14-04 ships the
+// real Telegram impl; until then NoopNotifier provides safe nil-receiver
+// behavior.
 type PriceGapNotifier interface {
 	NotifyPriceGapEntry(pos *models.PriceGapPosition)
 	NotifyPriceGapExit(pos *models.PriceGapPosition, reason string, pnl float64, duration time.Duration)
 	NotifyPriceGapRiskBlock(symbol, gate, detail string)
+	NotifyPriceGapDailyDigest(date string, record DailyReconcileRecord, ramp models.RampState)
+	NotifyPriceGapReconcileFailure(date string, err error)
 }
 
 // NoopNotifier is the zero-behavior default used when no Telegram notifier is
@@ -81,3 +90,9 @@ func (NoopNotifier) NotifyPriceGapExit(*models.PriceGapPosition, string, float64
 
 // NotifyPriceGapRiskBlock is a no-op.
 func (NoopNotifier) NotifyPriceGapRiskBlock(string, string, string) {}
+
+// NotifyPriceGapDailyDigest is a no-op (Phase 14 Plan 14-04 ships Telegram impl).
+func (NoopNotifier) NotifyPriceGapDailyDigest(string, DailyReconcileRecord, models.RampState) {}
+
+// NotifyPriceGapReconcileFailure is a no-op (Phase 14 Plan 14-04 ships Telegram impl).
+func (NoopNotifier) NotifyPriceGapReconcileFailure(string, error) {}

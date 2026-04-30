@@ -93,6 +93,26 @@ func (n *spyNotifier) NotifyPriceGapRiskBlock(symbol, gate, detail string) {
 	n.calls = append(n.calls, spyCall{Kind: "notify_risk:" + gate, Args: symbol})
 }
 
+// Phase 14 PG-LIVE-03: extend spyNotifier with reconcile-related methods
+// so it continues to satisfy the widened PriceGapNotifier interface.
+// Tests in this file do not exercise reconcile dispatch; the methods are
+// here purely for compile-time conformance.
+func (n *spyNotifier) NotifyPriceGapDailyDigest(date string, _ DailyReconcileRecord, _ models.RampState) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.calls = append(n.calls, spyCall{Kind: "notify_daily_digest", Args: date})
+}
+
+func (n *spyNotifier) NotifyPriceGapReconcileFailure(date string, err error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	args := date
+	if err != nil {
+		args = date + ":" + err.Error()
+	}
+	n.calls = append(n.calls, spyCall{Kind: "notify_reconcile_failure", Args: args})
+}
+
 func (n *spyNotifier) count() int {
 	n.mu.Lock()
 	defer n.mu.Unlock()
