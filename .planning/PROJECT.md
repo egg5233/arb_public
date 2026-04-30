@@ -157,4 +157,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-30 — Phase 12 (auto-promotion, PG-DISC-02) shipped on v0.36.0, default OFF behind `price_gap_discovery_enabled`. v2.2 milestone 2/5 phases done.*
+*Last updated: 2026-04-30 — Phase 14 (Daily Reconcile + Live Ramp Controller, PG-LIVE-01 + PG-LIVE-03) shipped on v0.37.0, default OFF behind `price_gap_live_capital`. Reconciler daemon (UTC 00:30, idempotent), three-stage ramp (100/500/1000 USDT/leg, asymmetric ratchet), risk Gate 6, sizer hard ceiling, boot guard, pg-admin operator surface, read-only dashboard widget. v2.2 milestone 3/4 phases done; Phase 15 (drawdown breaker, PG-LIVE-02) next.*
