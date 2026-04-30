@@ -36,7 +36,7 @@ const COMPONENT_FILES = [
   'CycleStatsCard.tsx',
   'ScoreHistoryCard.tsx',
   'WhyRejectedCard.tsx',
-  'PromoteTimelinePlaceholder.tsx',
+  'PromoteTimeline.tsx',
 ];
 
 function readComp(name: string): string {
@@ -74,7 +74,7 @@ test('Test 4: DiscoverySection renders all 5 cards by importing them', () => {
     'CycleStatsCard',
     'ScoreHistoryCard',
     'WhyRejectedCard',
-    'PromoteTimelinePlaceholder',
+    'PromoteTimeline',
   ];
   for (const r of required) {
     assert.ok(src.includes(r), `DiscoverySection.tsx does not reference ${r}`);
@@ -163,14 +163,13 @@ test('Test 8: WhyRejectedCard renders reason→count rows + handles empty', () =
   }
 });
 
-test('Test 9: PromoteTimelinePlaceholder uses dashed border', () => {
-  const src = readComp('PromoteTimelinePlaceholder.tsx');
-  assert.ok(/border-dashed/.test(src), 'border-dashed missing');
-  assert.ok(src.includes('pricegap.discovery.timeline.title'), 'title key missing');
+test('Test 9: PromoteTimeline uses solid border (Phase 12 — replaces placeholder)', () => {
+  const src = readComp('PromoteTimeline.tsx');
   assert.ok(
-    src.includes('pricegap.discovery.timeline.placeholder'),
-    'placeholder key missing',
+    !/border-dashed/.test(src),
+    'PromoteTimeline should not use dashed border (replaced placeholder)',
   );
+  assert.ok(src.includes('pricegap.discovery.timeline.title'), 'title key missing');
 });
 
 test('Test 10: usePgDiscovery hook seeds via REST + subscribes to 3 WS channels', () => {

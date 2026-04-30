@@ -10,7 +10,7 @@
 //   - Conditional <DiscoveryBanner> (disabled / errored variants).
 //   - <CycleStatsCard> full-width.
 //   - 2-col row (lg+) with <ScoreHistoryCard> (60%) + <WhyRejectedCard> (40%).
-//   - <PromoteTimelinePlaceholder> full-width below.
+//   - <PromoteTimeline> full-width below (Phase 12 Plan 04 swap from placeholder).
 //
 // State machine (UI-SPEC §"Three scanner visual states"):
 //   enabled=true,  errors==0, !cycle_failed → Scanner ON   (green pill)
@@ -23,7 +23,7 @@ import { DiscoveryBanner } from './DiscoveryBanner.tsx';
 import { CycleStatsCard } from './CycleStatsCard.tsx';
 import { ScoreHistoryCard } from './ScoreHistoryCard.tsx';
 import { WhyRejectedCard } from './WhyRejectedCard.tsx';
-import { PromoteTimelinePlaceholder } from './PromoteTimelinePlaceholder.tsx';
+import { PromoteTimeline } from './PromoteTimeline.tsx';
 
 function formatLastRunPill(ts: number | null): string {
   if (ts == null || !Number.isFinite(ts) || ts <= 0) return '';
@@ -129,8 +129,8 @@ export const DiscoverySection: FC = () => {
         </div>
       </div>
 
-      {/* Phase 12 placeholder */}
-      <PromoteTimelinePlaceholder />
+      {/* Phase 12 Plan 04 — populated PromoteTimeline (replaces placeholder) */}
+      <PromoteTimeline />
     </section>
   );
 };
