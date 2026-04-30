@@ -78,7 +78,7 @@ A multi-strategy arbitrage platform that monitors funding rate differentials and
 
 **Auto-Discovery & Promotion (Priority 1)**
 - [ ] PG-DISC-01 — Auto-discovery scanner surfaces candidates with score + reasoning. Default OFF.
-- [ ] PG-DISC-02 — Auto-promotion to `cfg.PriceGapCandidates` with score gate + max cap. Persisted to `config.json`. WS + Telegram on promote/demote.
+- [x] PG-DISC-02 — Auto-promotion to `cfg.PriceGapCandidates` with score gate + max cap. Persisted to `config.json`. WS + Telegram on promote/demote. _Validated in Phase 12: auto-promotion (v0.36.0, 2026-04-30)._
 - [ ] PG-DISC-03 — Discovery telemetry: scanner cycle metrics, candidate score history, dashboard observability.
 
 **Paper-Mode Bug Closure (Priority 2)**
@@ -157,4 +157,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-28 — v2.2 Auto-Discovery & Live Strategy 4 milestone started. v2.1 Candidate Operations shipped 2026-04-27 (Phases 10, 13, 999.1).*
+*Last updated: 2026-04-30 — Phase 12 (auto-promotion, PG-DISC-02) shipped on v0.36.0, default OFF behind `price_gap_discovery_enabled`. v2.2 milestone 2/5 phases done.*

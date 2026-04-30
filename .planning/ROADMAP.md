@@ -188,7 +188,7 @@ Phase numbers reuse 11 + 12 from the v2.1 deferred-numbering plan; 13 was consum
 | 13. v2.0 Deferred Closure | v2.1 | n/a | Complete (direct commits) | 2026-04-25 |
 | 999.1. Bidirectional pricegap candidates | v2.1 | 6/6 | Complete | 2026-04-27 |
 | 11. Auto-Discovery Scanner + Chokepoint + Telemetry | v2.2 | 6/6 | Complete    | 2026-04-28 |
-| 12. Auto-Promotion | v2.2 | 4/4 | Complete | 2026-04-30 |
+| 12. Auto-Promotion | v2.2 | 4/4 | Complete    | 2026-04-30 |
 | 14. Daily Reconcile + Live Ramp Controller | v2.2 | 0/? | Not started | — |
 | 15. Drawdown Circuit Breaker | v2.2 | 0/? | Not started | — |
 | 16. Paper-Mode Cleanup + Dashboard Consolidation | v2.2 | 0/? | Not started | — |
