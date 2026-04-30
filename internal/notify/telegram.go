@@ -346,6 +346,7 @@ var priceGapGateAllowlist = map[string]struct{}{
 	"delist":          {},
 	"budget":          {},
 	"exec_quality":    {},
+	"ramp":            {}, // Phase 14 (PG-LIVE-01 — Gate 6 risk_block)
 }
 
 // sanitizeForTelegram strips control characters (\x00–\x1F) other than \t and

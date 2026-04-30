@@ -481,18 +481,126 @@ func TestRiskGate_DuplicateCandidate_DifferentSymbol_Passes(t *testing.T) {
 	}
 }
 
-// Phase 14 Gate 6 (live ramp budget) stubs — bodies land in plan 14-03.
-// Ramp-stage budget cap, no-op when live capital OFF, fail-closed posture
-// when ramp state unavailable.
+// ---- Phase 14 Gate 6 (live ramp budget) tests ----------------------------
+//
+// Ramp-stage notional cap, no-op when live capital OFF, fail-closed posture
+// when ramp state unavailable. preEntry consults t.ramp (RampSnapshotter) +
+// t.cfg.PriceGapLiveCapital + t.cfg.PriceGapStage{1,2,3}SizeUSDT +
+// t.cfg.PriceGapHardCeilingUSDT.
 
+// fakeRampSnapshotter is a deterministic ramp source for risk-gate tests.
+// stage controls Snapshot().CurrentStage; unavailable=true models a state-load
+// failure (Snapshot returns CurrentStage=0 — Gate 6 must fail-closed).
+type fakeRampSnapshotter struct {
+	stage       int
+	unavailable bool
+}
+
+func (f *fakeRampSnapshotter) Snapshot() models.RampState {
+	if f.unavailable {
+		// CurrentStage=0 is the fail-closed signal — bootstrapState would
+		// normally never produce this, but a corrupt-Redis race could.
+		return models.RampState{CurrentStage: 0}
+	}
+	return models.RampState{CurrentStage: f.stage}
+}
+
+func liveRampCfg() *config.Config {
+	return &config.Config{
+		PriceGapEnabled:              true,
+		PriceGapBudget:               5000,
+		PriceGapMaxConcurrent:        3,
+		PriceGapGateConcentrationPct: 0.5,
+		PriceGapKlineStalenessSec:    90,
+
+		// Phase 14 live capital fields.
+		PriceGapLiveCapital:        true,
+		PriceGapStage1SizeUSDT:     100,
+		PriceGapStage2SizeUSDT:     500,
+		PriceGapStage3SizeUSDT:     1000,
+		PriceGapHardCeilingUSDT:    1000,
+		PriceGapCleanDaysToPromote: 7,
+	}
+}
+
+// TestRiskGate_Gate6_Ramp_OverBudget_Rejects — at stage=1 (cap=$100), a
+// candidate request of $200 must be rejected with ErrPriceGapRampExceeded
+// and Reason="ramp".
 func TestRiskGate_Gate6_Ramp_OverBudget_Rejects(t *testing.T) {
-	t.Skip("Wave 0 stub: implementation lands in plan 14-03")
+	store := newFakeStore()
+	tr := newGateTestTracker(t, store, newFakeDelistChecker(), liveRampCfg())
+	tr.ramp = &fakeRampSnapshotter{stage: 1}
+
+	res := tr.preEntry(binanceBybitCand(), 200, freshDetection(), nil)
+	if res.Approved {
+		t.Fatalf("requested=$200 > stage1 cap=$100 must be blocked")
+	}
+	if !errors.Is(res.Err, ErrPriceGapRampExceeded) {
+		t.Fatalf("err=%v, want ErrPriceGapRampExceeded", res.Err)
+	}
+	if res.Reason != "ramp" {
+		t.Fatalf("reason=%q, want ramp", res.Reason)
+	}
 }
 
+// TestRiskGate_Gate6_Ramp_NoOpWhenLiveCapitalOff — when paper mode is on,
+// Gate 6 must NOT fire even on huge requests. The candidate's per-position
+// cap (Gate 3) and budget (Gate 4) still apply, so we must use a candidate
+// that passes those gates with a paper-feasible notional.
 func TestRiskGate_Gate6_Ramp_NoOpWhenLiveCapitalOff(t *testing.T) {
-	t.Skip("Wave 0 stub: implementation lands in plan 14-03")
+	cfg := liveRampCfg()
+	cfg.PriceGapLiveCapital = false
+	store := newFakeStore()
+	tr := newGateTestTracker(t, store, newFakeDelistChecker(), cfg)
+	// Even with ramp at stage=1 (cap=$100 if live were on), a $1000 request
+	// should pass Gate 6 because PriceGapLiveCapital=false.
+	tr.ramp = &fakeRampSnapshotter{stage: 1}
+
+	res := tr.preEntry(binanceBybitCand(), 1000, freshDetection(), nil)
+	if res.Err != nil && errors.Is(res.Err, ErrPriceGapRampExceeded) {
+		t.Fatalf("Gate 6 must not fire when PriceGapLiveCapital=false; got %v reason=%s", res.Err, res.Reason)
+	}
+	// Other gates may legitimately reject for unrelated reasons (none should
+	// here — $1000 is within the $5000 candidate cap and $5000 budget).
+	if !res.Approved {
+		t.Fatalf("paper-mode happy path must pass; err=%v reason=%s", res.Err, res.Reason)
+	}
 }
 
+// TestRiskGate_Gate6_Ramp_FailClosedOnStateUnavailable — when the ramp's
+// Snapshot returns CurrentStage=0 (corruption / Redis miss), Gate 6 must
+// fail-closed with ErrPriceGapRampStateUnavailable. Live capital ON.
 func TestRiskGate_Gate6_Ramp_FailClosedOnStateUnavailable(t *testing.T) {
-	t.Skip("Wave 0 stub: implementation lands in plan 14-03")
+	store := newFakeStore()
+	tr := newGateTestTracker(t, store, newFakeDelistChecker(), liveRampCfg())
+	tr.ramp = &fakeRampSnapshotter{unavailable: true}
+
+	res := tr.preEntry(binanceBybitCand(), 50, freshDetection(), nil)
+	if res.Approved {
+		t.Fatalf("ramp state unavailable must fail-closed even for tiny request")
+	}
+	if !errors.Is(res.Err, ErrPriceGapRampStateUnavailable) {
+		t.Fatalf("err=%v, want ErrPriceGapRampStateUnavailable", res.Err)
+	}
+	if res.Reason != "ramp" {
+		t.Fatalf("reason=%q, want ramp", res.Reason)
+	}
+}
+
+// TestRiskGate_Gate6_Ramp_NilRampController_FailsClosed — when the tracker's
+// ramp field is nil but PriceGapLiveCapital=true, Gate 6 must fail-closed.
+// (Plan 14-04 guarantees non-nil at production wiring; this test locks the
+// defensive path against a partial wiring regression.)
+func TestRiskGate_Gate6_Ramp_NilRampController_FailsClosed(t *testing.T) {
+	store := newFakeStore()
+	tr := newGateTestTracker(t, store, newFakeDelistChecker(), liveRampCfg())
+	tr.ramp = nil // Mis-wired or pre-Plan-14-04 state.
+
+	res := tr.preEntry(binanceBybitCand(), 50, freshDetection(), nil)
+	if res.Approved {
+		t.Fatalf("nil ramp + live capital must fail-closed")
+	}
+	if !errors.Is(res.Err, ErrPriceGapRampStateUnavailable) {
+		t.Fatalf("err=%v, want ErrPriceGapRampStateUnavailable", res.Err)
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"arb/internal/config"
 	"arb/internal/models"
 )
 
@@ -14,16 +15,23 @@ type GateDecision struct {
 	Reason   string // human-readable tag for log + exit_reason stamping
 }
 
-// preEntry composes the 6 deterministic gates in the order specified by CONTEXT §D-17.
-// Returns first failure; runs no side effects.
+// preEntry composes the 8 deterministic gates (gate 0 + 7) in the order
+// specified by CONTEXT §D-17 + Phase 14 D-22. Returns first failure; runs no
+// side effects.
 //
 // Gates (in order):
+//  0. Duplicate-candidate re-entry lockout (per-candidate slot)
 //  1. Exec-quality disable flag (D-19) [reads Redis via PriceGapStore]
 //  2. Max concurrent (PG-RISK-04) [reads active set cardinality]
 //  3. Per-position notional cap (PG-RISK-05) [pure math]
 //  4. Budget remaining (sum requested + this <= PriceGapBudget) [pure math]
 //  5. Gate concentration cap 50% (PG-RISK-01) [pure math, conditional on Gate-leg presence]
-//  6. Delist/halt/staleness (PG-RISK-02) [t.delist.IsDelisted via DelistChecker + det.StalenessSec]
+//  6. Live-capital ramp (Phase 14 PG-LIVE-01) [pure math, conditional on PriceGapLiveCapital]
+//  7. Delist/halt/staleness (PG-RISK-02) [t.delist.IsDelisted via DelistChecker + det.StalenessSec]
+//
+// Phase 14 inserts Gate 6 (ramp) AFTER Gate 5 (concentration); the previous
+// Gate 6 (delist+staleness) is now Gate 7. Gate 6 is a no-op when
+// PriceGapLiveCapital=false (D-07 paper-mode pass-through).
 //
 // Order is documented here because any reorder would change blame-attribution in
 // logs and exit_reason stamping. TestRiskGate_OrderingInvariant locks D-17.
@@ -119,7 +127,42 @@ func (t *Tracker) preEntry(
 		}
 	}
 
-	// Gate 6: delist / halt / staleness (PG-RISK-02).
+	// Gate 6: ramp (Phase 14 — first gate that touches live capital).
+	// D-07: NO-OP when PriceGapLiveCapital=false (paper-mode pass-through).
+	// D-22: defense in depth — this gate enforces min(stage_size, hard_ceiling)
+	//   independently of the Sizer at the call site (sizer.go). Either alone
+	//   is sufficient; both must agree.
+	// T-14-12 + T-14-07: fail-closed when ramp controller is missing or returns
+	//   stage 0 (corruption / pre-bootstrap state).
+	if t.cfg.PriceGapLiveCapital {
+		if t.ramp == nil {
+			t.notifier.NotifyPriceGapRiskBlock(cand.Symbol, "ramp", "ramp controller unavailable")
+			return GateDecision{Err: ErrPriceGapRampStateUnavailable, Reason: "ramp"}
+		}
+		snap := t.ramp.Snapshot()
+		stageSize := stageSizeForCfg(snap.CurrentStage, t.cfg)
+		if stageSize <= 0 {
+			// Stage out of [1,3] → fail-closed.
+			t.notifier.NotifyPriceGapRiskBlock(cand.Symbol, "ramp",
+				fmt.Sprintf("invalid stage=%d", snap.CurrentStage))
+			return GateDecision{Err: ErrPriceGapRampStateUnavailable, Reason: "ramp"}
+		}
+		cap := stageSize
+		if t.cfg.PriceGapHardCeilingUSDT > 0 && t.cfg.PriceGapHardCeilingUSDT < cap {
+			// min(stage_size, hard_ceiling).
+			cap = t.cfg.PriceGapHardCeilingUSDT
+		}
+		if requestedNotionalUSDT > cap {
+			t.notifier.NotifyPriceGapRiskBlock(cand.Symbol, "ramp",
+				fmt.Sprintf("requested=$%.0f stage=%d stage_size=$%.0f ceiling=$%.0f cap=$%.0f",
+					requestedNotionalUSDT, snap.CurrentStage, stageSize,
+					t.cfg.PriceGapHardCeilingUSDT, cap))
+			return GateDecision{Err: ErrPriceGapRampExceeded, Reason: "ramp"}
+		}
+	}
+
+	// Gate 7: delist / halt / staleness (PG-RISK-02). [Phase 14 renumbered
+	// from Gate 6 — the ramp gate above is now Gate 6.]
 	// t.delist is the injected models.DelistChecker (Plan 01); production
 	// wires *discovery.Scanner, tests wire a fakeDelistChecker.
 	if t.delist != nil && t.delist.IsDelisted(cand.Symbol) {
@@ -147,4 +190,28 @@ func candHasGate(c models.PriceGapCandidate) bool {
 
 func positionHasGate(p *models.PriceGapPosition) bool {
 	return strings.EqualFold(p.LongExchange, "gate") || strings.EqualFold(p.ShortExchange, "gate")
+}
+
+// stageSizeForCfg returns the configured per-leg notional for a ramp stage.
+// Mirrors Sizer.stageSize (sizer.go) — kept here as a small helper so
+// risk_gate.go does not need to depend on the *Sizer concrete type. Returns
+// 0 for stages outside [1,3] which the caller treats as fail-closed.
+//
+// Phase 14 D-22 defense-in-depth: this and Sizer.stageSize must stay in sync.
+// If you change one, change both — and consider whether the duplication is
+// still worth the decoupling.
+func stageSizeForCfg(stage int, cfg *config.Config) float64 {
+	if cfg == nil {
+		return 0
+	}
+	switch stage {
+	case 1:
+		return cfg.PriceGapStage1SizeUSDT
+	case 2:
+		return cfg.PriceGapStage2SizeUSDT
+	case 3:
+		return cfg.PriceGapStage3SizeUSDT
+	default:
+		return 0
+	}
 }
