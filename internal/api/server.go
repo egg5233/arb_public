@@ -72,6 +72,20 @@ type Server struct {
 	// (write path) and the api Server (read path). Nil in unit tests that
 	// don't exercise the discovery routes — handlers return 503 in that case.
 	telemetry DiscoveryTelemetryReader
+
+	// pgRamp + pgReconciler are Phase 14 Plan 14-05 read-only consumer
+	// surfaces (PG-LIVE-01 / PG-LIVE-03). cmd/main.go constructs exactly one
+	// *pricegaptrader.RampController + *pricegaptrader.Reconciler and shares
+	// them with the daemon (write path) AND this Server (read path) so
+	// /api/pg/ramp and /api/pg/reconcile/{date} report a coherent view.
+	//
+	// D-14: read-only dashboard surface — NO mutators here. pg-admin CLI
+	// owns force-promote / force-demote / reset / reconcile run.
+	//
+	// Nil in unit tests that don't exercise these routes — handlers return
+	// 503 in that case (mirrors telemetry behavior).
+	pgRamp       RampSnapshotter
+	pgReconciler ReconcileRecordLoader
 }
 
 // DiscoveryTelemetryReader is the narrow read-side surface the discovery
@@ -79,6 +93,22 @@ type Server struct {
 type DiscoveryTelemetryReader interface {
 	GetState(ctx context.Context) (pricegaptrader.StateResponse, error)
 	GetScores(ctx context.Context, symbol string) (pricegaptrader.ScoresResponse, error)
+}
+
+// RampSnapshotter — narrow read-side surface for /api/pg/ramp.
+// *pricegaptrader.RampController satisfies it via its Snapshot() method.
+// Phase 14 Plan 14-05 / D-14: read-only dashboard surface only — no mutators.
+type RampSnapshotter interface {
+	Snapshot() models.RampState
+}
+
+// ReconcileRecordLoader — narrow read-side surface for
+// /api/pg/reconcile/{date}. *pricegaptrader.Reconciler satisfies it via
+// LoadRecord. Returns (record, exists, err); 404 maps from exists=false.
+// Phase 14 Plan 14-05 / D-14: read-only dashboard surface only — pg-admin
+// owns reconcile run.
+type ReconcileRecordLoader interface {
+	LoadRecord(ctx context.Context, date string) (pricegaptrader.DailyReconcileRecord, bool, error)
 }
 
 // ManualOpenOptions carries dashboard-only manual entry overrides.
@@ -195,6 +225,15 @@ func (s *Server) Start() {
 	// timeline (D-12). Reads pg:promote:events LIST (RPushed by
 	// RedisWSPromoteSink); returns newest-first.
 	mux.HandleFunc("GET /api/pg/discovery/promote-events", s.cors(s.authMiddleware(s.handlePgDiscoveryPromoteEvents)))
+
+	// Phase 14 Plan 14-05 — read-only dashboard surface (D-14).
+	// /api/pg/ramp returns the 5-field RampState + size/ceiling sidecar +
+	// server-authoritative live_capital flag. /api/pg/reconcile/{date}
+	// returns the typed DailyReconcileRecord for an existing reconcile day,
+	// 404 otherwise, 400 on invalid date format. NO mutators — force ops
+	// + reconcile run live in pg-admin CLI only.
+	mux.HandleFunc("GET /api/pg/ramp", s.cors(s.authMiddleware(s.handlePgRampState)))
+	mux.HandleFunc("GET /api/pg/reconcile/{date}", s.cors(s.authMiddleware(s.handlePgReconcileDay)))
 
 	// Capital allocation
 	mux.HandleFunc("/api/allocation", s.cors(s.authMiddleware(s.handleGetAllocation)))
@@ -437,6 +476,21 @@ func (s *Server) SetRegistry(reg CandidateRegistry) {
 // dashboard is unaffected.
 func (s *Server) SetDiscoveryTelemetry(t DiscoveryTelemetryReader) {
 	s.telemetry = t
+}
+
+// SetPgRamp injects the Phase 14 Plan 14-05 read-only RampController
+// snapshotter for GET /api/pg/ramp (PG-LIVE-01). Passing nil leaves the
+// route returning 503. D-14: read-only — no mutators surface here.
+func (s *Server) SetPgRamp(r RampSnapshotter) {
+	s.pgRamp = r
+}
+
+// SetPgReconciler injects the Phase 14 Plan 14-05 read-only Reconciler
+// record loader for GET /api/pg/reconcile/{date} (PG-LIVE-03). Passing nil
+// leaves the route returning 503. D-14: read-only — pg-admin CLI owns
+// reconcile run.
+func (s *Server) SetPgReconciler(r ReconcileRecordLoader) {
+	s.pgReconciler = r
 }
 
 // ConfigNotifier returns the shared ConfigNotifier so that other

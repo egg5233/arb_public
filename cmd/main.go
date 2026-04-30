@@ -497,6 +497,11 @@ func main() {
 		pgTracker.SetReconciler(pgReconciler)
 		pgTracker.SetRamp(pgRamp)
 		pgTracker.SetSizer(pgSizer)
+		// Phase 14 Plan 14-05 — wire the SAME ramp + reconciler instances
+		// into the dashboard server so /api/pg/ramp + /api/pg/reconcile/{date}
+		// report a coherent view (D-14 read-only surface).
+		apiSrv.SetPgRamp(pgRamp)
+		apiSrv.SetPgReconciler(pgReconciler)
 		log.Info("[phase-14] reconciler + ramp controller + sizer wired (live_capital=%v)",
 			cfg.PriceGapLiveCapital)
 
