@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.2
 milestone_name: Auto-Discovery & Live Strategy 4
 status: executing
-stopped_at: Completed 14-03-PLAN.md
-last_updated: "2026-04-30T07:35:58.943Z"
+stopped_at: Completed 14-04-PLAN.md
+last_updated: "2026-04-30T07:55:21.592Z"
 last_activity: 2026-04-30
 progress:
   total_phases: 5
   completed_phases: 2
   total_plans: 15
-  completed_plans: 13
-  percent: 87
+  completed_plans: 14
+  percent: 93
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-28 after v2.2 milestone start)
 ## Current Position
 
 Phase: 14 (daily-reconcile-live-ramp-controller) — EXECUTING
-Plan: 4 of 5
+Plan: 5 of 5
 Status: Ready to execute
 Last activity: 2026-04-30
 
@@ -117,6 +117,7 @@ Progress (v2.2): [          ] 0%
 | Phase 14 P01 | 12min | 3 tasks | 14 files |
 | Phase 14 P02 | 8min | 3 tasks | 6 files |
 | Phase 14 P03 | 8min | 4 tasks | 10 files |
+| Phase 14 P04 | 15min | 3 tasks | 19 files |
 
 ## Accumulated Context
 
@@ -153,6 +154,10 @@ v2.0 + v1.0 decisions retained (truncated for brevity — see git history for fu
 - [Phase 14]: Plan 14-03: Forward-declared RampSnapshotter narrow interface on Tracker (single Snapshot() method) lets Task 1 sizer wiring compile before Task 3 creates *RampController; production wires concrete *RampController via duck typing in Plan 14-04
 - [Phase 14]: Plan 14-03: stageSizeForCfg helper duplicated in risk_gate.go (mirrors Sizer.stageSize) — kept in sync via doc comment; rejected exporting Sizer.StageSize to avoid coupling risk_gate.go to *Sizer when only the cap math is needed; D-22 defense in depth requires the two layers be independent
 - [Phase 14]: Plan 14-03: ForcePromote preserves CleanDayCounter (D-15 #3 — operator override is intentional); ForceDemote zeroes counter + increments DemoteCount (D-15 #4 matches asymmetric ratchet); Reset clears all state including DemoteCount; all three fire NotifyPriceGapRampForceOp via narrow RampNotifier interface
+- [Phase 14]: Plan 14-04: Tracker setters (SetReconciler/SetRamp/SetSizer) instead of NewTracker constructor param explosion — preserves 11+ existing tests; cmd/main.go wires via setters before Start
+- [Phase 14]: Plan 14-04: Notify dispatch tests moved to internal/notify (cycle fix) — pricegaptrader notify_test.go cannot import notify because notify imports pricegaptrader via pricegap_assert.go; SetTelegramAPIBase test hook added in test_hook.go for sibling-package retargeting
+- [Phase 14]: Plan 14-04: Added *database.Client.LoadPriceGapPosition (pos, exists, error) adapter — original GetPriceGapPosition conflates not-found with Redis errors; T-14-11 skipped-position counting requires the distinction
+- [Phase 14]: Plan 14-04: Boot guard treats CurrentStage<1 as unified failure signal (covers nil-ramp + corrupt-Redis + legacy-empty-state). Tracker.Start panics + dispatches BOOT_GUARD critical Telegram BEFORE spawning daemon goroutines
 
 ### Pending Todos
 
@@ -176,7 +181,7 @@ v2.0 + v1.0 decisions retained (truncated for brevity — see git history for fu
 
 ## Session Continuity
 
-Last session: 2026-04-30T07:35:45.641Z
-Stopped at: Completed 14-03-PLAN.md
+Last session: 2026-04-30T07:55:21.587Z
+Stopped at: Completed 14-04-PLAN.md
 Resume file: None
 Next command: `/gsd-plan-phase 14` to decompose Phase 14 (Daily Reconcile + Live Ramp Controller) into executable plans
