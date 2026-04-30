@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.2
 milestone_name: Auto-Discovery & Live Strategy 4
 status: executing
-stopped_at: Completed 14-04-PLAN.md
-last_updated: "2026-04-30T07:55:21.592Z"
+stopped_at: Completed 14-05-PLAN.md (Phase 14 closed — 5/5 plans)
+last_updated: "2026-04-30T16:07:00.000Z"
 last_activity: 2026-04-30
 progress:
   total_phases: 5
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 15
-  completed_plans: 14
-  percent: 93
+  completed_plans: 15
+  percent: 100
 ---
 
 # Project State
@@ -25,9 +25,9 @@ See: .planning/PROJECT.md (updated 2026-04-28 after v2.2 milestone start)
 
 ## Current Position
 
-Phase: 14 (daily-reconcile-live-ramp-controller) — EXECUTING
-Plan: 5 of 5
-Status: Ready to execute
+Phase: 14 (daily-reconcile-live-ramp-controller) — COMPLETE (5/5 plans)
+Plan: 5 of 5 — Read-only Dashboard Surface — DONE
+Status: Phase 14 closed; ready to plan Phase 15 (drawdown-circuit-breaker, PG-LIVE-02)
 Last activity: 2026-04-30
 
 **v2.2 phase structure (6 phases, 14 reqs, 100% coverage):**
@@ -118,6 +118,7 @@ Progress (v2.2): [          ] 0%
 | Phase 14 P02 | 8min | 3 tasks | 6 files |
 | Phase 14 P03 | 8min | 4 tasks | 10 files |
 | Phase 14 P04 | 15min | 3 tasks | 19 files |
+| Phase 14 P05 | 12min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -158,6 +159,9 @@ v2.0 + v1.0 decisions retained (truncated for brevity — see git history for fu
 - [Phase 14]: Plan 14-04: Notify dispatch tests moved to internal/notify (cycle fix) — pricegaptrader notify_test.go cannot import notify because notify imports pricegaptrader via pricegap_assert.go; SetTelegramAPIBase test hook added in test_hook.go for sibling-package retargeting
 - [Phase 14]: Plan 14-04: Added *database.Client.LoadPriceGapPosition (pos, exists, error) adapter — original GetPriceGapPosition conflates not-found with Redis errors; T-14-11 skipped-position counting requires the distinction
 - [Phase 14]: Plan 14-04: Boot guard treats CurrentStage<1 as unified failure signal (covers nil-ramp + corrupt-Redis + legacy-empty-state). Tracker.Start panics + dispatches BOOT_GUARD critical Telegram BEFORE spawning daemon goroutines
+- [Phase 14]: Plan 14-05: Narrow interfaces on *Server (RampSnapshotter + ReconcileRecordLoader) keep internal/api free of pricegaptrader concrete imports — production wires *RampController + *Reconciler via SetPgRamp/SetPgReconciler setters in cmd/main.go (D-15 boundary preserved, identical to Plan 12-03 Server.Hub() pattern)
+- [Phase 14]: Plan 14-05: Server-authoritative live_capital flag — handler reads cfg.PriceGapLiveCapital directly (NEVER from client config cache); operator badge color drives money-at-risk perception, must reflect server truth on every refresh (T-14-18 mitigation)
+- [Phase 14]: Plan 14-05: D-14 read-only contract enforced via explicit comment header in RampReconcileSection.tsx + grep verification (0 POST/PUT/PATCH/DELETE matches in widget); mutation UI deferred to Phase 16 PG-OPS-09 absorb when new top-level Pricegap tab is built
 
 ### Pending Todos
 
@@ -181,7 +185,7 @@ v2.0 + v1.0 decisions retained (truncated for brevity — see git history for fu
 
 ## Session Continuity
 
-Last session: 2026-04-30T07:55:21.587Z
-Stopped at: Completed 14-04-PLAN.md
+Last session: 2026-04-30T16:07:00.000Z
+Stopped at: Completed 14-05-PLAN.md (Phase 14 closed — 5/5 plans, all 6 success criteria ✓)
 Resume file: None
-Next command: `/gsd-plan-phase 14` to decompose Phase 14 (Daily Reconcile + Live Ramp Controller) into executable plans
+Next command: `/gsd-plan-phase 15` to decompose Phase 15 (Drawdown Circuit Breaker, PG-LIVE-02) into executable plans
