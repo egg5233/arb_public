@@ -2,6 +2,7 @@ package pricegaptrader
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -111,6 +112,19 @@ func (n *spyNotifier) NotifyPriceGapReconcileFailure(date string, err error) {
 		args = date + ":" + err.Error()
 	}
 	n.calls = append(n.calls, spyCall{Kind: "notify_reconcile_failure", Args: args})
+}
+
+// Phase 14 Plan 14-04: ramp surfaces for compile-time PriceGapNotifier conformance.
+func (n *spyNotifier) NotifyPriceGapRampDemote(prior, next int, reason string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.calls = append(n.calls, spyCall{Kind: "notify_ramp_demote", Args: fmt.Sprintf("%d->%d:%s", prior, next, reason)})
+}
+
+func (n *spyNotifier) NotifyPriceGapRampForceOp(action string, prior, next int, operator, reason string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.calls = append(n.calls, spyCall{Kind: "notify_ramp_force_op:" + action, Args: fmt.Sprintf("%d->%d:%s:%s", prior, next, operator, reason)})
 }
 
 func (n *spyNotifier) count() int {

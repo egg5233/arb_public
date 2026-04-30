@@ -75,6 +75,10 @@ type PriceGapNotifier interface {
 	NotifyPriceGapRiskBlock(symbol, gate, detail string)
 	NotifyPriceGapDailyDigest(date string, record DailyReconcileRecord, ramp models.RampState)
 	NotifyPriceGapReconcileFailure(date string, err error)
+	// Phase 14 Plan 14-03 ramp surfaces — emitted by RampController.Eval (loss-day demote)
+	// and pg-admin force-promote/force-demote/reset.
+	NotifyPriceGapRampDemote(prior, next int, reason string)
+	NotifyPriceGapRampForceOp(action string, prior, next int, operator, reason string)
 }
 
 // NoopNotifier is the zero-behavior default used when no Telegram notifier is
@@ -96,3 +100,9 @@ func (NoopNotifier) NotifyPriceGapDailyDigest(string, DailyReconcileRecord, mode
 
 // NotifyPriceGapReconcileFailure is a no-op (Phase 14 Plan 14-04 ships Telegram impl).
 func (NoopNotifier) NotifyPriceGapReconcileFailure(string, error) {}
+
+// NotifyPriceGapRampDemote is a no-op (Phase 14 Plan 14-04 ships Telegram impl).
+func (NoopNotifier) NotifyPriceGapRampDemote(int, int, string) {}
+
+// NotifyPriceGapRampForceOp is a no-op (Phase 14 Plan 14-04 ships Telegram impl).
+func (NoopNotifier) NotifyPriceGapRampForceOp(string, int, int, string, string) {}

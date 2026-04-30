@@ -1,6 +1,11 @@
 package pricegaptrader
 
 import (
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -82,18 +87,55 @@ func TestTracker_SetBroadcaster_NilRevertsToNoop(t *testing.T) {
 	}
 }
 
-// Phase 14 notifier stubs — bodies land in plan 14-04.
-// Daily-digest dispatcher (non-critical), reconcile-failure dispatcher
-// (critical), ramp-event allowlist routing.
+// Phase 14 Plan 14-04 notifier tests.
+//
+// Dispatch-shape assertions for NotifyPriceGapDailyDigest +
+// NotifyPriceGapReconcileFailure live in internal/notify (alongside other
+// telegram_*_test.go files) — placing them here would create an import
+// cycle (pricegaptrader imports notify via pricegap_assert.go test build).
+//
+// This file keeps the static allowlist invariant lock + Wave-0 stub
+// stand-ins.
 
+// TestNotifier_DailyDigest_DispatchesNonCritical lives in
+// internal/notify/telegram_pricegap_phase14_test.go (Plan 14-04). The Wave-0
+// stub is replaced here by a thin sibling that re-asserts the implementation
+// exists at compile time (NoopNotifier conforms to the widened interface).
 func TestNotifier_DailyDigest_DispatchesNonCritical(t *testing.T) {
-	t.Skip("Wave 0 stub: implementation lands in plan 14-04")
+	var n PriceGapNotifier = NoopNotifier{}
+	rec := DailyReconcileRecord{Anomalies: DailyReconcileAnomalies{FlaggedIDs: []string{}}}
+	n.NotifyPriceGapDailyDigest("2026-04-29", rec, models.RampState{CurrentStage: 1})
+	// Real dispatch behavior: see internal/notify/telegram_pricegap_phase14_test.go.
 }
 
+// TestNotifier_ReconcileFailure_DispatchesCritical — see comment above.
 func TestNotifier_ReconcileFailure_DispatchesCritical(t *testing.T) {
-	t.Skip("Wave 0 stub: implementation lands in plan 14-04")
+	var n PriceGapNotifier = NoopNotifier{}
+	n.NotifyPriceGapReconcileFailure("2026-04-29", nil)
+	// Real dispatch behavior: see internal/notify/telegram_pricegap_phase14_test.go.
 }
 
+// TestNotifier_AddsRampToAllowlist verifies the priceGapGateAllowlist in
+// telegram.go contains the "ramp" entry — the static check that locks the
+// allowlist invariant against future regression. We open the source file
+// (relative to runtime caller) and regex-match the allowlist body.
 func TestNotifier_AddsRampToAllowlist(t *testing.T) {
-	t.Skip("Wave 0 stub: implementation lands in plan 14-04")
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed")
+	}
+	telegramGo := filepath.Join(filepath.Dir(thisFile), "..", "notify", "telegram.go")
+	src, err := os.ReadFile(telegramGo)
+	if err != nil {
+		t.Fatalf("read telegram.go: %v", err)
+	}
+	re := regexp.MustCompile(`(?s)priceGapGateAllowlist\s*=\s*map\[string\]struct\{\}\{(.+?)\n\}`)
+	m := re.FindStringSubmatch(string(src))
+	if len(m) < 2 {
+		t.Fatalf("priceGapGateAllowlist literal not found in %s", telegramGo)
+	}
+	body := m[1]
+	if !strings.Contains(body, `"ramp"`) {
+		t.Errorf(`priceGapGateAllowlist missing "ramp" entry; allowlist body: %s`, body)
+	}
 }
