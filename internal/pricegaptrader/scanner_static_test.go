@@ -1,10 +1,30 @@
-// scanner_static_test.go — Compile-time read-only invariant for the scanner.
+// scanner_static_test.go — Compile-time chokepoint invariant for the scanner.
 //
-// Phase 11 / D-13 / T-11-26: Plan 04 ships the scanner with RegistryReader
-// (read-only). This file enforces that invariant by greppinng scanner.go's
-// source and refusing references to the concrete *Registry type or any of
-// its mutator method names. If a future change accidentally widens the
-// dependency back to *Registry the test fails before review.
+// Phase 11 / D-13 / T-11-26 (original) shipped this test forbidding `*Registry`
+// in scanner.go to enforce that Plan 04 only consumed the read-only
+// RegistryReader. Phase 12 D-17 widens scanner.go to hold *Registry so the
+// PromotionController (now reachable via s.promotion.Apply) can call Add and
+// Delete on the chokepoint. The chokepoint discipline is preserved by a
+// different invariant:
+//
+//   - PromotionController has NO *config.Config-mutation surface (it only
+//     READS PriceGapAutoPromoteScore + PriceGapMaxCandidates under cfg.RLock,
+//     never assigns cfg.PriceGapCandidates), so the only way scanner.go could
+//     bypass the chokepoint is via a raw `cfg.PriceGapCandidates =` or
+//     `s.cfg.PriceGapCandidates =` assignment.
+//
+// This file enforces the new (relaxed) invariant by greppinng scanner.go for
+// the raw-mutation pattern and rejecting it. The original `*Registry` and
+// `registry.(Add|Update|Delete|Replace)(` checks are intentionally REMOVED;
+// those calls are now legitimate via the PromotionController path.
+//
+// What is still forbidden in scanner.go:
+//   - Raw assignment to cfg.PriceGapCandidates (any receiver — `cfg.`, `s.cfg.`).
+//
+// What is now permitted:
+//   - Holding `*Registry` as a field (s.registry is *Registry per D-17).
+//   - Calling s.promotion.Apply(ctx, summary), which transitively calls
+//     s.registry.Add / s.registry.Delete — the chokepoint.
 package pricegaptrader
 
 import (
@@ -14,34 +34,32 @@ import (
 	"testing"
 )
 
-// TestScanner_NoRegistryMutators reads internal/pricegaptrader/scanner.go and
-// asserts:
-//   - The bare token `*Registry` (concrete type) does NOT appear — only the
-//     interface `RegistryReader` is permitted.
-//   - No call to registry.Add(, registry.Update(, registry.Delete(, or
-//     registry.Replace(, or to s.registry.<mutator>( on the receiver.
+// TestScanner_NoRawCfgCandidatesAssignment asserts that scanner.go never
+// directly writes cfg.PriceGapCandidates. The only legitimate writers in
+// Phase 12 are:
+//   - dashboard / pg-admin (via internal/api → pgRegistry chokepoint)
+//   - PromotionController (via pgRegistry.Add/Delete chokepoint)
 //
-// Comments are allowed to mention the words; the regex matches the typed
-// token form `\*Registry\b` and the call-form `registry\.(Add|Update|Delete|Replace)\(`.
-func TestScanner_NoRegistryMutators(t *testing.T) {
+// Both paths route through *Registry, which under cfg.Lock applies the diff.
+// The scanner package has no other path to mutate cfg.PriceGapCandidates;
+// this regex enforces that contract at the source-text level.
+func TestScanner_NoRawCfgCandidatesAssignment(t *testing.T) {
 	src, err := os.ReadFile("scanner.go")
 	if err != nil {
 		t.Fatalf("read scanner.go: %v", err)
 	}
 
-	// Strip line comments before matching so legitimate prose mentioning
-	// "*Registry" in comments doesn't trigger the regex. Block comments are
-	// rare in this package; if used, the comment-trim helper below also
-	// excises them.
+	// Strip line + block comments before matching so legitimate prose mentions
+	// of forbidden patterns inside comments (this very file's doc block,
+	// scanner.go's package comment) do not trigger the regex.
 	stripped := stripGoComments(string(src))
 
-	if regexp.MustCompile(`\*Registry\b`).MatchString(stripped) {
-		t.Errorf("scanner.go references concrete *Registry — must use RegistryReader interface (D-13 / T-11-26)")
-	}
-
-	mutatorRe := regexp.MustCompile(`registry\.(Add|Update|Delete|Replace)\(`)
-	if mutatorRe.MatchString(stripped) {
-		t.Errorf("scanner.go calls a Registry mutator — must be read-only (D-13 / T-11-26)")
+	// Forbid `cfg.PriceGapCandidates = ...` and `s.cfg.PriceGapCandidates = ...`
+	// or any other receiver-prefixed form. The `\s*=` (without `==`) excludes
+	// equality comparisons.
+	rawAssignRe := regexp.MustCompile(`PriceGapCandidates\s*=[^=]`)
+	if rawAssignRe.MatchString(stripped) {
+		t.Errorf("scanner.go contains raw `cfg.PriceGapCandidates =` assignment — must use *Registry chokepoint via PromotionController (Phase 12 D-17)")
 	}
 }
 

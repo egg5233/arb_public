@@ -191,11 +191,20 @@ type legSample struct {
 // per-key bar ring map and lastSample map are guarded by s.mu so external
 // observers (none today; reserved for future debug introspection) can read
 // state safely. consecErr is incremented inside scanPair while s.mu is held.
+//
+// Phase 12 D-17: registry was widened from RegistryReader to *Registry so the
+// PromotionController can call Add/Delete via the chokepoint. Direct mutator
+// calls from scanner.go itself remain forbidden by scanner_static_test.go's
+// `cfg.PriceGapCandidates =` regex; the chokepoint discipline is enforced by
+// PromotionController not having a *config.Config field of its own (it only
+// reads thresholds), so the scanner→controller→registry path is the ONLY
+// auto-mutation route in Phase 12.
 type Scanner struct {
 	cfg       *config.Config
-	registry  RegistryReader
+	registry  *Registry
 	exchanges map[string]exchange.Exchange
 	telemetry TelemetryWriter
+	promotion *PromotionController // Phase 12 (D-16); nil-safe — RunCycle checks
 	log       *utils.Logger
 	nowFunc   func() time.Time
 
@@ -208,14 +217,17 @@ type Scanner struct {
 // NewScanner constructs a Scanner. log is optional; when nil the scanner
 // emits no logs (callers in Plan 05 will pass utils.NewLogger("scanner")).
 //
-// Compile-time assertion: registry parameter is RegistryReader (interface),
-// not the concrete registry type. scanner_static_test.go enforces this at
-// the source level.
+// Phase 12 D-17 swap: registry is now *Registry (concrete) so the
+// PromotionController can call Add/Delete via this same instance. The
+// promotion parameter is nil-safe — RunCycle checks for nil before calling
+// Apply, so unit tests that only exercise scanner gating continue to pass
+// nil here.
 func NewScanner(
 	cfg *config.Config,
-	registry RegistryReader,
+	registry *Registry,
 	exchanges map[string]exchange.Exchange,
 	telemetry TelemetryWriter,
+	promotion *PromotionController,
 	log *utils.Logger,
 ) *Scanner {
 	return &Scanner{
@@ -223,6 +235,7 @@ func NewScanner(
 		registry:   registry,
 		exchanges:  exchanges,
 		telemetry:  telemetry,
+		promotion:  promotion,
 		log:        log,
 		nowFunc:    time.Now,
 		bars:       make(map[string]*barRing),
@@ -317,6 +330,21 @@ UniverseLoop:
 	summary.CompletedAt = completedAt.Unix()
 	summary.DurationMs = completedAt.Sub(startedAtNanos).Milliseconds()
 	_ = s.telemetry.WriteCycle(ctx, summary)
+
+	// Phase 12 (D-16) — synchronous auto-promotion. Apply runs in this same
+	// goroutine right after the telemetry write so streak counters see the
+	// authoritative cycle outcome. promotion is nil when:
+	//   - the operator has set PriceGapDiscoveryEnabled=false (cmd/main.go
+	//     never constructs a controller in that case — rest of RunCycle is
+	//     also gated on the same flag at the top of this function)
+	//   - the scanner is under unit test and the test passed nil
+	// Pitfall 6: never abort a cycle on a controller hiccup — Apply errors
+	// are logged best-effort and the loop continues.
+	if s.promotion != nil {
+		if err := s.promotion.Apply(ctx, summary); err != nil && s.log != nil {
+			s.log.Warn("[phase-12] promotion.Apply failed: %v", err)
+		}
+	}
 }
 
 // scanPair evaluates the 6 hard gates in cheapest-first order. On any

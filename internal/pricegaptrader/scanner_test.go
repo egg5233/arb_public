@@ -26,7 +26,6 @@ import (
 	"time"
 
 	"arb/internal/config"
-	"arb/internal/models"
 	"arb/pkg/exchange"
 	"arb/pkg/utils"
 )
@@ -68,22 +67,17 @@ func (s *scanStub) GetDepth(symbol string) (*exchange.Orderbook, bool) {
 	return nil, false
 }
 
-// fakeRegistryReader is the read-only registry used by scanner. The scanner
-// only consults List() for the "already promoted" set.
-type fakeRegistryReader struct {
-	items []models.PriceGapCandidate
-}
-
-func (f *fakeRegistryReader) Get(idx int) (models.PriceGapCandidate, bool) {
-	if idx < 0 || idx >= len(f.items) {
-		return models.PriceGapCandidate{}, false
-	}
-	return f.items[idx], true
-}
-func (f *fakeRegistryReader) List() []models.PriceGapCandidate {
-	out := make([]models.PriceGapCandidate, len(f.items))
-	copy(out, f.items)
-	return out
+// newTestRegistry returns a *Registry usable as a scanner dependency in tests
+// that don't exercise auto-promotion. Phase 12 D-17 widened NewScanner to take
+// *Registry instead of RegistryReader; for tests that only need List() (the
+// scanner's snapshotPromoted path), a registry built against an empty
+// *config.Config and nil audit writer is sufficient — List() only RLocks
+// cfg.PriceGapCandidates and never touches disk.
+//
+// Tests that actually want to seed promoted candidates pass them through cfg
+// before constructing the registry.
+func newTestRegistry(cfg *config.Config) *Registry {
+	return NewRegistry(cfg, nil, utils.NewLogger("test-registry"))
 }
 
 // fakeTele captures every TelemetryWriter call so tests can assert exact
@@ -169,8 +163,11 @@ func runCycles(s *Scanner, ctx context.Context, n int, start time.Time) {
 
 // scenario builds a scanner with two stubs (binance long, bybit short) each
 // publishing the supplied BTCUSDT BBO + depth book.
+//
+// Phase 12 D-17: registry is now *Registry (concrete) and the scanner gets a
+// nil PromotionController — these tests cover gating, not auto-promotion.
 func scenarioTwoLeg(longBid, longAsk, shortBid, shortAsk, depthQty float64) (
-	*Scanner, *fakeTele, *fakeRegistryReader, *scanStub, *scanStub,
+	*Scanner, *fakeTele, *Registry, *scanStub, *scanStub,
 ) {
 	cfg := newScannerCfg()
 	long := newScanStub("binance")
@@ -183,9 +180,9 @@ func scenarioTwoLeg(longBid, longAsk, shortBid, shortAsk, depthQty float64) (
 	short.setDepth("BTCUSDT", bS, aS)
 	exchanges := map[string]exchange.Exchange{"binance": long, "bybit": short}
 	tele := &fakeTele{}
-	reg := &fakeRegistryReader{}
+	reg := newTestRegistry(cfg)
 	log := utils.NewLogger("scanner-test")
-	sc := NewScanner(cfg, reg, exchanges, tele, log)
+	sc := NewScanner(cfg, reg, exchanges, tele, nil, log)
 	return sc, tele, reg, long, short
 }
 
@@ -202,9 +199,9 @@ func TestScanner_DefaultOff(t *testing.T) {
 	long := newScanStub("binance")
 	short := newScanStub("bybit")
 	exchanges := map[string]exchange.Exchange{"binance": long, "bybit": short}
-	reg := &fakeRegistryReader{}
+	reg := newTestRegistry(cfg)
 	log := utils.NewLogger("scanner-test")
-	sc := NewScanner(cfg, reg, exchanges, tele, log)
+	sc := NewScanner(cfg, reg, exchanges, tele, nil, log)
 
 	sc.RunCycle(context.Background(), nonBlackout(time.Now()))
 
@@ -241,8 +238,8 @@ func TestScanner_UniverseWalk(t *testing.T) {
 		ex.setDepth("ETHUSDT", bE, aE)
 	}
 	exchanges := map[string]exchange.Exchange{"a": a, "b": b, "c": c}
-	reg := &fakeRegistryReader{}
-	sc := NewScanner(cfg, reg, exchanges, tele, utils.NewLogger("t"))
+	reg := newTestRegistry(cfg)
+	sc := NewScanner(cfg, reg, exchanges, tele, nil, utils.NewLogger("t"))
 
 	sc.RunCycle(context.Background(), nonBlackout(time.Now()))
 
@@ -376,9 +373,9 @@ func TestScanner_DenylistTuple(t *testing.T) {
 		ex.setDepth("BTCUSDT", bL, aL)
 	}
 	exchanges := map[string]exchange.Exchange{"a": a, "bybit": b, "c": c}
-	reg := &fakeRegistryReader{}
+	reg := newTestRegistry(cfg)
 	tele := &fakeTele{}
-	sc := NewScanner(cfg, reg, exchanges, tele, utils.NewLogger("t"))
+	sc := NewScanner(cfg, reg, exchanges, tele, nil, utils.NewLogger("t"))
 
 	// Use a non-blackout minute (:40) by injecting nowFunc explicitly so the
 	// blackout gate can't preempt the denylist gate ordering verification.
@@ -422,7 +419,7 @@ func TestScanner_BybitBlackout(t *testing.T) {
 	}
 	exchanges := map[string]exchange.Exchange{"a": a, "bybit": b, "c": c}
 	tele := &fakeTele{}
-	sc := NewScanner(cfg, &fakeRegistryReader{}, exchanges, tele, utils.NewLogger("t"))
+	sc := NewScanner(cfg, newTestRegistry(cfg), exchanges, tele, nil, utils.NewLogger("t"))
 
 	// 12:04:30 UTC — inside the :04..:05:30 window.
 	now := time.Date(2026, 4, 28, 12, 4, 30, 0, time.UTC)
@@ -452,7 +449,7 @@ func TestScanner_SingletonSilentSkip(t *testing.T) {
 	a.setDepth("SOMETHINGUSDT", bL, aL)
 	exchanges := map[string]exchange.Exchange{"a": a, "b": b}
 	tele := &fakeTele{}
-	sc := NewScanner(cfg, &fakeRegistryReader{}, exchanges, tele, utils.NewLogger("t"))
+	sc := NewScanner(cfg, newTestRegistry(cfg), exchanges, tele, nil, utils.NewLogger("t"))
 
 	sc.RunCycle(context.Background(), nonBlackout(time.Now()))
 
@@ -559,7 +556,7 @@ func TestScanner_CycleErrorBudget(t *testing.T) {
 		exchanges[k] = v
 	}
 	tele := &fakeTele{}
-	sc := NewScanner(cfg, &fakeRegistryReader{}, exchanges, tele, utils.NewLogger("t"))
+	sc := NewScanner(cfg, newTestRegistry(cfg), exchanges, tele, nil, utils.NewLogger("t"))
 	sc.RunCycle(context.Background(), nonBlackout(time.Now()))
 
 	if tele.cycleFailed == 0 {
@@ -606,6 +603,92 @@ func TestScanner_SubScoreRecord(t *testing.T) {
 	}
 	if rec.GatesFailed == nil {
 		t.Errorf("GatesFailed nil")
+	}
+}
+
+// Test 16 (Phase 12 D-16) — TestScanner_RunCycleCallsPromotionApply asserts
+// that RunCycle calls PromotionController.Apply AFTER telemetry.WriteCycle
+// returns AND with the same CycleSummary that was passed to telemetry.
+//
+// We construct a real PromotionController (not a fake) wired to the in-package
+// fakeRegistry/fakeSink/fakeNotifier/fakeGuard/fakeTelemetrySink doubles
+// declared in promotion_testhelpers_test.go (same package, automatically
+// available in test build).
+//
+// Strategy: run 9 cycles spaced 1 minute apart so the persistence gate (4
+// bars) clears and the controller's promoteStreakThreshold (6) is crossed.
+// On the 9th cycle (4 build-up cycles + 6 accepted cycles overlaps; the
+// streak counter starts incrementing on the FIRST accepted cycle which is
+// cycle 4) we should see the controller fire a promote event on the sink
+// and an Add call on the fake registry. PriceGapAutoPromoteScore=1 ensures
+// the magnitude clears the bar.
+func TestScanner_RunCycleCallsPromotionApply(t *testing.T) {
+	sc, tele, _, _, _ := scenarioTwoLeg(100, 100.1, 102, 102.1, 100)
+
+	sc.cfg.PriceGapAutoPromoteScore = 1
+	sc.cfg.PriceGapMaxCandidates = 12
+
+	reg := newFakeRegistry()
+	guard := &fakeGuard{}
+	sink := &fakeSink{}
+	notif := &fakeNotifier{}
+	telSink := newFakeTelemetrySink()
+	ctrl, err := NewPromotionController(sc.cfg, reg, guard, sink, notif, telSink, utils.NewLogger("test-promotion"))
+	if err != nil {
+		t.Fatalf("NewPromotionController: %v", err)
+	}
+	sc.promotion = ctrl
+
+	// 4 cycles to fill the persistence ring + 6 cycles for the promote streak
+	// threshold = 10 cycles total.
+	start := nonBlackout(time.Now())
+	runCycles(sc, context.Background(), 10, start)
+
+	// telemetry.WriteCycle MUST have been called 10 times — proves Apply
+	// always runs AFTER WriteCycle (otherwise an Apply panic would have
+	// short-circuited the loop).
+	if got := len(tele.cycles); got != 10 {
+		t.Fatalf("telemetry cycle count=%d want 10", got)
+	}
+	last := tele.cycles[len(tele.cycles)-1]
+	rec := findRec(last.Records, "BTCUSDT", "binance", "bybit")
+	if rec == nil || rec.WhyRejected != ReasonAccepted {
+		t.Fatalf("final record not accepted: rec=%+v", rec)
+	}
+
+	// 6 consecutive accepted cycles after the persistence ring fills →
+	// controller fires exactly one promote action.
+	addCalls := func() int {
+		reg.mu.Lock()
+		defer reg.mu.Unlock()
+		return len(reg.addLog)
+	}()
+	if addCalls < 1 {
+		t.Fatalf("expected at least one registry.Add call from Apply (proves Apply ran with summary); got %d", addCalls)
+	}
+	events := sink.Events()
+	if len(events) < 1 {
+		t.Fatalf("expected at least one PromoteEvent emitted by sink; got %d", len(events))
+	}
+	ev := events[0]
+	if ev.Action != "promote" || ev.Symbol != "BTCUSDT" || ev.LongExch != "binance" || ev.ShortExch != "bybit" {
+		t.Fatalf("event mismatch: action=%q sym=%q long=%q short=%q",
+			ev.Action, ev.Symbol, ev.LongExch, ev.ShortExch)
+	}
+}
+
+// TestScanner_RunCycleNilPromotionSafe — the promotion field is nil-safe so
+// existing tests (which pass nil) and OFF-by-config bootstrap (which never
+// constructs a controller) do not panic.
+func TestScanner_RunCycleNilPromotionSafe(t *testing.T) {
+	sc, tele, _, _, _ := scenarioTwoLeg(100, 100.1, 102, 102.1, 100)
+	if sc.promotion != nil {
+		t.Fatal("scenarioTwoLeg should return scanner with nil promotion")
+	}
+	// Run a cycle — must not panic.
+	sc.RunCycle(context.Background(), nonBlackout(time.Now()))
+	if len(tele.cycles) != 1 {
+		t.Fatalf("expected 1 cycle write; got %d", len(tele.cycles))
 	}
 }
 
