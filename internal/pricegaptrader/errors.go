@@ -16,4 +16,15 @@ var (
 	ErrPriceGapStaleBBO             = errors.New("pricegap: BBO staler than threshold")
 	ErrPriceGapCircuitBreaker       = errors.New("pricegap: circuit breaker open")
 	ErrPriceGapDuplicateCandidate   = errors.New("pricegap: candidate already has an active position")
+
+	// Phase 14 Plan 14-03 (PG-LIVE-01) — Gate 6 ramp sentinels.
+
+	// ErrPriceGapRampExceeded — Gate 6 ramp rejection. Returned when
+	// requestedNotionalUSDT > min(stageSize, hardCeiling) AND PriceGapLiveCapital=true.
+	ErrPriceGapRampExceeded = errors.New("pricegap: ramp exceeded — notional > min(stage_size, hard_ceiling)")
+
+	// ErrPriceGapRampStateUnavailable — Gate 6 fail-closed when ramp state
+	// read fails AND live_capital=true. Refuses to size live capital from
+	// unknown ramp state; matches T-14-12 fail-closed posture.
+	ErrPriceGapRampStateUnavailable = errors.New("pricegap: ramp state unavailable — refusing to size live capital")
 )

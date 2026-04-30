@@ -105,6 +105,27 @@ type Tracker struct {
 	// are set in NewTracker.
 	scanFirstTickOffset time.Duration
 	scanInterval        time.Duration
+
+	// Phase 14 Plan 14-03 — live-capital ramp DI seams.
+	//
+	// sizer caps notional at the sizing call site (D-22 defense-in-depth
+	// layer 2; risk_gate.go Gate 6 is the independent second layer).
+	// ramp provides the current stage via Snapshot().CurrentStage; the
+	// narrow RampSnapshotter interface (declared below) keeps Tracker
+	// independent of the *RampController concrete type.
+	//
+	// Both are nil-by-default; Plan 14-04 wires *Sizer + *RampController in
+	// cmd/main.go bootstrap. nil-guarded throughout so tests + the in-flight
+	// Phase 14 work do not crash.
+	sizer *Sizer
+	ramp  RampSnapshotter
+}
+
+// RampSnapshotter is the narrow read-only surface Tracker requires from a
+// ramp controller. The full *RampController (Plan 14-03 Task 3) satisfies
+// this; tests can substitute a fake.
+type RampSnapshotter interface {
+	Snapshot() models.RampState
 }
 
 // ScanRunner is the narrow Scanner interface the Tracker depends on so the
@@ -558,6 +579,14 @@ func (t *Tracker) runTick(now time.Time) {
 		}
 
 		notional := cand.MaxPositionUSDT
+		// Phase 14 Plan 14-03 — defense-in-depth layer 2 (D-22). Sizer caps
+		// at the sizing call site BEFORE Gate 6 sees the request. Both
+		// guards must agree; either one alone is sufficient to block over-
+		// budget proposals. nil-guard: Plan 14-04 wires non-nil; before
+		// then this is a no-op so paper mode is byte-identical.
+		if t.sizer != nil && t.ramp != nil {
+			notional = t.sizer.Cap(notional, t.ramp.Snapshot().CurrentStage)
+		}
 
 		gate := t.preEntry(cand, notional, det, active)
 		if gate.Err != nil {
