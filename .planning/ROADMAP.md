@@ -130,7 +130,12 @@ Phase numbers reuse 11 + 12 from the v2.1 deferred-numbering plan; 13 was consum
   4. Asymmetric ratchet works: a single losing day resets clean-day counter to 0 AND demotes one stage if currently above stage 1.
   5. Hard ceiling enforced as `min(stage_size, hard_ceiling)` at the sizing call site — a config typo of `stage_3_size_usdt: 9999` still sizes at 1000.
   6. Ramp gate integrated into `risk_gate.go` as gate #7, returning `GateRampExceeded` for over-budget proposals.
-**Plans**: TBD
+**Plans**: 5 plans
+- [x] 14-01-PLAN.md — Foundation (config schema + Position model + Redis namespace + close-path SADD + Wave-0 stubs)
+- [ ] 14-02-PLAN.md — Reconciler core (3-retry imitation + idempotency byte-equality + anomaly flagging)
+- [ ] 14-03-PLAN.md — RampController + Gate 6 + Sizer (asymmetric ratchet, Redis persistence, defense-in-depth caps)
+- [ ] 14-04-PLAN.md — Daemon + pg-admin + Telegram (UTC 00:30 fire, boot guard, 6 subcommands, 4 telegram methods, VERSION+CHANGELOG)
+- [ ] 14-05-PLAN.md — API + Frontend widget (read-only /api/pg/ramp + /api/pg/reconcile/{date}, dashboard panel, EN+zh-TW lockstep, human-verify)
 **UI hint**: yes
 
 ### Phase 15: Drawdown Circuit Breaker
@@ -189,7 +194,7 @@ Phase numbers reuse 11 + 12 from the v2.1 deferred-numbering plan; 13 was consum
 | 999.1. Bidirectional pricegap candidates | v2.1 | 6/6 | Complete | 2026-04-27 |
 | 11. Auto-Discovery Scanner + Chokepoint + Telemetry | v2.2 | 6/6 | Complete    | 2026-04-28 |
 | 12. Auto-Promotion | v2.2 | 4/4 | Complete    | 2026-04-30 |
-| 14. Daily Reconcile + Live Ramp Controller | v2.2 | 0/? | Not started | — |
+| 14. Daily Reconcile + Live Ramp Controller | v2.2 | 1/5 | In Progress|  |
 | 15. Drawdown Circuit Breaker | v2.2 | 0/? | Not started | — |
 | 16. Paper-Mode Cleanup + Dashboard Consolidation | v2.2 | 0/? | Not started | — |
 | 17. v1.0 Tech-Debt Sweep | v2.2 | 0/? | Not started | — |

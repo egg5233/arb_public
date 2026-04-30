@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.2
 milestone_name: Auto-Discovery & Live Strategy 4
-status: completed
-stopped_at: Phase 14 context gathered
-last_updated: "2026-04-30T04:24:52.940Z"
+status: executing
+stopped_at: Completed 14-01-PLAN.md
+last_updated: "2026-04-30T07:11:20.477Z"
 last_activity: 2026-04-30
 progress:
   total_phases: 5
   completed_phases: 2
-  total_plans: 10
-  completed_plans: 10
-  percent: 100
+  total_plans: 15
+  completed_plans: 11
+  percent: 73
 ---
 
 # Project State
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-28 after v2.2 milestone start)
 
 **Core value:** "I deposit USDT, select my risk preference, and the system automatically finds opportunities across multiple strategies, opens positions, collects yield, exits when profitable, and I can see exactly how much each position earned — with capital shifting between strategies as opportunities shift."
-**Current focus:** Phase 12 — auto-promotion
+**Current focus:** Phase 14 — daily-reconcile-live-ramp-controller
 
 ## Current Position
 
-Phase: 14
-Plan: Not started
-Status: Phase 12 complete; ready to start Phase 14 (Daily Reconcile + Live Ramp Controller)
+Phase: 14 (daily-reconcile-live-ramp-controller) — EXECUTING
+Plan: 2 of 5
+Status: Ready to execute
 Last activity: 2026-04-30
 
 **v2.2 phase structure (6 phases, 14 reqs, 100% coverage):**
@@ -114,6 +114,7 @@ Progress (v2.2): [          ] 0%
 | Phase 12 P02 | 22 | 2 tasks | 7 files |
 | Phase 12 P03 | 25min | 2 tasks | 7 files |
 | Phase 12 P04 | 35min | 4 tasks | 7 files |
+| Phase 14 P01 | 12min | 3 tasks | 14 files |
 
 ## Accumulated Context
 
@@ -141,6 +142,9 @@ v2.0 + v1.0 decisions retained (truncated for brevity — see git history for fu
 - [Phase 12]: Plan 03: scanner registry param widened to *Registry (D-17 swap); chokepoint discipline preserved by relaxed scanner_static_test.go regex forbidding only raw cfg.PriceGapCandidates assignment
 - [Phase 12]: Plan 03: added Server.Hub() public accessor in internal/api so cmd/main.go can pass the WS hub to RedisWSPromoteSink without leaking internal/api into pricegaptrader (D-15 boundary preserved)
 - [Phase 12]: Plan 04: PromoteTimeline replaces Phase 11 placeholder; usePgDiscovery hook does composite-key dedupe + 1000-cap at the hook layer (not component) so all consumers inherit bounded shape; PG-DISC-02 closed (success criterion #5 satisfied: events appear in dashboard timeline). Phase 12 backend+frontend feature-complete on v0.36.0 binary; default OFF behind PriceGapDiscoveryEnabled.
+- [Phase 14]: [Phase 14 P01]: validatePriceGapDiscovery (Phase 11) intentionally remains unwired in Load() because wiring it broke pre-existing tests with MaxCandidates=100; only validatePriceGapLive runs at config-load (D-06 paper/live + v2.2 hard ceiling)
+- [Phase 14]: [Phase 14 P01]: monitor.closePair SADD lands AFTER pos.ClosedAt (line 248) and BEFORE SavePriceGapPosition so anomalous timing is captured even when persistence fails — matches existing best-effort pattern
+- [Phase 14]: [Phase 14 P01]: Per-day SET (pg:positions:closed:{YYYY-MM-DD}) has no TTL — operator backfill must work for any past date; RampState HASH uses HSet pipeline for atomic 5-field write
 
 ### Pending Todos
 
@@ -164,7 +168,7 @@ v2.0 + v1.0 decisions retained (truncated for brevity — see git history for fu
 
 ## Session Continuity
 
-Last session: 2026-04-30T04:24:52.935Z
-Stopped at: Phase 14 context gathered
-Resume file: .planning/phases/14-daily-reconcile-live-ramp-controller/14-CONTEXT.md
+Last session: 2026-04-30T07:11:09.354Z
+Stopped at: Completed 14-01-PLAN.md
+Resume file: None
 Next command: `/gsd-plan-phase 14` to decompose Phase 14 (Daily Reconcile + Live Ramp Controller) into executable plans

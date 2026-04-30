@@ -28,9 +28,9 @@
 
 ### Strategy 4 Live Capital
 
-- [ ] **PG-LIVE-01**: Conservative ramp controller gates Strategy 4 live capital through discrete stages — 100 USDT/leg → 500 USDT/leg after 7 clean days → hard ceiling 1000 USDT/leg for v2.2. Ramp state Redis-persisted with 5 explicit fields (current stage, clean-day counter, last evaluation timestamp, last-loss-day timestamp, demote count). Asymmetric ratchet: any loss day resets the clean-day counter to 0 and demotes one stage. `min(stage_size, hard_ceiling)` enforced at the sizing call site, not only at stage transitions. Idempotent daily evaluation. Gate integrated into `risk_gate.go` as gate #7.
+- [x] **PG-LIVE-01**: Conservative ramp controller gates Strategy 4 live capital through discrete stages — 100 USDT/leg → 500 USDT/leg after 7 clean days → hard ceiling 1000 USDT/leg for v2.2. Ramp state Redis-persisted with 5 explicit fields (current stage, clean-day counter, last evaluation timestamp, last-loss-day timestamp, demote count). Asymmetric ratchet: any loss day resets the clean-day counter to 0 and demotes one stage. `min(stage_size, hard_ceiling)` enforced at the sizing call site, not only at stage transitions. Idempotent daily evaluation. Gate integrated into `risk_gate.go` as gate #7.
 - [ ] **PG-LIVE-02**: Drawdown circuit breaker monitors Strategy 4 daily REALIZED PnL on a rolling 24h window (NOT calendar-day, NOT MTM). When realized PnL drops below `PriceGapDrawdownLimitUSDT` (new config field), breaker fires: auto-revert live → paper via sticky `PaperModeStickyUntil` flag, auto-disable any open candidate, Telegram critical alert + WS broadcast, log to `pg:breaker:trips`. Suppress evaluation during Bybit `:04-:05:30` blackout. Two-strike rule (require breach + confirmation tick before firing). Recovery requires explicit operator action — sticky flag does not auto-clear.
-- [ ] **PG-LIVE-03**: Daily PnL reconcile job runs 30+ minutes after UTC 00:00 (deliberately offset from Bybit blackout + funding settlement windows). Aggregates closed Strategy 4 positions keyed by `(position_id, version)` using exchange close-timestamp (not local clock), reuses perp-perp 3-retry pattern. Output to `pg:reconcile:daily:{date}` Redis keys. Provides clean-day signal to PG-LIVE-01. Anomaly flagging on large slippage / missing close timestamps.
+- [x] **PG-LIVE-03**: Daily PnL reconcile job runs 30+ minutes after UTC 00:00 (deliberately offset from Bybit blackout + funding settlement windows). Aggregates closed Strategy 4 positions keyed by `(position_id, version)` using exchange close-timestamp (not local clock), reuses perp-perp 3-retry pattern. Output to `pg:reconcile:daily:{date}` Redis keys. Provides clean-day signal to PG-LIVE-01. Anomaly flagging on large slippage / missing close timestamps.
 
 ### Operations
 
@@ -90,9 +90,9 @@
 | PG-DISC-02 | Phase 12 | Complete |
 | PG-DISC-03 | Phase 11 | Pending |
 | PG-DISC-04 | Phase 11 | Pending |
-| PG-LIVE-01 | Phase 14 | Pending |
+| PG-LIVE-01 | Phase 14 | Complete |
 | PG-LIVE-02 | Phase 15 | Pending |
-| PG-LIVE-03 | Phase 14 | Pending |
+| PG-LIVE-03 | Phase 14 | Complete |
 | PG-OPS-09 | Phase 16 | Pending |
 | PG-FIX-01 | Phase 16 | Pending |
 | PG-FIX-02 | Phase 16 | Pending |
