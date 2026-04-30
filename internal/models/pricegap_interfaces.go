@@ -86,4 +86,21 @@ type PriceGapStore interface {
 	// Redis lock reuse (Phase 8 uses "arb:locks:pg:<symbol>" per CONTEXT code_context)
 	AcquirePriceGapLock(resource string, ttl time.Duration) (token string, ok bool, err error)
 	ReleasePriceGapLock(resource, token string) error
+
+	// Phase 14 (PG-LIVE-01, PG-LIVE-03) — daily reconcile + ramp persistence.
+	// AddPriceGapClosedPositionForDate SADDs the position id into a per-day
+	// SET keyed by UTC date (D-02). The reconciler reads the SET via
+	// GetPriceGapClosedPositionsForDate to enumerate closed positions for
+	// aggregation (D-04 idempotency). Save/LoadPriceGapReconcileDaily round-trip
+	// the byte-identical aggregate JSON to satisfy D-04 (re-runs produce the
+	// same bytes). Save/LoadPriceGapRampState round-trip the 5-field RampState
+	// hash (PG-LIVE-01 hard contract). AppendPriceGapRampEvent writes a
+	// bounded LIST capped at 500 entries.
+	AddPriceGapClosedPositionForDate(posID string, date time.Time) error
+	GetPriceGapClosedPositionsForDate(date string) ([]string, error)
+	SavePriceGapReconcileDaily(date string, payload []byte) error
+	LoadPriceGapReconcileDaily(date string) ([]byte, bool, error)
+	SavePriceGapRampState(s RampState) error
+	LoadPriceGapRampState() (RampState, bool, error)
+	AppendPriceGapRampEvent(ev RampEvent) error
 }

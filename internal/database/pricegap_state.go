@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"arb/internal/models"
@@ -29,6 +30,17 @@ const (
 	// A caller asking for "SOON" yields the final key "arb:locks:pg:SOON", which
 	// cannot collide with perp-perp's "arb:locks:<symbol>" namespace.
 	priceGapLockPrefix = "arb:locks:pg:"
+
+	// Phase 14 (PG-LIVE-01, PG-LIVE-03) — daily reconcile + ramp persistence.
+	// All keys live under the existing pg:* namespace to keep operator mental
+	// model consistent. Per-day SET enables O(1) reconcile lookup (D-02);
+	// reconcile daily aggregate is byte-identical on repeat (D-04 idempotency).
+	keyPricegapClosedPrefix       = "pg:positions:closed:" // SET per-day, key = prefix + YYYY-MM-DD (D-02)
+	keyPricegapReconcileDailyPref = "pg:reconcile:daily:"  // STRING per-day (D-04 byte-identical)
+	keyPricegapRampState          = "pg:ramp:state"        // HASH 5 fields (PG-LIVE-01 hard contract)
+	keyPricegapRampEvents         = "pg:ramp:events"       // LIST capped 500
+
+	priceGapRampEventsCap = 500
 )
 
 // Compile-time assertion that *Client satisfies the PriceGapStore interface.
@@ -302,6 +314,170 @@ func (c *Client) ReleasePriceGapLock(resource, token string) error {
 	_, err := releaseLockScript.Run(ctx, c.rdb, []string{priceGapLockPrefix + resource}, token).Result()
 	if err != nil && err != redis.Nil {
 		return fmt.Errorf("release pricegap lock %s: %w", resource, err)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Phase 14 — daily reconcile + ramp persistence (PG-LIVE-01, PG-LIVE-03)
+// ---------------------------------------------------------------------------
+
+// pricegapDateString formats date in UTC YYYY-MM-DD for use in key suffixes.
+// Centralized so every reconcile path uses the same format (D-04 keying).
+func pricegapDateString(d time.Time) string {
+	return d.UTC().Format("2006-01-02")
+}
+
+// AddPriceGapClosedPositionForDate SADDs the position id into a per-day SET
+// keyed by the UTC date of `date` (D-02). No TTL — operator backfill must
+// work for any past date. Caller is the close-path hook in monitor.closePair;
+// the SADD is best-effort (matches the existing precedent at lines 248–249
+// of monitor.go where SavePriceGapPosition / RemoveActivePriceGapPosition
+// failures are logged but not raised — T-14-09).
+func (c *Client) AddPriceGapClosedPositionForDate(posID string, date time.Time) error {
+	if posID == "" {
+		return fmt.Errorf("pricegap: AddPriceGapClosedPositionForDate empty posID")
+	}
+	key := keyPricegapClosedPrefix + pricegapDateString(date)
+	return c.rdb.SAdd(context.Background(), key, posID).Err()
+}
+
+// GetPriceGapClosedPositionsForDate returns the position IDs SADDed for the
+// given UTC date string (YYYY-MM-DD). Returns nil slice on empty SET; non-nil
+// only when at least one ID exists.
+func (c *Client) GetPriceGapClosedPositionsForDate(date string) ([]string, error) {
+	key := keyPricegapClosedPrefix + date
+	ids, err := c.rdb.SMembers(context.Background(), key).Result()
+	if err != nil {
+		return nil, fmt.Errorf("smembers pg:positions:closed:%s: %w", date, err)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return ids, nil
+}
+
+// SavePriceGapReconcileDaily SETs the byte-identical aggregate JSON for the
+// given UTC date. Plain SET (overwrite) — D-04 byte-identical re-runs are
+// the reconciler's responsibility, not Redis's.
+func (c *Client) SavePriceGapReconcileDaily(date string, payload []byte) error {
+	if date == "" {
+		return fmt.Errorf("pricegap: SavePriceGapReconcileDaily empty date")
+	}
+	key := keyPricegapReconcileDailyPref + date
+	return c.rdb.Set(context.Background(), key, payload, 0).Err()
+}
+
+// LoadPriceGapReconcileDaily returns (payload, exists, err). exists=false on
+// redis.Nil (no value yet for this date). Callers use exists=false to decide
+// whether to run the reconcile aggregation for the first time.
+func (c *Client) LoadPriceGapReconcileDaily(date string) ([]byte, bool, error) {
+	key := keyPricegapReconcileDailyPref + date
+	data, err := c.rdb.Get(context.Background(), key).Bytes()
+	if err == redis.Nil {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("get pg:reconcile:daily:%s: %w", date, err)
+	}
+	return data, true, nil
+}
+
+// SavePriceGapRampState writes the 5-field RampState atomically to a HASH at
+// keyPricegapRampState. Numeric fields are stored as decimal strings;
+// timestamps as RFC3339Nano so reconciliation is sub-second precise. The
+// HSet pipeline guarantees all-or-nothing semantics (consumer reading mid-
+// write sees either the prior state or the new state).
+func (c *Client) SavePriceGapRampState(s models.RampState) error {
+	ctx := context.Background()
+	pipe := c.rdb.Pipeline()
+	pipe.HSet(ctx, keyPricegapRampState, map[string]any{
+		"current_stage":     s.CurrentStage,
+		"clean_day_counter": s.CleanDayCounter,
+		"last_eval_ts":      s.LastEvalTs.UTC().Format(time.RFC3339Nano),
+		"last_loss_day_ts":  s.LastLossDayTs.UTC().Format(time.RFC3339Nano),
+		"demote_count":      s.DemoteCount,
+	})
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("hset pg:ramp:state: %w", err)
+	}
+	return nil
+}
+
+// LoadPriceGapRampState returns (state, exists, err). On a fresh database
+// (HASH absent), exists=false and state is the zero value — Phase 14 ramp
+// controller treats the zero value as "stage 1, no clean days". On a populated
+// HASH, all 5 fields are decoded; an unparseable field returns an error so
+// the controller can fail-closed (Plan 14-03 Gate 6).
+func (c *Client) LoadPriceGapRampState() (models.RampState, bool, error) {
+	ctx := context.Background()
+	m, err := c.rdb.HGetAll(ctx, keyPricegapRampState).Result()
+	if err != nil {
+		return models.RampState{}, false, fmt.Errorf("hgetall pg:ramp:state: %w", err)
+	}
+	if len(m) == 0 {
+		return models.RampState{}, false, nil
+	}
+	var s models.RampState
+	// CurrentStage
+	if v, ok := m["current_stage"]; ok && v != "" {
+		stage, perr := strconv.Atoi(v)
+		if perr != nil {
+			return models.RampState{}, false, fmt.Errorf("parse current_stage=%q: %w", v, perr)
+		}
+		s.CurrentStage = stage
+	}
+	// CleanDayCounter
+	if v, ok := m["clean_day_counter"]; ok && v != "" {
+		ctr, perr := strconv.Atoi(v)
+		if perr != nil {
+			return models.RampState{}, false, fmt.Errorf("parse clean_day_counter=%q: %w", v, perr)
+		}
+		s.CleanDayCounter = ctr
+	}
+	// LastEvalTs
+	if v, ok := m["last_eval_ts"]; ok && v != "" {
+		ts, perr := time.Parse(time.RFC3339Nano, v)
+		if perr != nil {
+			return models.RampState{}, false, fmt.Errorf("parse last_eval_ts=%q: %w", v, perr)
+		}
+		s.LastEvalTs = ts
+	}
+	// LastLossDayTs
+	if v, ok := m["last_loss_day_ts"]; ok && v != "" {
+		ts, perr := time.Parse(time.RFC3339Nano, v)
+		if perr != nil {
+			return models.RampState{}, false, fmt.Errorf("parse last_loss_day_ts=%q: %w", v, perr)
+		}
+		s.LastLossDayTs = ts
+	}
+	// DemoteCount
+	if v, ok := m["demote_count"]; ok && v != "" {
+		dc, perr := strconv.Atoi(v)
+		if perr != nil {
+			return models.RampState{}, false, fmt.Errorf("parse demote_count=%q: %w", v, perr)
+		}
+		s.DemoteCount = dc
+	}
+	return s, true, nil
+}
+
+// AppendPriceGapRampEvent JSON-marshals ev, RPUSHes onto the pg:ramp:events
+// LIST, and trims to priceGapRampEventsCap (500). Best-effort — cap-overflow
+// drops the oldest entries; callers expect a bounded operator log, not a
+// durable audit trail.
+func (c *Client) AppendPriceGapRampEvent(ev models.RampEvent) error {
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return fmt.Errorf("marshal ramp event: %w", err)
+	}
+	ctx := context.Background()
+	pipe := c.rdb.Pipeline()
+	pipe.RPush(ctx, keyPricegapRampEvents, data)
+	pipe.LTrim(ctx, keyPricegapRampEvents, -priceGapRampEventsCap, -1)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("rpush+ltrim pg:ramp:events: %w", err)
 	}
 	return nil
 }

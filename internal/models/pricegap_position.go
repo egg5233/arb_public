@@ -86,6 +86,15 @@ type PriceGapPosition struct {
 	ExitReason string    `json:"exit_reason,omitempty"`
 	OpenedAt   time.Time `json:"opened_at"`
 	ClosedAt   time.Time `json:"closed_at,omitempty"`
+
+	// Phase 14 PG-LIVE-03: Reconcile aggregation key is (position_id, version).
+	// 0 on legacy/pre-Phase-14 records (omitted via omitempty); 1 on new closes;
+	// increment on amended closes (e.g., late-fill correction).
+	Version int `json:"version,omitempty"`
+
+	// Phase 14 D-10: Exchange-side close timestamp. Falls back to ClosedAt
+	// (local clock) per D-10 when zero — reconciler flags anomaly_missing_close_ts.
+	ExchangeClosedAt time.Time `json:"exchange_closed_at,omitempty"`
 }
 
 // NormalizeMode defaults an empty Mode field to "live" so records persisted

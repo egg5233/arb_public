@@ -119,6 +119,34 @@ func (f *fakeStore) ReleasePriceGapLock(resource, token string) error {
 	return nil
 }
 
+// ---- Phase 14 PriceGapStore zero-value stubs --------------------------------
+//
+// Plan 14-01 extends the PriceGapStore interface with 7 reconcile/ramp
+// methods. These tests don't drive the new methods (Plan 14-02..14-04 do)
+// but the interface conformance assertion below requires implementations.
+
+func (f *fakeStore) AddPriceGapClosedPositionForDate(posID string, date time.Time) error {
+	return nil
+}
+func (f *fakeStore) GetPriceGapClosedPositionsForDate(date string) ([]string, error) {
+	return nil, nil
+}
+func (f *fakeStore) SavePriceGapReconcileDaily(date string, payload []byte) error {
+	return nil
+}
+func (f *fakeStore) LoadPriceGapReconcileDaily(date string) ([]byte, bool, error) {
+	return nil, false, nil
+}
+func (f *fakeStore) SavePriceGapRampState(s models.RampState) error {
+	return nil
+}
+func (f *fakeStore) LoadPriceGapRampState() (models.RampState, bool, error) {
+	return models.RampState{}, false, nil
+}
+func (f *fakeStore) AppendPriceGapRampEvent(ev models.RampEvent) error {
+	return nil
+}
+
 // fakeDelistChecker satisfies models.DelistChecker.
 type fakeDelistChecker struct {
 	delisted map[string]bool

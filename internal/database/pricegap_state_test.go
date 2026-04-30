@@ -517,3 +517,188 @@ func TestGetPriceGapHistory_NormalizesLegacyMode(t *testing.T) {
 		t.Fatalf("legacy Mode: got %q, want %q", got[0].Mode, models.PriceGapModeLive)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Phase 14 (PG-LIVE-01, PG-LIVE-03) — daily reconcile + ramp persistence
+// ---------------------------------------------------------------------------
+
+// TestPriceGapClosedSet_AddListByDate — D-02 dated index round-trip.
+// Three IDs SADDed for a single date must come back from
+// GetPriceGapClosedPositionsForDate as a non-nil slice.
+func TestPriceGapClosedSet_AddListByDate(t *testing.T) {
+	db, _ := newPriceGapTestClient(t)
+	when := time.Date(2026, 4, 29, 13, 0, 0, 0, time.UTC)
+
+	for _, id := range []string{"pg_SOON_a_b_1", "pg_BTC_a_b_2", "pg_ETH_b_a_3"} {
+		if err := db.AddPriceGapClosedPositionForDate(id, when); err != nil {
+			t.Fatalf("AddPriceGapClosedPositionForDate %s: %v", id, err)
+		}
+	}
+
+	got, err := db.GetPriceGapClosedPositionsForDate("2026-04-29")
+	if err != nil {
+		t.Fatalf("GetPriceGapClosedPositionsForDate: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 IDs, got %d: %v", len(got), got)
+	}
+	// Order is unspecified (SET), so just check membership.
+	want := map[string]bool{"pg_SOON_a_b_1": false, "pg_BTC_a_b_2": false, "pg_ETH_b_a_3": false}
+	for _, id := range got {
+		if _, ok := want[id]; !ok {
+			t.Fatalf("unexpected id %q in result", id)
+		}
+		want[id] = true
+	}
+	for id, seen := range want {
+		if !seen {
+			t.Fatalf("missing id %q from result", id)
+		}
+	}
+}
+
+// TestPriceGapReconcileDaily_SaveLoadRoundTrip — D-04 byte-identical contract.
+// Save returns no error; Load returns the same bytes with exists=true.
+func TestPriceGapReconcileDaily_SaveLoadRoundTrip(t *testing.T) {
+	db, _ := newPriceGapTestClient(t)
+
+	want := []byte(`{"date":"2026-04-29","positions":3,"realized_pnl":12.34}`)
+	if err := db.SavePriceGapReconcileDaily("2026-04-29", want); err != nil {
+		t.Fatalf("SavePriceGapReconcileDaily: %v", err)
+	}
+
+	got, exists, err := db.LoadPriceGapReconcileDaily("2026-04-29")
+	if err != nil {
+		t.Fatalf("LoadPriceGapReconcileDaily: %v", err)
+	}
+	if !exists {
+		t.Fatalf("exists=false after Save+Load")
+	}
+	if string(got) != string(want) {
+		t.Fatalf("payload mismatch:\n got=%s\nwant=%s", got, want)
+	}
+}
+
+// TestPriceGapReconcileDaily_NotFound_ReturnsExistsFalse — fresh Redis,
+// no Save: Load returns (nil, false, nil) so the daemon can branch on
+// "first run today".
+func TestPriceGapReconcileDaily_NotFound_ReturnsExistsFalse(t *testing.T) {
+	db, _ := newPriceGapTestClient(t)
+
+	got, exists, err := db.LoadPriceGapReconcileDaily("2026-04-29")
+	if err != nil {
+		t.Fatalf("LoadPriceGapReconcileDaily: %v", err)
+	}
+	if exists {
+		t.Fatalf("exists=true on absent key")
+	}
+	if got != nil {
+		t.Fatalf("payload not nil on absent key: %v", got)
+	}
+}
+
+// TestPriceGapRampState_SaveLoadAllFields — all 5 fields of RampState round-
+// trip atomically. Numeric stages, counters, and RFC3339Nano timestamps must
+// survive HSet → HGetAll without precision loss.
+func TestPriceGapRampState_SaveLoadAllFields(t *testing.T) {
+	db, _ := newPriceGapTestClient(t)
+
+	now := time.Date(2026, 4, 29, 0, 30, 0, 0, time.UTC)
+	loss := time.Date(2026, 4, 25, 12, 15, 7, 0, time.UTC)
+	want := models.RampState{
+		CurrentStage:    2,
+		CleanDayCounter: 4,
+		LastEvalTs:      now,
+		LastLossDayTs:   loss,
+		DemoteCount:     1,
+	}
+
+	if err := db.SavePriceGapRampState(want); err != nil {
+		t.Fatalf("SavePriceGapRampState: %v", err)
+	}
+
+	got, exists, err := db.LoadPriceGapRampState()
+	if err != nil {
+		t.Fatalf("LoadPriceGapRampState: %v", err)
+	}
+	if !exists {
+		t.Fatalf("exists=false after Save+Load")
+	}
+	if got.CurrentStage != want.CurrentStage {
+		t.Fatalf("CurrentStage: got=%d want=%d", got.CurrentStage, want.CurrentStage)
+	}
+	if got.CleanDayCounter != want.CleanDayCounter {
+		t.Fatalf("CleanDayCounter: got=%d want=%d", got.CleanDayCounter, want.CleanDayCounter)
+	}
+	if got.DemoteCount != want.DemoteCount {
+		t.Fatalf("DemoteCount: got=%d want=%d", got.DemoteCount, want.DemoteCount)
+	}
+	if !got.LastEvalTs.Equal(want.LastEvalTs) {
+		t.Fatalf("LastEvalTs: got=%v want=%v", got.LastEvalTs, want.LastEvalTs)
+	}
+	if !got.LastLossDayTs.Equal(want.LastLossDayTs) {
+		t.Fatalf("LastLossDayTs: got=%v want=%v", got.LastLossDayTs, want.LastLossDayTs)
+	}
+}
+
+// TestPriceGapRampState_EmptyHash_ReturnsExistsFalse — fresh Redis: Load
+// returns (RampState{}, false, nil). Plan 14-03 ramp controller treats this
+// as "stage 1, no clean days" without persisting anything yet.
+func TestPriceGapRampState_EmptyHash_ReturnsExistsFalse(t *testing.T) {
+	db, _ := newPriceGapTestClient(t)
+
+	got, exists, err := db.LoadPriceGapRampState()
+	if err != nil {
+		t.Fatalf("LoadPriceGapRampState: %v", err)
+	}
+	if exists {
+		t.Fatalf("exists=true on absent hash")
+	}
+	if got.CurrentStage != 0 || got.CleanDayCounter != 0 {
+		t.Fatalf("expected zero-value RampState on absent hash, got %+v", got)
+	}
+}
+
+// TestPriceGapRampEvents_AppendCapsAt500 — push 510 events, LIST length must
+// be exactly 500 (LTRIM keeps the newest 500). Bounded operator log per D-09.
+func TestPriceGapRampEvents_AppendCapsAt500(t *testing.T) {
+	db, _ := newPriceGapTestClient(t)
+	ctx := context.Background()
+
+	now := time.Date(2026, 4, 29, 0, 30, 0, 0, time.UTC)
+	for i := 0; i < 510; i++ {
+		ev := models.RampEvent{
+			Action:     "evaluate",
+			PriorStage: 1,
+			NewStage:   1,
+			Operator:   "daemon",
+			Timestamp:  now.Add(time.Duration(i) * time.Minute),
+			Reason:     "test",
+		}
+		if err := db.AppendPriceGapRampEvent(ev); err != nil {
+			t.Fatalf("AppendPriceGapRampEvent %d: %v", i, err)
+		}
+	}
+
+	count, err := db.rdb.LLen(ctx, keyPricegapRampEvents).Result()
+	if err != nil {
+		t.Fatalf("LLen: %v", err)
+	}
+	if count != 500 {
+		t.Fatalf("expected LIST length 500, got %d", count)
+	}
+
+	// Sanity: the newest entry must still be the i=509 one (LTRIM keeps tail).
+	last, err := db.rdb.LIndex(ctx, keyPricegapRampEvents, -1).Result()
+	if err != nil {
+		t.Fatalf("LIndex -1: %v", err)
+	}
+	var lastEv models.RampEvent
+	if err := json.Unmarshal([]byte(last), &lastEv); err != nil {
+		t.Fatalf("unmarshal last: %v", err)
+	}
+	wantTs := now.Add(509 * time.Minute)
+	if !lastEv.Timestamp.Equal(wantTs) {
+		t.Fatalf("last event timestamp: got=%v want=%v", lastEv.Timestamp, wantTs)
+	}
+}

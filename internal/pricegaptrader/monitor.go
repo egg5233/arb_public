@@ -246,6 +246,19 @@ func (t *Tracker) closePair(pos *models.PriceGapPosition, reason string) {
 	pos.ExitReason = reason
 	pos.Status = models.PriceGapStatusClosed
 	pos.ClosedAt = time.Now()
+
+	// Phase 14 D-02: dated index for O(1) reconcile lookup. Best-effort
+	// (matches existing pattern at lines below). ExchangeClosedAt is preferred
+	// when populated; we fall back to ClosedAt (local clock) per D-10 — the
+	// reconciler flags anomaly_missing_close_ts in the latter case.
+	closeDate := pos.ExchangeClosedAt
+	if closeDate.IsZero() {
+		closeDate = pos.ClosedAt
+	}
+	if err := t.db.AddPriceGapClosedPositionForDate(pos.ID, closeDate); err != nil {
+		t.log.Warn("pricegap: AddPriceGapClosedPositionForDate failed for %s: %v", pos.ID, err)
+	}
+
 	if err := t.db.SavePriceGapPosition(pos); err != nil {
 		t.log.Warn("pricegap: SavePriceGapPosition(closed) failed for %s: %v", pos.ID, err)
 	}
