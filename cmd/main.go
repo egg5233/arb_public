@@ -485,6 +485,21 @@ func main() {
 		pgTracker.SetBroadcaster(apiSrv)
 		pgTracker.SetNotifier(tg)
 
+		// Phase 14 Plan 14-04 — Reconciler + RampController + Sizer wiring.
+		// All three are constructed unconditionally so the daemon's state
+		// machine bootstraps even in paper mode (D-07: clean-day signal
+		// accumulates regardless of capital mode). Boot guard inside
+		// pgTracker.Start panics if cfg.PriceGapLiveCapital=true and the
+		// ramp's bootstrapState falls back to stage 0 (corrupt store).
+		pgReconciler := pricegaptrader.NewReconciler(db, tg, cfg, utils.NewLogger("pg-reconcile"))
+		pgRamp := pricegaptrader.NewRampController(db, tg, cfg, utils.NewLogger("pg-ramp"), time.Now)
+		pgSizer := pricegaptrader.NewSizer(cfg)
+		pgTracker.SetReconciler(pgReconciler)
+		pgTracker.SetRamp(pgRamp)
+		pgTracker.SetSizer(pgSizer)
+		log.Info("[phase-14] reconciler + ramp controller + sizer wired (live_capital=%v)",
+			cfg.PriceGapLiveCapital)
+
 		// Phase 11 (Plan 11-05 / PG-DISC-03) — Auto-Discovery Scanner +
 		// Telemetry bootstrap. Telemetry is ALWAYS constructed when the
 		// price-gap subsystem is up so the REST endpoints can render the

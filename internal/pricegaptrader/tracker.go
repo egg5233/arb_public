@@ -24,6 +24,7 @@ package pricegaptrader
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -119,6 +120,21 @@ type Tracker struct {
 	// Phase 14 work do not crash.
 	sizer *Sizer
 	ramp  RampSnapshotter
+
+	// Phase 14 Plan 14-04 — daemon-driven reconcile + ramp.
+	//
+	// reconciler runs the UTC 00:30 daily aggregation; rampCtl evaluates the
+	// previous day's record and drives stage transitions. Both are
+	// nil-when-unwired; production bootstraps via cmd/main.go (SetReconciler
+	// + SetRamp called BEFORE Start). The daemon goroutine (reconcileLoop)
+	// is launched by Start ONLY when both are non-nil — paper-mode and
+	// pre-Phase-14 deployments simply skip the loop.
+	//
+	// rampDaemon is the full *RampController used by the daemon's Eval call.
+	// It is set alongside ramp (RampSnapshotter); the existing Snapshotter
+	// surface stays the layer-2 read-only path consumed by sizing.
+	reconciler *Reconciler
+	rampDaemon *RampController
 }
 
 // RampSnapshotter is the narrow read-only surface Tracker requires from a
@@ -171,6 +187,34 @@ func NewTracker(
 // at most once at Start time).
 func (t *Tracker) SetScanner(s ScanRunner) {
 	t.scanner = s
+}
+
+// SetSizer wires the Phase 14 Plan 14-03 sizing-cap primitive. Passing nil
+// leaves the layer-2 cap disabled (paper-mode default). Plan 14-04 calls
+// this from cmd/main.go alongside SetRamp.
+func (t *Tracker) SetSizer(s *Sizer) {
+	t.sizer = s
+}
+
+// SetRamp wires the Phase 14 Plan 14-03 ramp controller. Both the narrow
+// snapshotter surface (consumed at sizing chokepoint) and the full
+// controller (used by the reconcile daemon's Eval call) are stamped here.
+// Passing nil leaves both surfaces nil; sizing falls back to layer-1
+// candidate cap and the daemon's reconcileLoop becomes a no-op.
+func (t *Tracker) SetRamp(rc *RampController) {
+	t.rampDaemon = rc
+	if rc == nil {
+		t.ramp = nil
+		return
+	}
+	t.ramp = rc
+}
+
+// SetReconciler wires the Phase 14 Plan 14-02 reconciler. Required for the
+// daemon goroutine — when nil, reconcileLoop returns immediately. Plan 14-04
+// constructs *Reconciler in cmd/main.go.
+func (t *Tracker) SetReconciler(r *Reconciler) {
+	t.reconciler = r
 }
 
 // CandidateSnapshotForTest returns len(t.cfg.PriceGapCandidates) — a test
@@ -336,6 +380,34 @@ const priceGapBBOAssertionGrace = 15 * time.Second
 func (t *Tracker) Start() {
 	t.log.Info("Price-gap tracker starting (candidates=%d, budget=$%.0f, enabled=%v)",
 		len(t.cfg.PriceGapCandidates), t.cfg.PriceGapBudget, t.cfg.PriceGapEnabled)
+
+	// Phase 14 Plan 14-04 boot guard (CONTEXT "Specific Ideas" #6, T-14-04):
+	// refuse to start with PriceGapLiveCapital=true if the ramp state is
+	// missing or invalid. RampController.bootstrapState materializes
+	// (stage=1, counter=0) on a populated store; CurrentStage < 1 means the
+	// ramp was never wired or its store path is corrupt — promoting to live
+	// capital with no stage signal would skip the asymmetric-ratchet guard
+	// and risk over-budget orders.
+	//
+	// Critical Telegram dispatch + panic so the systemd service exits and
+	// operators get loud notification. We use panic rather than os.Exit so
+	// the deferred cleanup in cmd/main.go (apiSrv.Stop, eng.Stop, etc.) can
+	// still run if this is called from the wired startup path.
+	if t.cfg != nil && t.cfg.PriceGapLiveCapital {
+		var stage int
+		if t.ramp != nil {
+			stage = t.ramp.Snapshot().CurrentStage
+		}
+		if stage < 1 {
+			t.log.Error("FATAL: PriceGapLiveCapital=true but pg:ramp:state missing or invalid (stage=%d)", stage)
+			if t.notifier != nil {
+				t.notifier.NotifyPriceGapReconcileFailure("BOOT_GUARD",
+					fmt.Errorf("live_capital=true with missing/invalid ramp state (stage=%d) — refusing to start", stage))
+			}
+			panic("pricegap: live_capital=true requires valid pg:ramp:state")
+		}
+	}
+
 	t.subscribeCandidates()
 	if t.scanner != nil {
 		// Phase 11 Pitfall 5: pre-warm BBO subscriptions for every
@@ -353,6 +425,11 @@ func (t *Tracker) Start() {
 		go t.scanLoop()
 		t.log.Info("pricegap: discovery scanLoop started (interval=%ds)",
 			t.cfg.PriceGapDiscoveryIntervalSec)
+	}
+	if t.reconciler != nil && t.rampDaemon != nil {
+		t.wg.Add(1)
+		go t.reconcileLoop()
+		t.log.Info("pricegap: reconcile daemon started (fires daily UTC 00:30)")
 	}
 }
 

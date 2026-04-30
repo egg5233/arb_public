@@ -93,6 +93,27 @@ func (c *Client) GetPriceGapPosition(id string) (*models.PriceGapPosition, error
 	return &p, nil
 }
 
+// LoadPriceGapPosition is the (pos, exists, error) variant required by
+// pricegaptrader.ReconcileStore (Phase 14 Plan 14-02). It distinguishes
+// missing-id (exists=false, err=nil) from real Redis errors so the daemon's
+// per-position error path can count skipped positions without confusing
+// "not found" with transport failures (T-14-11).
+func (c *Client) LoadPriceGapPosition(id string) (*models.PriceGapPosition, bool, error) {
+	ctx := context.Background()
+	data, err := c.rdb.HGet(ctx, keyPricegapPositions, id).Bytes()
+	if err == redis.Nil {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	var p models.PriceGapPosition
+	if err := json.Unmarshal(data, &p); err != nil {
+		return nil, false, fmt.Errorf("unmarshal pricegap position: %w", err)
+	}
+	return &p, true, nil
+}
+
 // GetActivePriceGapPositions returns all price-gap positions whose IDs are in
 // the active set. Orphan entries (SET member with no HASH value) are skipped.
 func (c *Client) GetActivePriceGapPositions() ([]*models.PriceGapPosition, error) {
