@@ -500,18 +500,48 @@ func main() {
 		)
 		apiSrv.SetDiscoveryTelemetry(pgTelemetry)
 		if cfg.PriceGapDiscoveryEnabled {
+			// Phase 12 (PG-DISC-02): construct the auto-promotion controller
+			// BEFORE the scanner so we can wire it in via the new
+			// promotion parameter. Default-OFF safety: this whole block is
+			// gated by cfg.PriceGapDiscoveryEnabled — when false, the
+			// controller is never constructed and the scanner is never
+			// instantiated.
+			pgPromoteSink := pricegaptrader.NewRedisWSPromoteSink(db, apiSrv.Hub())
+			pgGuard := pricegaptrader.NewDBActivePositionChecker(db)
+			pgPromotion, perr := pricegaptrader.NewPromotionController(
+				cfg,           // *config.Config — controller reads PriceGapAutoPromoteScore + PriceGapMaxCandidates
+				pgRegistry,    // RegistryWriter — *Registry satisfies it via Add/Delete/List (D-15, D-17)
+				pgGuard,       // ActivePositionChecker — D-05 fail-safe guard
+				pgPromoteSink, // PromoteEventSink — Plan 02 Redis LIST + WS hub fanout
+				tg,            // PromoteNotifier — *TelegramNotifier.NotifyPromoteEvent (Plan 02; nil-safe)
+				pgTelemetry,   // TelemetrySink — *Telemetry.IncCapFullSkip (Plan 02)
+				utils.NewLogger("pg-promotion"),
+			)
+			if perr != nil {
+				log.Error("FATAL: [phase-12] failed to construct promotion controller: %v", perr)
+				os.Exit(1)
+			}
+			// Override defaultNowMs with a real time source so PromoteEvent.TS
+			// reflects actual fire time (Plan 01's defaultNowMsImpl returns 0
+			// until SetNowFunc is called).
+			pgPromotion.SetNowFunc(func() int64 { return time.Now().UnixMilli() })
+
 			pgScanner := pricegaptrader.NewScanner(
 				cfg,
-				pgRegistry, // RegistryReader (read-only) — Plan 04 contract
+				pgRegistry,   // *Registry (Phase 12 D-17 swap)
 				exchanges,
 				pgTelemetry,
+				pgPromotion,  // PromotionController (Phase 12 D-16)
 				utils.NewLogger("pg-scanner"),
 			)
 			pgTracker.SetScanner(pgScanner)
 			log.Info("[phase-11] discovery scanner enabled — scanLoop will start with Tracker (interval=%ds)",
 				cfg.PriceGapDiscoveryIntervalSec)
+			log.Info("[phase-12] auto-promotion controller enabled (threshold=%d, max_candidates=%d)",
+				cfg.PriceGapAutoPromoteScore, cfg.PriceGapMaxCandidates)
 		} else {
 			log.Info("[phase-11] discovery scanner disabled — set price_gap_discovery_enabled=true in config.json to enable")
+			log.Info("[phase-12] auto-promotion disabled (PriceGapDiscoveryEnabled=false)")
 		}
 
 		pgTracker.Start()

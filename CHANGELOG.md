@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-04-30
+
+### Added
+
+- **Phase 12 (PG-DISC-02) auto-promotion controller** — bidirectional pricegap candidates with score >= `PriceGapAutoPromoteScore` for >=6 consecutive scanner cycles auto-promote into `cfg.PriceGapCandidates` through the Phase 11 `*Registry` chokepoint. Symmetric demote: candidates below threshold (or absent from cycle records) for >=6 consecutive cycles auto-demote, gated by an active-position guard that consults `pg:positions:active` SMEMBERS — match → demote held until the position closes (D-05 fail-safe also blocks on Redis read errors).
+- **Cap-full silent skip telemetry** — when promotion would exceed `cfg.PriceGapMaxCandidates`, the controller HOLDs the streak at threshold and increments `cap_full_skips:{symbol}` HASH field on `pg:scan:metrics` (no Telegram, no event). Operators can `redis-cli HGETALL pg:scan:metrics` to see WHICH symbols are queued behind a sustained cap.
+- **Idempotent dedupe** — duplicate `(Symbol, LongExch, ShortExch, Direction)` tuples coming from a race between dashboard / pg-admin / controller are silently skipped (controller HOLDs streak at threshold; no spurious event).
+- **Per-event Telegram alert** with cooldown key `"pg_promote:{action}:{symbol}:{long}:{short}:{direction}"` — distinct events bypass each other's 5-minute cooldown; same-candidate flap is throttled.
+- **WebSocket event `pg_promote_event`** — broadcast on every promote/demote for live dashboard updates.
+- **Redis LIST `pg:promote:events`** (RPush + LTrim 1000) plus REST seed `GET /api/pg/discovery/promote-events` (newest-first, Bearer-authed) — feeds the discovery dashboard timeline.
+- **`DBActivePositionChecker`** in `internal/pricegaptrader` — production `ActivePositionChecker` impl; matches the configured tuple via `CandidateLongExch / CandidateShortExch` (PG-DIR-01) with fallback to wire-side roles for legacy positions (Pitfall 5).
+- **`Server.Hub()` accessor** in `internal/api` — exposes the WS hub so cmd/main.go can pass it into `pricegaptrader.NewRedisWSPromoteSink` without leaking `internal/api` into `pricegaptrader` (D-15 module boundary preserved).
+
+### Changed
+
+- **`pricegaptrader.NewScanner` constructor signature (Phase 12 D-17 swap):** `registry` parameter widened from `RegistryReader` (interface) to `*Registry` (concrete) so the new `PromotionController` can call `registry.Add` / `registry.Delete` via the chokepoint. New `promotion *PromotionController` parameter added before `log` (nil-safe — `RunCycle` checks). The `RegistryReader` interface remains in `registry_reader.go` for read-only consumers.
+- **`internal/pricegaptrader/scanner_static_test.go` (Phase 12 D-17 relaxation):** the original `\*Registry` and `registry.(Add|Update|Delete|Replace)\(` forbidden-token regexes are removed; the new (relaxed) invariant is a single regex `PriceGapCandidates\s*=` that forbids only RAW `cfg.PriceGapCandidates =` assignment. Chokepoint discipline is preserved by `PromotionController` having no `*config.Config` mutation surface.
+
+### Safety
+
+- **Default OFF:** the entire Phase 12 auto-promotion path is gated by the existing `cfg.PriceGapDiscoveryEnabled` flag. When `false`, the controller is never constructed, `s.promotion` is nil, and `Scanner.RunCycle` skips the `Apply` call. No new flag introduced.
+- **Module boundary preserved:** `internal/pricegaptrader` does not import `internal/api` — `RedisWSPromoteSink` accepts a narrow `WSBroadcaster` interface that `*api.Hub` satisfies via duck-typing at the cmd/main.go wiring site.
+- **Threat model documented:** cap-full / dedupe / active-position guard / chokepoint discipline / Telegram fan-out each have STRIDE entries in `.planning/phases/12-auto-promotion/12-0{1,2,3}-PLAN.md` `<threat_model>` blocks. All severities medium-or-lower; no high blockers.
+- **Rollback:** set `cfg.PriceGapDiscoveryEnabled=false` via `POST /api/config` (NEVER edit `config.json` directly — CLAUDE.local.md). Restart `arb`. Optional cleanup: `redis-cli DEL pg:promote:events` (clears timeline) and `redis-cli HDEL pg:scan:metrics cap_full_skips:*` (clears counters). Existing manually-promoted candidates remain in `cfg.PriceGapCandidates` — only the AUTO-promotion path is disabled.
+
 ## [0.35.2] - 2026-04-28
 
 ### Added

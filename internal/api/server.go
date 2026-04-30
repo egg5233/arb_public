@@ -275,6 +275,19 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Hub returns the WebSocket broadcast hub. Phase 12 Plan 03 wires this into
+// pricegaptrader.NewRedisWSPromoteSink so the auto-promotion controller can
+// fan PromoteEvents over the dashboard WS hub. *Hub satisfies the narrow
+// pricegaptrader.WSBroadcaster interface via its
+// Broadcast(eventType string, data interface{}) method (declared in ws.go).
+//
+// Module boundary: pricegaptrader does NOT import internal/api — it accepts a
+// WSBroadcaster interface, and *Hub is passed through this accessor at the
+// cmd/main.go wiring site. The boundary is preserved.
+func (s *Server) Hub() *Hub {
+	return s.hub
+}
+
 // BroadcastPositionUpdate sends a position update to all WebSocket clients.
 // It broadcasts the full active positions list so the frontend can replace state.
 func (s *Server) BroadcastPositionUpdate(pos *models.ArbitragePosition) {
