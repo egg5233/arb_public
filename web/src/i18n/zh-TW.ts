@@ -930,6 +930,21 @@ const zhTW: Record<TranslationKey, string> = {
   'pricegap.discovery.timeline.loadMore': '顯示全部（{n}）',
   'pricegap.discovery.timeline.sr.promote': '已升級',
   'pricegap.discovery.timeline.sr.demote': '已降級',
+
+  // Phase 14 Plan 14-05 — read-only Ramp + Reconcile widget (D-14)
+  'pricegap.ramp.title': '即時資金階梯',
+  'pricegap.ramp.stage': '階段',
+  'pricegap.ramp.cleanDayCounter': '無損失天數',
+  'pricegap.ramp.lastLossDay': '最後損失日',
+  'pricegap.ramp.demoteCount': '降級次數',
+  'pricegap.ramp.liveCapitalOn': '即時資金:啟用',
+  'pricegap.ramp.liveCapitalOff': '即時資金:停用',
+  'pricegap.reconcile.title': '最後對帳',
+  'pricegap.reconcile.totalPnl': '已實現損益總額',
+  'pricegap.reconcile.positionsClosed': '已平倉部位數',
+  'pricegap.reconcile.winLossSplit': '勝/敗',
+  'pricegap.reconcile.anomalies': '異常項目',
+  'pricegap.reconcile.noAnomalies': '無異常',
 };
 
 export default zhTW;

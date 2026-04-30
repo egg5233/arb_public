@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, type FC } from 'react';
 import { useLocale } from '../i18n/index.ts';
 import { DiscoverySection } from '../components/Discovery/DiscoverySection.tsx';
+import { RampReconcileSection } from '../components/Ramp/RampReconcileSection.tsx';
 
 // ─── Data shapes ──────────────────────────────────────────────────────────
 // Mirror the Go response shapes from internal/api/pricegap_handlers.go
@@ -770,6 +771,12 @@ const PriceGap: FC = () => {
           breakdown.  Self-contained component so Phase 16 (PG-OPS-09) can
           lift it to a top-level tab without restructuring this page. */}
       <DiscoverySection />
+
+      {/* Phase 14 Plan 14-05 — Ramp + Reconcile sub-section (PG-LIVE-01 / PG-LIVE-03).
+          READ-ONLY (D-14): force-promote / force-demote / reset live in pg-admin
+          CLI only this phase. Phase 16 (PG-OPS-09) will lift this widget into
+          the new top-level Pricegap tab alongside DiscoverySection. */}
+      <RampReconcileSection />
 
       {/* Section 2: Candidates */}
       <div className={panelCls}>

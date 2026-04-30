@@ -929,6 +929,21 @@ const en = {
   'pricegap.discovery.timeline.loadMore': 'Show all ({n})',
   'pricegap.discovery.timeline.sr.promote': 'Promoted',
   'pricegap.discovery.timeline.sr.demote': 'Demoted',
+
+  // Phase 14 Plan 14-05 — read-only Ramp + Reconcile widget (D-14)
+  'pricegap.ramp.title': 'Live Capital Ramp',
+  'pricegap.ramp.stage': 'Stage',
+  'pricegap.ramp.cleanDayCounter': 'Clean Days',
+  'pricegap.ramp.lastLossDay': 'Last Loss Day',
+  'pricegap.ramp.demoteCount': 'Demote Count',
+  'pricegap.ramp.liveCapitalOn': 'LIVE CAPITAL: ON',
+  'pricegap.ramp.liveCapitalOff': 'LIVE CAPITAL: OFF',
+  'pricegap.reconcile.title': 'Last Reconcile',
+  'pricegap.reconcile.totalPnl': 'Total Realized PnL',
+  'pricegap.reconcile.positionsClosed': 'Positions Closed',
+  'pricegap.reconcile.winLossSplit': 'Wins / Losses',
+  'pricegap.reconcile.anomalies': 'Anomalies',
+  'pricegap.reconcile.noAnomalies': 'No anomalies flagged',
 } as const;
 
 export type TranslationKey = keyof typeof en;
