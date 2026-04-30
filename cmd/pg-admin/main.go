@@ -57,16 +57,36 @@ type CandidateRegistry interface {
 	List() []models.PriceGapCandidate
 }
 
+// ReconcileRunner is the narrow surface pg-admin needs from the Phase 14
+// Plan 14-02 reconciler. Tests inject a fake; production wires
+// *pricegaptrader.Reconciler.
+type ReconcileRunner interface {
+	RunForDate(ctx context.Context, date string) error
+	LoadRecord(ctx context.Context, date string) (pricegaptrader.DailyReconcileRecord, bool, error)
+}
+
+// RampOps is the narrow surface pg-admin needs from the Phase 14 Plan 14-03
+// ramp controller. Tests inject a fake; production wires
+// *pricegaptrader.RampController.
+type RampOps interface {
+	Snapshot() models.RampState
+	ForcePromote(operator, reason string) error
+	ForceDemote(operator, reason string) error
+	Reset(operator, reason string) error
+}
+
 // Dependencies bundles the test-overridable surface of pg-admin so Run() can
 // be invoked from a unit test with a fake registry, captured stdout/stderr,
 // and (where exposed) a fake DB. Production main() builds these from the
 // real *config.Config + *database.Client + *pricegaptrader.Registry.
 type Dependencies struct {
-	Registry CandidateRegistry
-	DB       *database.Client // optional — only the legacy non-candidates subcommands need it
-	Cfg      *config.Config   // optional — used by the status subcommand
-	Stdout   io.Writer
-	Stderr   io.Writer
+	Registry   CandidateRegistry
+	Reconciler ReconcileRunner // Phase 14 Plan 14-04 — reconcile run/show
+	Ramp       RampOps         // Phase 14 Plan 14-04 — ramp show/reset/force-promote/force-demote
+	DB         *database.Client // optional — only the legacy non-candidates subcommands need it
+	Cfg        *config.Config   // optional — used by the status subcommand
+	Stdout     io.Writer
+	Stderr     io.Writer
 }
 
 // Run is the test-friendly entrypoint. main() forwards os.Args[1:] +
@@ -146,6 +166,10 @@ func Run(args []string, deps Dependencies) int {
 		}
 	case "candidates":
 		return runCandidates(args[1:], deps)
+	case "reconcile":
+		return runReconcile(args[1:], deps)
+	case "ramp":
+		return runRamp(args[1:], deps)
 	case "-h", "--help", "help":
 		usage(deps.Stdout)
 		return 0
@@ -323,12 +347,24 @@ func main() {
 
 	registry := pricegaptrader.NewRegistry(cfg, db.PriceGapAudit(), utils.NewLogger("pg-admin"))
 
+	// Phase 14 Plan 14-04 — Reconciler + RampController construction. Both
+	// share the single *database.Client store; daemon-side notifications
+	// are nil here (pg-admin is a one-shot CLI that does not own the
+	// running Telegram client). Force-op telegram notifications still fire
+	// because the running arb daemon's RampController has the notifier
+	// wired and its in-memory state is refreshed lazily — pg-admin writes
+	// to the same Redis keys the daemon reads at next Eval.
+	pgReconciler := pricegaptrader.NewReconciler(db, nil, cfg, utils.NewLogger("pg-admin-reconcile"))
+	pgRamp := pricegaptrader.NewRampController(db, nil, cfg, utils.NewLogger("pg-admin-ramp"), time.Now)
+
 	deps := Dependencies{
-		Registry: registry,
-		DB:       db,
-		Cfg:      cfg,
-		Stdout:   os.Stdout,
-		Stderr:   os.Stderr,
+		Registry:   registry,
+		Reconciler: pgReconciler,
+		Ramp:       pgRamp,
+		DB:         db,
+		Cfg:        cfg,
+		Stdout:     os.Stdout,
+		Stderr:     os.Stderr,
 	}
 	os.Exit(Run(os.Args[1:], deps))
 }
@@ -430,4 +466,10 @@ func usage(out io.Writer) {
 	fmt.Fprintln(out, "  pg-admin candidates add --symbol .. --long .. --short .. [--threshold-bps N] [--max-position-usdt N] [--modeled-slippage-bps N] [--direction pinned|bidirectional]")
 	fmt.Fprintln(out, "  pg-admin candidates delete --idx N")
 	fmt.Fprintln(out, "  pg-admin candidates replace --file <path>")
+	fmt.Fprintln(out, "  pg-admin reconcile run --date=YYYY-MM-DD")
+	fmt.Fprintln(out, "  pg-admin reconcile show --date=YYYY-MM-DD")
+	fmt.Fprintln(out, "  pg-admin ramp show")
+	fmt.Fprintln(out, "  pg-admin ramp reset --reason=...")
+	fmt.Fprintln(out, "  pg-admin ramp force-promote --reason=...")
+	fmt.Fprintln(out, "  pg-admin ramp force-demote --reason=...")
 }

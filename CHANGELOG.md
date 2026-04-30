@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-04-30
+
+### Added
+
+- **Phase 14 (PG-LIVE-01 + PG-LIVE-03) — Daily reconcile daemon + live ramp controller (backend complete):**
+  - **Reconcile daemon** — fires daily at UTC 00:30, aggregates closed Strategy 4 positions for the previous UTC date keyed by `(position_id, version)`, writes byte-identical `pg:reconcile:daily:{date}` payload (D-04 idempotency proven at `-count=100`), 3-retry on transient failure (5s/15s/30s, imitated from `internal/engine/exit.go:1119`), triple-fail dispatches `NotifyPriceGapReconcileFailure` and skips the day. Boot-time catchup runs immediately if Tracker starts past 01:00 UTC and yesterday is missing (RESEARCH Q14). Per-day timeout 10 min (T-14-14).
+  - **Live ramp controller** — Redis-persisted state machine with 5 fields (`pg:ramp:state`), 3 stages (100 / 500 / 1000 USDT/leg at v2.2 defaults), asymmetric ratchet (PriceGapCleanDaysToPromote consecutive clean days = 1 step up, ANY single loss day demotes one stage AND zeroes the counter), bounded RampEvent LIST `pg:ramp:events` (RPUSH + LTRIM 500) for full audit trail.
+  - **Risk Gate 6 (ramp)** — defense-in-depth layer 2: when `cfg.PriceGapLiveCapital=true`, both Sizer (caps at sizing call site BEFORE Gate enters) and `risk_gate.go` Gate 6 (independent `min(stage_size, hard_ceiling)` check) reject over-budget proposals. No-op in paper mode (D-07 paper/live parity preserved).
+  - **`pg-admin` Phase 14 subcommands** — `reconcile run --date=YYYY-MM-DD`, `reconcile show --date=YYYY-MM-DD`, `ramp show`, `ramp reset --reason=...`, `ramp force-promote --reason=...`, `ramp force-demote --reason=...`. Force ops emit RampEvents with `operator="pg-admin"` for audit visibility.
+  - **4 new Telegram dispatch methods on `*TelegramNotifier`** — `NotifyPriceGapDailyDigest` (non-critical, one-shot per UTC day, cooldown key `pg_digest:{date}`), `NotifyPriceGapReconcileFailure` (CRITICAL, cooldown key `pg_reconcile_failure:{date}`), `NotifyPriceGapRampDemote` (CRITICAL on capital reduction), `NotifyPriceGapRampForceOp` (CRITICAL on operator override).
+  - **Boot guard** — `Tracker.Start` panics + dispatches `BOOT_GUARD` critical Telegram if `cfg.PriceGapLiveCapital=true` and `pg:ramp:state` is missing or invalid (`CurrentStage < 1`). Refuses to ramp without a valid state signal (CONTEXT "Specific Ideas" #6, T-14-04).
+  - **Telegram allowlist extended** — `"ramp"` entry added to `priceGapGateAllowlist` so Gate-6 risk-block notifications surface via existing `NotifyPriceGapRiskBlock` plumbing.
+  - **`*database.Client.LoadPriceGapPosition`** — new `(pos, exists, error)` adapter satisfies `pricegaptrader.ReconcileStore`; distinguishes missing-id (exists=false, err=nil) from real Redis errors so `T-14-11` skipped-position counting works correctly.
+
+### Safety
+
+- **Default OFF:** entire Phase 14 path is dormant unless operator flips `cfg.PriceGapLiveCapital=true`. Reconciler runs in paper mode too — clean-day signal accumulates regardless of capital mode (D-07).
+- **Module boundary preserved:** `internal/pricegaptrader` imports zero `internal/engine` / `internal/spotengine` paths. Reconciler imitates the engine's 3-retry shape locally rather than importing it.
+- **Layered defense:** config-load validator (Plan 14-01) rejects malformed stage sizes / hard-ceiling typos at boot; Sizer + Gate 6 catch anything that escapes layer 1 (D-22).
+- **Operator audit trail:** every state-changing operation (daemon eval, force-promote, force-demote, reset) appends to `pg:ramp:events` with operator + reason + prior/next stages. Force-op operator is hard-coded `"pg-admin"`.
+- **Threat model documented:** T-14-01..T-14-16 in plan files; STRIDE entries cover boot-guard refusal, force-op auditability, daemon timeout, future-date validation, concurrent eval/force-op serialization.
+
+### Tests
+
+- `internal/pricegaptrader`: 5 nextUTCFireTime subcases + 1 boot-catchup + 1 graceful-shutdown + 1 boot-guard panic + 3 PriceGapNotifier conformance/static-allowlist = 11 new tests.
+- `internal/notify`: 4 dispatch-shape tests (digest, reconcile-failure, ramp-demote, ramp-force-op) on httptest server.
+- `cmd/pg-admin`: 6 reconcile + 7 ramp = 13 new subcommand tests covering happy-path / invalid-date / future-date / not-found / nil-dep / unknown-subcommand.
+- Full pricegaptrader suite remains green (5.9s, idempotency lock test still PASS at -count=100).
+
 ## [0.36.0] - 2026-04-30
 
 ### Added
