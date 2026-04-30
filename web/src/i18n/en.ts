@@ -918,6 +918,17 @@ const en = {
 
   'pricegap.discovery.timeline.title': 'Promote / Demote Timeline',
   'pricegap.discovery.timeline.placeholder': 'Promote and demote events will appear here once Phase 12 (auto-promotion) ships.',
+  'pricegap.discovery.timeline.actionPromote': 'PROMOTE',
+  'pricegap.discovery.timeline.actionDemote': 'DEMOTE',
+  'pricegap.discovery.timeline.scoreLabel': 'score',
+  'pricegap.discovery.timeline.streakLabel': 'streak',
+  'pricegap.discovery.timeline.empty': 'No promote or demote events yet. The scanner will report here once a candidate completes its first 6-cycle observation streak.',
+  'pricegap.discovery.timeline.loading': 'Loading promote events…',
+  'pricegap.discovery.timeline.seedError': "Couldn't load promote events. Live updates will resume on next event.",
+  'pricegap.discovery.timeline.wsDisconnected': 'Live updates paused',
+  'pricegap.discovery.timeline.loadMore': 'Show all ({n})',
+  'pricegap.discovery.timeline.sr.promote': 'Promoted',
+  'pricegap.discovery.timeline.sr.demote': 'Demoted',
 } as const;
 
 export type TranslationKey = keyof typeof en;

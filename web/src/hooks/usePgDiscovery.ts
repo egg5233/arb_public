@@ -67,6 +67,21 @@ export interface ScoresResponse {
   threshold_band: ThresholdBand;
 }
 
+// Phase 12 Plan 04 — PromoteEvent (mirror Go pricegaptrader.PromoteEvent
+// in internal/pricegaptrader/promotion.go). REST: GET /api/pg/discovery/promote-events
+// returns newest-first (server reverses post-LRANGE per Plan 02). WS: pg_promote_event.
+export interface PromoteEvent {
+  ts: number;
+  action: 'promote' | 'demote';
+  symbol: string;
+  long_exch: string;
+  short_exch: string;
+  direction: string;
+  score: number;
+  streak_cycles: number;
+  reason: 'score_threshold_met' | 'score_below_threshold';
+}
+
 interface ApiEnvelope<T> {
   ok: boolean;
   data?: T;
@@ -83,6 +98,10 @@ interface UsePgDiscoveryResult {
   lastRunAt: number | null;
   wsConnected: boolean;
   seedError: string | null;
+  // Phase 12 Plan 04 — PromoteTimeline data layer.
+  promoteEvents: PromoteEvent[] | null;
+  promoteEventsLoading: boolean;
+  promoteEventsError: string | null;
 }
 
 function authHeaders(): Record<string, string> {
@@ -101,6 +120,10 @@ export function usePgDiscovery(): UsePgDiscoveryResult {
   const [loadingSymbol, setLoadingSymbol] = useState<string | null>(null);
   const [seedError, setSeedError] = useState<string | null>(null);
   const [wsConnected, setWsConnected] = useState(true);
+  // Phase 12 Plan 04 — PromoteTimeline state.
+  const [promoteEvents, setPromoteEvents] = useState<PromoteEvent[] | null>(null);
+  const [promoteEventsLoading, setPromoteEventsLoading] = useState<boolean>(true);
+  const [promoteEventsError, setPromoteEventsError] = useState<string | null>(null);
 
   // Track which symbol is currently displayed; used to filter pg_scan_score
   // events so we only mutate state for the active subscription.
@@ -120,9 +143,45 @@ export function usePgDiscovery(): UsePgDiscoveryResult {
     }
   }, []);
 
+  // ── REST seed for promote events ────────────────────────────────────────
+  // Phase 12 Plan 04 (D-12). Server returns newest-first per Plan 02 reversal.
+  const seedPromoteEvents = useCallback(async () => {
+    try {
+      setPromoteEventsLoading(true);
+      const res = await fetch('/api/pg/discovery/promote-events', {
+        headers: authHeaders(),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as ApiEnvelope<PromoteEvent[]>;
+      if (!body.ok) throw new Error(body.error || 'promote events seed failed');
+      setPromoteEvents(body.data ?? []);
+      setPromoteEventsError(null);
+    } catch (err) {
+      setPromoteEventsError(err instanceof Error ? err.message : String(err));
+      setPromoteEvents([]);
+    } finally {
+      setPromoteEventsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void seed();
   }, [seed]);
+
+  useEffect(() => {
+    void seedPromoteEvents();
+  }, [seedPromoteEvents]);
+
+  // Re-seed on WS reconnect (false → true transition) to recover events
+  // missed during the disconnect window. Dedupe-on-prepend in the WS case
+  // handles in-flight WS events that arrive during the re-seed.
+  const prevWsConnected = useRef<boolean>(wsConnected);
+  useEffect(() => {
+    if (!prevWsConnected.current && wsConnected) {
+      void seedPromoteEvents();
+    }
+    prevWsConnected.current = wsConnected;
+  }, [wsConnected, seedPromoteEvents]);
 
   // ── Lazy per-symbol score history ────────────────────────────────────────
   const loadScoresFor = useCallback((symbol: string) => {
@@ -211,6 +270,31 @@ export function usePgDiscovery(): UsePgDiscoveryResult {
               });
               break;
             }
+            case 'pg_promote_event': {
+              // Phase 12 Plan 04 (D-11). Prepend newest-first; dedupe by composite
+              // (ts, action, symbol, long_exch, short_exch, direction); cap 1000
+              // (mirrors server LTrim and Phase 11 score-trim pattern).
+              const ev = msg.data as PromoteEvent;
+              if (!ev || typeof ev !== 'object' || typeof ev.ts !== 'number') break;
+              setPromoteEvents((prev) => {
+                if (prev == null) return [ev];
+                const head = prev[0];
+                if (
+                  head &&
+                  head.ts === ev.ts &&
+                  head.action === ev.action &&
+                  head.symbol === ev.symbol &&
+                  head.long_exch === ev.long_exch &&
+                  head.short_exch === ev.short_exch &&
+                  head.direction === ev.direction
+                ) {
+                  return prev;
+                }
+                const next = [ev, ...prev];
+                return next.length > 1000 ? next.slice(0, 1000) : next;
+              });
+              break;
+            }
           }
         } catch {
           // ignore malformed frames
@@ -243,5 +327,8 @@ export function usePgDiscovery(): UsePgDiscoveryResult {
     lastRunAt,
     wsConnected,
     seedError,
+    promoteEvents,
+    promoteEventsLoading,
+    promoteEventsError,
   };
 }

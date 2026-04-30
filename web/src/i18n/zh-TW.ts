@@ -919,6 +919,17 @@ const zhTW: Record<TranslationKey, string> = {
 
   'pricegap.discovery.timeline.title': '升級／降級時間線',
   'pricegap.discovery.timeline.placeholder': '升級與降級事件將於 Phase 12（自動升級）上線後顯示於此。',
+  'pricegap.discovery.timeline.actionPromote': '升級',
+  'pricegap.discovery.timeline.actionDemote': '降級',
+  'pricegap.discovery.timeline.scoreLabel': '分數',
+  'pricegap.discovery.timeline.streakLabel': '連續',
+  'pricegap.discovery.timeline.empty': '尚無升級或降級事件。當候選通過連續 6 個週期的觀察門檻後，掃描器會於此回報。',
+  'pricegap.discovery.timeline.loading': '載入升級事件中…',
+  'pricegap.discovery.timeline.seedError': '無法載入升級事件，下一筆事件抵達時會自動恢復串流。',
+  'pricegap.discovery.timeline.wsDisconnected': '即時更新已暫停',
+  'pricegap.discovery.timeline.loadMore': '顯示全部（{n}）',
+  'pricegap.discovery.timeline.sr.promote': '已升級',
+  'pricegap.discovery.timeline.sr.demote': '已降級',
 };
 
 export default zhTW;
