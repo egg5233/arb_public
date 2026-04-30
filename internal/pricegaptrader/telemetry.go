@@ -303,6 +303,26 @@ func (t *Telemetry) WriteCycleFailed(ctx context.Context) error {
 	return t.db.Redis().HSet(c, keyMetrics, map[string]interface{}{"cycle_failed": "1"}).Err()
 }
 
+// IncCapFullSkip increments the cap_full_skips:{symbol} HASH field on
+// pg:scan:metrics. Called by Phase 12 PromotionController.Apply when the
+// registry is full and an otherwise-eligible promote candidate must be
+// silently skipped (D-08). Per-symbol counter (Pitfall 4) so operators can
+// see WHICH symbol is sustained-cap-full, not just an aggregate.
+//
+// Empty symbol is a no-op (defensive — prevents poisoning the HASH with a
+// "cap_full_skips:" zero-suffix field if a caller passes "").
+func (t *Telemetry) IncCapFullSkip(ctx context.Context, symbol string) error {
+	if t.db == nil {
+		return nil
+	}
+	if symbol == "" {
+		return nil
+	}
+	c, cancel := boundCtx(ctx)
+	defer cancel()
+	return t.db.Redis().HIncrBy(c, keyMetrics, "cap_full_skips:"+symbol, 1).Err()
+}
+
 // ---- read helpers (Plan 05 REST handlers consume these) ---------------------
 
 // GetState reads pg:scan:metrics + pg:scan:enabled + last cycle envelope and
