@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v2.2
 milestone_name: Auto-Discovery & Live Strategy 4
 status: completed
-stopped_at: Completed 12-04-PLAN.md (Phase 12 — Auto-Promotion — done)
-last_updated: "2026-04-30T03:41:16.906Z"
+stopped_at: Phase 14 context gathered
+last_updated: "2026-04-30T04:24:52.940Z"
 last_activity: 2026-04-30
 progress:
   total_phases: 5
@@ -164,7 +164,7 @@ v2.0 + v1.0 decisions retained (truncated for brevity — see git history for fu
 
 ## Session Continuity
 
-Last session: 2026-04-30T03:00:00.000Z
-Stopped at: Completed 12-04-PLAN.md (Phase 12 — Auto-Promotion — done)
-Resume file: None
+Last session: 2026-04-30T04:24:52.935Z
+Stopped at: Phase 14 context gathered
+Resume file: .planning/phases/14-daily-reconcile-live-ramp-controller/14-CONTEXT.md
 Next command: `/gsd-plan-phase 14` to decompose Phase 14 (Daily Reconcile + Live Ramp Controller) into executable plans
