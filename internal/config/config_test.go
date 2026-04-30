@@ -375,3 +375,179 @@ func TestConfig_PriceGapDebugLog_SaveJSONRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Phase 14 (PG-LIVE-01, PG-LIVE-03) — validatePriceGapLive defense-layer-1
+// ---------------------------------------------------------------------------
+
+// defaultLiveConfig returns a Config populated with all Phase 14 defaults so
+// individual tests can flip a single field to assert that the validator
+// rejects exactly that violation.
+func defaultLiveConfig() *Config {
+	return &Config{
+		PriceGapPaperMode:          true,
+		PriceGapLiveCapital:        false,
+		PriceGapStage1SizeUSDT:     100,
+		PriceGapStage2SizeUSDT:     500,
+		PriceGapStage3SizeUSDT:     1000,
+		PriceGapHardCeilingUSDT:    1000,
+		PriceGapAnomalySlippageBps: 50,
+		PriceGapCleanDaysToPromote: 7,
+	}
+}
+
+// TestValidatePriceGapLive_RejectsLiveWithPaper — D-06: live capital must
+// fail-fast at config-load when paper mode is also on.
+func TestValidatePriceGapLive_RejectsLiveWithPaper(t *testing.T) {
+	c := defaultLiveConfig()
+	c.PriceGapLiveCapital = true
+	c.PriceGapPaperMode = true
+	if err := validatePriceGapLive(c); err == nil {
+		t.Fatal("expected error when LiveCapital=true AND PaperMode=true (D-06), got nil")
+	}
+}
+
+// TestValidatePriceGapLive_RejectsCeilingAbove1000 — v2.2 hard ceiling 1000
+// per CONTEXT Hard Contracts; even if defense-layer-2 (sizer) caps at 1000,
+// layer 1 must reject before any code path runs.
+func TestValidatePriceGapLive_RejectsCeilingAbove1000(t *testing.T) {
+	c := defaultLiveConfig()
+	c.PriceGapHardCeilingUSDT = 1500
+	if err := validatePriceGapLive(c); err == nil {
+		t.Fatal("expected error when HardCeiling > 1000, got nil")
+	}
+}
+
+// TestValidatePriceGapLive_RejectsStageOrderViolation — Stage1<=Stage2<=Stage3
+// is the asymmetric ratchet invariant (PG-LIVE-01). A misordered config
+// (Stage1=600 with Stage2=500) must be caught at load.
+func TestValidatePriceGapLive_RejectsStageOrderViolation(t *testing.T) {
+	c := defaultLiveConfig()
+	c.PriceGapStage1SizeUSDT = 600
+	c.PriceGapStage2SizeUSDT = 500
+	if err := validatePriceGapLive(c); err == nil {
+		t.Fatal("expected error when Stage1=600 > Stage2=500, got nil")
+	}
+}
+
+// TestValidatePriceGapLive_AcceptsDefaults — default values produced by
+// Load() must satisfy the validator. This is the no-regression backstop:
+// a config.json without a Phase 14 block must not fail validation.
+func TestValidatePriceGapLive_AcceptsDefaults(t *testing.T) {
+	c := defaultLiveConfig()
+	if err := validatePriceGapLive(c); err != nil {
+		t.Fatalf("validator rejected defaults: %v", err)
+	}
+}
+
+// TestValidatePriceGapLive_RejectsTypoStage3At9999 — RESEARCH Q10 explicit
+// scenario: operator types 9999 instead of 1000 in stage_3_size_usdt. Layer-1
+// must catch this before the sizer (layer-2) runs.
+func TestValidatePriceGapLive_RejectsTypoStage3At9999(t *testing.T) {
+	c := defaultLiveConfig()
+	c.PriceGapStage3SizeUSDT = 9999 // typo
+	if err := validatePriceGapLive(c); err == nil {
+		t.Fatal("expected error when Stage3=9999 > HardCeiling=1000, got nil")
+	}
+}
+
+// TestValidatePriceGapLive_RejectsAnomalyBpsOutOfRange — D-09 default 50;
+// range [0,500]. Negative or above 500 must be rejected.
+func TestValidatePriceGapLive_RejectsAnomalyBpsOutOfRange(t *testing.T) {
+	for _, val := range []float64{-1, 501, 9999} {
+		c := defaultLiveConfig()
+		c.PriceGapAnomalySlippageBps = val
+		if err := validatePriceGapLive(c); err == nil {
+			t.Fatalf("expected error when AnomalySlippageBps=%v, got nil", val)
+		}
+	}
+}
+
+// TestValidatePriceGapLive_RejectsCleanDaysOutOfRange — default 7; range
+// [1,30]. Zero or above 30 must be rejected.
+func TestValidatePriceGapLive_RejectsCleanDaysOutOfRange(t *testing.T) {
+	for _, val := range []int{0, 31, 365} {
+		c := defaultLiveConfig()
+		c.PriceGapCleanDaysToPromote = val
+		if err := validatePriceGapLive(c); err == nil {
+			t.Fatalf("expected error when CleanDaysToPromote=%d, got nil", val)
+		}
+	}
+}
+
+// TestPriceGapLiveDTORoundTrip — JSON DTO with Phase 14 fields:
+//   - Empty block: applyJSON installs the Phase 14 defaults (100/500/1000/1000/50/7/false).
+//   - Explicit values: applyJSON preserves them verbatim.
+func TestPriceGapLiveDTORoundTrip(t *testing.T) {
+	t.Run("empty_block_installs_defaults", func(t *testing.T) {
+		raw := []byte(`{"price_gap":{}}`)
+		var jc jsonConfig
+		if err := json.Unmarshal(raw, &jc); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		cfg := &Config{}
+		cfg.applyJSON(&jc)
+		if cfg.PriceGapLiveCapital {
+			t.Fatalf("expected LiveCapital=false default, got true")
+		}
+		if cfg.PriceGapStage1SizeUSDT != 100 {
+			t.Fatalf("expected Stage1=100, got %v", cfg.PriceGapStage1SizeUSDT)
+		}
+		if cfg.PriceGapStage2SizeUSDT != 500 {
+			t.Fatalf("expected Stage2=500, got %v", cfg.PriceGapStage2SizeUSDT)
+		}
+		if cfg.PriceGapStage3SizeUSDT != 1000 {
+			t.Fatalf("expected Stage3=1000, got %v", cfg.PriceGapStage3SizeUSDT)
+		}
+		if cfg.PriceGapHardCeilingUSDT != 1000 {
+			t.Fatalf("expected HardCeiling=1000, got %v", cfg.PriceGapHardCeilingUSDT)
+		}
+		if cfg.PriceGapAnomalySlippageBps != 50 {
+			t.Fatalf("expected AnomalySlippageBps=50, got %v", cfg.PriceGapAnomalySlippageBps)
+		}
+		if cfg.PriceGapCleanDaysToPromote != 7 {
+			t.Fatalf("expected CleanDaysToPromote=7, got %d", cfg.PriceGapCleanDaysToPromote)
+		}
+	})
+
+	t.Run("explicit_values_preserved", func(t *testing.T) {
+		raw := []byte(`{
+            "price_gap": {
+                "live_capital": true,
+                "stage_1_size_usdt": 200,
+                "stage_2_size_usdt": 600,
+                "stage_3_size_usdt": 950,
+                "hard_ceiling_usdt": 1000,
+                "anomaly_slippage_bps": 75,
+                "clean_days_to_promote": 14
+            }
+        }`)
+		var jc jsonConfig
+		if err := json.Unmarshal(raw, &jc); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		cfg := &Config{}
+		cfg.applyJSON(&jc)
+		if !cfg.PriceGapLiveCapital {
+			t.Fatalf("expected LiveCapital=true, got false")
+		}
+		if cfg.PriceGapStage1SizeUSDT != 200 {
+			t.Fatalf("expected Stage1=200, got %v", cfg.PriceGapStage1SizeUSDT)
+		}
+		if cfg.PriceGapStage2SizeUSDT != 600 {
+			t.Fatalf("expected Stage2=600, got %v", cfg.PriceGapStage2SizeUSDT)
+		}
+		if cfg.PriceGapStage3SizeUSDT != 950 {
+			t.Fatalf("expected Stage3=950, got %v", cfg.PriceGapStage3SizeUSDT)
+		}
+		if cfg.PriceGapHardCeilingUSDT != 1000 {
+			t.Fatalf("expected HardCeiling=1000, got %v", cfg.PriceGapHardCeilingUSDT)
+		}
+		if cfg.PriceGapAnomalySlippageBps != 75 {
+			t.Fatalf("expected AnomalySlippageBps=75, got %v", cfg.PriceGapAnomalySlippageBps)
+		}
+		if cfg.PriceGapCleanDaysToPromote != 14 {
+			t.Fatalf("expected CleanDaysToPromote=14, got %d", cfg.PriceGapCleanDaysToPromote)
+		}
+	})
+}

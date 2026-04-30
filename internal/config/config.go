@@ -60,6 +60,45 @@ func validatePriceGapDiscovery(c *Config) error {
 	return nil
 }
 
+// validatePriceGapLive verifies the Phase 14 live-capital ramp schema (D-06,
+// D-09, PG-LIVE-01). Returns the first violation as an error.
+//
+// Defense layer 1 (this function) catches typos at config-load (e.g.,
+// stage_3_size_usdt: 9999 is rejected here). Layer 2 is the sizer/risk gate
+// at trade time (Plan 14-03). Both layers cap at HardCeiling so a misordered
+// or oversized stage cannot leak into a real fill.
+//
+// D-06 invariant: live capital can never run while paper mode is on. The
+// loader fails fast when both flags are set so the operator catches the
+// contradiction before any position is opened.
+func validatePriceGapLive(c *Config) error {
+	if c.PriceGapLiveCapital && c.PriceGapPaperMode {
+		return fmt.Errorf("PriceGapLiveCapital=true requires PriceGapPaperMode=false (D-06)")
+	}
+	if c.PriceGapStage1SizeUSDT < 0 {
+		return fmt.Errorf("PriceGapStage1SizeUSDT=%v must be >= 0", c.PriceGapStage1SizeUSDT)
+	}
+	if c.PriceGapStage1SizeUSDT > c.PriceGapStage2SizeUSDT {
+		return fmt.Errorf("Stage1=%v must be <= Stage2=%v", c.PriceGapStage1SizeUSDT, c.PriceGapStage2SizeUSDT)
+	}
+	if c.PriceGapStage2SizeUSDT > c.PriceGapStage3SizeUSDT {
+		return fmt.Errorf("Stage2=%v must be <= Stage3=%v", c.PriceGapStage2SizeUSDT, c.PriceGapStage3SizeUSDT)
+	}
+	if c.PriceGapStage3SizeUSDT > c.PriceGapHardCeilingUSDT {
+		return fmt.Errorf("Stage3=%v exceeds HardCeiling=%v", c.PriceGapStage3SizeUSDT, c.PriceGapHardCeilingUSDT)
+	}
+	if c.PriceGapHardCeilingUSDT > 1000 {
+		return fmt.Errorf("HardCeiling=%v exceeds v2.2 ceiling 1000", c.PriceGapHardCeilingUSDT)
+	}
+	if c.PriceGapAnomalySlippageBps < 0 || c.PriceGapAnomalySlippageBps > 500 {
+		return fmt.Errorf("PriceGapAnomalySlippageBps=%v outside [0,500]", c.PriceGapAnomalySlippageBps)
+	}
+	if c.PriceGapCleanDaysToPromote < 1 || c.PriceGapCleanDaysToPromote > 30 {
+		return fmt.Errorf("PriceGapCleanDaysToPromote=%d outside [1,30]", c.PriceGapCleanDaysToPromote)
+	}
+	return nil
+}
+
 func parseBoolEnv(raw string) (bool, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "1", "true", "yes":
@@ -364,6 +403,20 @@ type Config struct {
 	// Phase 11 schema (Phase 12 acts on these — D-15 displays them now).
 	PriceGapAutoPromoteScore int // default 60; server floor 50, ceiling 100
 	PriceGapMaxCandidates    int // default 12; range 1-50
+
+	// ---------------------------------------------------------------------------
+	// Phase 14 (PG-LIVE-01, PG-LIVE-03) — live capital ramp + reconciler config.
+	// All defaults safe-off. Live-capital activation requires PaperMode=false AND
+	// LiveCapital=true (D-06) — both validated together by validatePriceGapLive
+	// at config-load.
+	// ---------------------------------------------------------------------------
+	PriceGapLiveCapital        bool    // D-06 default false; live-capital master toggle
+	PriceGapStage1SizeUSDT     float64 // PG-LIVE-01 default 100
+	PriceGapStage2SizeUSDT     float64 // PG-LIVE-01 default 500
+	PriceGapStage3SizeUSDT     float64 // PG-LIVE-01 default 1000
+	PriceGapHardCeilingUSDT    float64 // v2.2 hard ceiling 1000 USDT/leg
+	PriceGapAnomalySlippageBps float64 // D-09 default 50; range [0,500]
+	PriceGapCleanDaysToPromote int     // PG-LIVE-01 default 7
 }
 
 // ---------- Nested JSON config structs ----------
@@ -414,6 +467,16 @@ type jsonPriceGap struct {
 	DiscoveryMinDepthUSDT *int     `json:"discovery_min_depth_usdt,omitempty"`
 	AutoPromoteScore      *int     `json:"auto_promote_score,omitempty"`
 	MaxCandidates         *int     `json:"max_candidates,omitempty"`
+
+	// Phase 14 (PG-LIVE-01, PG-LIVE-03) — live capital ramp + reconciler.
+	// Pointer-optional: omission preserves defaults installed by Load().
+	LiveCapital        *bool    `json:"live_capital,omitempty"`
+	Stage1SizeUSDT     *float64 `json:"stage_1_size_usdt,omitempty"`
+	Stage2SizeUSDT     *float64 `json:"stage_2_size_usdt,omitempty"`
+	Stage3SizeUSDT     *float64 `json:"stage_3_size_usdt,omitempty"`
+	HardCeilingUSDT    *float64 `json:"hard_ceiling_usdt,omitempty"`
+	AnomalySlippageBps *float64 `json:"anomaly_slippage_bps,omitempty"`
+	CleanDaysToPromote *int     `json:"clean_days_to_promote,omitempty"`
 }
 
 type jsonAnalytics struct {
@@ -814,6 +877,17 @@ func Load() *Config {
 	c.PriceGapAutoPromoteScore = 60 // headroom above server floor 50
 	c.PriceGapMaxCandidates = 12    // PG-RISK-04 cap below 50
 
+	// Phase 14 live-capital ramp defaults (PG-LIVE-01) — master switch OFF.
+	// Stage sizing 100/500/1000 with hard ceiling 1000 (v2.2). Anomaly threshold
+	// 50 bps default (D-09). Clean-day promotion threshold 7 days.
+	c.PriceGapLiveCapital = false
+	c.PriceGapStage1SizeUSDT = 100
+	c.PriceGapStage2SizeUSDT = 500
+	c.PriceGapStage3SizeUSDT = 1000
+	c.PriceGapHardCeilingUSDT = 1000
+	c.PriceGapAnomalySlippageBps = 50
+	c.PriceGapCleanDaysToPromote = 7
+
 	// Load from JSON file
 	c.loadJSON()
 
@@ -822,6 +896,19 @@ func Load() *Config {
 
 	// Ensure special scan minutes are present in the schedule.
 	c.EnsureScanMinutes()
+
+	// Phase 11 + Phase 14 PriceGap schema validation. Both functions return
+	// the first violation as an error; we log fatal-style via fmt.Fprintln so
+	// that an operator running ./arb sees the contradiction immediately.
+	// validatePriceGapDiscovery is wired here for the first time (was unwired
+	// in earlier phases). validatePriceGapLive enforces the D-06 paper/live
+	// coupling and the v2.2 hard ceiling.
+	if err := validatePriceGapDiscovery(c); err != nil {
+		fmt.Fprintln(os.Stderr, "config: price-gap discovery validation:", err)
+	}
+	if err := validatePriceGapLive(c); err != nil {
+		fmt.Fprintln(os.Stderr, "config: price-gap live validation:", err)
+	}
 
 	return c
 }
@@ -1506,6 +1593,49 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		}
 		if pg.MaxCandidates != nil {
 			c.PriceGapMaxCandidates = *pg.MaxCandidates
+		}
+
+		// Phase 14 live-capital ramp + reconciler. Default-then-override:
+		// ensure defaults exist before applying overrides so a partial block
+		// leaves safe values intact (matches Phase 11 pattern above).
+		if c.PriceGapStage1SizeUSDT == 0 {
+			c.PriceGapStage1SizeUSDT = 100
+		}
+		if c.PriceGapStage2SizeUSDT == 0 {
+			c.PriceGapStage2SizeUSDT = 500
+		}
+		if c.PriceGapStage3SizeUSDT == 0 {
+			c.PriceGapStage3SizeUSDT = 1000
+		}
+		if c.PriceGapHardCeilingUSDT == 0 {
+			c.PriceGapHardCeilingUSDT = 1000
+		}
+		if c.PriceGapAnomalySlippageBps == 0 {
+			c.PriceGapAnomalySlippageBps = 50
+		}
+		if c.PriceGapCleanDaysToPromote == 0 {
+			c.PriceGapCleanDaysToPromote = 7
+		}
+		if pg.LiveCapital != nil {
+			c.PriceGapLiveCapital = *pg.LiveCapital
+		}
+		if pg.Stage1SizeUSDT != nil {
+			c.PriceGapStage1SizeUSDT = *pg.Stage1SizeUSDT
+		}
+		if pg.Stage2SizeUSDT != nil {
+			c.PriceGapStage2SizeUSDT = *pg.Stage2SizeUSDT
+		}
+		if pg.Stage3SizeUSDT != nil {
+			c.PriceGapStage3SizeUSDT = *pg.Stage3SizeUSDT
+		}
+		if pg.HardCeilingUSDT != nil {
+			c.PriceGapHardCeilingUSDT = *pg.HardCeilingUSDT
+		}
+		if pg.AnomalySlippageBps != nil {
+			c.PriceGapAnomalySlippageBps = *pg.AnomalySlippageBps
+		}
+		if pg.CleanDaysToPromote != nil {
+			c.PriceGapCleanDaysToPromote = *pg.CleanDaysToPromote
 		}
 	}
 
