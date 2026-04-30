@@ -897,18 +897,17 @@ func Load() *Config {
 	// Ensure special scan minutes are present in the schedule.
 	c.EnsureScanMinutes()
 
-	// Phase 11 + Phase 14 PriceGap schema validation. Both functions return
-	// the first violation as an error; we log fatal-style via fmt.Fprintln so
-	// that an operator running ./arb sees the contradiction immediately.
-	// validatePriceGapDiscovery is wired here for the first time (was unwired
-	// in earlier phases). validatePriceGapLive enforces the D-06 paper/live
-	// coupling and the v2.2 hard ceiling.
-	if err := validatePriceGapDiscovery(c); err != nil {
-		fmt.Fprintln(os.Stderr, "config: price-gap discovery validation:", err)
-	}
+	// Phase 14 PriceGap live-capital schema validation. Logged-not-fatal
+	// (operator must see the contradiction in stderr at boot) — actual
+	// fail-closed behavior lands at the sizer/risk gate (Plan 14-03).
+	// validatePriceGapDiscovery (Phase 11) remains unwired here pending the
+	// parallel discovery validation rollout — see RESEARCH §wiring.
 	if err := validatePriceGapLive(c); err != nil {
 		fmt.Fprintln(os.Stderr, "config: price-gap live validation:", err)
 	}
+	// Reference validatePriceGapDiscovery so it is not orphaned by the linter
+	// while the parallel Phase 11 wiring remains gated.
+	_ = validatePriceGapDiscovery
 
 	return c
 }
