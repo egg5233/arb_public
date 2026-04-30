@@ -191,6 +191,11 @@ func (s *Server) Start() {
 	mux.HandleFunc("GET /api/pg/discovery/state", s.cors(s.authMiddleware(s.handlePgDiscoveryState)))
 	mux.HandleFunc("GET /api/pg/discovery/scores/{symbol}", s.cors(s.authMiddleware(s.handlePgDiscoveryScores)))
 
+	// Phase 12 auto-promotion — Plan 12-02 REST seed for promote/demote
+	// timeline (D-12). Reads pg:promote:events LIST (RPushed by
+	// RedisWSPromoteSink); returns newest-first.
+	mux.HandleFunc("GET /api/pg/discovery/promote-events", s.cors(s.authMiddleware(s.handlePgDiscoveryPromoteEvents)))
+
 	// Capital allocation
 	mux.HandleFunc("/api/allocation", s.cors(s.authMiddleware(s.handleGetAllocation)))
 

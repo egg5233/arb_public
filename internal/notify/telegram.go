@@ -420,6 +420,41 @@ func (t *TelegramNotifier) NotifyPriceGapExit(pos *models.PriceGapPosition, reas
 	go t.send(text)
 }
 
+// NotifyPromoteEvent fires a Telegram alert for a Phase 12 PromotionController
+// promote/demote event (D-13, D-14). Called fire-and-forget by
+// RedisWSPromoteSink.Emit's caller; void return preserves the
+// PromoteNotifier interface contract (Plan 12-01 promotion.go).
+//
+// Cooldown key (D-13):
+//
+//	"pg_promote:" + action + ":" + symbol + ":" + longExch + ":" +
+//	    shortExch + ":" + direction
+//
+// Distinct events get distinct keys so the existing 5-min cooldown does
+// NOT suppress legitimate sequential events for different candidates.
+// Same-candidate flap within 5 minutes IS throttled (intentional — the
+// dashboard timeline carries flap detail).
+//
+// Message format (D-14): plain text (NOT Markdown) so the heart-arrow
+// rune `↔` and any future symbol/exchange names render verbatim and the
+// timeline regex on the dashboard can match a stable shape. The send path
+// adds parse_mode=Markdown by default but the format below uses no
+// Markdown special chars at the field boundaries; if BTCUSDT one day
+// contains an asterisk we revisit.
+//
+// Nil-receiver safe (project convention).
+func (t *TelegramNotifier) NotifyPromoteEvent(action, symbol, longExch, shortExch, direction string, score, streak int) {
+	if t == nil {
+		return
+	}
+	key := "pg_promote:" + action + ":" + symbol + ":" + longExch + ":" + shortExch + ":" + direction
+	if !t.checkCooldown(key) {
+		return
+	}
+	go t.send(fmt.Sprintf("[PG %s] %s %s\xe2\x86\x94%s (%s) score=%d streak=%d",
+		action, symbol, longExch, shortExch, direction, score, streak))
+}
+
 // NotifyPriceGapRiskBlock sends an alert when a price-gap entry is rejected by
 // a risk gate. Cooldown is keyed per (gate, symbol) so a spinning gate on one
 // symbol cannot suppress alerts on another. Gate names are allowlisted

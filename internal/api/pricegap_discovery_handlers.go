@@ -16,6 +16,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -81,4 +82,43 @@ func (s *Server) handlePgDiscoveryScores(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: scores})
+}
+
+// handlePgDiscoveryPromoteEvents — GET /api/pg/discovery/promote-events.
+//
+// Returns the contents of the pg:promote:events Redis LIST (D-12 REST seed)
+// as a NEWEST-FIRST JSON array of pricegaptrader.PromoteEvent so the
+// dashboard timeline can render top-down without a client-side sort.
+//
+// Response envelope: { ok: true, data: []PromoteEvent }
+//
+// Auth: Bearer token (matches handlePgDiscoveryState).
+//
+// Threat T-12-07 mitigation: malformed entries (parse failure on a single
+// row) are silently skipped rather than failing the whole request — defense-
+// in-depth even though only the controller writes the LIST.
+func (s *Server) handlePgDiscoveryPromoteEvents(w http.ResponseWriter, r *http.Request) {
+	if s.db == nil {
+		writeJSON(w, http.StatusServiceUnavailable, Response{Error: "database unavailable"})
+		return
+	}
+	raws, err := s.db.Redis().LRange(r.Context(), "pg:promote:events", 0, -1).Result()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, Response{Error: err.Error()})
+		return
+	}
+	out := make([]pricegaptrader.PromoteEvent, 0, len(raws))
+	for _, raw := range raws {
+		var ev pricegaptrader.PromoteEvent
+		if err := json.Unmarshal([]byte(raw), &ev); err != nil {
+			// T-12-07 — skip malformed rather than fail whole request.
+			continue
+		}
+		out = append(out, ev)
+	}
+	// Reverse to newest-first (Redis RPush leaves oldest at index 0).
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: out})
 }
