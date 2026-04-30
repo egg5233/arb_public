@@ -452,3 +452,19 @@ func TestRiskGate_DuplicateCandidate_DifferentSymbol_Passes(t *testing.T) {
 		t.Fatalf("different-symbol same-exchange-pair must pass gate 0; err=%v reason=%s", res.Err, res.Reason)
 	}
 }
+
+// Phase 14 Gate 6 (live ramp budget) stubs — bodies land in plan 14-03.
+// Ramp-stage budget cap, no-op when live capital OFF, fail-closed posture
+// when ramp state unavailable.
+
+func TestRiskGate_Gate6_Ramp_OverBudget_Rejects(t *testing.T) {
+	t.Skip("Wave 0 stub: implementation lands in plan 14-03")
+}
+
+func TestRiskGate_Gate6_Ramp_NoOpWhenLiveCapitalOff(t *testing.T) {
+	t.Skip("Wave 0 stub: implementation lands in plan 14-03")
+}
+
+func TestRiskGate_Gate6_Ramp_FailClosedOnStateUnavailable(t *testing.T) {
+	t.Skip("Wave 0 stub: implementation lands in plan 14-03")
+}

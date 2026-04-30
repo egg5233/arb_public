@@ -81,3 +81,19 @@ func TestTracker_SetBroadcaster_NilRevertsToNoop(t *testing.T) {
 		t.Fatalf("SetBroadcaster(nil) broadcaster: got %T, want NoopBroadcaster", tr.broadcaster)
 	}
 }
+
+// Phase 14 notifier stubs — bodies land in plan 14-04.
+// Daily-digest dispatcher (non-critical), reconcile-failure dispatcher
+// (critical), ramp-event allowlist routing.
+
+func TestNotifier_DailyDigest_DispatchesNonCritical(t *testing.T) {
+	t.Skip("Wave 0 stub: implementation lands in plan 14-04")
+}
+
+func TestNotifier_ReconcileFailure_DispatchesCritical(t *testing.T) {
+	t.Skip("Wave 0 stub: implementation lands in plan 14-04")
+}
+
+func TestNotifier_AddsRampToAllowlist(t *testing.T) {
+	t.Skip("Wave 0 stub: implementation lands in plan 14-04")
+}
