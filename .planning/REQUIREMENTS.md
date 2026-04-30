@@ -22,7 +22,7 @@
 ### Auto-Discovery & Promotion
 
 - [ ] **PG-DISC-01**: Auto-discovery scanner polls a bounded universe (≤20 symbols × 6 exchanges) on configurable interval, applies ≥4-bar persistence detector + BBO freshness gate + depth probe, computes a per-candidate score, and writes scanner cycle output to `pg:scan:*` Redis keys. Default OFF via `PriceGapDiscoveryEnabled`. Scanner is read-only until PG-DISC-04 (CandidateRegistry chokepoint) lands.
-- [ ] **PG-DISC-02**: Auto-promotion controller appends candidates with score ≥ `PriceGapAutoPromoteScore` (new config field) to `cfg.PriceGapCandidates` via the chokepoint, capped by `PriceGapMaxCandidates` (new config field, default 12), persisted via SaveJSON with `.bak` rotation. Idempotent dedupe (incl. v0.35.0 `direction` field). Observation streak ≥6 cycles required before promotion clears. Auto-demote honors `pg:positions:active` guard (Phase 10 reuse). Promote/demote events emit Telegram critical alert + WS broadcast.
+- [x] **PG-DISC-02**: Auto-promotion controller appends candidates with score ≥ `PriceGapAutoPromoteScore` (new config field) to `cfg.PriceGapCandidates` via the chokepoint, capped by `PriceGapMaxCandidates` (new config field, default 12), persisted via SaveJSON with `.bak` rotation. Idempotent dedupe (incl. v0.35.0 `direction` field). Observation streak ≥6 cycles required before promotion clears. Auto-demote honors `pg:positions:active` guard (Phase 10 reuse). Promote/demote events emit Telegram critical alert + WS broadcast.
 - [ ] **PG-DISC-03**: Discovery telemetry surfaces scanner cycle stats, score history per candidate, why-rejected breakdown, and promote/demote event timeline in the dashboard (new section under PG-OPS-09 tab) using existing Recharts components. Read path uses `pg:scan:*` and `pg:promote:*` Redis keys via existing WS hub batching.
 - [ ] **PG-DISC-04**: `CandidateRegistry` chokepoint serializes all writers (operator dashboard CRUD from Phase 10, pg-admin CLI, scanner auto-promotion, scanner auto-demote) through one mutex + atomic file write + timestamped `.bak` ring. Required prerequisite before scanner is write-permitted (PG-DISC-02 cannot land until PG-DISC-04 ships).
 
@@ -87,7 +87,7 @@
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | PG-DISC-01 | Phase 11 | Pending |
-| PG-DISC-02 | Phase 12 | Pending |
+| PG-DISC-02 | Phase 12 | Complete |
 | PG-DISC-03 | Phase 11 | Pending |
 | PG-DISC-04 | Phase 11 | Pending |
 | PG-LIVE-01 | Phase 14 | Pending |
