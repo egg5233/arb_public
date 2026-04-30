@@ -114,7 +114,7 @@ Phase numbers reuse 11 + 12 from the v2.1 deferred-numbering plan; 13 was consum
   5. Promote and demote events fire Telegram critical alert AND WS broadcast; events appear in the dashboard timeline added in Phase 11.
 **Plans**: 4 plans
 - [x] 12-01-PLAN.md - PromotionController core (TDD: streak, cap-full, dedupe, demote, active-position guard)
-- [ ] 12-02-PLAN.md - I/O surfaces: RedisWSPromoteSink, IncCapFullSkip, REST seed, Telegram NotifyPromoteEvent
+- [x] 12-02-PLAN.md - I/O surfaces: RedisWSPromoteSink, IncCapFullSkip, REST seed, Telegram NotifyPromoteEvent
 - [ ] 12-03-PLAN.md - Wire controller into Scanner.RunCycle + ActivePositionChecker + bootstrap + v0.36.0
 - [ ] 12-04-PLAN.md - Frontend swap: PromoteTimeline component + i18n + human-verify checkpoint
 **UI hint**: yes
@@ -188,7 +188,7 @@ Phase numbers reuse 11 + 12 from the v2.1 deferred-numbering plan; 13 was consum
 | 13. v2.0 Deferred Closure | v2.1 | n/a | Complete (direct commits) | 2026-04-25 |
 | 999.1. Bidirectional pricegap candidates | v2.1 | 6/6 | Complete | 2026-04-27 |
 | 11. Auto-Discovery Scanner + Chokepoint + Telemetry | v2.2 | 6/6 | Complete    | 2026-04-28 |
-| 12. Auto-Promotion | v2.2 | 1/4 | In Progress|  |
+| 12. Auto-Promotion | v2.2 | 2/4 | In Progress|  |
 | 14. Daily Reconcile + Live Ramp Controller | v2.2 | 0/? | Not started | — |
 | 15. Drawdown Circuit Breaker | v2.2 | 0/? | Not started | — |
 | 16. Paper-Mode Cleanup + Dashboard Consolidation | v2.2 | 0/? | Not started | — |
