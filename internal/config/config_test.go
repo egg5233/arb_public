@@ -551,3 +551,58 @@ func TestPriceGapLiveDTORoundTrip(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// Phase 15 (PG-LIVE-02) — Drawdown circuit breaker validator
+// ---------------------------------------------------------------------------
+
+// TestValidatePriceGapLive_BreakerFields exercises the Phase 15 breaker
+// validator extension to validatePriceGapLive. Default OFF (disabled=false)
+// must accept any field values without inspection. When enabled, the
+// validator rejects positive limits (D-06: limit is absolute USDT, must be
+// negative-or-zero) and out-of-range intervals (60s..3600s per D-01).
+func TestValidatePriceGapLive_BreakerFields(t *testing.T) {
+	tests := []struct {
+		name      string
+		enabled   bool
+		limit     float64
+		interval  int
+		wantError bool
+	}{
+		// Default OFF — any values accepted (master switch is the gate).
+		{"disabled_zeros_accepted", false, 0, 0, false},
+		{"disabled_positive_limit_accepted", false, 50, 30, false},
+		{"disabled_huge_interval_accepted", false, -100, 99999, false},
+
+		// Enabled — limit validation.
+		{"enabled_limit_zero_accepted", true, 0, 300, false},
+		{"enabled_limit_negative_accepted", true, -50, 300, false},
+		{"enabled_limit_positive_rejected", true, 50, 300, true},
+		{"enabled_limit_positive_one_rejected", true, 0.1, 300, true},
+
+		// Enabled — interval range.
+		{"enabled_interval_default_300_accepted", true, -50, 300, false},
+		{"enabled_interval_floor_60_accepted", true, -50, 60, false},
+		{"enabled_interval_ceiling_3600_accepted", true, -50, 3600, false},
+		{"enabled_interval_below_floor_rejected", true, -50, 59, true},
+		{"enabled_interval_above_ceiling_rejected", true, -50, 3601, true},
+		{"enabled_interval_zero_rejected", true, -50, 0, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := defaultLiveConfig()
+			c.PriceGapBreakerEnabled = tc.enabled
+			c.PriceGapDrawdownLimitUSDT = tc.limit
+			c.PriceGapBreakerIntervalSec = tc.interval
+			err := validatePriceGapLive(c)
+			if tc.wantError && err == nil {
+				t.Fatalf("expected error (enabled=%v, limit=%v, interval=%d), got nil",
+					tc.enabled, tc.limit, tc.interval)
+			}
+			if !tc.wantError && err != nil {
+				t.Fatalf("expected no error (enabled=%v, limit=%v, interval=%d), got: %v",
+					tc.enabled, tc.limit, tc.interval, err)
+			}
+		})
+	}
+}

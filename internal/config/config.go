@@ -96,6 +96,17 @@ func validatePriceGapLive(c *Config) error {
 	if c.PriceGapCleanDaysToPromote < 1 || c.PriceGapCleanDaysToPromote > 30 {
 		return fmt.Errorf("PriceGapCleanDaysToPromote=%d outside [1,30]", c.PriceGapCleanDaysToPromote)
 	}
+	// Phase 15 breaker validators — only enforced when breaker is enabled.
+	// Default OFF means defaults (limit=0, interval=300) bypass these checks
+	// and a fresh install is unaffected. Operators must opt-in explicitly.
+	if c.PriceGapBreakerEnabled {
+		if c.PriceGapDrawdownLimitUSDT > 0 {
+			return fmt.Errorf("pricegap_drawdown_limit_usdt must be <= 0 (got %v); breaker fires when realized PnL drops BELOW this negative threshold", c.PriceGapDrawdownLimitUSDT)
+		}
+		if c.PriceGapBreakerIntervalSec < 60 || c.PriceGapBreakerIntervalSec > 3600 {
+			return fmt.Errorf("pricegap_breaker_interval_sec must be in [60, 3600] (got %d); 60s minimum prevents Redis cardinality blow-up, 3600s maximum prevents excessive trip latency", c.PriceGapBreakerIntervalSec)
+		}
+	}
 	return nil
 }
 
@@ -417,6 +428,13 @@ type Config struct {
 	PriceGapHardCeilingUSDT    float64 // v2.2 hard ceiling 1000 USDT/leg
 	PriceGapAnomalySlippageBps float64 // D-09 default 50; range [0,500]
 	PriceGapCleanDaysToPromote int     // PG-LIVE-01 default 7
+
+	// ---------------------------------------------------------------------------
+	// Phase 15 (PG-LIVE-02) — Drawdown circuit breaker. Default OFF.
+	// ---------------------------------------------------------------------------
+	PriceGapBreakerEnabled     bool    // D-Discretion default false; master switch
+	PriceGapDrawdownLimitUSDT  float64 // D-06 absolute USDT, negative; default 0 (armed-but-never-trips)
+	PriceGapBreakerIntervalSec int     // D-01 5-min ticker; default 300; range [60,3600]
 }
 
 // ---------- Nested JSON config structs ----------
@@ -477,6 +495,12 @@ type jsonPriceGap struct {
 	HardCeilingUSDT    *float64 `json:"hard_ceiling_usdt,omitempty"`
 	AnomalySlippageBps *float64 `json:"anomaly_slippage_bps,omitempty"`
 	CleanDaysToPromote *int     `json:"clean_days_to_promote,omitempty"`
+
+	// Phase 15 (PG-LIVE-02) — Drawdown circuit breaker. Pointer-optional so
+	// omission preserves defaults installed by Load(); D-22 safe-off semantics.
+	BreakerEnabled       *bool    `json:"enable_pricegap_breaker,omitempty"`
+	DrawdownLimitUSDT    *float64 `json:"pricegap_drawdown_limit_usdt,omitempty"`
+	BreakerIntervalSec   *int     `json:"pricegap_breaker_interval_sec,omitempty"`
 }
 
 type jsonAnalytics struct {
@@ -887,6 +911,12 @@ func Load() *Config {
 	c.PriceGapHardCeilingUSDT = 1000
 	c.PriceGapAnomalySlippageBps = 50
 	c.PriceGapCleanDaysToPromote = 7
+
+	// Phase 15 drawdown circuit breaker defaults (PG-LIVE-02) — master switch
+	// OFF, armed-but-never-trips threshold (limit=0), 5-min default ticker.
+	c.PriceGapBreakerEnabled = false
+	c.PriceGapDrawdownLimitUSDT = 0
+	c.PriceGapBreakerIntervalSec = 300
 
 	// Load from JSON file
 	c.loadJSON()
@@ -1635,6 +1665,22 @@ func (c *Config) applyJSON(jc *jsonConfig) {
 		}
 		if pg.CleanDaysToPromote != nil {
 			c.PriceGapCleanDaysToPromote = *pg.CleanDaysToPromote
+		}
+
+		// Phase 15 drawdown circuit breaker (PG-LIVE-02). Default-then-override
+		// matches Phase 14 pattern above. Defaults: disabled=false, limit=0
+		// (armed-but-never-trips), interval=300s (5-min ticker per D-01).
+		if c.PriceGapBreakerIntervalSec == 0 {
+			c.PriceGapBreakerIntervalSec = 300
+		}
+		if pg.BreakerEnabled != nil {
+			c.PriceGapBreakerEnabled = *pg.BreakerEnabled
+		}
+		if pg.DrawdownLimitUSDT != nil {
+			c.PriceGapDrawdownLimitUSDT = *pg.DrawdownLimitUSDT
+		}
+		if pg.BreakerIntervalSec != nil {
+			c.PriceGapBreakerIntervalSec = *pg.BreakerIntervalSec
 		}
 	}
 
