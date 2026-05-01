@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.2
 milestone_name: Auto-Discovery & Live Strategy 4
 status: executing
-stopped_at: Completed 15-03-PLAN.md
-last_updated: "2026-05-01T05:50:23.879Z"
+stopped_at: Completed 15-04-PLAN.md
+last_updated: "2026-05-01T06:31:05.061Z"
 last_activity: 2026-05-01
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 20
-  completed_plans: 18
-  percent: 90
+  completed_plans: 19
+  percent: 95
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-28 after v2.2 milestone start)
 ## Current Position
 
 Phase: 15 (drawdown-circuit-breaker) — EXECUTING
-Plan: 4 of 5
+Plan: 5 of 5
 Status: Ready to execute
 Last activity: 2026-05-01
 
@@ -123,6 +123,7 @@ Progress (v2.2): [          ] 0%
 | Phase 15 P01 | 25min | 3 tasks | 14 files |
 | Phase 15 P02 | 20min | 2 tasks | 7 files |
 | Phase 15 P03 | 22min | 2 tasks | 13 files |
+| Phase 15 P04 | 75min | 3 tasks | 17 files |
 
 ## Accumulated Context
 
@@ -174,6 +175,9 @@ v2.0 + v1.0 decisions retained (truncated for brevity — see git history for fu
 - [Phase 15]: Plan 15-03: Adapted plan's hypothetical Candidate.Disabled bool to PausedByBreaker bool only — actual model has no Disabled field (Redis-backed). Added Gate 1.5 in risk_gate.go between Gate 1 and Gate 2 with distinct rejection reason 'paused_by_breaker' vs 'exec_quality'. Preserves D-10 spirit.
 - [Phase 15]: Plan 15-03: D-15 trip Step 2 (PauseAllOpenCandidates) reordered before Step 3 (AppendBreakerTrip) so trip record carries PausedCandidateCount. CONTEXT D-15 prose allows the swap (only Step 1 sticky persistence is load-bearing); locked by TestBreaker_TripOrdering_StickyFirstWhenStepsFail + Step1FailureAborts.
 - [Phase 15]: Plan 15-03: ActivePositionLister.GetActivePriceGapPositions returns []*PriceGapPosition (matches existing concrete signature) not []string IDs as plan suggested — needed for tuple matching in Registry.PauseAllOpenCandidates. *database.Client satisfies via duck typing, no adapter shim.
+- [Phase 15]: Plan 15-04: VERSION bare semver (0.38.0 not v0.38.0) per codebase convention; pg-admin dispatcher named runBreaker (not breakerCmd) per existing runReconcile/runRamp pattern
+- [Phase 15]: Plan 15-04: Recover sticky cleared LAST (Step 3 critical) inverting trip ordering — partial earlier failure leaves engine still tripped (safer state); forward-progress invariant zeroes pending+strike1_ts too
+- [Phase 15]: Plan 15-04: sendCritical helper added to TelegramNotifier; Hub.BroadcastPriceGapBreakerEvent specific method (not generic Broadcast) preserves D-15 boundary at wiring site
 
 ### Pending Todos
 
@@ -197,7 +201,7 @@ v2.0 + v1.0 decisions retained (truncated for brevity — see git history for fu
 
 ## Session Continuity
 
-Last session: 2026-05-01T05:50:23.874Z
-Stopped at: Completed 15-03-PLAN.md
+Last session: 2026-05-01T06:30:55.172Z
+Stopped at: Completed 15-04-PLAN.md
 Resume file: None
 Next command: `/gsd-plan-phase 15` to decompose Phase 15 (Drawdown Circuit Breaker, PG-LIVE-02) into executable plans
