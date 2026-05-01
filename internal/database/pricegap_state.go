@@ -41,6 +41,13 @@ const (
 	keyPricegapRampEvents         = "pg:ramp:events"       // LIST capped 500
 
 	priceGapRampEventsCap = 500
+
+	// Phase 15 (PG-LIVE-02) — Drawdown circuit breaker persistence. HASH for
+	// the 5-field BreakerState (D-05); capped LIST for the trip log (D-18).
+	keyPriceGapBreakerState = "pg:breaker:state"
+	keyPriceGapBreakerTrips = "pg:breaker:trips"
+
+	priceGapBreakerTripsCap = 500
 )
 
 // Compile-time assertion that *Client satisfies the PriceGapStore interface.
@@ -499,6 +506,132 @@ func (c *Client) AppendPriceGapRampEvent(ev models.RampEvent) error {
 	pipe.LTrim(ctx, keyPricegapRampEvents, -priceGapRampEventsCap, -1)
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("rpush+ltrim pg:ramp:events: %w", err)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Phase 15 (PG-LIVE-02) — Drawdown circuit breaker persistence
+// ---------------------------------------------------------------------------
+
+// SaveBreakerState writes the 5-field BreakerState atomically to the HASH at
+// keyPriceGapBreakerState (D-05). All numeric fields are stored as decimal
+// strings so the int64 sentinel PaperModeStickyUntil=math.MaxInt64 (D-07)
+// roundtrips without float truncation. The HSet pipeline guarantees
+// all-or-nothing semantics — concurrent readers see either the prior or the
+// new state, never a partial mix.
+func (c *Client) SaveBreakerState(s models.BreakerState) error {
+	ctx := context.Background()
+	pipe := c.rdb.Pipeline()
+	pipe.HSet(ctx, keyPriceGapBreakerState, map[string]any{
+		"pending_strike":          strconv.Itoa(s.PendingStrike),
+		"strike1_ts":              strconv.FormatInt(s.Strike1Ts, 10),
+		"last_eval_ts":            strconv.FormatInt(s.LastEvalTs, 10),
+		"last_eval_pnl_usdt":      strconv.FormatFloat(s.LastEvalPnLUSDT, 'f', -1, 64),
+		"paper_mode_sticky_until": strconv.FormatInt(s.PaperModeStickyUntil, 10),
+	})
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("hset pg:breaker:state: %w", err)
+	}
+	return nil
+}
+
+// LoadBreakerState returns (state, exists, err). On a fresh database (HASH
+// absent), exists=false and state is the zero value — boot-time fresh-init
+// signal per Phase 15 RESEARCH §"Boot guard". Decode failures return an error
+// so the BreakerController can fail-safe-to-paper (Pitfall 8).
+func (c *Client) LoadBreakerState() (models.BreakerState, bool, error) {
+	ctx := context.Background()
+	m, err := c.rdb.HGetAll(ctx, keyPriceGapBreakerState).Result()
+	if err != nil {
+		return models.BreakerState{}, false, fmt.Errorf("hgetall pg:breaker:state: %w", err)
+	}
+	if len(m) == 0 {
+		return models.BreakerState{}, false, nil
+	}
+	var s models.BreakerState
+	if v, ok := m["pending_strike"]; ok && v != "" {
+		n, perr := strconv.Atoi(v)
+		if perr != nil {
+			return models.BreakerState{}, false, fmt.Errorf("parse pending_strike=%q: %w", v, perr)
+		}
+		s.PendingStrike = n
+	}
+	if v, ok := m["strike1_ts"]; ok && v != "" {
+		n, perr := strconv.ParseInt(v, 10, 64)
+		if perr != nil {
+			return models.BreakerState{}, false, fmt.Errorf("parse strike1_ts=%q: %w", v, perr)
+		}
+		s.Strike1Ts = n
+	}
+	if v, ok := m["last_eval_ts"]; ok && v != "" {
+		n, perr := strconv.ParseInt(v, 10, 64)
+		if perr != nil {
+			return models.BreakerState{}, false, fmt.Errorf("parse last_eval_ts=%q: %w", v, perr)
+		}
+		s.LastEvalTs = n
+	}
+	if v, ok := m["last_eval_pnl_usdt"]; ok && v != "" {
+		f, perr := strconv.ParseFloat(v, 64)
+		if perr != nil {
+			return models.BreakerState{}, false, fmt.Errorf("parse last_eval_pnl_usdt=%q: %w", v, perr)
+		}
+		s.LastEvalPnLUSDT = f
+	}
+	if v, ok := m["paper_mode_sticky_until"]; ok && v != "" {
+		n, perr := strconv.ParseInt(v, 10, 64)
+		if perr != nil {
+			return models.BreakerState{}, false, fmt.Errorf("parse paper_mode_sticky_until=%q: %w", v, perr)
+		}
+		s.PaperModeStickyUntil = n
+	}
+	return s, true, nil
+}
+
+// AppendBreakerTrip JSON-marshals the record, LPUSHes it onto the trip LIST,
+// and LTRIMs to priceGapBreakerTripsCap (500) — D-18. Newest-first ordering
+// (LPUSH inserts at index 0) lets recovery's LSET target index 0 by default.
+func (c *Client) AppendBreakerTrip(record models.BreakerTripRecord) error {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal breaker trip: %w", err)
+	}
+	ctx := context.Background()
+	pipe := c.rdb.Pipeline()
+	pipe.LPush(ctx, keyPriceGapBreakerTrips, data)
+	// LTrim 0 499 caps at 500 entries (priceGapBreakerTripsCap = 500).
+	pipe.LTrim(ctx, keyPriceGapBreakerTrips, 0, 499)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("lpush+ltrim pg:breaker:trips: %w", err)
+	}
+	return nil
+}
+
+// UpdateBreakerTripRecovery loads the trip record at the given index, backfills
+// RecoveryTs + RecoveryOperator, and LSETs it back. Used by the recovery path
+// (D-09 + D-15) to record operator action without disturbing the original trip
+// fields. Returns an error if the index is out of range.
+func (c *Client) UpdateBreakerTripRecovery(index int64, recoveryTs int64, operator string) error {
+	ctx := context.Background()
+	raw, err := c.rdb.LIndex(ctx, keyPriceGapBreakerTrips, index).Result()
+	if err == redis.Nil {
+		return fmt.Errorf("trip log index %d: not found", index)
+	}
+	if err != nil {
+		return fmt.Errorf("lindex pg:breaker:trips %d: %w", index, err)
+	}
+	var rec models.BreakerTripRecord
+	if err := json.Unmarshal([]byte(raw), &rec); err != nil {
+		return fmt.Errorf("unmarshal trip @%d: %w", index, err)
+	}
+	rec.RecoveryTs = &recoveryTs
+	rec.RecoveryOperator = &operator
+	updated, err := json.Marshal(rec)
+	if err != nil {
+		return fmt.Errorf("marshal updated trip: %w", err)
+	}
+	if err := c.rdb.LSet(ctx, keyPriceGapBreakerTrips, index, updated).Err(); err != nil {
+		return fmt.Errorf("lset pg:breaker:trips %d: %w", index, err)
 	}
 	return nil
 }
