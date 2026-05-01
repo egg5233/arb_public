@@ -6,6 +6,32 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Phase 15 Plan 03 (PG-LIVE-02) — BreakerController state machine + D-15 trip ordering (Task 2):**
+  - **`BreakerController`** (`internal/pricegaptrader/breaker_controller.go`) — drawdown circuit-breaker daemon. Run() → 5-min ticker → evalTick(). evalTick implements D-01 (5-min cadence) + D-03 (whole-tick Bybit blackout suppression — REUSES `inBybitBlackout` from scanner.go, no parallel impl) + D-04 (pending strike survives blackout) + D-05 (HASH persistence on every state change) + D-08 (PnL recovery clears Strike-1) + boot guard (missing state → fresh init, permissive unlike Phase 14 ramp) + defensive ≥5min check (`5*60*1000` ms) independent of ticker interval.
+  - **D-15 trip ordering with load-bearing safety property** — Step 1 persists `PaperModeStickyUntil = math.MaxInt64` to `pg:breaker:state` FIRST. Step 1 failure aborts the trip (Steps 2-5 skipped, error returned). Steps 2-5 (candidate pause via chokepoint, AppendBreakerTrip, NotifyPriceGapBreakerTrip critical alert, WS broadcast) are best-effort with logged failures. Step 2 runs before Step 3 so the trip record carries `PausedCandidateCount`. Comment block in `trip()` locks the ordering against future regressions.
+  - **5 narrow interfaces** for D-15 module-boundary preservation: `BreakerStateStore` (Load/Save/Append), `BreakerNotifier`, `BreakerWSBroadcaster`, `CandidatePauser`, `ActivePositionLister`. Production wires `*database.Client` + `*notify.TelegramNotifier` + `*api.Hub` + `*Registry`; tests inject in-memory fakes.
+  - **`Tracker.SetBreakerController`** + daemon spawn — `Tracker.Start` launches `runBreakerDaemon` goroutine which adapts `t.stopCh` into a `context.Context` (BreakerController.Run expects ctx.Done()). nil-safe; spawned only when `*BreakerController` wired (Plan 15-04 wires production via cmd/main.go).
+  - **15 unit tests** covering all D-01..D-15 behaviors:
+    - `TestBreaker_DisabledByDefault` — daemon no-op when cfg disabled.
+    - `TestBreaker_FreshBootInit` / `TestBreaker_BootGuard_PreservesExistingTrip` — missing-state vs sticky-MaxInt64 boot paths.
+    - `TestBreaker_SingleStrike_NoTrip` / `TestBreaker_TwoStrikeTrips` — two-strike state machine.
+    - `TestBreaker_TwoStrikeRequiresTwoSeparateEvaluations` — defensive <5min skip.
+    - `TestBreaker_RecoveryClearsPendingStrike` — D-08 PnL recovery clear.
+    - `TestBreaker_BlackoutSuppression` / `TestBreaker_PendingSurvivesBlackout` — D-03/D-04 blackout pair.
+    - `TestBreaker_StateSurvivesRestart` — kill-9 mid-strike, fresh controller fires Strike-2 (Pitfall 2).
+    - **`TestBreaker_TripOrdering_StickyFirstWhenStepsFail`** — load-bearing D-15 anchor: Steps 2-5 all fail, sticky still persisted.
+    - **`TestBreaker_TripOrdering_Step1FailureAborts`** — Step 1 fail returns error, Steps 2-5 not invoked.
+    - `TestBreaker_TripIncludesRampStage` / `TestBreaker_TripPausedCandidateCount` / `TestBreaker_WSBroadcastFiredOnTrip` / `TestBreaker_Snapshot` — record-population + broadcast + read-only Snapshot lockdown.
+
+### Changed
+
+- `internal/pricegaptrader/tracker.go` — `Start()` spawns the breaker daemon goroutine when `*BreakerController` is wired (in addition to existing scanner / reconcile / ramp daemons).
+
+### Safety
+
+- **D-15 trip atomicity locked by test.** `TestBreaker_TripOrdering_StickyFirstWhenStepsFail` deliberately fails Steps 2-5 and verifies the sticky flag persisted. Any future reorder of `trip()` will fail this test.
+- **Bybit blackout suppression delegates to scanner.go.** No parallel implementation of `inBybitBlackout` — Pitfall 4 (single source of truth) enforced via grep gate.
+
 - **Phase 15 Plan 03 (PG-LIVE-02) — Notifier + Candidate.PausedByBreaker + entry-path guard (Task 1):**
   - **`PriceGapNotifier` extended with 2 critical-bucket methods** — `NotifyPriceGapBreakerTrip(record)` and `NotifyPriceGapBreakerRecovery(record, operator)`. `NoopNotifier` and `*notify.TelegramNotifier` (stub bodies, real impl in Plan 15-04) satisfy the interface. `spyNotifier` (test double) extended for compile-time conformance.
   - **`models.PriceGapCandidate.PausedByBreaker bool`** (`json:"paused_by_breaker,omitempty"`) — Phase 15 D-10. Distinct from operator-set Redis disable (Phase 9 PG-RISK-03). Set by trip path (D-15 step 3); cleared by recovery path. JSON `omitempty` preserves byte-identity for legacy candidates.

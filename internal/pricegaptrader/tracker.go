@@ -143,6 +143,14 @@ type Tracker struct {
 	// cfg.PriceGapPaperMode only). Production sets via SetBreakerStore in
 	// cmd/main.go (Plan 15-04 wires *database.Client).
 	breakerStore BreakerStateLoader
+
+	// Phase 15 Plan 15-03 — drawdown circuit breaker daemon (D-01..D-15).
+	//
+	// breakerController is the BreakerController state machine. nil-when-unwired
+	// (default-OFF — paper-mode + pre-Phase-15 deployments simply skip the
+	// daemon goroutine). Tracker.Start spawns Run() ONLY when this is non-nil
+	// AND cfg.PriceGapBreakerEnabled=true. Plan 15-04 constructs and wires.
+	breakerController *BreakerController
 }
 
 // BreakerStateLoader — narrow interface for Tracker.IsPaperModeActive (Phase 15
@@ -239,6 +247,15 @@ func (t *Tracker) SetReconciler(r *Reconciler) {
 // via cmd/main.go.
 func (t *Tracker) SetBreakerStore(store BreakerStateLoader) {
 	t.breakerStore = store
+}
+
+// SetBreakerController wires the Phase 15 Plan 15-03 BreakerController. The
+// daemon goroutine is spawned by Start() ONLY when both this is non-nil AND
+// cfg.PriceGapBreakerEnabled=true. Passing nil leaves the breaker daemon
+// unstarted (default-OFF / legacy / paper-only deployments). Plan 15-04
+// constructs *BreakerController in cmd/main.go.
+func (t *Tracker) SetBreakerController(bc *BreakerController) {
+	t.breakerController = bc
 }
 
 // IsPaperModeActive — single paper-mode chokepoint per Phase 15 D-07. Returns
@@ -509,6 +526,30 @@ func (t *Tracker) Start() {
 		go t.reconcileLoop()
 		t.log.Info("pricegap: reconcile daemon started (fires daily UTC 00:30)")
 	}
+	if t.breakerController != nil {
+		// Phase 15 Plan 15-03 — drawdown breaker daemon. Run() internally
+		// no-ops when cfg.PriceGapBreakerEnabled=false; safe to spawn
+		// regardless. ctx wired from a tracker-private context derived
+		// from stopCh so Stop() cancels it cleanly.
+		t.wg.Add(1)
+		go t.runBreakerDaemon()
+		t.log.Info("pricegap: breaker daemon spawned (cfg.enabled=%v interval=%ds threshold=%.2f)",
+			t.cfg.PriceGapBreakerEnabled, t.cfg.PriceGapBreakerIntervalSec, t.cfg.PriceGapDrawdownLimitUSDT)
+	}
+}
+
+// runBreakerDaemon adapts t.stopCh into a context.Context so the
+// BreakerController.Run loop (which expects ctx.Done()) integrates with the
+// existing stopCh-based shutdown signal. The wg.Done belongs to Start.
+func (t *Tracker) runBreakerDaemon() {
+	defer t.wg.Done()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		<-t.stopCh
+		cancel()
+	}()
+	t.breakerController.Run(ctx)
 }
 
 // subscribeUniverse fans out SubscribeSymbol for every cfg.PriceGapDiscoveryUniverse
