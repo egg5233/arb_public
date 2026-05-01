@@ -80,13 +80,16 @@ type RampOps interface {
 // and (where exposed) a fake DB. Production main() builds these from the
 // real *config.Config + *database.Client + *pricegaptrader.Registry.
 type Dependencies struct {
-	Registry   CandidateRegistry
-	Reconciler ReconcileRunner // Phase 14 Plan 14-04 — reconcile run/show
-	Ramp       RampOps         // Phase 14 Plan 14-04 — ramp show/reset/force-promote/force-demote
-	DB         *database.Client // optional — only the legacy non-candidates subcommands need it
-	Cfg        *config.Config   // optional — used by the status subcommand
-	Stdout     io.Writer
-	Stderr     io.Writer
+	Registry     CandidateRegistry
+	Reconciler   ReconcileRunner    // Phase 14 Plan 14-04 — reconcile run/show
+	Ramp         RampOps            // Phase 14 Plan 14-04 — ramp show/reset/force-promote/force-demote
+	Breaker      BreakerOps         // Phase 15 Plan 15-04 — breaker show/recover/test-fire
+	BreakerTrips BreakerTripsReader // Phase 15 Plan 15-04 — `breaker show` recent-trips tail
+	DB           *database.Client   // optional — only the legacy non-candidates subcommands need it
+	Cfg          *config.Config     // optional — used by the status subcommand
+	Stdin        io.Reader          // Phase 15 Plan 15-04 — typed-phrase prompts (recover/test-fire)
+	Stdout       io.Writer
+	Stderr       io.Writer
 }
 
 // Run is the test-friendly entrypoint. main() forwards os.Args[1:] +
@@ -170,6 +173,8 @@ func Run(args []string, deps Dependencies) int {
 		return runReconcile(args[1:], deps)
 	case "ramp":
 		return runRamp(args[1:], deps)
+	case "breaker":
+		return runBreaker(args[1:], deps)
 	case "-h", "--help", "help":
 		usage(deps.Stdout)
 		return 0
@@ -357,14 +362,28 @@ func main() {
 	pgReconciler := pricegaptrader.NewReconciler(db, nil, cfg, utils.NewLogger("pg-admin-reconcile"))
 	pgRamp := pricegaptrader.NewRampController(db, nil, cfg, utils.NewLogger("pg-admin-ramp"), time.Now)
 
+	// Phase 15 Plan 15-04 — breaker controller for pg-admin recover/test-fire.
+	// Aggregator is real (reads pg:positions:closed:* via *database.Client);
+	// notifier nil (pg-admin doesn't own a Telegram client — running daemon
+	// dispatches alerts when it next reads pg:breaker:state). Registry wired
+	// so recover/test-fire can pause/clear candidates via the chokepoint.
+	pgAggregator := pricegaptrader.NewRealizedPnLAggregator(db)
+	pgBreaker := pricegaptrader.NewBreakerController(cfg, db, pgAggregator, nil, utils.NewLogger("pg-admin-breaker"))
+	pgBreaker.SetRamp(pgRamp)
+	pgBreaker.SetRegistry(registry)
+	pgBreaker.SetPositions(db)
+
 	deps := Dependencies{
-		Registry:   registry,
-		Reconciler: pgReconciler,
-		Ramp:       pgRamp,
-		DB:         db,
-		Cfg:        cfg,
-		Stdout:     os.Stdout,
-		Stderr:     os.Stderr,
+		Registry:     registry,
+		Reconciler:   pgReconciler,
+		Ramp:         pgRamp,
+		Breaker:      pgBreaker,
+		BreakerTrips: db,
+		DB:           db,
+		Cfg:          cfg,
+		Stdin:        os.Stdin,
+		Stdout:       os.Stdout,
+		Stderr:       os.Stderr,
 	}
 	os.Exit(Run(os.Args[1:], deps))
 }
@@ -472,4 +491,7 @@ func usage(out io.Writer) {
 	fmt.Fprintln(out, "  pg-admin ramp reset --reason=...")
 	fmt.Fprintln(out, "  pg-admin ramp force-promote --reason=...")
 	fmt.Fprintln(out, "  pg-admin ramp force-demote --reason=...")
+	fmt.Fprintln(out, "  pg-admin breaker show")
+	fmt.Fprintln(out, "  pg-admin breaker recover --confirm")
+	fmt.Fprintln(out, "  pg-admin breaker test-fire --confirm [--dry-run]")
 }

@@ -86,6 +86,16 @@ type Server struct {
 	// 503 in that case (mirrors telemetry behavior).
 	pgRamp       RampSnapshotter
 	pgReconciler ReconcileRecordLoader
+
+	// pgBreaker + pgBreakerTrips are Phase 15 Plan 15-04 surfaces for the
+	// drawdown circuit breaker (PG-LIVE-02). Same wiring pattern as
+	// pgRamp/pgReconciler — narrow interfaces; *pricegaptrader.BreakerController
+	// + *database.Client satisfy via duck typing at cmd/main.go.
+	//
+	// Nil in unit tests that don't exercise these routes — handlers return
+	// 503 in that case.
+	pgBreaker      BreakerControllerAPI
+	pgBreakerTrips BreakerTripsReader
 }
 
 // DiscoveryTelemetryReader is the narrow read-side surface the discovery
@@ -234,6 +244,13 @@ func (s *Server) Start() {
 	// + reconcile run live in pg-admin CLI only.
 	mux.HandleFunc("GET /api/pg/ramp", s.cors(s.authMiddleware(s.handlePgRampState)))
 	mux.HandleFunc("GET /api/pg/reconcile/{date}", s.cors(s.authMiddleware(s.handlePgReconcileDay)))
+
+	// Phase 15 Plan 15-04 — drawdown circuit breaker (PG-LIVE-02).
+	// All three routes auth-gated; POSTs additionally require typed-phrase
+	// confirmation_phrase body field (T-15-12 + T-15-13).
+	mux.HandleFunc("GET /api/pg/breaker/state", s.cors(s.authMiddleware(s.handlePgBreakerStateGet)))
+	mux.HandleFunc("POST /api/pg/breaker/recover", s.cors(s.authMiddleware(s.handlePgBreakerRecover)))
+	mux.HandleFunc("POST /api/pg/breaker/test-fire", s.cors(s.authMiddleware(s.handlePgBreakerTestFire)))
 
 	// Capital allocation
 	mux.HandleFunc("/api/allocation", s.cors(s.authMiddleware(s.handleGetAllocation)))
