@@ -74,7 +74,7 @@ A multi-strategy arbitrage platform that monitors funding rate differentials and
 - [ ] Conservative ramp budget controller — start 100 USDT/leg, scale to 500 USDT/leg after 7 clean days, hard ceiling 1000 USDT/leg for v2.2
 - [ ] Telegram alert per Strategy 4 live fill (entry + exit, both legs)
 - [ ] Daily PnL reconcile job for Strategy 4 live positions
-- [ ] Drawdown circuit breaker — auto-revert to paper if daily loss exceeds threshold
+- [x] PG-LIVE-02 — Drawdown circuit breaker — auto-revert to paper if 24h realized PnL drawdown exceeds threshold. _Validated in Phase 15: drawdown circuit breaker (v0.38.0, 2026-05-01)._
 
 **Auto-Discovery & Promotion (Priority 1)**
 - [ ] PG-DISC-01 — Auto-discovery scanner surfaces candidates with score + reasoning. Default OFF.
@@ -157,4 +157,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-30 — Phase 14 (Daily Reconcile + Live Ramp Controller, PG-LIVE-01 + PG-LIVE-03) shipped on v0.37.0, default OFF behind `price_gap_live_capital`. Reconciler daemon (UTC 00:30, idempotent), three-stage ramp (100/500/1000 USDT/leg, asymmetric ratchet), risk Gate 6, sizer hard ceiling, boot guard, pg-admin operator surface, read-only dashboard widget. v2.2 milestone 3/4 phases done; Phase 15 (drawdown breaker, PG-LIVE-02) next.*
+*Last updated: 2026-05-01 — Phase 15 (Drawdown Circuit Breaker, PG-LIVE-02) shipped on v0.38.0, default OFF behind `enable_pricegap_breaker`. Two-strike state machine on 24h realized-PnL aggregator with Bybit blackout suppression; D-15 atomicity flips paper-mode sticky FIRST when threshold breached twice ≥5 min apart; operator-only recovery via typed-phrase RECOVER (REST + pg-admin CLI + frontend modal); test-fire path (dry-run + real-trip); Telegram critical-bucket dispatch. Operator UAT approved 2026-05-01.*
