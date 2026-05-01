@@ -46,19 +46,25 @@ import (
 )
 
 // BreakerStateStore — narrow interface for BreakerController persistence
-// (D-15 boundary). *database.Client satisfies via methods added in Plan 15-01.
-// Subsumes BreakerStateLoader from tracker.go for the read path.
+// (D-15 boundary). *database.Client satisfies via methods added in Plan 15-01
+// (Load/Save/Append) + Plan 15-04 (LoadBreakerTripAt). UpdateBreakerTripRecovery
+// is the recovery-side LSet backfill; both halves are required so the Recover
+// path can read-modify-write the most-recent trip without a separate store
+// interface. Subsumes BreakerStateLoader from tracker.go for the read path.
 type BreakerStateStore interface {
 	LoadBreakerState() (models.BreakerState, bool, error)
 	SaveBreakerState(state models.BreakerState) error
 	AppendBreakerTrip(record models.BreakerTripRecord) error
+	LoadBreakerTripAt(index int64) (models.BreakerTripRecord, bool, error)
+	UpdateBreakerTripRecovery(index int64, recoveryTs int64, operator string) error
 }
 
-// BreakerNotifier — narrow interface for the trip Telegram dispatch.
+// BreakerNotifier — narrow interface for the trip + recovery Telegram dispatch.
 // Subset of PriceGapNotifier; *notify.TelegramNotifier and NoopNotifier
-// satisfy via the Phase 15 Plan 15-03 Task 1 method addition.
+// satisfy via the Phase 15 Plan 15-03 + 15-04 method additions.
 type BreakerNotifier interface {
 	NotifyPriceGapBreakerTrip(record models.BreakerTripRecord) error
+	NotifyPriceGapBreakerRecovery(record models.BreakerTripRecord, operator string) error
 }
 
 // BreakerWSBroadcaster — narrow interface for the WS broadcast (D-15 step 5).
@@ -69,9 +75,11 @@ type BreakerWSBroadcaster interface {
 
 // CandidatePauser — narrow interface for the trip-path candidate-pause step
 // (D-15 step 2). *Registry satisfies via PauseAllOpenCandidates (Plan 15-03
-// Task 1).
+// Task 1). The Recover path additionally requires ClearAllPausedByBreaker
+// (Phase 15 Plan 15-04 D-15 inverse) for the recovery chokepoint.
 type CandidatePauser interface {
 	PauseAllOpenCandidates(positions []*models.PriceGapPosition) (int, error)
+	ClearAllPausedByBreaker() (int, error)
 }
 
 // ActivePositionLister — narrow interface for the trip-path active-positions

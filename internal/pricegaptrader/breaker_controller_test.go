@@ -62,6 +62,17 @@ func (f *fakeBreakerStore) AppendBreakerTrip(record models.BreakerTripRecord) er
 	return nil
 }
 
+// LoadBreakerTripAt — no-op default for trip-flow tests; recovery-flow tests
+// use fakeBreakerStoreFull (Plan 15-04 wrapper) for backed lookups.
+func (f *fakeBreakerStore) LoadBreakerTripAt(_ int64) (models.BreakerTripRecord, bool, error) {
+	return models.BreakerTripRecord{}, false, nil
+}
+
+// UpdateBreakerTripRecovery — no-op default; recovery-flow tests override.
+func (f *fakeBreakerStore) UpdateBreakerTripRecovery(_ int64, _ int64, _ string) error {
+	return nil
+}
+
 // fakeBreakerStoreOneShotSaveErr lets Step 1 fail while a subsequent save (if
 // the controller mistakenly tries another) succeeds — used to lock the "trip
 // aborted on Step 1 failure" property without false-positive from a second
@@ -104,6 +115,9 @@ func (f *fakeAggregator) Realized24h(_ context.Context, _ time.Time) (float64, e
 }
 
 // fakeBreakerNotifier records NotifyPriceGapBreakerTrip calls + injectable err.
+// Plan 15-04 widened BreakerNotifier to include NotifyPriceGapBreakerRecovery;
+// this fake provides a no-op default. Recovery-flow tests wrap with
+// fakeBreakerNotifierFull to record recovery calls.
 type fakeBreakerNotifier struct {
 	mu          sync.Mutex
 	calls       []models.BreakerTripRecord
@@ -115,6 +129,11 @@ func (f *fakeBreakerNotifier) NotifyPriceGapBreakerTrip(record models.BreakerTri
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, record)
 	return f.notifyErr
+}
+
+// NotifyPriceGapBreakerRecovery — no-op default; recovery-flow tests override.
+func (f *fakeBreakerNotifier) NotifyPriceGapBreakerRecovery(_ models.BreakerTripRecord, _ string) error {
+	return nil
 }
 
 // fakeBreakerWS records BroadcastPriceGapBreakerEvent calls.
@@ -143,6 +162,10 @@ func (f fakeRampSnap) Snapshot() models.RampState {
 }
 
 // fakePauser records PauseAllOpenCandidates calls.
+// Plan 15-04 widened CandidatePauser to include ClearAllPausedByBreaker for
+// the Recover path; this fake provides a no-op default. Plan 15-04 tests that
+// exercise recovery wrap *fakePauser with fakeRegistryClearer to record clear
+// calls.
 type fakePauser struct {
 	mu    sync.Mutex
 	calls int
@@ -161,6 +184,9 @@ func (f *fakePauser) PauseAllOpenCandidates(positions []*models.PriceGapPosition
 	}
 	return f.count, nil
 }
+
+// ClearAllPausedByBreaker — no-op default; recovery-flow tests override.
+func (f *fakePauser) ClearAllPausedByBreaker() (int, error) { return 0, nil }
 
 // fakePosLister returns a preset list of active positions.
 type fakePosLister struct {

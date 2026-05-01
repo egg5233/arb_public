@@ -607,6 +607,28 @@ func (c *Client) AppendBreakerTrip(record models.BreakerTripRecord) error {
 	return nil
 }
 
+// LoadBreakerTripAt returns (record, exists, err) for the trip at the given
+// LIST index. exists=false on redis.Nil (index out of range / empty list).
+// Used by the recovery path (Plan 15-04) to load the most-recent trip
+// (index 0) for the recovery alert payload. Mirrors the LoadPriceGapPosition
+// shape established in Phase 14 — the (exists bool) sentinel keeps "no trip
+// yet" and "redis transport error" distinguishable.
+func (c *Client) LoadBreakerTripAt(index int64) (models.BreakerTripRecord, bool, error) {
+	ctx := context.Background()
+	raw, err := c.rdb.LIndex(ctx, keyPriceGapBreakerTrips, index).Result()
+	if err == redis.Nil {
+		return models.BreakerTripRecord{}, false, nil
+	}
+	if err != nil {
+		return models.BreakerTripRecord{}, false, fmt.Errorf("lindex pg:breaker:trips %d: %w", index, err)
+	}
+	var rec models.BreakerTripRecord
+	if err := json.Unmarshal([]byte(raw), &rec); err != nil {
+		return models.BreakerTripRecord{}, false, fmt.Errorf("unmarshal trip @%d: %w", index, err)
+	}
+	return rec, true, nil
+}
+
 // UpdateBreakerTripRecovery loads the trip record at the given index, backfills
 // RecoveryTs + RecoveryOperator, and LSETs it back. Used by the recovery path
 // (D-09 + D-15) to record operator action without disturbing the original trip

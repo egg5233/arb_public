@@ -83,16 +83,16 @@ func TestNotifyPriceGapBreakerTrip_CriticalBucket(t *testing.T) {
 		t.Fatalf("expected 1 send, got %d", len(*captured))
 	}
 	mu.Lock()
-	defer mu.Unlock()
 	body := (*captured)[0].text
+	mu.Unlock()
 	for _, want := range []string{
 		"BREAKER",
-		"-75.50",                                // 24h PnL
-		"-50.00",                                // threshold
-		"Stage 2",                               // ramp stage
-		"3 candidate",                           // paused count
-		"pg-admin breaker recover --confirm",    // recovery instruction
-		"live",                                  // source
+		"-75.50",                             // 24h PnL
+		"-50.00",                             // threshold
+		"Ramp Stage: 2",                      // ramp stage
+		"3 candidate",                        // paused count
+		"pg-admin breaker recover --confirm", // recovery instruction
+		"LIVE",                               // source label (upper-cased)
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected body to contain %q, got: %q", want, body)
@@ -105,7 +105,10 @@ func TestNotifyPriceGapBreakerTrip_CriticalBucket(t *testing.T) {
 		t.Fatalf("second NotifyPriceGapBreakerTrip err=%v", err)
 	}
 	if !waitForBreakerCaptured(captured, mu, 2, 2*time.Second) {
-		t.Fatalf("expected 2 sends (critical bypass), got %d", len(*captured))
+		mu.Lock()
+		got := len(*captured)
+		mu.Unlock()
+		t.Fatalf("expected 2 sends (critical bypass), got %d", got)
 	}
 }
 
@@ -137,13 +140,13 @@ func TestNotifyPriceGapBreakerRecovery_CriticalBucket(t *testing.T) {
 		t.Fatalf("expected 1 send, got %d", len(*captured))
 	}
 	mu.Lock()
-	defer mu.Unlock()
 	body := (*captured)[0].text
+	mu.Unlock()
 	for _, want := range []string{
 		"RECOVERED",
-		"alice",   // operator
-		"-75.50",  // original trip pnl
-		"-50.00",  // threshold
+		"alice",  // operator
+		"-75.50", // original trip pnl
+		"-50.00", // threshold
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected body to contain %q, got: %q", want, body)
