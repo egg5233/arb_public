@@ -17,6 +17,7 @@
 // can never confuse paper-mode for live-mode at a glance.
 import { useEffect, useState, type FC } from 'react';
 import { useLocale } from '../../i18n/index.ts';
+import { BreakerSubsection } from './BreakerSubsection.tsx';
 
 interface RampState {
   current_stage: number;
@@ -238,6 +239,12 @@ export const RampReconcileSection: FC = () => {
           {reconcileMissing ? 'No reconcile data for yesterday yet.' : 'Loading reconcile…'}
         </div>
       )}
+
+      {/* Phase 15 Plan 15-05 — Drawdown Circuit Breaker subsection (PG-LIVE-02).
+          Renders status badge + recover/test-fire controls. Phase 16
+          (PG-OPS-09) will lift this widget into the new top-level Pricegap
+          tab without restructuring the BreakerSubsection component. */}
+      <BreakerSubsection />
     </section>
   );
 };

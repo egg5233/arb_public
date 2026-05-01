@@ -945,6 +945,30 @@ const zhTW: Record<TranslationKey, string> = {
   'pricegap.reconcile.winLossSplit': '勝/敗',
   'pricegap.reconcile.anomalies': '異常項目',
   'pricegap.reconcile.noAnomalies': '無異常',
+
+  // Phase 15 — 提取虧損熔斷器 (PG-LIVE-02)
+  'pricegap.breaker.status': '熔斷器狀態',
+  'pricegap.breaker.armed': '武裝中',
+  'pricegap.breaker.tripped': '已觸發',
+  'pricegap.breaker.disabled': '已停用',
+  'pricegap.breaker.realized24hPnl': '24小時已實現損益',
+  'pricegap.breaker.threshold': '閾值',
+  'pricegap.breaker.lastTripTs': '上次觸發時間',
+  'pricegap.breaker.lastTripPnl': '上次觸發時損益',
+  'pricegap.breaker.pausedCount': '已暫停候選',
+  'pricegap.breaker.recoverButton': '恢復',
+  'pricegap.breaker.testFireButton': '測試觸發',
+  'pricegap.breaker.confirmRecoverPrompt': "輸入 'RECOVER' 確認操作員啟動恢復:",
+  'pricegap.breaker.confirmTestFirePrompt': "輸入 'TEST-FIRE' 確認測試觸發:",
+  'pricegap.breaker.dryRunCheckbox': '空跑(計算 would-trip PnL,不執行寫入)',
+  'pricegap.breaker.realTripWarning': '⚠️ 預設行為為真實觸發 — 引擎將切換為紙上交易模式。勾選空跑進行模擬。',
+  'pricegap.breaker.recoveryInstruction': '操作員審查後使用恢復按鈕清除黏滯紙上交易旗標。',
+  'pricegap.breaker.confirmTitleRecover': '確認操作員恢復',
+  'pricegap.breaker.confirmTitleTestFire': '確認合成測試觸發',
+  'pricegap.breaker.confirmCancel': '取消',
+  'pricegap.breaker.confirmSubmit': '確認',
+  'pricegap.breaker.confirmTypePlaceholder': '請完全照寫魔法字串',
+  'pricegap.breaker.errorRequest': '請求失敗:{error}',
 };
 
 export default zhTW;

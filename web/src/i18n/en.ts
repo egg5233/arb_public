@@ -944,6 +944,30 @@ const en = {
   'pricegap.reconcile.winLossSplit': 'Wins / Losses',
   'pricegap.reconcile.anomalies': 'Anomalies',
   'pricegap.reconcile.noAnomalies': 'No anomalies flagged',
+
+  // Phase 15 — Drawdown Circuit Breaker (PG-LIVE-02)
+  'pricegap.breaker.status': 'Breaker Status',
+  'pricegap.breaker.armed': 'Armed',
+  'pricegap.breaker.tripped': 'TRIPPED',
+  'pricegap.breaker.disabled': 'Disabled',
+  'pricegap.breaker.realized24hPnl': 'Realized 24h PnL',
+  'pricegap.breaker.threshold': 'Threshold',
+  'pricegap.breaker.lastTripTs': 'Last Trip',
+  'pricegap.breaker.lastTripPnl': 'Last Trip PnL',
+  'pricegap.breaker.pausedCount': 'Paused Candidates',
+  'pricegap.breaker.recoverButton': 'Recover',
+  'pricegap.breaker.testFireButton': 'Test Fire',
+  'pricegap.breaker.confirmRecoverPrompt': "Type 'RECOVER' to confirm operator-initiated recovery:",
+  'pricegap.breaker.confirmTestFirePrompt': "Type 'TEST-FIRE' to confirm synthetic breaker test-fire:",
+  'pricegap.breaker.dryRunCheckbox': 'Dry run (compute would-trip PnL, no mutations)',
+  'pricegap.breaker.realTripWarning': '⚠️ Default behavior is REAL TRIP — engine will flip to paper mode. Check Dry Run for simulation.',
+  'pricegap.breaker.recoveryInstruction': 'Use the Recover button to clear sticky paper mode after operator review.',
+  'pricegap.breaker.confirmTitleRecover': 'Confirm Operator Recovery',
+  'pricegap.breaker.confirmTitleTestFire': 'Confirm Synthetic Test-Fire',
+  'pricegap.breaker.confirmCancel': 'Cancel',
+  'pricegap.breaker.confirmSubmit': 'Confirm',
+  'pricegap.breaker.confirmTypePlaceholder': 'Type the magic phrase exactly',
+  'pricegap.breaker.errorRequest': 'Request failed: {error}',
 } as const;
 
 export type TranslationKey = keyof typeof en;
