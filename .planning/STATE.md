@@ -4,7 +4,7 @@ milestone: v2.2
 milestone_name: Auto-Discovery & Live Strategy 4
 status: verifying
 stopped_at: Completed 15-05-PLAN.md (awaiting human-verify UAT)
-last_updated: "2026-05-01T06:41:17.790Z"
+last_updated: "2026-05-01T06:52:23.157Z"
 last_activity: 2026-05-01
 progress:
   total_phases: 5
@@ -25,8 +25,8 @@ See: .planning/PROJECT.md (updated 2026-04-28 after v2.2 milestone start)
 
 ## Current Position
 
-Phase: 15 (drawdown-circuit-breaker) — EXECUTING
-Plan: 5 of 5
+Phase: 16
+Plan: Not started
 Status: Phase complete — ready for verification
 Last activity: 2026-05-01
 
@@ -49,7 +49,7 @@ Progress (v2.2): [          ] 0%
 
 **Velocity (v1.0 baseline):**
 
-- Total plans completed: 66
+- Total plans completed: 71
 - Average duration: 14 min
 - Total execution time: ~5 hours
 
@@ -66,6 +66,7 @@ Progress (v2.2): [          ] 0%
 | 11 | 6 | - | - |
 | 12 | 4 | - | - |
 | 14 | 5 | - | - |
+| 15 | 5 | - | - |
 
 **Recent Trend:**
 
