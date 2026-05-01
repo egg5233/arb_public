@@ -6,6 +6,22 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Phase 15 Plan 02 (PG-LIVE-02) — Aggregator + paper-mode chokepoint:**
+  - **`RealizedPnLAggregator`** (`internal/pricegaptrader/breaker_aggregator.go`) — rolling 24h sum of `pos.RealizedPnL` over positions closed in `[now-24h, now]`. Reads the Phase 14 `pg:positions:closed:{YYYY-MM-DD}` SET indices (today ∪ yesterday); dedupes IDs across the two sets (clock-skew SADD edge); uses `ExchangeClosedAt` with `ClosedAt` fallback (mirrors `reconciler.go:255`); resilient to missing keys and load-not-found (skips, does not abort). 8 unit tests green.
+  - **`Tracker.IsPaperModeActive(ctx)`** — single paper-mode chokepoint per Phase 15 D-07. Order: cfg flag short-circuit → nil-store legacy fallback → `LoadBreakerState` consultation. **Fail-safes to paper on Redis error** (Pitfall 8) — Redis outage during a real trip MUST NOT silently allow live trading. Sticky truth table: `0` (live), `MaxInt64` (sticky-until-operator), `now < sticky_until` (timed sticky active).
+  - **`Tracker.SetBreakerStore`** + **`BreakerStateLoader`** narrow interface — preserves D-15 module boundary; `*database.Client` satisfies via existing `LoadBreakerState`. Plan 15-04 wires production.
+  - **`execution.go` 4-site migration** — all four direct `cfg.PriceGapPaperMode` reads (lines 170 / 227 / 269 / 362) routed through `IsPaperModeActive`. Site labels (`entry-order-placement`, `entry-synth-fill`, `entry-bingx-guard`, `close-leg-paper`) appear in WARN logs on Redis-error fail-safe so operators can trace which path applied paper-mode silently.
+  - **`TestStaticCheck_NoDirectPaperModeRead`** — regex-walk regression guard mirroring `scanner_static_test.go`. Forbids any non-`tracker.go` production file from reading `cfg.PriceGapPaperMode` directly. Mitigates T-15-05 (future paper-mode reader bypass).
+
+### Changed
+
+- `internal/pricegaptrader/execution.go` — paper-mode reads no longer touch `t.cfg.PriceGapPaperMode` directly; all routes through `Tracker.IsPaperModeActive`. Behavior is byte-identical when no breaker store is wired (legacy nil-store fallback to cfg flag); production wiring lands in Plan 15-04.
+
+### Safety
+
+- **Sticky paper-mode is now uncircumventable from within `internal/pricegaptrader/`.** Static test fails the build if any future code path reads `cfg.PriceGapPaperMode` outside the tracker.go helper.
+- **Redis outage = paper, not live.** `IsPaperModeActive` returns `(true, err)` on `LoadBreakerState` error; caller logs at WARN. Operator sees outage in journalctl + Telegram.
+
 - **Phase 15 Plan 01 (PG-LIVE-02) — Drawdown circuit breaker foundation:**
   - **3 new Config fields** — `PriceGapBreakerEnabled` (bool, default false), `PriceGapDrawdownLimitUSDT` (float64, default 0 / armed-but-never-trips), `PriceGapBreakerIntervalSec` (int, default 300 / 5-min ticker). All default OFF; JSON tags `enable_pricegap_breaker`, `pricegap_drawdown_limit_usdt`, `pricegap_breaker_interval_sec`.
   - **`validatePriceGapLive` extended** — when `PriceGapBreakerEnabled=true`, rejects positive limits (D-06: limit is absolute USDT, must be ≤ 0) and out-of-band intervals ([60, 3600]s). Disabled-state defaults bypass validation.

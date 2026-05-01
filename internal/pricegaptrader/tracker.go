@@ -135,6 +135,21 @@ type Tracker struct {
 	// surface stays the layer-2 read-only path consumed by sizing.
 	reconciler *Reconciler
 	rampDaemon *RampController
+
+	// Phase 15 Plan 15-02 — paper-mode chokepoint (D-07).
+	//
+	// breakerStore consults the persisted BreakerState HASH for the sticky
+	// paper-mode flag. nil-when-unwired (paper-mode behavior falls back to
+	// cfg.PriceGapPaperMode only). Production sets via SetBreakerStore in
+	// cmd/main.go (Plan 15-04 wires *database.Client).
+	breakerStore BreakerStateLoader
+}
+
+// BreakerStateLoader — narrow interface for Tracker.IsPaperModeActive (Phase 15
+// D-07 chokepoint). *database.Client satisfies via the existing LoadBreakerState
+// method (Plan 15-01). Tests inject a fake for sticky-flag behaviour coverage.
+type BreakerStateLoader interface {
+	LoadBreakerState() (models.BreakerState, bool, error)
 }
 
 // RampSnapshotter is the narrow read-only surface Tracker requires from a
@@ -215,6 +230,69 @@ func (t *Tracker) SetRamp(rc *RampController) {
 // constructs *Reconciler in cmd/main.go.
 func (t *Tracker) SetReconciler(r *Reconciler) {
 	t.reconciler = r
+}
+
+// SetBreakerStore wires the Phase 15 Plan 15-02 breaker-state loader. The
+// Tracker uses the loader inside IsPaperModeActive (D-07 chokepoint) to consult
+// the sticky paper-mode flag. Passing nil leaves the helper in legacy behavior
+// (cfg flag only — pre-Phase-15 byte-identical). Plan 15-04 wires production
+// via cmd/main.go.
+func (t *Tracker) SetBreakerStore(store BreakerStateLoader) {
+	t.breakerStore = store
+}
+
+// IsPaperModeActive — single paper-mode chokepoint per Phase 15 D-07. Returns
+// (true, nil) when paper mode should apply. The breaker's sticky flag overrides
+// the cfg flag while non-zero AND inside the timed window (or sentinel
+// MaxInt64 for sticky-until-operator).
+//
+// Fail-safe to paper on Redis error (Pitfall 8): a Redis outage during a real
+// trip MUST NOT silently allow live trading. The helper returns (true, err) so
+// the caller can both apply paper-mode AND log/alert the underlying failure.
+//
+// Truth table (cfg=PriceGapPaperMode):
+//
+//	cfg=true                                 → (true,  nil)   forced paper
+//	cfg=false, store=nil                     → (false, nil)   legacy (pre-15)
+//	cfg=false, exists=false                  → (false, nil)   armed-but-not-tripped
+//	cfg=false, sticky=0                      → (false, nil)   live mode
+//	cfg=false, sticky=MaxInt64                → (true,  nil)   sticky-until-operator
+//	cfg=false, sticky>0, now<sticky          → (true,  nil)   timed sticky active
+//	cfg=false, sticky>0, now>=sticky         → (false, nil)   timed sticky expired
+//	cfg=false, store err                     → (true,  err)   fail-safe to paper on Redis error
+//
+// The ctx parameter is currently unused — accepted for forward compatibility
+// when Plan 15-03's BreakerController eval tick adopts ctx-aware Redis calls.
+func (t *Tracker) IsPaperModeActive(ctx context.Context) (bool, error) {
+	_ = ctx // reserved for future ctx-aware Redis path (Plan 15-03+)
+
+	// 1. Static cfg flag — fastest path; if true, no need to consult Redis.
+	if t.cfg != nil && t.cfg.PriceGapPaperMode {
+		return true, nil
+	}
+	// 2. No breaker store wired → legacy behavior (cfg flag only).
+	if t.breakerStore == nil {
+		return false, nil
+	}
+	// 3. Consult sticky flag.
+	state, exists, err := t.breakerStore.LoadBreakerState()
+	if err != nil {
+		// Fail-safe to paper on Redis error (Pitfall 8). Caller logs + alerts.
+		return true, err
+	}
+	if !exists {
+		return false, nil
+	}
+	if state.PaperModeStickyUntil == 0 {
+		return false, nil
+	}
+	// PaperModeStickyUntil non-zero — active when `now < sticky_until`.
+	// math.MaxInt64 sentinel = "sticky-until-operator-clears" (always true:
+	// any plausible time.Now().UnixMilli() is far below MaxInt64).
+	if time.Now().UnixMilli() < state.PaperModeStickyUntil {
+		return true, nil
+	}
+	return false, nil
 }
 
 // CandidateSnapshotForTest returns len(t.cfg.PriceGapCandidates) — a test

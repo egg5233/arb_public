@@ -1,6 +1,7 @@
 package pricegaptrader
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"strconv"
@@ -164,10 +165,15 @@ func (t *Tracker) openPair(
 	// Persist the matched position.
 	//
 	// Mode is stamped ONCE at entry (Pitfall 2 — immutability through lifecycle).
-	// All downstream monitors / close paths read pos.Mode, NEVER t.cfg.PriceGapPaperMode
-	// mid-life. This is the single read of the global flag in the entire package.
+	// All downstream monitors / close paths read pos.Mode, NEVER the global flag
+	// mid-life. Phase 15 D-07: paper-mode is read through the chokepoint helper
+	// (entry-order-placement site) so the breaker's sticky flag participates.
 	mode := models.PriceGapModeLive
-	if t.cfg.PriceGapPaperMode {
+	paperMode, paperModeErr := t.IsPaperModeActive(context.TODO())
+	if paperModeErr != nil {
+		t.log.Warn("execution: IsPaperModeActive site=entry-order-placement returned err, fail-safe paper=true: %v", paperModeErr)
+	}
+	if paperMode {
 		mode = models.PriceGapModePaper
 	}
 	// posID uses CONFIGURED tuple (cand.LongExch/cand.ShortExch) — preserves
@@ -213,18 +219,22 @@ func (t *Tracker) openPair(
 // GetOrderFilledQty. The fill price is stamped as the caller-supplied mid
 // (det.MidLong / det.MidShort) because the adapter interface returns only qty.
 //
-// Paper-mode chokepoint (Plan 09-03 Pattern 2): when t.cfg.PriceGapPaperMode
-// is true, the function DOES NOT call ex.PlaceOrder. It synthesizes a fill at
-// mid ± (modeledEdgeBps / 2) so realized slippage is non-zero and the Phase 8
-// slippage pipeline is fully exercised (Pitfall 7). This is the SINGLE
-// divergence point between paper and live on the entry path; openPair's
-// lock acquisition, circuit-breaker accounting, and persistence all run
-// identically in paper mode.
+// Paper-mode chokepoint (Plan 09-03 Pattern 2; Phase 15 D-07 migration):
+// when paper-mode is active (cfg flag OR breaker's sticky flag), the function
+// DOES NOT call ex.PlaceOrder. It synthesizes a fill at mid ± (modeledEdgeBps / 2)
+// so realized slippage is non-zero and the Phase 8 slippage pipeline is fully
+// exercised (Pitfall 7). This is the SINGLE divergence point between paper and
+// live on the entry path; openPair's lock acquisition, circuit-breaker
+// accounting, and persistence all run identically in paper mode.
 func (t *Tracker) placeLeg(
 	ex exchange.Exchange, symbol string, side exchange.Side,
 	sizeBase float64, decimals int, force string, fillPrice float64, modeledEdgeBps float64,
 ) fillResult {
-	if t.cfg.PriceGapPaperMode {
+	paperMode, paperModeErr := t.IsPaperModeActive(context.TODO())
+	if paperModeErr != nil {
+		t.log.Warn("execution: IsPaperModeActive site=entry-synth-fill returned err, fail-safe paper=true: %v", paperModeErr)
+	}
+	if paperMode {
 		adverse := fillPrice * (modeledEdgeBps / 2.0) / 10_000.0
 		synth := fillPrice
 		if side == exchange.SideBuy {
@@ -266,7 +276,12 @@ func (t *Tracker) preflightBingXPriceGapEntry(
 	decimals int,
 	refPrice float64,
 ) error {
-	if t.cfg.PriceGapPaperMode || !strings.EqualFold(exchName, "bingx") {
+	// Phase 15 D-07: paper-mode skips the BingX preflight (no live order to test).
+	paperMode, paperModeErr := t.IsPaperModeActive(context.TODO())
+	if paperModeErr != nil {
+		t.log.Warn("execution: IsPaperModeActive site=entry-bingx-guard returned err, fail-safe paper=true: %v", paperModeErr)
+	}
+	if paperMode || !strings.EqualFold(exchName, "bingx") {
 		return nil
 	}
 	preflight, ok := ex.(exchange.OrderPreflight)
@@ -346,20 +361,24 @@ func priceGapBingXPriceFormat(ex exchange.Exchange, symbol string) (float64, int
 // closeLegMarket submits a MARKET order (no IOC) with ReduceOnly for exit/unwind.
 // Returns best-effort; errors are logged and bump the failure counter.
 //
-// Paper-mode chokepoint (Plan 09-03 Pattern 2 / D-12): when PriceGapPaperMode
-// is true the live ex.PlaceOrder call is skipped. placeLeg synthesizes fills
-// without touching the exchange, so there is no real position to reduce;
-// hitting the wire here would always be wrong (and was observed to fire
-// reduceOnly market orders against non-existent bingx positions in the
-// 2026-04-24 UAT attempt). Every caller of closeLegMarket originates from
-// paths that already assume best-effort — openPair's defensive-close and
-// unwind-to-match — so a silent skip preserves the invariant that paper
-// mode makes zero PlaceOrder calls.
+// Paper-mode chokepoint (Plan 09-03 Pattern 2 / D-12; Phase 15 D-07 migration):
+// when paper-mode is active (cfg flag OR breaker sticky flag) the live
+// ex.PlaceOrder call is skipped. placeLeg synthesizes fills without touching
+// the exchange, so there is no real position to reduce; hitting the wire here
+// would always be wrong (and was observed to fire reduceOnly market orders
+// against non-existent bingx positions in the 2026-04-24 UAT attempt). Every
+// caller of closeLegMarket originates from paths that already assume best-
+// effort — openPair's defensive-close and unwind-to-match — so a silent skip
+// preserves the invariant that paper mode makes zero PlaceOrder calls.
 func (t *Tracker) closeLegMarket(ex exchange.Exchange, symbol string, side exchange.Side, size float64, decimals int) {
 	if size <= 0 {
 		return
 	}
-	if t.cfg.PriceGapPaperMode {
+	paperMode, paperModeErr := t.IsPaperModeActive(context.TODO())
+	if paperModeErr != nil {
+		t.log.Warn("execution: IsPaperModeActive site=close-leg-paper returned err, fail-safe paper=true: %v", paperModeErr)
+	}
+	if paperMode {
 		return
 	}
 	_, err := ex.PlaceOrder(exchange.PlaceOrderParams{
