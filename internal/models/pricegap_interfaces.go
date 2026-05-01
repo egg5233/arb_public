@@ -21,6 +21,14 @@ type PriceGapCandidate struct {
 	// NormalizeDirection — preserves backward compat with pre-Phase-999.1
 	// candidates persisted in config.json.
 	Direction string `json:"direction,omitempty"`
+
+	// PausedByBreaker — Phase 15 Plan 15-03 (PG-LIVE-02 / D-10). Distinct from
+	// the Redis-backed exec-quality disable flag (IsCandidateDisabled, Phase 9
+	// PG-RISK-03) and from operator-set candidate removal. Set to true by the
+	// drawdown circuit-breaker trip path (D-15 step 3) on every candidate that
+	// has an active position at trip time. Cleared en-masse by the recovery
+	// path. Operator-set Redis disable state is NOT touched by either path.
+	PausedByBreaker bool `json:"paused_by_breaker,omitempty"`
 }
 
 // ID returns the canonical candidate identifier. Matches the D-15

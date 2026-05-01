@@ -604,3 +604,60 @@ func TestRiskGate_Gate6_Ramp_NilRampController_FailsClosed(t *testing.T) {
 		t.Fatalf("err=%v, want ErrPriceGapRampStateUnavailable", res.Err)
 	}
 }
+
+// ---- Phase 15 Plan 15-03 — paused_by_breaker entry guard (Gate 1.5) --------
+
+// TestRiskGate_PausedByBreaker_RejectsWithDistinctReason — D-10: Gate 1.5
+// rejects entry when cand.PausedByBreaker=true. Distinct reason string from
+// Gate 1's "exec_quality" so operators can tell apart in logs/Telegram.
+func TestRiskGate_PausedByBreaker_RejectsWithDistinctReason(t *testing.T) {
+	store := newFakeStore()
+	tr := newGateTestTracker(t, store, newFakeDelistChecker(), defaultGateConfig())
+	cand := binanceBybitCand()
+	cand.PausedByBreaker = true
+
+	res := tr.preEntry(cand, 1000, freshDetection(), nil)
+	if res.Approved {
+		t.Fatalf("paused_by_breaker candidate must be rejected")
+	}
+	if res.Reason != "paused_by_breaker" {
+		t.Fatalf("reason=%q, want paused_by_breaker", res.Reason)
+	}
+}
+
+// TestRiskGate_DisabledOR_PausedByBreaker_TruthTable — 4-cell matrix on
+// (Redis-disabled, PausedByBreaker). Allowed only when both are false. Gate 1
+// (Redis-disabled) fires first when both are true.
+func TestRiskGate_DisabledOR_PausedByBreaker_TruthTable(t *testing.T) {
+	cases := []struct {
+		name        string
+		disabledKey bool
+		paused      bool
+		wantApprove bool
+		wantReason  string // exact match, "" means N/A
+	}{
+		{"both_false_allow", false, false, true, ""},
+		{"disabled_only_reject", true, false, false, "exec_quality: test_reason"},
+		{"paused_only_reject", false, true, false, "paused_by_breaker"},
+		{"both_true_disabled_first", true, true, false, "exec_quality: test_reason"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeStore()
+			if tc.disabledKey {
+				store.disabled["SOON"] = "test_reason"
+			}
+			tr := newGateTestTracker(t, store, newFakeDelistChecker(), defaultGateConfig())
+			cand := binanceBybitCand()
+			cand.PausedByBreaker = tc.paused
+
+			res := tr.preEntry(cand, 1000, freshDetection(), nil)
+			if res.Approved != tc.wantApprove {
+				t.Fatalf("approved=%v, want %v (reason=%q err=%v)", res.Approved, tc.wantApprove, res.Reason, res.Err)
+			}
+			if !tc.wantApprove && res.Reason != tc.wantReason {
+				t.Fatalf("reason=%q, want %q", res.Reason, tc.wantReason)
+			}
+		})
+	}
+}

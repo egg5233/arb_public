@@ -79,6 +79,13 @@ type PriceGapNotifier interface {
 	// and pg-admin force-promote/force-demote/reset.
 	NotifyPriceGapRampDemote(prior, next int, reason string)
 	NotifyPriceGapRampForceOp(action string, prior, next int, operator, reason string)
+	// Phase 15 Plan 15-03 (PG-LIVE-02) — drawdown circuit-breaker surfaces.
+	// Both methods MUST dispatch via the **critical bucket** (bypasses allowlist
+	// filtering) per CONTEXT D-17 — these are fire-now alerts, not informational.
+	// NoopNotifier provides safe nil-receiver fallbacks; *notify.TelegramNotifier
+	// ships the real impl in Plan 15-04.
+	NotifyPriceGapBreakerTrip(record models.BreakerTripRecord) error
+	NotifyPriceGapBreakerRecovery(record models.BreakerTripRecord, operator string) error
 }
 
 // NoopNotifier is the zero-behavior default used when no Telegram notifier is
@@ -106,3 +113,11 @@ func (NoopNotifier) NotifyPriceGapRampDemote(int, int, string) {}
 
 // NotifyPriceGapRampForceOp is a no-op (Phase 14 Plan 14-04 ships Telegram impl).
 func (NoopNotifier) NotifyPriceGapRampForceOp(string, int, int, string, string) {}
+
+// NotifyPriceGapBreakerTrip is a no-op (Phase 15 Plan 15-04 ships Telegram impl).
+func (NoopNotifier) NotifyPriceGapBreakerTrip(models.BreakerTripRecord) error { return nil }
+
+// NotifyPriceGapBreakerRecovery is a no-op (Phase 15 Plan 15-04 ships Telegram impl).
+func (NoopNotifier) NotifyPriceGapBreakerRecovery(models.BreakerTripRecord, string) error {
+	return nil
+}

@@ -127,6 +127,21 @@ func (n *spyNotifier) NotifyPriceGapRampForceOp(action string, prior, next int, 
 	n.calls = append(n.calls, spyCall{Kind: "notify_ramp_force_op:" + action, Args: fmt.Sprintf("%d->%d:%s:%s", prior, next, operator, reason)})
 }
 
+// Phase 15 Plan 15-03 — breaker surfaces for compile-time PriceGapNotifier conformance.
+func (n *spyNotifier) NotifyPriceGapBreakerTrip(record models.BreakerTripRecord) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.calls = append(n.calls, spyCall{Kind: "notify_breaker_trip", Args: fmt.Sprintf("pnl=%.2f", record.TripPnLUSDT)})
+	return nil
+}
+
+func (n *spyNotifier) NotifyPriceGapBreakerRecovery(record models.BreakerTripRecord, operator string) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.calls = append(n.calls, spyCall{Kind: "notify_breaker_recovery", Args: operator})
+	return nil
+}
+
 func (n *spyNotifier) count() int {
 	n.mu.Lock()
 	defer n.mu.Unlock()

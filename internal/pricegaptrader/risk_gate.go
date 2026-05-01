@@ -81,6 +81,17 @@ func (t *Tracker) preEntry(
 		return GateDecision{Err: ErrPriceGapCandidateDisabled, Reason: "exec_quality: " + reason}
 	}
 
+	// Gate 1.5: breaker-paused (Phase 15 Plan 15-03 / D-10). Distinct from
+	// Gate 1 — exec-quality disabled is operator/quality-driven (Redis-backed,
+	// per-symbol); paused_by_breaker is the drawdown circuit breaker's trip
+	// side-effect (D-15 step 3, persisted on the candidate config entry). Both
+	// must reject entry; the rejection reason is distinct so operators can tell
+	// "exec_quality" apart from "paused_by_breaker" in logs and Telegram.
+	if cand.PausedByBreaker {
+		t.notifier.NotifyPriceGapRiskBlock(cand.Symbol, "paused_by_breaker", "drawdown circuit breaker tripped")
+		return GateDecision{Err: ErrPriceGapCandidateDisabled, Reason: "paused_by_breaker"}
+	}
+
 	// Gate 2: max concurrent (PG-RISK-04)
 	if len(activePositions) >= t.cfg.PriceGapMaxConcurrent {
 		t.notifier.NotifyPriceGapRiskBlock(cand.Symbol, "max_concurrent",

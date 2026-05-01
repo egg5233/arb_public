@@ -259,6 +259,174 @@ func (r *Registry) Replace(ctx context.Context, source string, next []models.Pri
 	return nil
 }
 
+// SetPausedByBreaker — Phase 15 Plan 15-03 chokepoint helper for the breaker
+// trip + recovery paths. Sets candidate.PausedByBreaker = value on every entry
+// matching (symbol, longExch, shortExch, direction); idempotent. Returns the
+// number of candidates affected (so callers can record paused_candidate_count
+// in the trip record). Persists via SaveJSONWithBakRing; on persist failure
+// in-memory mutations are rolled back.
+//
+// Empty-direction lookup matches both empty and "pinned" since
+// NormalizeDirection treats them as equivalent (Phase 999.1 PG-DIR-01).
+func (r *Registry) SetPausedByBreaker(symbol, longExch, shortExch, direction string, value bool) (int, error) {
+	releasePath := r.cfg.LockConfigFile()
+	defer releasePath()
+	r.cfg.Lock()
+	defer r.cfg.Unlock()
+
+	if err := r.reloadFromDiskLocked(); err != nil {
+		return 0, fmt.Errorf("registry: reload: %w", err)
+	}
+
+	// Snapshot prior state for rollback.
+	prior := append([]models.PriceGapCandidate(nil), r.cfg.PriceGapCandidates...)
+	count := 0
+	for i := range r.cfg.PriceGapCandidates {
+		c := &r.cfg.PriceGapCandidates[i]
+		if c.Symbol != symbol || c.LongExch != longExch || c.ShortExch != shortExch {
+			continue
+		}
+		// Normalize direction comparison: empty == "pinned" per PG-DIR-01.
+		cDir := c.Direction
+		if cDir == "" {
+			cDir = models.PriceGapDirectionPinned
+		}
+		wantDir := direction
+		if wantDir == "" {
+			wantDir = models.PriceGapDirectionPinned
+		}
+		if cDir != wantDir {
+			continue
+		}
+		if c.PausedByBreaker == value {
+			// Already at desired state — count anyway (idempotent semantics).
+			count++
+			continue
+		}
+		c.PausedByBreaker = value
+		count++
+	}
+
+	if count == 0 {
+		// No matching candidate; nothing to save. Not an error — just a no-op.
+		return 0, nil
+	}
+
+	if err := r.cfg.SaveJSONWithBakRing(); err != nil {
+		r.cfg.PriceGapCandidates = prior
+		return 0, fmt.Errorf("registry: save: %w", err)
+	}
+
+	op := "pause_by_breaker"
+	if !value {
+		op = "clear_paused_by_breaker"
+	}
+	r.writeAuditLocked(context.Background(), "breaker", op, len(prior), len(r.cfg.PriceGapCandidates))
+	return count, nil
+}
+
+// PauseAllOpenCandidates — Phase 15 Plan 15-03 trip-path chokepoint (D-15
+// step 3). Sets PausedByBreaker=true on every candidate matching the
+// (symbol, longExch, shortExch, direction) tuple of any provided active
+// position. Returns the count of candidates that were paused (i.e. flipped
+// from false→true OR were already true). Single SaveJSONWithBakRing per call.
+//
+// On persist failure, in-memory mutations are rolled back. Pass nil/empty
+// positions slice → no-op returns (0, nil).
+func (r *Registry) PauseAllOpenCandidates(positions []*models.PriceGapPosition) (int, error) {
+	if len(positions) == 0 {
+		return 0, nil
+	}
+
+	releasePath := r.cfg.LockConfigFile()
+	defer releasePath()
+	r.cfg.Lock()
+	defer r.cfg.Unlock()
+
+	if err := r.reloadFromDiskLocked(); err != nil {
+		return 0, fmt.Errorf("registry: reload: %w", err)
+	}
+
+	prior := append([]models.PriceGapCandidate(nil), r.cfg.PriceGapCandidates...)
+
+	// Build a set keyed by (symbol|long|short|direction) for O(1) match.
+	// Position carries Symbol, LongExchange, ShortExchange. Direction is not
+	// always present on legacy positions; treat missing direction as wildcard
+	// (match every candidate with the same exchanges-tuple).
+	type posKey struct {
+		symbol, long, short string
+	}
+	wanted := make(map[posKey]struct{}, len(positions))
+	for _, p := range positions {
+		if p == nil {
+			continue
+		}
+		wanted[posKey{p.Symbol, p.LongExchange, p.ShortExchange}] = struct{}{}
+	}
+
+	count := 0
+	for i := range r.cfg.PriceGapCandidates {
+		c := &r.cfg.PriceGapCandidates[i]
+		if _, ok := wanted[posKey{c.Symbol, c.LongExch, c.ShortExch}]; !ok {
+			continue
+		}
+		c.PausedByBreaker = true
+		count++
+	}
+
+	if count == 0 {
+		return 0, nil
+	}
+
+	if err := r.cfg.SaveJSONWithBakRing(); err != nil {
+		r.cfg.PriceGapCandidates = prior
+		return 0, fmt.Errorf("registry: save: %w", err)
+	}
+	r.writeAuditLocked(context.Background(), "breaker", "pause_all_open",
+		len(prior), len(r.cfg.PriceGapCandidates))
+	return count, nil
+}
+
+// ClearAllPausedByBreaker — Phase 15 Plan 15-03 recovery-path chokepoint.
+// Sets PausedByBreaker=false on every candidate. Operator-set Disabled state
+// (Redis-backed via PriceGapStore.IsCandidateDisabled) is NOT touched — D-11
+// distinguishes operator-set disable from breaker-set pause. Returns the
+// count of candidates whose PausedByBreaker flipped true→false.
+//
+// On persist failure, in-memory mutations are rolled back.
+func (r *Registry) ClearAllPausedByBreaker() (int, error) {
+	releasePath := r.cfg.LockConfigFile()
+	defer releasePath()
+	r.cfg.Lock()
+	defer r.cfg.Unlock()
+
+	if err := r.reloadFromDiskLocked(); err != nil {
+		return 0, fmt.Errorf("registry: reload: %w", err)
+	}
+
+	prior := append([]models.PriceGapCandidate(nil), r.cfg.PriceGapCandidates...)
+	count := 0
+	for i := range r.cfg.PriceGapCandidates {
+		c := &r.cfg.PriceGapCandidates[i]
+		if c.PausedByBreaker {
+			c.PausedByBreaker = false
+			count++
+		}
+	}
+
+	if count == 0 {
+		return 0, nil
+	}
+
+	if err := r.cfg.SaveJSONWithBakRing(); err != nil {
+		r.cfg.PriceGapCandidates = prior
+		return 0, fmt.Errorf("registry: save: %w", err)
+	}
+	r.writeAuditLocked(context.Background(), "breaker", "clear_all_paused_by_breaker",
+		len(prior), len(r.cfg.PriceGapCandidates))
+	return count, nil
+}
+
 // reloadFromDiskLocked refreshes r.cfg.PriceGapCandidates from the on-disk
 // config.json before applying a mutation. Caller MUST hold cfg.mu (the
 // underlying Load() does its own internal initialization but this method

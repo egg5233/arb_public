@@ -115,6 +115,27 @@ func (t *TelegramNotifier) NotifyPriceGapRampDemote(prior, next int, reason stri
 	go t.send(text)
 }
 
+// NotifyPriceGapBreakerTrip — Phase 15 Plan 15-03 stub. Real Telegram dispatch
+// (critical bucket per D-17, full-context single message) ships in Plan 15-04
+// (separate file: pricegap_breaker.go). Stub returns nil so the interface is
+// satisfied compile-time and the breaker controller can call without crashing
+// before Plan 15-04 lands. Nil-receiver-safe.
+func (t *TelegramNotifier) NotifyPriceGapBreakerTrip(record models.BreakerTripRecord) error {
+	if t == nil {
+		return nil
+	}
+	return nil
+}
+
+// NotifyPriceGapBreakerRecovery — Phase 15 Plan 15-03 stub. Real impl in
+// Plan 15-04. Nil-receiver-safe.
+func (t *TelegramNotifier) NotifyPriceGapBreakerRecovery(record models.BreakerTripRecord, operator string) error {
+	if t == nil {
+		return nil
+	}
+	return nil
+}
+
 // NotifyPriceGapRampForceOp is fired by pg-admin force-promote / force-demote
 // / reset (PG-LIVE-01, D-15 #3 + #4 — manual operator override). CRITICAL
 // path; surfaces full operator + reason for audit visibility.

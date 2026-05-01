@@ -228,6 +228,12 @@ func (f *fakeBootGuardNotifier) NotifyPriceGapReconcileFailure(date string, _ er
 }
 func (f *fakeBootGuardNotifier) NotifyPriceGapRampDemote(int, int, string)              {}
 func (f *fakeBootGuardNotifier) NotifyPriceGapRampForceOp(string, int, int, string, string) {}
+func (f *fakeBootGuardNotifier) NotifyPriceGapBreakerTrip(models.BreakerTripRecord) error {
+	return nil
+}
+func (f *fakeBootGuardNotifier) NotifyPriceGapBreakerRecovery(models.BreakerTripRecord, string) error {
+	return nil
+}
 
 // fakeRampSnapshotterStage0 — Snapshot returns CurrentStage=0, simulating a
 // missing/corrupt pg:ramp:state. Boot guard MUST refuse this combination
