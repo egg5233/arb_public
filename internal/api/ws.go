@@ -102,6 +102,15 @@ func (h *Hub) Broadcast(msgType string, data interface{}) {
 	h.broadcast <- b
 }
 
+// BroadcastPriceGapBreakerEvent satisfies pricegaptrader.BreakerWSBroadcaster
+// (Phase 15 Plan 15-04). Specific method name (not generic Broadcast) so the
+// narrow interface in pricegaptrader/breaker_controller.go stays distinct
+// from any future hub Broadcast variants — preserves the D-15 module
+// boundary at the wiring site (cmd/main.go).
+func (h *Hub) BroadcastPriceGapBreakerEvent(eventType string, payload any) {
+	h.Broadcast(eventType, payload)
+}
+
 // HandleWS upgrades the HTTP connection to a WebSocket and registers the client.
 func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)

@@ -2,7 +2,53 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## 0.38.0 — 2026-05-01
+
+### Phase 15 — Drawdown Circuit Breaker (PG-LIVE-02)
+
+**New feature, default OFF.** Strategy 4 gains a realized-PnL drawdown breaker that auto-flips the engine to paper mode when rolling 24h realized PnL drops below `pricegap_drawdown_limit_usdt`. Bybit `:04-:05:30` blackout suppresses evaluation. Two-strike rule (≥5 min apart). Recovery requires explicit operator action via `pg-admin breaker recover --confirm` or dashboard Recover button.
+
+#### Added (Plan 15-04 — operations surface, version-bump ship)
+
+- **3 new pg-admin subcommands** (`cmd/pg-admin/breaker.go`):
+  - `pg-admin breaker show` — read-only status + last 10 trip records (Asia/Taipei timestamps).
+  - `pg-admin breaker recover --confirm` — typed-phrase-guarded operator recovery; prompts for literal `RECOVER` from stdin (case-sensitive) before invoking `BreakerController.Recover(ctx, "pg-admin")`.
+  - `pg-admin breaker test-fire --confirm [--dry-run]` — typed-phrase-guarded synthetic fire; prompts for `TEST-FIRE`. Default behavior is REAL TRIP (operator sees `WARNING: default behavior is REAL TRIP` line); `--dry-run` opts into preview-only (no mutations).
+- **3 new REST endpoints** (`internal/api/pricegap_breaker_handlers.go`), all bearer-auth gated:
+  - `GET /api/pg/breaker/state` — snapshot + most-recent trip + derived `armed`/`tripped` flags.
+  - `POST /api/pg/breaker/recover` — body `{confirmation_phrase: "RECOVER", operator?: string}`. 400 on phrase mismatch, 409 when sticky=0, 500 on controller error.
+  - `POST /api/pg/breaker/test-fire` — body `{confirmation_phrase: "TEST-FIRE", dry_run?: bool}`. 400 on phrase mismatch, 409 when already tripped (T-15-16 bounded recursion), 500 on controller error.
+- **2 new Telegram critical-bucket methods** (`internal/notify/pricegap_breaker.go`):
+  - `NotifyPriceGapBreakerTrip(record)` — D-17 critical alert with 24h PnL, threshold, ramp stage, paused candidate count, Asia/Taipei trip time, recovery instruction line. Bypasses cooldown via new `sendCritical` helper.
+  - `NotifyPriceGapBreakerRecovery(record, operator)` — recovery alert with operator name, recovery time, original trip context.
+- **`BreakerController.TestFire(ctx, dryRun)`** (`internal/pricegaptrader/breaker_test_fire.go`):
+  - `dryRun=false` → REAL trip via the same D-15 ordering as evalTick; source label `test_fire`.
+  - `dryRun=true` → computes 24h PnL but writes NOTHING (no SaveBreakerState, no AppendBreakerTrip, no Telegram, no WS, no candidate pause); source label `test_fire_dry_run`.
+- **`BreakerController.Recover(ctx, operator)`** (`internal/pricegaptrader/breaker_recovery.go`):
+  - 5-step inverse of trip — sticky cleared LAST so partial earlier failure leaves engine in safer state (still paper).
+  - Step 1: `Registry.ClearAllPausedByBreaker()` (operator-set `Disabled` untouched per D-11).
+  - Step 2: `UpdateBreakerTripRecovery(0, ts, op)` LSet backfill on most-recent trip.
+  - Step 3 (CRITICAL): `SaveBreakerState` with sticky=0 + pending=0 + strike1_ts=0; failure returns error.
+  - Step 4: Telegram critical-bucket recovery alert.
+  - Step 5: WS broadcast `pg.breaker.recover` with operator + recovery_ts + trip payload.
+  - Returns explicit `breaker not tripped (sticky=0)` error when called against an armed-but-not-tripped state.
+- **`*database.Client.LoadBreakerTripAt(idx)`** (`internal/database/pricegap_state.go`) — `(record, exists, err)` shape mirrors `LoadPriceGapPosition` (Phase 14); used by Recover for alert payload + by `breaker show` for the recent-trips tail.
+- **`Server.SetPgBreaker` / `Server.SetPgBreakerTrips` + `BreakerControllerAPI` / `BreakerTripsReader` narrow interfaces** in `internal/api/server.go` — same Plan 12-03 D-15 boundary precedent (pricegaptrader stays import-free of internal/api).
+- **`Hub.BroadcastPriceGapBreakerEvent`** in `internal/api/ws.go` satisfies the narrow `BreakerWSBroadcaster` interface for production wiring.
+- **`cmd/main.go` full bootstrap wiring** — aggregator + breaker controller + setters (WS / Ramp / Registry / Positions) + tracker.SetBreakerController + apiSrv.SetPgBreaker + apiSrv.SetPgBreakerTrips. Daemon spawned by tracker.Start when `cfg.PriceGapBreakerEnabled=true`.
+- **Synthetic full-cycle integration test** (`TestSyntheticFireFullCycle`) — exercises trip → paper-flip → operator recovery in-process, no engine restart. Success-criterion #5 evidence.
+- **Widened `CandidatePauser` interface** with `ClearAllPausedByBreaker()` so the recovery chokepoint goes through `*Registry`.
+- **Widened `BreakerNotifier` interface** with `NotifyPriceGapBreakerRecovery(record, operator) error`.
+- **Widened `BreakerStateStore` interface** with `LoadBreakerTripAt` + `UpdateBreakerTripRecovery` so Recover can read-modify-write the most-recent trip without a separate store interface.
+- **`/api/pg/breaker/{recover,test-fire}` added to `isMutatingEndpoint`** (`internal/api/auth.go`) so the routes always require auth in production deployments where DASHBOARD_PASSWORD is unset.
+
+#### Tests
+
+- 7 unit tests in `internal/pricegaptrader` (Telegram + TestFire + Recover); 9 sub-tests in `cmd/pg-admin/breaker_test.go`; 11 sub-tests in `internal/api/pricegap_breaker_handlers_test.go`. Full Phase 15 test suite (Plans 01+02+03+04 combined) green; pricegaptrader (324) + notify (35) + database (50) + api (112) + cmd/pg-admin (42) all pass.
+
+#### Migration
+
+Existing operators set `enable_pricegap_breaker: true` + `pricegap_drawdown_limit_usdt: <negative threshold>` via dashboard config or pg-admin tooling — `config.json` reload not required for runtime toggle.
 
 ### Added
 

@@ -505,6 +505,27 @@ func main() {
 		log.Info("[phase-14] reconciler + ramp controller + sizer wired (live_capital=%v)",
 			cfg.PriceGapLiveCapital)
 
+		// ---- Phase 15: Drawdown Circuit Breaker (PG-LIVE-02) ----
+		// Default OFF via cfg.PriceGapBreakerEnabled; daemon spawned
+		// conditionally inside tracker.Start (Plan 15-03 wiring).
+		// Aggregator is constructed BEFORE the controller (constructor arg).
+		// The Hub() accessor is the same Plan 12-03 D-15 boundary precedent
+		// used for promote events — preserves pricegaptrader's module
+		// isolation from internal/api.
+		pgAggregator := pricegaptrader.NewRealizedPnLAggregator(db)
+		pgTracker.SetBreakerStore(db) // narrow BreakerStateLoader; *database.Client implements via duck typing
+		pgBreaker := pricegaptrader.NewBreakerController(cfg, db, pgAggregator, tg, utils.NewLogger("pg-breaker"))
+		pgBreaker.SetWSBroadcaster(apiSrv.Hub())
+		pgBreaker.SetRamp(pgRamp)
+		pgBreaker.SetRegistry(pgRegistry)
+		pgBreaker.SetPositions(db)
+		pgTracker.SetBreakerController(pgBreaker)
+		// Expose Snapshot/Recover/TestFire to the api server's handlers.
+		apiSrv.SetPgBreaker(pgBreaker)
+		apiSrv.SetPgBreakerTrips(db)
+		log.Info("[phase-15] breaker controller wired (enabled=%v threshold=%.2f interval=%ds)",
+			cfg.PriceGapBreakerEnabled, cfg.PriceGapDrawdownLimitUSDT, cfg.PriceGapBreakerIntervalSec)
+
 		// Phase 11 (Plan 11-05 / PG-DISC-03) — Auto-Discovery Scanner +
 		// Telemetry bootstrap. Telemetry is ALWAYS constructed when the
 		// price-gap subsystem is up so the REST endpoints can render the
