@@ -77,7 +77,7 @@ Phase numbers reuse 11 + 12 from the v2.1 deferred-numbering plan; 13 was consum
 - [x] **Phase 11: Auto-Discovery Scanner + Chokepoint + Telemetry** — Read-only scanner with score, BBO freshness, depth probe, denylist; CandidateRegistry chokepoint serializing all writers; telemetry surfaced to dashboard. Default OFF. (completed 2026-04-28)
 - [x] **Phase 12: Auto-Promotion** — Score-gated auto-promotion through chokepoint with cap, dedupe, observation streak, active-position guard, Telegram + WS broadcast. (completed 2026-04-30)
 - [x] **Phase 14: Daily Reconcile + Live Ramp Controller** — Daily PnL reconcile keyed by close-timestamp + ramp controller with Redis-persisted clean-day counter, asymmetric ratchet, hard-ceiling sizing guard. (completed 2026-04-30)
-- [ ] **Phase 15: Drawdown Circuit Breaker** — Realized-PnL rolling-24h breaker with two-strike rule, Bybit-blackout suppression, sticky paper-mode flag, human-gated recovery.
+- [x] **Phase 15: Drawdown Circuit Breaker** — Realized-PnL rolling-24h breaker with two-strike rule, Bybit-blackout suppression, sticky paper-mode flag, human-gated recovery. (completed 2026-05-01)
 - [ ] **Phase 16: Paper-Mode Cleanup + Dashboard Consolidation** — Fix realized-slippage zero, fix dashboard auto-POST flip, promote bingxprobe to Make target, consolidate all Strategy 4 config into new Price-Gap dashboard tab.
 - [ ] **Phase 17: v1.0 Tech-Debt Sweep** — Phase 07 retrospective VERIFICATION/VALIDATION, Nyquist Wave-0 for v1.0 phases 01/03/04/06, browser confirmations for v1.0 phases 02/03/05/06.
 
@@ -195,7 +195,7 @@ Phase numbers reuse 11 + 12 from the v2.1 deferred-numbering plan; 13 was consum
 | 11. Auto-Discovery Scanner + Chokepoint + Telemetry | v2.2 | 6/6 | Complete    | 2026-04-28 |
 | 12. Auto-Promotion | v2.2 | 4/4 | Complete    | 2026-04-30 |
 | 14. Daily Reconcile + Live Ramp Controller | v2.2 | 5/5 | Complete    | 2026-04-30 |
-| 15. Drawdown Circuit Breaker | v2.2 | 4/5 | In Progress|  |
+| 15. Drawdown Circuit Breaker | v2.2 | 5/5 | Complete   | 2026-05-01 |
 | 16. Paper-Mode Cleanup + Dashboard Consolidation | v2.2 | 0/? | Not started | — |
 | 17. v1.0 Tech-Debt Sweep | v2.2 | 0/? | Not started | — |
 

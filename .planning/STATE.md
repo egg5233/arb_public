@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.2
 milestone_name: Auto-Discovery & Live Strategy 4
-status: executing
-stopped_at: Completed 15-04-PLAN.md
-last_updated: "2026-05-01T06:31:05.061Z"
+status: verifying
+stopped_at: Completed 15-05-PLAN.md (awaiting human-verify UAT)
+last_updated: "2026-05-01T06:41:17.790Z"
 last_activity: 2026-05-01
 progress:
   total_phases: 5
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 20
-  completed_plans: 19
-  percent: 95
+  completed_plans: 20
+  percent: 100
 ---
 
 # Project State
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-04-28 after v2.2 milestone start)
 
 Phase: 15 (drawdown-circuit-breaker) — EXECUTING
 Plan: 5 of 5
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-05-01
 
 **v2.2 phase structure (6 phases, 14 reqs, 100% coverage):**
@@ -124,6 +124,7 @@ Progress (v2.2): [          ] 0%
 | Phase 15 P02 | 20min | 2 tasks | 7 files |
 | Phase 15 P03 | 22min | 2 tasks | 13 files |
 | Phase 15 P04 | 75min | 3 tasks | 17 files |
+| Phase 15 P05 | 25min | 1 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -178,6 +179,12 @@ v2.0 + v1.0 decisions retained (truncated for brevity — see git history for fu
 - [Phase 15]: Plan 15-04: VERSION bare semver (0.38.0 not v0.38.0) per codebase convention; pg-admin dispatcher named runBreaker (not breakerCmd) per existing runReconcile/runRamp pattern
 - [Phase 15]: Plan 15-04: Recover sticky cleared LAST (Step 3 critical) inverting trip ordering — partial earlier failure leaves engine still tripped (safer state); forward-progress invariant zeroes pending+strike1_ts too
 - [Phase 15]: Plan 15-04: sendCritical helper added to TelegramNotifier; Hub.BroadcastPriceGapBreakerEvent specific method (not generic Broadcast) preserves D-15 boundary at wiring site
+- [Phase 15]: Plan 15-05 BreakerSubsection: web/src/components/Ramp/{BreakerSubsection,BreakerConfirmModal}.tsx + usePgBreaker hook + 22 i18n keys lockstep en+zh-TW
+- [Phase 15]: Plan 15-05: Magic strings RECOVER + TEST-FIRE LITERAL in TS code + zh-TW prose (D-12 invariant — never i18n'd, never lowercased, never trimmed)
+- [Phase 15]: Plan 15-05: Dry-run defaults to FALSE — operator must opt INTO dry-run; REAL-TRIP red banner shown until checkbox checked (Pitfall 7 mitigation)
+- [Phase 15]: Plan 15-05: Component path web/src/components/Ramp/ (matches existing Phase 14 RampReconcileSection.tsx location); plan literal said PriceGap/ but that dir does not exist (Rule 3 blocking)
+- [Phase 15]: Plan 15-05: Hook signature usePgBreaker() takes no args (reads localStorage internally) — matches Phase 14 RampReconcileSection + DiscoverySection self-fetching FC pattern
+- [Phase 15]: Plan 15-05: i18n key naming dot-notation pricegap.breaker.* (matches existing pricegap.ramp.* + pricegap.discovery.* convention) — TranslationKey type derives compile-time safety from en object literal
 
 ### Pending Todos
 
@@ -201,7 +208,7 @@ v2.0 + v1.0 decisions retained (truncated for brevity — see git history for fu
 
 ## Session Continuity
 
-Last session: 2026-05-01T06:30:55.172Z
-Stopped at: Completed 15-04-PLAN.md
+Last session: 2026-05-01T06:41:03.843Z
+Stopped at: Completed 15-05-PLAN.md (awaiting human-verify UAT)
 Resume file: None
 Next command: `/gsd-plan-phase 15` to decompose Phase 15 (Drawdown Circuit Breaker, PG-LIVE-02) into executable plans
