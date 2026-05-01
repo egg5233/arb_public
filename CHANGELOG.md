@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Phase 15 Plan 01 (PG-LIVE-02) — Drawdown circuit breaker foundation:**
+  - **3 new Config fields** — `PriceGapBreakerEnabled` (bool, default false), `PriceGapDrawdownLimitUSDT` (float64, default 0 / armed-but-never-trips), `PriceGapBreakerIntervalSec` (int, default 300 / 5-min ticker). All default OFF; JSON tags `enable_pricegap_breaker`, `pricegap_drawdown_limit_usdt`, `pricegap_breaker_interval_sec`.
+  - **`validatePriceGapLive` extended** — when `PriceGapBreakerEnabled=true`, rejects positive limits (D-06: limit is absolute USDT, must be ≤ 0) and out-of-band intervals ([60, 3600]s). Disabled-state defaults bypass validation.
+  - **2 new Redis namespace constants** — `pg:breaker:state` (5-field HASH per D-05) and `pg:breaker:trips` (LIST capped at 500 per D-18).
+  - **2 new model structs** — `models.BreakerState` (5 fields including `PaperModeStickyUntil` int64 sentinel encoding) and `models.BreakerTripRecord` (8 fields including nullable `RecoveryTs`/`RecoveryOperator`).
+  - **4 new database helpers** — `SaveBreakerState` / `LoadBreakerState` (HSet pipeline + decimal-string encoding to preserve `math.MaxInt64` sentinel), `AppendBreakerTrip` (LPush + LTrim 0 499), `UpdateBreakerTripRecovery` (LIndex + LSet to backfill recovery fields).
+  - **7 Wave 0 stub test files** — 30 test names reserved across `internal/pricegaptrader/`, `internal/api/`, `internal/notify/`, `cmd/pg-admin/` so Plans 15-02 / 15-03 / 15-04 implement against pre-named test targets. All stubs compile and skip; `go build ./...` green.
+
+### Safety
+
+- **Default OFF:** breaker is dormant on existing installs; operator must explicitly toggle `enable_pricegap_breaker=true` and set a negative `pricegap_drawdown_limit_usdt` to arm.
+- **`config.json` untouched:** Phase 15 Plan 01 is pure Go-struct + helper plumbing; runtime mutations land via `POST /api/config` in Plan 15-04.
+- **Module boundary preserved:** all new code under `internal/config/`, `internal/database/`, `internal/models/`, plus test stubs in pricegap subpackages. Zero imports of `internal/engine` / `internal/spotengine`.
+
 ## [0.37.0] - 2026-04-30
 
 ### Added

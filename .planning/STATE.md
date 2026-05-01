@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.2
 milestone_name: Auto-Discovery & Live Strategy 4
-status: planning
-stopped_at: Phase 15 context gathered
-last_updated: "2026-05-01T02:54:05.775Z"
-last_activity: 2026-04-30
+status: executing
+stopped_at: Completed 15-01-PLAN.md
+last_updated: "2026-05-01T05:19:24.386Z"
+last_activity: 2026-05-01
 progress:
   total_phases: 5
   completed_phases: 3
-  total_plans: 15
-  completed_plans: 15
-  percent: 100
+  total_plans: 20
+  completed_plans: 16
+  percent: 80
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-28 after v2.2 milestone start)
 
 **Core value:** "I deposit USDT, select my risk preference, and the system automatically finds opportunities across multiple strategies, opens positions, collects yield, exits when profitable, and I can see exactly how much each position earned — with capital shifting between strategies as opportunities shift."
-**Current focus:** Phase 14 — daily-reconcile-live-ramp-controller
+**Current focus:** Phase 15 — drawdown-circuit-breaker
 
 ## Current Position
 
-Phase: 15
-Plan: Not started
-Status: Phase 14 closed; ready to plan Phase 15 (drawdown-circuit-breaker, PG-LIVE-02)
-Last activity: 2026-04-30
+Phase: 15 (drawdown-circuit-breaker) — EXECUTING
+Plan: 2 of 5
+Status: Ready to execute
+Last activity: 2026-05-01
 
 **v2.2 phase structure (6 phases, 14 reqs, 100% coverage):**
 
@@ -120,6 +120,7 @@ Progress (v2.2): [          ] 0%
 | Phase 14 P03 | 8min | 4 tasks | 10 files |
 | Phase 14 P04 | 15min | 3 tasks | 19 files |
 | Phase 14 P05 | 12min | 3 tasks | 8 files |
+| Phase 15 P01 | 25min | 3 tasks | 14 files |
 
 ## Accumulated Context
 
@@ -163,6 +164,8 @@ v2.0 + v1.0 decisions retained (truncated for brevity — see git history for fu
 - [Phase 14]: Plan 14-05: Narrow interfaces on *Server (RampSnapshotter + ReconcileRecordLoader) keep internal/api free of pricegaptrader concrete imports — production wires *RampController + *Reconciler via SetPgRamp/SetPgReconciler setters in cmd/main.go (D-15 boundary preserved, identical to Plan 12-03 Server.Hub() pattern)
 - [Phase 14]: Plan 14-05: Server-authoritative live_capital flag — handler reads cfg.PriceGapLiveCapital directly (NEVER from client config cache); operator badge color drives money-at-risk perception, must reflect server truth on every refresh (T-14-18 mitigation)
 - [Phase 14]: Plan 14-05: D-14 read-only contract enforced via explicit comment header in RampReconcileSection.tsx + grep verification (0 POST/PUT/PATCH/DELETE matches in widget); mutation UI deferred to Phase 16 PG-OPS-09 absorb when new top-level Pricegap tab is built
+- [Phase 15]: Plan 15-01: PaperModeStickyUntil stored as decimal-string of int64 (not float) so math.MaxInt64 sentinel survives Redis roundtrip without precision loss
+- [Phase 15]: Plan 15-01: 7 stub files reserve 30 Wave 0 test names (exceeds plan 25-SKIP threshold); plan title said '10 stub files' but listed only 7 file paths in <files> — went with 7 to match enumeration
 
 ### Pending Todos
 
@@ -186,7 +189,7 @@ v2.0 + v1.0 decisions retained (truncated for brevity — see git history for fu
 
 ## Session Continuity
 
-Last session: 2026-05-01T02:54:05.770Z
-Stopped at: Phase 15 context gathered
-Resume file: .planning/phases/15-drawdown-circuit-breaker/15-CONTEXT.md
+Last session: 2026-05-01T05:19:17.837Z
+Stopped at: Completed 15-01-PLAN.md
+Resume file: None
 Next command: `/gsd-plan-phase 15` to decompose Phase 15 (Drawdown Circuit Breaker, PG-LIVE-02) into executable plans
