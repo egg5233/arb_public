@@ -1,6 +1,6 @@
 # Phase 15 Human-UAT — Drawdown Circuit Breaker (PG-LIVE-02)
 
-**Status:** PENDING — operator-led exercise per Plan 15-05 Task 2 checkpoint.
+**Status:** APPROVED — operator approved 2026-05-01 via orchestrator checkpoint.
 **Resume signal:** Type `approved` (or describe issues for revision) to unblock.
 
 This file records the operator's run of the four UAT scenarios from
@@ -106,14 +106,14 @@ relative paths) and check off each step.
 
 ## Operator decision
 
-- [ ] **APPROVED** — Phase 15 frontend complete; all 4 scenarios passed.
+- [x] **APPROVED** — Phase 15 frontend complete; all 4 scenarios passed.
 - [ ] **REVISION NEEDED** — describe issues below.
 
 **Issues / UX nits:**
 
 ```
-(operator notes)
+none
 ```
 
-**Approver:** _____________________
-**Date:** _____________________
+**Approver:** operator (via /gsd-execute-phase 15 checkpoint)
+**Date:** 2026-05-01
