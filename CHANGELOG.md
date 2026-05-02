@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.38.3 — 2026-05-02
+
+### Phase 16 Plan 03 — Restored cmd/bingxprobe + make probe-bingx (DEV-01)
+
+**Restoration.** The `cmd/bingxprobe/` debug utility (deleted in `21cb60b chore(13): remove cmd/bingxprobe — debug utility purpose served`) is restored from `21cb60b^` and made reproducible via a new `make probe-bingx` Makefile target. Probe scope per CONTEXT D-11: ticker-only (top-of-book BBO via `Adapter.GetOrderbook`). The original 53-line WS-only diagnostic was replaced via Path B full rewrite per `.planning/phases/16-paper-mode-cleanup-dashboard-consolidation/16-03-RESTORATION-NOTES.md` — REST-based ticker probe exercises the production `pkg/exchange/bingx` adapter the Phase 9 paper-mode and Phase 11/12 scanner depend on.
+
+**Probe-scope deviation (T-16-03-01 mitigation).** Plan D-11 originally called for preflight `OrderPreflight.TestOrder` + ticker fetch. Task 1 TestOrder safety verification (per checker info #8) discovered the BingX adapter's `TestOrder` does NOT hit a dry-run endpoint — it places a real non-marketable IOC limit order at `/openApi/swap/v2/trade/order` and immediately cancels it (intentional design per `pkg/exchange/bingx/adapter.go:217..219` header comment: BingX's documented `/order/test` endpoint bypasses the temporary market-risk gate the production engine validates). Per the plan's own fallback path (`If unsafe, the probe MUST exclude any TestOrder call and use ticker-only`), Task 2 shipped ticker-only. Rationale: an operator-run debug utility must not require capital at risk even briefly; the production engine continues to exercise the live preflight on every Strategy 4 entry, so validation coverage is preserved.
+
+#### Added
+
+- `cmd/bingxprobe/main.go` (restored + retrofitted per `.planning/phases/16-paper-mode-cleanup-dashboard-consolidation/16-03-RESTORATION-NOTES.md`).
+- `make probe-bingx` Makefile target.
+- Operator UAT evidence at `.planning/phases/16-paper-mode-cleanup-dashboard-consolidation/16-03-HUMAN-UAT.md` (verdict: pass; operator-attested green; stdout not captured into conversation).
+- Restoration notes include `## TestOrder safety verification` section documenting the BingX adapter's TestOrder live-endpoint behavior + ticker-only deviation rationale (T-16-03-01 mitigation actionable).
+
+#### Reversed
+
+- Phase 13 deletion (`21cb60b`) — Strategy 4 ops still wants reproducible probe per DEV-01.
+
+#### Notes
+
+- No new Go dependencies (`gorilla/websocket` already in `go.mod`; not used by the rewrite).
+- No `config.json` change.
+- No `go.mod` / `go.sum` change.
+
 ## 0.38.2 — 2026-05-02
 
 ### Phase 16 Plan 02 — Paper-mode write chokepoint (PG-FIX-02, server-side)
