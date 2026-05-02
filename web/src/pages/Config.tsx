@@ -740,20 +740,9 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
         value={getByPath(config, ['strategy', 'discovery', 'max_cost_ratio'])}
         onChange={(v) => handleChange(['strategy', 'discovery', 'max_cost_ratio'], v)}
       />
-      <NumberField
-        label={t('cfg.field.freeGap')}
-        desc={t('cfg.desc.freeGap')}
-        value={getByPath(config, ['strategy', 'discovery', 'price_gap_free_bps'])}
-        unit="bps"
-        onChange={(v) => handleChange(['strategy', 'discovery', 'price_gap_free_bps'], v)}
-      />
-      <NumberField
-        label={t('cfg.field.maxGap')}
-        desc={t('cfg.desc.maxGap')}
-        value={getByPath(config, ['strategy', 'discovery', 'max_price_gap_bps'])}
-        unit="bps"
-        onChange={(v) => handleChange(['strategy', 'discovery', 'max_price_gap_bps'], v)}
-      />
+      {/* Phase 16 Plan 04 (PG-OPS-09 D-16): Strategy 4 free-gap + max-gap
+          fields migrated to <ConfigCard /> at top of PriceGap.tsx — single
+          source of truth for all Strategy 4 controls. */}
       <NumberField
         label={t('cfg.field.recoveryIntervals')}
         desc={t('cfg.desc.recoveryIntervals')}
@@ -1390,7 +1379,9 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
   // =========================================================================
   const renderSfDiscoveryTab = () => {
     const sfScannerMode = String(getByPath(config, ['spot_futures', 'scanner_mode']) ?? 'native');
-    const sfEnablePriceGapGate = getByPath(config, ['spot_futures', 'enable_price_gap_gate']) === true;
+    // Phase 16 Plan 04 (PG-OPS-09 D-16): Strategy 4 spot-futures gate fields
+    // migrated to <ConfigCard /> at top of PriceGap.tsx — single source of
+    // truth for all Strategy 4 controls.
     const sfBacktestEnabled = getByPath(config, ['spot_futures', 'backtest_enabled']) === true;
 
     return (
@@ -1440,36 +1431,9 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
           />
         </div>
 
-        {/* Entry Gates section */}
-        <div className="border-t border-gray-800 pt-4 mt-4">
-          <h4 className="text-sm font-semibold text-gray-400 mb-3">Entry Gates</h4>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-              <div className="flex items-center gap-2 mb-2">
-                <label className="text-sm font-medium">{t('cfg.sf.enableBasisGate')}</label>
-                <Tooltip text={t('cfg.sf.enableBasisGateDesc')} />
-              </div>
-              <div className="flex items-center gap-3">
-                <ToggleSwitch
-                  on={sfEnablePriceGapGate}
-                  onChange={(v) => handleBoolChange(['spot_futures', 'enable_price_gap_gate'], v)}
-                />
-                <span className={`text-sm font-semibold ${sfEnablePriceGapGate ? 'text-green-400' : 'text-red-400'}`}>
-                  {sfEnablePriceGapGate ? 'ON' : 'OFF'}
-                </span>
-              </div>
-            </div>
-            <div className={!sfEnablePriceGapGate ? 'opacity-50' : ''}>
-              <NumberField
-                label={t('cfg.sf.maxBasisPct')}
-                desc={t('cfg.sf.maxBasisPctDesc')}
-                value={getByPath(config, ['spot_futures', 'max_price_gap_pct'])}
-                unit="%"
-                onChange={(v) => handleChange(['spot_futures', 'max_price_gap_pct'], v)}
-              />
-            </div>
-          </div>
-        </div>
+        {/* Phase 16 Plan 04 (PG-OPS-09 D-16): Entry Gates section
+            (Strategy 4 spot-futures gate + max basis pct) migrated to
+            <ConfigCard /> at top of PriceGap.tsx. */}
 
         {/* Dir B Backtest section */}
         <div className="border-t border-gray-800 pt-4 mt-4">

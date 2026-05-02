@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback, type FC } from 'react';
 import { useLocale } from '../i18n/index.ts';
 import { DiscoverySection } from '../components/Discovery/DiscoverySection.tsx';
 import { RampReconcileSection } from '../components/Ramp/RampReconcileSection.tsx';
+import ConfigCard from '../components/PriceGap/ConfigCard.tsx';
 
 // ─── Data shapes ──────────────────────────────────────────────────────────
 // Mirror the Go response shapes from internal/api/pricegap_handlers.go
@@ -365,7 +366,15 @@ const PriceGap: FC = () => {
     setPaperMode(next);
     setToggleError(null);
     try {
-      await postConfig({ price_gap_paper_mode: next });
+      // Phase 16 Plan 04 (PG-FIX-02 client portion): the paper_mode write
+      // path on /api/config rejects updates that lack `operator_action: true`
+      // (returns HTTP 409). The dashboard toggle button is the operator
+      // action — the marker satisfies the Plan 02 server guard. Page-load
+      // hydration and any other code path that POSTs config without this
+      // marker will be rejected. (Wire-up transferred from Plan 02 per the
+      // checker scope blocker — single owner of this file resolves the
+      // scope-leak.)
+      await postConfig({ price_gap_paper_mode: next, operator_action: true });
     } catch (err) {
       setPaperMode(!next);
       setToggleError(replaceTokens(t('pricegap.err.toggleFailed'), {
@@ -693,6 +702,15 @@ const PriceGap: FC = () => {
           {t('pricegap.warn.wsDisconnected')}
         </div>
       )}
+
+      {/* Phase 16 Plan 04 (PG-OPS-09): Strategy 4 Configuration card.
+          Top-of-page collapsible card consolidating all editable Strategy 4
+          config. 4 subsections (Scanner / Breaker / Ramp / Live-Capital) +
+          ENABLE-LIVE-CAPITAL / ENABLE-BREAKER typed-phrase modal toggles.
+          Phase 14 RampReconcileSection + Phase 15 BreakerSubsection stay in
+          their current locations per D-19 (read-mostly status displays
+          separated from editable config). */}
+      <ConfigCard />
 
       {/* Section 1: Header / Status bar */}
       <div className={panelCls}>
