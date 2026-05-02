@@ -39,7 +39,7 @@
 ### Paper-Mode Bug Closure
 
 - [x] **PG-FIX-01**: Fix `realized_slippage_bps` machine-zero in paper mode. Phase 9 synth-fill formula computes delta vs modeled (Pitfall 7 documented in v2.0 retrospective); fix produces non-zero realized slippage so paper-mode metrics exercise the full Phase 8 pipeline.
-- [ ] **PG-FIX-02**: Diagnose + fix dashboard auto-POST that flipped `paper_mode=false` on page load (one-time observation during v2.0 UAT). Capture via DevTools Network panel, audit POST handler chain, enforce sticky paper flag respect across all writers. Must NOT regress the Phase 9 chokepoint pattern (`pos.Mode` stamped at entry, immutable).
+- [x] **PG-FIX-02**: Diagnose + fix dashboard auto-POST that flipped `paper_mode=false` on page load (one-time observation during v2.0 UAT). Capture via DevTools Network panel, audit POST handler chain, enforce sticky paper flag respect across all writers. Must NOT regress the Phase 9 chokepoint pattern (`pos.Mode` stamped at entry, immutable).
 
 ### Developer Experience
 
@@ -95,7 +95,7 @@
 | PG-LIVE-03 | Phase 14 | Complete |
 | PG-OPS-09 | Phase 16 | Pending |
 | PG-FIX-01 | Phase 16 | Complete |
-| PG-FIX-02 | Phase 16 | Pending |
+| PG-FIX-02 | Phase 16 | Complete |
 | DEV-01 | Phase 16 | Pending |
 | DEBT-V1-01 | Phase 17 | Pending |
 | DEBT-V1-02 | Phase 17 | Pending |
