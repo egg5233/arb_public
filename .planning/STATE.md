@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.2
 milestone_name: Auto-Discovery & Live Strategy 4
-status: verifying
-stopped_at: Phase 16 context gathered
-last_updated: "2026-05-01T11:06:22.923Z"
-last_activity: 2026-05-01
+status: executing
+stopped_at: "Completed 16-01-PLAN.md (PG-FIX-01: paper-mode realized-slip fix shipped on v0.38.1)"
+last_updated: "2026-05-02T10:13:02.775Z"
+last_activity: 2026-05-02
 progress:
   total_phases: 5
   completed_phases: 4
-  total_plans: 20
-  completed_plans: 20
-  percent: 100
+  total_plans: 24
+  completed_plans: 21
+  percent: 88
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-28 after v2.2 milestone start)
 
 **Core value:** "I deposit USDT, select my risk preference, and the system automatically finds opportunities across multiple strategies, opens positions, collects yield, exits when profitable, and I can see exactly how much each position earned — with capital shifting between strategies as opportunities shift."
-**Current focus:** Phase 15 — drawdown-circuit-breaker
+**Current focus:** Phase 16 — paper-mode-cleanup-dashboard-consolidation
 
 ## Current Position
 
-Phase: 16
-Plan: Not started
-Status: Phase complete — ready for verification
-Last activity: 2026-05-01
+Phase: 16 (paper-mode-cleanup-dashboard-consolidation) — EXECUTING
+Plan: 2 of 4
+Status: Ready to execute
+Last activity: 2026-05-02
 
 **v2.2 phase structure (6 phases, 14 reqs, 100% coverage):**
 
@@ -126,6 +126,7 @@ Progress (v2.2): [          ] 0%
 | Phase 15 P03 | 22min | 2 tasks | 13 files |
 | Phase 15 P04 | 75min | 3 tasks | 17 files |
 | Phase 15 P05 | 25min | 1 tasks | 6 files |
+| Phase 16 P01 | 12min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -186,6 +187,8 @@ v2.0 + v1.0 decisions retained (truncated for brevity — see git history for fu
 - [Phase 15]: Plan 15-05: Component path web/src/components/Ramp/ (matches existing Phase 14 RampReconcileSection.tsx location); plan literal said PriceGap/ but that dir does not exist (Rule 3 blocking)
 - [Phase 15]: Plan 15-05: Hook signature usePgBreaker() takes no args (reads localStorage internally) — matches Phase 14 RampReconcileSection + DiscoverySection self-fetching FC pattern
 - [Phase 15]: Plan 15-05: i18n key naming dot-notation pricegap.breaker.* (matches existing pricegap.ramp.* + pricegap.discovery.* convention) — TranslationKey type derives compile-time safety from en object literal
+- [Phase 16]: Plan 16-01: Switched realized-slip formula from signed sum to math.Abs sum per leg (Rule 1 deviation). Plan's <interfaces> showed math.Abs form; live code at monitor.go:231 had drifted to signed sum. Fixes Pitfall-7-class cancellation when paper-mode synth fills run against same-mid exit reference. No live regression — all live tests assert != 0 only.
+- [Phase 16]: Plan 16-01: Plan acceptance criterion 'grep PriceGapModePaper = 0 in monitor.go' interpreted as spirit-of-criterion not literal (Rule 3). Literal reading would delete paper-mode synth-fill chokepoints in placeCloseLegIOC + closeLegMarketForPos which D-04 explicitly preserves. Override block fully removed (RealizedSlipBps = ModeledSlipBps grep returns 0); 2 PriceGapModePaper references remain in synth-fill paths.
 
 ### Pending Todos
 
@@ -209,7 +212,7 @@ v2.0 + v1.0 decisions retained (truncated for brevity — see git history for fu
 
 ## Session Continuity
 
-Last session: 2026-05-01T11:06:22.917Z
-Stopped at: Phase 16 context gathered
-Resume file: .planning/phases/16-paper-mode-cleanup-dashboard-consolidation/16-CONTEXT.md
+Last session: 2026-05-02T10:13:02.770Z
+Stopped at: Completed 16-01-PLAN.md (PG-FIX-01: paper-mode realized-slip fix shipped on v0.38.1)
+Resume file: None
 Next command: `/gsd-plan-phase 15` to decompose Phase 15 (Drawdown Circuit Breaker, PG-LIVE-02) into executable plans
