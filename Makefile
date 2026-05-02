@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 export PATH := /usr/local/go/bin:$(PATH)
 
-.PHONY: build-frontend build run dev clean
+.PHONY: build-frontend build run dev clean probe-bingx
 
 build-frontend:
 	@# CRITICAL: use `npm ci` only. `npm install` is FORBIDDEN per CLAUDE.md
@@ -27,3 +27,6 @@ dev:
 
 clean:
 	rm -rf arb web/dist
+
+probe-bingx:
+	go run ./cmd/bingxprobe/
