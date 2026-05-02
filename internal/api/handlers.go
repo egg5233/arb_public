@@ -781,6 +781,12 @@ type configUpdate struct {
 	// at the root level as `price_gap_paper_mode` (simplest binding shape).
 	// Either form updates cfg.PriceGapPaperMode. Nested form wins on conflict.
 	PriceGapPaperMode *bool `json:"price_gap_paper_mode"`
+	// Phase 16 PG-FIX-02 D-06: explicit operator-action marker. Any POST that
+	// touches paper_mode (flat OR nested) MUST set this true; otherwise the
+	// handler returns HTTP 409. Page-load hydration / generic config persists
+	// cannot silently flip the engine-wide flag. Phase 9 pos.Mode immutability
+	// is the per-position chokepoint; this guard is its engine-wide companion.
+	OperatorAction bool `json:"operator_action,omitempty"`
 }
 
 // priceGapUpdate mirrors the "price_gap" block of /api/config POST bodies.
@@ -1596,6 +1602,25 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		if bundledOverride {
 			s.cfg.RiskProfile = "custom"
 		}
+	}
+
+	// Phase 16 PG-FIX-02 D-06: paper_mode is engine-wide; only operator-marked
+	// POSTs may flip it. This guard sits in the same locked block as both the
+	// nested write site below (pg.PaperMode != nil) and the flat write site
+	// further down (upd.PriceGapPaperMode != nil) — page-load hydration and
+	// generic config persists cannot silently flip the flag.
+	//
+	// Phase 9 chokepoint (pos.Mode immutability) is per-position; this guard
+	// is the engine-wide companion. Phase 15 IsPaperModeActive sticky-flag
+	// chokepoint is unchanged — engine reads still go through Tracker.
+	paperModeRequested := upd.PriceGapPaperMode != nil ||
+		(upd.PriceGap != nil && upd.PriceGap.PaperMode != nil)
+	if paperModeRequested && !upd.OperatorAction {
+		s.cfg.Unlock()
+		writeJSON(w, http.StatusConflict, Response{
+			Error: "price_gap_paper_mode write requires operator_action=true (Phase 16 PG-FIX-02 D-06; toggle button must be the source)",
+		})
+		return
 	}
 
 	// Price-gap tracker config apply (Phase 9 Plan 02). Accepts either the

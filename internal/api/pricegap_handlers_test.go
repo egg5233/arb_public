@@ -391,7 +391,8 @@ func TestConfig_PaperMode_NestedRoundTrip(t *testing.T) {
 	s, _, token, td := newPriceGapTestServer(t)
 	defer td()
 
-	body := `{"price_gap":{"paper_mode":false}}`
+	// Phase 16 PG-FIX-02 D-06: paper_mode writes require operator_action=true.
+	body := `{"price_gap":{"paper_mode":false},"operator_action":true}`
 	req := httptest.NewRequest(http.MethodPost, "/api/config", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
@@ -413,7 +414,8 @@ func TestConfig_PaperMode_FlatRoundTrip(t *testing.T) {
 	s, _, token, td := newPriceGapTestServer(t)
 	defer td()
 
-	body := `{"price_gap_paper_mode":false}`
+	// Phase 16 PG-FIX-02 D-06: paper_mode writes require operator_action=true.
+	body := `{"price_gap_paper_mode":false,"operator_action":true}`
 	req := httptest.NewRequest(http.MethodPost, "/api/config", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
