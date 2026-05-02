@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.38.2 — 2026-05-02
+
+### Phase 16 Plan 02 — Paper-mode write chokepoint (PG-FIX-02, server-side)
+
+**Bug fix + hardening.** Closes the v2.0 UAT auto-POST regression that flipped `price_gap_paper_mode` to false on dashboard page load. Server-side guard installed at `/api/config` POST handler: any write touching `price_gap_paper_mode` (flat) or `price_gap.paper_mode` (nested) now requires an explicit `operator_action: true` field in the request body. Without the marker, the server returns HTTP 409. Audit-first investigation (D-05) per `.planning/phases/16-paper-mode-cleanup-dashboard-consolidation/16-02-AUDIT.md` documents the negative even where current code does not reproduce; HAR runtime capture skipped per CONTEXT D-09 audit-doc-only fallback (operator confirmed `skip har`).
+
+**Operator note:** This release ships the SERVER guard only. Until Plan 04 (PG-OPS-09, same release window) lands, the existing dashboard `togglePaper` button will receive HTTP 409. Use `pg-admin` CLI to toggle paper-mode in the interim. Plan 04 wires `togglePaper` to send `operator_action: true` and restores the dashboard toggle.
+
+#### Added
+
+- `OperatorAction bool \`json:"operator_action,omitempty"\`` field on the `/api/config` POST `configUpdate` struct (`internal/api/handlers.go`).
+- Server-side reject (HTTP 409) when paper_mode keys are written without the `operator_action` marker. Guard sits inside the same locked critical section as both flat (`upd.PriceGapPaperMode`) and nested (`upd.PriceGap.PaperMode`) write paths.
+- `internal/api/paper_mode_immutability_test.go` covering reject-flat, reject-nested (both with state-unchanged regression assertions that go red without the guard), accept-with-marker, non-paper-writes-unaffected, AND GET-does-not-mutate (Pitfall-1-class regression test, matches VALIDATION.md `TestConfigGetDoesNotMutate`).
+- Audit doc at `.planning/phases/16-paper-mode-cleanup-dashboard-consolidation/16-02-AUDIT.md` + grep evidence under `uat-evidence/audit-grep/`. HAR capture skipped per D-09 audit-doc-only fallback.
+
+#### Changed
+
+- Existing tests in `internal/api/pricegap_handlers_test.go` (`TestConfig_PaperMode_NestedRoundTrip`, `TestConfig_PaperMode_FlatRoundTrip`) updated to send `operator_action: true` (round-trip behavior preserved).
+
+#### Preserved
+
+- Phase 9 `pos.Mode` per-position immutability — guard sits at engine-wide config-write layer, not the position layer (D-07).
+- Phase 15 `IsPaperModeActive` sticky-flag chokepoint — engine reads still go through this single source of truth (D-08); audit Task 1 confirmed zero direct `cfg.PriceGapPaperMode` reads outside the chokepoint definition.
+- CandidateRegistry chokepoint (Phase 11) — unchanged.
+
+#### Deferred to Plan 04
+
+- `web/src/pages/PriceGap.tsx` `togglePaper` wire-up to send `operator_action: true`.
+
 ## 0.38.1 — 2026-05-02
 
 ### Phase 16 Plan 01 — Paper-mode realized-slippage fix (PG-FIX-01)
