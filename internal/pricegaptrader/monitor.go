@@ -161,6 +161,26 @@ func (t *Tracker) closePair(pos *models.PriceGapPosition, reason string) {
 	decL := t.sizeDecimals(pos.LongExchange, pos.Symbol)
 	decS := t.sizeDecimals(pos.ShortExchange, pos.Symbol)
 
+	// PG-FIX-01 D-01: capture exit-side BBO mid BEFORE placing the close legs.
+	// Used as the exit reference in the realized-slip formula below (replaces
+	// LongMidAtDecision/ShortMidAtDecision as exit reference). When BBO is
+	// stale (Pitfall 10) the fallback to *MidAtDecision keeps the formula
+	// finite and collapses the realized contribution to modeled-only — matches
+	// Phase 8 expectations when there is no drift signal available.
+	midL, midS, _, midErr := sampleLegs(t.exchanges, models.PriceGapCandidate{
+		Symbol:    pos.Symbol,
+		LongExch:  pos.LongExchange,
+		ShortExch: pos.ShortExchange,
+	})
+	if midErr != nil || midL == 0 {
+		midL = pos.LongMidAtDecision
+	}
+	if midErr != nil || midS == 0 {
+		midS = pos.ShortMidAtDecision
+	}
+	pos.LongMidAtExit = midL
+	pos.ShortMidAtExit = midS
+
 	// Simultaneous IOC ReduceOnly on both legs (D-12).
 	// pos.Mode drives the paper/live branch inside placeCloseLegIOC (Pitfall 2).
 	var wg sync.WaitGroup
@@ -208,40 +228,31 @@ func (t *Tracker) closePair(pos *models.PriceGapPosition, reason string) {
 		(longExitPrice-pos.LongFillPrice)*pos.LongSize +
 			(pos.ShortFillPrice-shortExitPrice)*pos.ShortSize
 
-	// Realized slippage as round-trip bps (D-21 / D-23): entry + exit asymmetry
-	// on both legs, stamped onto pos before AddPriceGapHistory so every history
-	// row carries both modeled (set at entry in execution.go openPair) and
-	// realized (set here) bps — Plan 05 reads realized-vs-modeled directly
-	// from pg:history (D-24 simplification).
-	//
-	// Plan 03 paper-mode coupling: when the close path is the synthesized paper
-	// close (fills at mid ± modeled/2), Plan 03 assigns
-	// pos.RealizedSlipBps := pos.ModeledSlipBps at the synth point; the live
-	// path below computes the measured value.
+	// PG-FIX-01: Realized slippage as round-trip bps (D-21 / D-23 / Phase 16
+	// D-01): entry term references *MidAtDecision; exit term references
+	// *MidAtExit (BBO mid captured above, with *MidAtDecision fallback when
+	// BBO is stale). Magnitudes are summed via math.Abs so each leg's
+	// contribution is additive — without it the paper-mode synth fills cancel
+	// algebraically against a same-mid exit reference and collapse to
+	// machine-zero (Pitfall 7). Stamped onto pos before AddPriceGapHistory so
+	// every history row carries both modeled and realized bps — Plan 05 reads
+	// realized-vs-modeled directly from pg:history (D-24 simplification).
 	// Guarded: zero mids (bad data) produce zero contributions, not NaN.
 	var entryLongBps, entryShortBps, exitLongBps, exitShortBps float64
 	if pos.LongMidAtDecision > 0 {
 		entryLongBps = (pos.LongFillPrice - pos.LongMidAtDecision) / pos.LongMidAtDecision * 10_000.0
-		exitLongBps = (longExitPrice - pos.LongMidAtDecision) / pos.LongMidAtDecision * 10_000.0
+	}
+	if pos.LongMidAtExit > 0 {
+		exitLongBps = (longExitPrice - pos.LongMidAtExit) / pos.LongMidAtExit * 10_000.0
 	}
 	if pos.ShortMidAtDecision > 0 {
 		entryShortBps = (pos.ShortMidAtDecision - pos.ShortFillPrice) / pos.ShortMidAtDecision * 10_000.0
-		exitShortBps = (pos.ShortMidAtDecision - shortExitPrice) / pos.ShortMidAtDecision * 10_000.0
 	}
-	pos.RealizedSlipBps = entryLongBps + entryShortBps + exitLongBps + exitShortBps
-
-	// PG-VAL-03 (v0.34.10 closure): in paper mode the synth fills are exactly
-	// `mid ± ModeledSlip/2` on both legs at both entry and exit. With no real
-	// price drift between decision and close, entry slip (+ModeledSlip) and
-	// exit slip (-ModeledSlip vs ENTRY mid, since the formula above uses
-	// LongMidAtDecision/ShortMidAtDecision as the exit reference) cancel
-	// algebraically and `pos.RealizedSlipBps` collapses to machine-zero —
-	// hiding what the operator actually modeled. Override with pos.ModeledSlipBps
-	// so the slippage column reflects intent. Live positions are unaffected;
-	// the formula above is the source of truth for them.
-	if pos.Mode == models.PriceGapModePaper {
-		pos.RealizedSlipBps = pos.ModeledSlipBps
+	if pos.ShortMidAtExit > 0 {
+		exitShortBps = (pos.ShortMidAtExit - shortExitPrice) / pos.ShortMidAtExit * 10_000.0
 	}
+	pos.RealizedSlipBps = math.Abs(entryLongBps) + math.Abs(exitLongBps) +
+		math.Abs(entryShortBps) + math.Abs(exitShortBps)
 
 	pos.ExitReason = reason
 	pos.Status = models.PriceGapStatusClosed
