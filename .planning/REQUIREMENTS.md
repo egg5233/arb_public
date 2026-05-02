@@ -43,7 +43,7 @@
 
 ### Developer Experience
 
-- [ ] **DEV-01**: Promote `cmd/bingxprobe/` debug utility into a `make probe-bingx` Makefile target so it's reproducible and discoverable for ops teams.
+- [x] **DEV-01**: Promote `cmd/bingxprobe/` debug utility into a `make probe-bingx` Makefile target so it's reproducible and discoverable for ops teams.
 
 ### v1.0 Tech Debt
 
@@ -96,7 +96,7 @@
 | PG-OPS-09 | Phase 16 | Pending |
 | PG-FIX-01 | Phase 16 | Complete |
 | PG-FIX-02 | Phase 16 | Complete |
-| DEV-01 | Phase 16 | Pending |
+| DEV-01 | Phase 16 | Complete |
 | DEBT-V1-01 | Phase 17 | Pending |
 | DEBT-V1-02 | Phase 17 | Pending |
 | DEBT-V1-03 | Phase 17 | Pending |

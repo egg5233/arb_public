@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.2
 milestone_name: Auto-Discovery & Live Strategy 4
 status: executing
-stopped_at: Completed 16-02-PLAN.md (PG-FIX-02 server guard)
-last_updated: "2026-05-02T11:55:55.309Z"
+stopped_at: Completed 16-03-PLAN.md (DEV-01 cmd/bingxprobe restored)
+last_updated: "2026-05-02T13:06:40.406Z"
 last_activity: 2026-05-02
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 24
-  completed_plans: 22
-  percent: 92
+  completed_plans: 23
+  percent: 96
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-28 after v2.2 milestone start)
 ## Current Position
 
 Phase: 16 (paper-mode-cleanup-dashboard-consolidation) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-05-02
 
@@ -128,6 +128,7 @@ Progress (v2.2): [          ] 0%
 | Phase 15 P05 | 25min | 1 tasks | 6 files |
 | Phase 16 P01 | 12min | 3 tasks | 5 files |
 | Phase 16 P02 | 25 | 3 tasks | 4 files |
+| Phase 16 P03 | 30min | 4 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -191,6 +192,7 @@ v2.0 + v1.0 decisions retained (truncated for brevity — see git history for fu
 - [Phase 16]: Plan 16-01: Switched realized-slip formula from signed sum to math.Abs sum per leg (Rule 1 deviation). Plan's <interfaces> showed math.Abs form; live code at monitor.go:231 had drifted to signed sum. Fixes Pitfall-7-class cancellation when paper-mode synth fills run against same-mid exit reference. No live regression — all live tests assert != 0 only.
 - [Phase 16]: Plan 16-01: Plan acceptance criterion 'grep PriceGapModePaper = 0 in monitor.go' interpreted as spirit-of-criterion not literal (Rule 3). Literal reading would delete paper-mode synth-fill chokepoints in placeCloseLegIOC + closeLegMarketForPos which D-04 explicitly preserves. Override block fully removed (RealizedSlipBps = ModeledSlipBps grep returns 0); 2 PriceGapModePaper references remain in synth-fill paths.
 - [Phase 16]: 16-02 PG-FIX-02: server-side operator_action guard at /api/config POST returns HTTP 409 on paper_mode writes without marker; audit-doc-only fallback per D-09 (HAR skipped); Phase 9 + Phase 15 chokepoints preserved; pg-admin workaround until Plan 04 ships togglePaper wire-up
+- [Phase 16]: Plan 16-03 DEV-01: T-16-03-01 ticker-only deviation — BingX adapter TestOrder hits live /openApi/swap/v2/trade/order endpoint (places real non-marketable IOC + immediate cancel, intentional per adapter header to validate temporary market-risk gate); per plan narrow definition (safe=path contains /test) verdict is unsafe; per plan fallback Task 2 shipped ticker-only via Adapter.GetOrderbook. Production engine still exercises live preflight on every Strategy 4 entry — validation coverage preserved.
 
 ### Pending Todos
 
@@ -214,7 +216,7 @@ v2.0 + v1.0 decisions retained (truncated for brevity — see git history for fu
 
 ## Session Continuity
 
-Last session: 2026-05-02T11:55:55.305Z
-Stopped at: Completed 16-02-PLAN.md (PG-FIX-02 server guard)
+Last session: 2026-05-02T13:06:35.059Z
+Stopped at: Completed 16-03-PLAN.md (DEV-01 cmd/bingxprobe restored)
 Resume file: None
 Next command: `/gsd-plan-phase 15` to decompose Phase 15 (Drawdown Circuit Breaker, PG-LIVE-02) into executable plans
