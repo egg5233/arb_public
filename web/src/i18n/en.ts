@@ -968,6 +968,81 @@ const en = {
   'pricegap.breaker.confirmSubmit': 'Confirm',
   'pricegap.breaker.confirmTypePlaceholder': 'Type the magic phrase exactly',
   'pricegap.breaker.errorRequest': 'Request failed: {error}',
+
+  // Phase 16 Plan 04 — Strategy 4 Configuration card (PG-OPS-09)
+  // Card heading
+  'pricegap.config.cardTitle': 'Strategy 4 Configuration',
+  'pricegap.config.cardSubtitle': 'All Strategy 4 controls — scanner, breaker, ramp, live-capital.',
+  // Subsection headings
+  'pricegap.config.section.scanner': 'Scanner',
+  'pricegap.config.section.breaker': 'Drawdown Circuit Breaker',
+  'pricegap.config.section.ramp': 'Live-Capital Ramp',
+  'pricegap.config.section.liveCapital': 'Live-Capital & Risk',
+  // Primary CTA
+  'pricegap.config.saveButton': 'Save {section}',
+  'pricegap.config.saving': 'Saving…',
+  // Empty / null states
+  'pricegap.config.collapsed': 'Configuration ▸ click to expand',
+  'pricegap.config.ramp.readOnlyNote': 'Ramp parameters are read-only here. Edit through pg-admin CLI.',
+  'pricegap.config.loading': 'Loading configuration…',
+  // Validation / error states
+  'pricegap.config.validation.range': 'Value must be between {min} and {max}.',
+  'pricegap.config.validation.drawdownNegative': 'Drawdown limit must be a negative USDT value (loss).',
+  'pricegap.config.error.saveNetwork': 'Save failed. Check your connection and try again.',
+  'pricegap.config.error.operatorActionRequired': 'This change requires an operator action. Re-open the toggle and confirm.',
+  'pricegap.config.error.serverValidation': 'Server rejected the value: {reason}.',
+  // Confirm modal copy — enableLiveCapital
+  'pricegap.config.confirmTitle.enableLiveCapital': 'Enable live capital',
+  'pricegap.config.confirmPrompt.enableLiveCapital': 'Live capital activation deploys real funds against Strategy 4. Type ENABLE-LIVE-CAPITAL exactly to confirm.',
+  'pricegap.config.confirmSubmit.enableLiveCapital': 'Enable Live Capital',
+  // Confirm modal copy — disableLiveCapital
+  'pricegap.config.confirmTitle.disableLiveCapital': 'Disable live capital',
+  'pricegap.config.confirmPrompt.disableLiveCapital': 'Disabling live capital reverts the engine to paper mode. No phrase required.',
+  'pricegap.config.confirmSubmit.disableLiveCapital': 'Disable',
+  // Confirm modal copy — enableBreaker
+  'pricegap.config.confirmTitle.enableBreaker': 'Enable circuit breaker',
+  'pricegap.config.confirmPrompt.enableBreaker': 'Enabling the breaker arms automatic strategy pause on drawdown threshold trip. Type ENABLE-BREAKER exactly to confirm.',
+  'pricegap.config.confirmSubmit.enableBreaker': 'Enable Breaker',
+  // Confirm modal copy — disableBreaker
+  'pricegap.config.confirmTitle.disableBreaker': 'Disable circuit breaker',
+  'pricegap.config.confirmPrompt.disableBreaker': 'Disabling the breaker removes automatic drawdown protection. No phrase required.',
+  'pricegap.config.confirmSubmit.disableBreaker': 'Disable',
+  // Scanner subsection
+  'pricegap.config.scanner.discovery.label': 'Auto-discovery scanner',
+  'pricegap.config.scanner.discovery.help': 'Enable scoring of new candidate symbols.',
+  'pricegap.config.scanner.interval.label': 'Scan interval (seconds)',
+  'pricegap.config.scanner.interval.help': 'Range 60–3600. Default 300.',
+  'pricegap.config.scanner.maxUniverse.label': 'Universe cap',
+  'pricegap.config.scanner.maxUniverse.help': 'Max symbols evaluated per scan. Range 1–50.',
+  'pricegap.config.scanner.promoteScore.label': 'Auto-promote score',
+  'pricegap.config.scanner.promoteScore.help': 'Score threshold for auto-promotion. Range 0–100.',
+  'pricegap.config.scanner.maxCandidates.label': 'Active-candidate cap',
+  'pricegap.config.scanner.maxCandidates.help': 'Max simultaneously active candidates. Range 1–50.',
+  // Breaker subsection
+  'pricegap.config.breaker.enabled.label': 'Drawdown circuit breaker',
+  'pricegap.config.breaker.enabled.help': 'Auto-pauses strategy on drawdown threshold trip.',
+  'pricegap.config.breaker.limit.label': 'Drawdown limit (USDT)',
+  'pricegap.config.breaker.limit.help': 'Negative loss value, e.g. -500. Range -1,000,000 to 0.',
+  'pricegap.config.breaker.interval.label': 'Breaker eval interval (seconds)',
+  'pricegap.config.breaker.interval.help': 'Range 60–3600. Default 300.',
+  // Live-capital subsection
+  'pricegap.config.liveCapital.master.label': 'Live capital',
+  'pricegap.config.liveCapital.master.help': 'Master switch — when ON, real funds deploy. Confirm with ENABLE-LIVE-CAPITAL.',
+  'pricegap.config.liveCapital.anomalyBps.label': 'Anomaly slippage threshold (bps)',
+  'pricegap.config.liveCapital.anomalyBps.help': 'Trips reconciler anomaly when realized − modeled exceeds this bps amount.',
+  // Migrated gate fields
+  'pricegap.config.gate.freeBps.label': 'Min free-gap (bps)',
+  'pricegap.config.gate.freeBps.help': 'Minimum cross-exchange price gap required for entry, in bps.',
+  'pricegap.config.gate.maxBps.label': 'Max price-gap (bps)',
+  'pricegap.config.gate.maxBps.help': 'Reject candidates whose gap exceeds this ceiling.',
+  'pricegap.config.gate.spotFuturesEnabled.label': 'Spot-futures price-gap gate',
+  'pricegap.config.gate.spotFuturesEnabled.help': 'Spot-futures engine references Strategy 4 gap data when this is ON.',
+  'pricegap.config.gate.maxPct.label': 'Max price-gap (%)',
+  'pricegap.config.gate.maxPct.help': 'Spot-futures cross-reference ceiling, percent units.',
+  // Paper-mode help text (PG-FIX-02 surface)
+  'pricegap.config.paperMode.helpText': 'Paper mode protects against accidental live trading. Toggle requires explicit operator action — page-load hydration cannot flip this flag.',
+  'pricegap.config.paperMode.serverReject': 'Server rejected the change. Click the toggle button explicitly to confirm.',
+  'pricegap.config.paperMode.confirmHint': 'Operator-driven toggle only — server guard rejects page-load writes.',
 } as const;
 
 export type TranslationKey = keyof typeof en;

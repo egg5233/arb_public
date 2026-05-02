@@ -969,6 +969,81 @@ const zhTW: Record<TranslationKey, string> = {
   'pricegap.breaker.confirmSubmit': '確認',
   'pricegap.breaker.confirmTypePlaceholder': '請完全照寫魔法字串',
   'pricegap.breaker.errorRequest': '請求失敗:{error}',
+
+  // Phase 16 Plan 04 — 策略 4 設定卡片 (PG-OPS-09)
+  // 卡片標題
+  'pricegap.config.cardTitle': '策略 4 設定',
+  'pricegap.config.cardSubtitle': '策略 4 全部設定 — 掃描器、熔斷器、爬坡、實盤資金。',
+  // 子區段標題
+  'pricegap.config.section.scanner': '掃描器',
+  'pricegap.config.section.breaker': '回撤熔斷器',
+  'pricegap.config.section.ramp': '實盤資金爬坡',
+  'pricegap.config.section.liveCapital': '實盤資金與風險',
+  // 主要 CTA
+  'pricegap.config.saveButton': '儲存{section}',
+  'pricegap.config.saving': '儲存中…',
+  // 空 / null 狀態
+  'pricegap.config.collapsed': '設定 ▸ 點擊展開',
+  'pricegap.config.ramp.readOnlyNote': '爬坡參數此處唯讀。請使用 pg-admin CLI 編輯。',
+  'pricegap.config.loading': '正在載入設定…',
+  // 驗證 / 錯誤狀態
+  'pricegap.config.validation.range': '數值必須介於 {min} 與 {max} 之間。',
+  'pricegap.config.validation.drawdownNegative': '回撤上限必須為負值 USDT (虧損)。',
+  'pricegap.config.error.saveNetwork': '儲存失敗。請檢查網路連線後重試。',
+  'pricegap.config.error.operatorActionRequired': '此變更需要操作員確認。請重新開啟切換並確認。',
+  'pricegap.config.error.serverValidation': '伺服器拒絕該數值：{reason}。',
+  // 確認彈窗 — 啟用實盤資金
+  'pricegap.config.confirmTitle.enableLiveCapital': '啟用實盤資金',
+  'pricegap.config.confirmPrompt.enableLiveCapital': '啟用實盤資金將以真實資金執行策略 4。請完整輸入 ENABLE-LIVE-CAPITAL 以確認。',
+  'pricegap.config.confirmSubmit.enableLiveCapital': '啟用實盤資金',
+  // 確認彈窗 — 停用實盤資金
+  'pricegap.config.confirmTitle.disableLiveCapital': '停用實盤資金',
+  'pricegap.config.confirmPrompt.disableLiveCapital': '停用實盤資金將切換引擎回紙上交易模式，無需輸入確認字串。',
+  'pricegap.config.confirmSubmit.disableLiveCapital': '停用',
+  // 確認彈窗 — 啟用熔斷器
+  'pricegap.config.confirmTitle.enableBreaker': '啟用熔斷器',
+  'pricegap.config.confirmPrompt.enableBreaker': '啟用熔斷器後，達到回撤上限時將自動暫停策略。請完整輸入 ENABLE-BREAKER 以確認。',
+  'pricegap.config.confirmSubmit.enableBreaker': '啟用熔斷器',
+  // 確認彈窗 — 停用熔斷器
+  'pricegap.config.confirmTitle.disableBreaker': '停用熔斷器',
+  'pricegap.config.confirmPrompt.disableBreaker': '停用熔斷器將移除自動回撤保護，無需輸入確認字串。',
+  'pricegap.config.confirmSubmit.disableBreaker': '停用',
+  // 掃描器子區段
+  'pricegap.config.scanner.discovery.label': '自動發現掃描器',
+  'pricegap.config.scanner.discovery.help': '啟用新候選交易對的自動評分。',
+  'pricegap.config.scanner.interval.label': '掃描間隔 (秒)',
+  'pricegap.config.scanner.interval.help': '範圍 60–3600。預設 300。',
+  'pricegap.config.scanner.maxUniverse.label': '宇宙上限',
+  'pricegap.config.scanner.maxUniverse.help': '每次掃描評估的最大交易對數量。範圍 1–50。',
+  'pricegap.config.scanner.promoteScore.label': '自動晉升分數',
+  'pricegap.config.scanner.promoteScore.help': '自動晉升的分數門檻。範圍 0–100。',
+  'pricegap.config.scanner.maxCandidates.label': '活躍候選上限',
+  'pricegap.config.scanner.maxCandidates.help': '同時活躍候選的最大數量。範圍 1–50。',
+  // 熔斷器子區段
+  'pricegap.config.breaker.enabled.label': '回撤熔斷器',
+  'pricegap.config.breaker.enabled.help': '達到回撤上限時自動暫停策略。',
+  'pricegap.config.breaker.limit.label': '回撤上限 (USDT)',
+  'pricegap.config.breaker.limit.help': '負值虧損，例如 -500。範圍 -1,000,000 至 0。',
+  'pricegap.config.breaker.interval.label': '熔斷器評估間隔 (秒)',
+  'pricegap.config.breaker.interval.help': '範圍 60–3600。預設 300。',
+  // 實盤資金子區段
+  'pricegap.config.liveCapital.master.label': '實盤資金',
+  'pricegap.config.liveCapital.master.help': '主開關 — 開啟後將部署真實資金。請輸入 ENABLE-LIVE-CAPITAL 以確認。',
+  'pricegap.config.liveCapital.anomalyBps.label': '異常滑點門檻 (bps)',
+  'pricegap.config.liveCapital.anomalyBps.help': '當實際滑點與模型滑點之差超過此 bps 數值時，觸發對帳異常。',
+  // 已遷移閘門欄位
+  'pricegap.config.gate.freeBps.label': '最小自由價差 (bps)',
+  'pricegap.config.gate.freeBps.help': '進場所需的最小跨交易所價差，以 bps 計。',
+  'pricegap.config.gate.maxBps.label': '最大價差 (bps)',
+  'pricegap.config.gate.maxBps.help': '拒絕價差超過此上限的候選。',
+  'pricegap.config.gate.spotFuturesEnabled.label': '現貨期貨價差過濾',
+  'pricegap.config.gate.spotFuturesEnabled.help': '開啟後，現貨期貨引擎會參考策略 4 的價差資料。',
+  'pricegap.config.gate.maxPct.label': '最大價差 (%)',
+  'pricegap.config.gate.maxPct.help': '現貨期貨交叉參考上限，百分比單位。',
+  // 紙上模式說明文字 (PG-FIX-02 介面)
+  'pricegap.config.paperMode.helpText': '紙上交易模式可防止意外實盤下單。切換需操作員明確操作 — 頁面載入無法改變此狀態。',
+  'pricegap.config.paperMode.serverReject': '伺服器拒絕該變更。請明確點擊切換按鈕以確認。',
+  'pricegap.config.paperMode.confirmHint': '僅操作員主動切換 — 伺服器守衛會拒絕頁面載入時的寫入。',
 };
 
 export default zhTW;

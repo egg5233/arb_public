@@ -18,15 +18,37 @@ import type { TranslationKey } from '../../i18n/index.ts';
 
 export type BreakerConfirmAction = 'recover' | 'test-fire';
 
+// Phase 16 Plan 04 (PG-OPS-09 D-18): Phrase union extended to cover the new
+// Strategy 4 Configuration card toggles (live-capital + breaker enable). Magic
+// strings are LITERAL — never translated, never lowercased, never trimmed.
+// Interaction logic (case-sensitive match, Esc closes, Enter does not submit,
+// real-trip warning banner) is unchanged from the Phase 15 contract.
+export type Phrase = 'RECOVER' | 'TEST-FIRE' | 'ENABLE-LIVE-CAPITAL' | 'ENABLE-BREAKER';
+
 interface Props {
   open: boolean;
   action: BreakerConfirmAction;
-  magicPhrase: 'RECOVER' | 'TEST-FIRE';
+  magicPhrase: Phrase;
   promptKey: TranslationKey;
   busy: boolean;
   errorMessage?: string | null;
   onClose: () => void;
   onConfirm: (opts: { dryRun: boolean }) => void;
+  // Phase 16 Plan 04 — optional overrides for the Strategy 4 Configuration
+  // card. When omitted the modal falls back to the Phase 15 recover/test-fire
+  // copy as before (no behavior change for existing callers).
+  titleKey?: TranslationKey;
+  submitKey?: TranslationKey;
+  // forceWarning: when true, render the real-trip red banner regardless of the
+  // dry-run checkbox (used for ENABLE-LIVE-CAPITAL where dry-run is not
+  // exposed and the banner is permanent).
+  forceWarning?: boolean;
+  // hideDryRun: when true, suppress the dry-run checkbox (Strategy 4
+  // Configuration toggles do not have a dry-run concept).
+  hideDryRun?: boolean;
+  // destructiveSubmit: when true, render the submit button red regardless of
+  // dry-run state — used for live-capital ON / breaker disable.
+  destructiveSubmit?: boolean;
 }
 
 export const BreakerConfirmModal: FC<Props> = ({
@@ -38,6 +60,11 @@ export const BreakerConfirmModal: FC<Props> = ({
   errorMessage,
   onClose,
   onConfirm,
+  titleKey,
+  submitKey,
+  forceWarning,
+  hideDryRun,
+  destructiveSubmit,
 }) => {
   const { t } = useLocale();
   const [typed, setTyped] = useState('');
@@ -66,13 +93,22 @@ export const BreakerConfirmModal: FC<Props> = ({
 
   // EXACT case-sensitive match. No trim, no toUpperCase. T-15-13 mitigation:
   // pasting a lowercased copy from chat history fails closed.
-  const valid = typed === magicPhrase;
+  // Phase 16 Plan 04: when magicPhrase is empty the modal is in "no-phrase"
+  // mode (used for safer-direction toggles like Disable live-capital). The
+  // confirm button is enabled by default and the input is hidden by the
+  // caller via empty magicPhrase. We treat empty magicPhrase as
+  // unconditionally valid.
+  const noPhrase = magicPhrase === ('' as unknown as Phrase);
+  const valid = noPhrase || typed === magicPhrase;
   const isTestFire = action === 'test-fire';
-  const showRealTripWarning = isTestFire && !dryRun;
+  const showRealTripWarning = (isTestFire && !dryRun) || forceWarning === true;
+  const showDryRun = isTestFire && !hideDryRun;
 
-  const titleKey: TranslationKey = isTestFire
-    ? 'pricegap.breaker.confirmTitleTestFire'
-    : 'pricegap.breaker.confirmTitleRecover';
+  const resolvedTitleKey: TranslationKey =
+    titleKey ?? (isTestFire
+      ? 'pricegap.breaker.confirmTitleTestFire'
+      : 'pricegap.breaker.confirmTitleRecover');
+  const resolvedSubmitKey: TranslationKey = submitKey ?? 'pricegap.breaker.confirmSubmit';
 
   return (
     <div
@@ -93,12 +129,12 @@ export const BreakerConfirmModal: FC<Props> = ({
           className="text-lg font-semibold text-white mb-3"
           data-test="breaker-confirm-title"
         >
-          {t(titleKey)}
+          {t(resolvedTitleKey)}
         </h3>
 
         {/* Test-fire only: Dry-run checkbox. Place ABOVE the warning so a
             late-stage flip of the checkbox visibly clears the warning. */}
-        {isTestFire && (
+        {showDryRun && (
           <label className="flex items-center gap-2 mb-3 text-sm text-gray-200 cursor-pointer">
             <input
               type="checkbox"
@@ -126,16 +162,18 @@ export const BreakerConfirmModal: FC<Props> = ({
         <p className="text-sm text-gray-300 mb-2" data-test="breaker-confirm-prompt">
           {t(promptKey)}
         </p>
-        <input
-          type="text"
-          value={typed}
-          onChange={(e) => setTyped(e.target.value)}
-          placeholder={t('pricegap.breaker.confirmTypePlaceholder')}
-          disabled={busy}
-          autoFocus
-          className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 mb-3 text-white font-mono"
-          data-test="breaker-confirm-input"
-        />
+        {!noPhrase && (
+          <input
+            type="text"
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            placeholder={t('pricegap.breaker.confirmTypePlaceholder')}
+            disabled={busy}
+            autoFocus
+            className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 mb-3 text-white font-mono"
+            data-test="breaker-confirm-input"
+          />
+        )}
 
         {errorMessage && (
           <p className="text-red-400 text-xs mb-3" data-test="breaker-confirm-error">
@@ -159,14 +197,14 @@ export const BreakerConfirmModal: FC<Props> = ({
             type="button"
             disabled={busy || !valid}
             className={`px-3 py-1.5 rounded text-sm text-white disabled:opacity-50 ${
-              showRealTripWarning
+              showRealTripWarning || destructiveSubmit
                 ? 'bg-red-600 hover:bg-red-500'
                 : 'bg-blue-600 hover:bg-blue-500'
             }`}
             onClick={() => onConfirm({ dryRun })}
             data-test="breaker-confirm-submit"
           >
-            {t('pricegap.breaker.confirmSubmit')}
+            {t(resolvedSubmitKey)}
           </button>
         </div>
       </div>
