@@ -1,0 +1,1 @@
+web/src/pages/PriceGap.tsx:368:      await postConfig({ price_gap_paper_mode: next });

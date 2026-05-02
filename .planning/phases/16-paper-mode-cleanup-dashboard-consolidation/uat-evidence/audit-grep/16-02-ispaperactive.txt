@@ -1,0 +1,39 @@
+internal/pricegaptrader/execution.go:172:	paperMode, paperModeErr := t.IsPaperModeActive(context.TODO())
+internal/pricegaptrader/execution.go:174:		t.log.Warn("execution: IsPaperModeActive site=entry-order-placement returned err, fail-safe paper=true: %v", paperModeErr)
+internal/pricegaptrader/execution.go:233:	paperMode, paperModeErr := t.IsPaperModeActive(context.TODO())
+internal/pricegaptrader/execution.go:235:		t.log.Warn("execution: IsPaperModeActive site=entry-synth-fill returned err, fail-safe paper=true: %v", paperModeErr)
+internal/pricegaptrader/execution.go:280:	paperMode, paperModeErr := t.IsPaperModeActive(context.TODO())
+internal/pricegaptrader/execution.go:282:		t.log.Warn("execution: IsPaperModeActive site=entry-bingx-guard returned err, fail-safe paper=true: %v", paperModeErr)
+internal/pricegaptrader/execution.go:377:	paperMode, paperModeErr := t.IsPaperModeActive(context.TODO())
+internal/pricegaptrader/execution.go:379:		t.log.Warn("execution: IsPaperModeActive site=close-leg-paper returned err, fail-safe paper=true: %v", paperModeErr)
+internal/pricegaptrader/breaker_controller_test.go:774:// ---- Re-implemented IsPaperModeActive helper tests (preserved from Plan 15-02 stub) ----
+internal/pricegaptrader/breaker_controller_test.go:780:// TestTracker_IsPaperModeActive_CfgFlagOnly — cfg=true short-circuits.
+internal/pricegaptrader/breaker_controller_test.go:781:func TestTracker_IsPaperModeActive_CfgFlagOnly(t *testing.T) {
+internal/pricegaptrader/breaker_controller_test.go:783:	got, err := tr.IsPaperModeActive(context.Background())
+internal/pricegaptrader/breaker_controller_test.go:792:// TestTracker_IsPaperModeActive_CfgFlagFalse_NoSticky — cfg=false + sticky=0 → live.
+internal/pricegaptrader/breaker_controller_test.go:793:func TestTracker_IsPaperModeActive_CfgFlagFalse_NoSticky(t *testing.T) {
+internal/pricegaptrader/breaker_controller_test.go:798:	got, err := tr.IsPaperModeActive(context.Background())
+internal/pricegaptrader/breaker_controller_test.go:807:// TestTracker_IsPaperModeActive_StickyMaxInt64 — D-07 sentinel forces paper.
+internal/pricegaptrader/breaker_controller_test.go:808:func TestTracker_IsPaperModeActive_StickyMaxInt64(t *testing.T) {
+internal/pricegaptrader/breaker_controller_test.go:813:	got, err := tr.IsPaperModeActive(context.Background())
+internal/pricegaptrader/breaker_controller_test.go:822:// TestTracker_IsPaperModeActive_StickyFutureTimestamp — timed sticky window active.
+internal/pricegaptrader/breaker_controller_test.go:823:func TestTracker_IsPaperModeActive_StickyFutureTimestamp(t *testing.T) {
+internal/pricegaptrader/breaker_controller_test.go:829:	got, err := tr.IsPaperModeActive(context.Background())
+internal/pricegaptrader/breaker_controller_test.go:838:// TestTracker_IsPaperModeActive_StickyExpired — expired window → live.
+internal/pricegaptrader/breaker_controller_test.go:839:func TestTracker_IsPaperModeActive_StickyExpired(t *testing.T) {
+internal/pricegaptrader/breaker_controller_test.go:845:	got, err := tr.IsPaperModeActive(context.Background())
+internal/pricegaptrader/breaker_controller_test.go:854:// TestTracker_IsPaperModeActive_RedisError_FailsToPaper — Pitfall 8.
+internal/pricegaptrader/breaker_controller_test.go:855:func TestTracker_IsPaperModeActive_RedisError_FailsToPaper(t *testing.T) {
+internal/pricegaptrader/breaker_controller_test.go:861:	got, err := tr.IsPaperModeActive(context.Background())
+internal/pricegaptrader/breaker_controller_test.go:870:// TestTracker_IsPaperModeActive_NilStore — pre-wired path.
+internal/pricegaptrader/breaker_controller_test.go:871:func TestTracker_IsPaperModeActive_NilStore(t *testing.T) {
+internal/pricegaptrader/breaker_controller_test.go:873:	got, err := tr.IsPaperModeActive(context.Background())
+internal/pricegaptrader/tracker.go:156:// BreakerStateLoader — narrow interface for Tracker.IsPaperModeActive (Phase 15
+internal/pricegaptrader/tracker.go:244:// Tracker uses the loader inside IsPaperModeActive (D-07 chokepoint) to consult
+internal/pricegaptrader/tracker.go:261:// IsPaperModeActive — single paper-mode chokepoint per Phase 15 D-07. Returns
+internal/pricegaptrader/tracker.go:283:func (t *Tracker) IsPaperModeActive(ctx context.Context) (bool, error) {
+internal/pricegaptrader/breaker_controller.go:28:// Plan 15-02 IsPaperModeActive chokepoint.
+internal/pricegaptrader/breaker_controller.go:284:// IsPaperModeActive chokepoint (Plan 15-02).
+internal/pricegaptrader/breaker_static_test.go:14:// The chokepoint is Tracker.IsPaperModeActive(ctx). No production .go file in
+internal/pricegaptrader/breaker_static_test.go:17:// check inside IsPaperModeActive itself.
+internal/pricegaptrader/breaker_static_test.go:43:			t.Errorf("forbidden direct cfg.PriceGapPaperMode read in %s — must use Tracker.IsPaperModeActive(ctx) (Phase 15 D-07 chokepoint)", path)

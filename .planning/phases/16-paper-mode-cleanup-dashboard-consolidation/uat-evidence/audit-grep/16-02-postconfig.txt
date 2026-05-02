@@ -1,0 +1,22 @@
+web/src/pages/PriceGap.tsx:337:  const postConfig = useCallback(async (body: Record<string, unknown>): Promise<void> => {
+web/src/pages/PriceGap.tsx:354:      await postConfig({ price_gap: { enabled: next } });
+web/src/pages/PriceGap.tsx:361:  }, [enabled, postConfig, t]);
+web/src/pages/PriceGap.tsx:368:      await postConfig({ price_gap_paper_mode: next });
+web/src/pages/PriceGap.tsx:375:  }, [paperMode, postConfig, t]);
+web/src/pages/PriceGap.tsx:386:      await postConfig({ price_gap: { debug_log: next } });
+web/src/pages/PriceGap.tsx:393:  }, [debugLog, postConfig, t]);
+web/src/pages/PriceGap.tsx:569:      await postConfig({ price_gap: { candidates: next } });
+web/src/pages/PriceGap.tsx:578:  }, [candidates, editorOpen, formSymbol, formLongExch, formShortExch, formThresholdBps, formMaxPositionUSDT, formModeledSlippageBps, formDirection, postConfig, seed, validateLocalForm]);
+web/src/pages/PriceGap.tsx:595:      await postConfig({ price_gap: { candidates: next } });
+web/src/pages/PriceGap.tsx:609:  }, [candidates, deleteTarget, postConfig, seed, t]);
+web/src/pages/PriceGap.candidates.test.ts:34://   3. PG-OPS-08 invariant — open Add: openEditor('add') does NOT call postConfig
+web/src/pages/PriceGap.candidates.test.ts:36://   5. PG-OPS-08 invariant — backdrop dismiss: same setter, no postConfig
+web/src/pages/PriceGap.candidates.test.ts:37://   6. PG-OPS-08 invariant — ESC dismiss: useEffect handler clears state, no postConfig
+web/src/pages/PriceGap.candidates.test.ts:45://  14. Delete Cancel — setDeleteTarget(null) is the only state change, no postConfig
+web/src/pages/PriceGap.candidates.test.ts:213:// matching `postConfig(` or `fetch(...api/config...method.*POST`.
+web/src/pages/PriceGap.candidates.test.ts:271:  if (/\bpostConfig\s*\(/.test(body)) return true;
+web/src/pages/PriceGap.candidates.test.ts:272:  // Defensive: any raw fetch to /api/config with POST method.
+web/src/pages/PriceGap.candidates.test.ts:324:  it('Test 3: PG-OPS-08 open Add invariant — openEditor body has no postConfig call', () => {
+web/src/pages/PriceGap.candidates.test.ts:335:    // Cancel buttons / backdrop / ESC all reduce to setEditorOpen(null) without postConfig.
+web/src/pages/PriceGap.candidates.test.ts:346:    // Search for the editor modal mount and confirm its backdrop click does not call postConfig.
+web/src/pages/PriceGap.candidates.test.ts:356:    // Walk the ESC handler body and assert all setters present, no postConfig.

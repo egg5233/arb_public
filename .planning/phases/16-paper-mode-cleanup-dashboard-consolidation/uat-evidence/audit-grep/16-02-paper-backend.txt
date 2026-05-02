@@ -1,0 +1,20 @@
+internal/api/pricegap_handlers_test.go:56:		PriceGapPaperMode:     true,
+internal/api/pricegap_handlers_test.go:387:// POST /api/config with price_gap_paper_mode — Phase 9 D-12 round-trip.
+internal/api/pricegap_handlers_test.go:394:	body := `{"price_gap":{"paper_mode":false}}`
+internal/api/pricegap_handlers_test.go:406:	if s.cfg.PriceGapPaperMode != false {
+internal/api/pricegap_handlers_test.go:407:		t.Errorf("cfg.PriceGapPaperMode=%v, want false; status=%d body=%s",
+internal/api/pricegap_handlers_test.go:408:			s.cfg.PriceGapPaperMode, w.Code, w.Body.String())
+internal/api/pricegap_handlers_test.go:416:	body := `{"price_gap_paper_mode":false}`
+internal/api/pricegap_handlers_test.go:424:	if s.cfg.PriceGapPaperMode != false {
+internal/api/pricegap_handlers_test.go:425:		t.Errorf("cfg.PriceGapPaperMode=%v, want false; status=%d body=%s",
+internal/api/pricegap_handlers_test.go:426:			s.cfg.PriceGapPaperMode, w.Code, w.Body.String())
+internal/api/handlers.go:781:	// at the root level as `price_gap_paper_mode` (simplest binding shape).
+internal/api/handlers.go:782:	// Either form updates cfg.PriceGapPaperMode. Nested form wins on conflict.
+internal/api/handlers.go:783:	PriceGapPaperMode *bool `json:"price_gap_paper_mode"`
+internal/api/handlers.go:795:	PaperMode  *bool                       `json:"paper_mode"`
+internal/api/handlers.go:1602:	// nested "price_gap" block or the flat "price_gap_paper_mode" shortcut.
+internal/api/handlers.go:1618:			s.cfg.PriceGapPaperMode = *pg.PaperMode
+internal/api/handlers.go:1666:	if upd.PriceGapPaperMode != nil && (upd.PriceGap == nil || upd.PriceGap.PaperMode == nil) {
+internal/api/handlers.go:1667:		s.cfg.PriceGapPaperMode = *upd.PriceGapPaperMode
+internal/api/pricegap_handlers.go:109:	PaperMode       bool                              `json:"paper_mode"`
+internal/api/pricegap_handlers.go:177:		PaperMode:       s.cfg.PriceGapPaperMode,

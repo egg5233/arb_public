@@ -1,0 +1,69 @@
+web/src/hooks/usePgBreaker.ts:20:import { useCallback, useEffect, useRef, useState } from 'react';
+web/src/hooks/usePgBreaker.ts:100:  useEffect(() => {
+web/src/hooks/usePgBreaker.ts:106:  useEffect(() => {
+web/src/hooks/usePgBreaker.ts:116:  useEffect(() => {
+web/src/hooks/useWebSocket.ts:1:import { useState, useEffect, useRef, useCallback } from 'react';
+web/src/hooks/useWebSocket.ts:133:  useEffect(() => {
+web/src/hooks/usePgDiscovery.ts:17:import { useCallback, useEffect, useRef, useState } from 'react';
+web/src/hooks/usePgDiscovery.ts:167:  useEffect(() => {
+web/src/hooks/usePgDiscovery.ts:171:  useEffect(() => {
+web/src/hooks/usePgDiscovery.ts:179:  useEffect(() => {
+web/src/hooks/usePgDiscovery.ts:212:  useEffect(() => {
+web/src/App.tsx:1:import { useState, useEffect, useCallback } from 'react';
+web/src/App.tsx:64:  useEffect(() => {
+web/src/App.tsx:148:  useEffect(() => {
+web/src/components/Discovery/ScoreHistoryCard.tsx:12:import { useEffect, useState } from 'react';
+web/src/components/Discovery/ScoreHistoryCard.tsx:69:  useEffect(() => {
+web/src/components/Ramp/BreakerConfirmModal.tsx:15:import { useEffect, useState, type FC } from 'react';
+web/src/components/Ramp/BreakerConfirmModal.tsx:48:  useEffect(() => {
+web/src/components/Ramp/BreakerConfirmModal.tsx:56:  useEffect(() => {
+web/src/components/Ramp/RampReconcileSection.tsx:18:import { useEffect, useState, type FC } from 'react';
+web/src/components/Ramp/RampReconcileSection.tsx:89:  useEffect(() => {
+web/src/pages/Transfers.tsx:1:import { useState, useEffect, type FC } from 'react';
+web/src/pages/Transfers.tsx:30:  useEffect(() => {
+web/src/pages/Transfers.tsx:71:  useEffect(() => {
+web/src/pages/History.tsx:1:import { useState, useEffect, useCallback, Fragment } from 'react';
+web/src/pages/History.tsx:44:  useEffect(() => {
+web/src/pages/PriceGap.tsx:1:import { useState, useEffect, useMemo, useCallback, type FC } from 'react';
+web/src/pages/PriceGap.tsx:151:  useEffect(() => {
+web/src/pages/PriceGap.tsx:286:  useEffect(() => {
+web/src/pages/PriceGap.tsx:514:  useEffect(() => {
+web/src/pages/Opportunities.tsx:1:import { useState, useEffect, useCallback, type Dispatch, type FC, type SetStateAction } from 'react';
+web/src/pages/Opportunities.tsx:855:  useEffect(() => {
+web/src/pages/SpotPositions.tsx:1:import { useState, useEffect, Fragment, type FC } from 'react';
+web/src/pages/SpotPositions.tsx:75:  useEffect(() => {
+web/src/pages/SpotPositions.tsx:82:  useEffect(() => {
+web/src/pages/SpotPositions.tsx:90:  useEffect(() => {
+web/src/pages/Positions.tsx:1:import { useState, useEffect, useRef, Fragment, type FC } from 'react';
+web/src/pages/Positions.tsx:101:  useEffect(() => {
+web/src/pages/Overview.tsx:1:import { useState, useEffect, type FC } from 'react';
+web/src/pages/Overview.tsx:56:  useEffect(() => {
+web/src/pages/Config.tsx:1:import { useState, useEffect, useRef } from 'react';
+web/src/pages/Config.tsx:85:  useEffect(() => {
+web/src/pages/Config.tsx:268:  useEffect(() => {
+web/src/pages/Config.tsx:341:  useEffect(() => {
+web/src/pages/Logs.tsx:1:import { useState, useEffect, useRef, type FC } from 'react';
+web/src/pages/Logs.tsx:32:  useEffect(() => {
+web/src/pages/Logs.tsx:41:  useEffect(() => {
+web/src/pages/Logs.tsx:57:  useEffect(() => {
+web/src/pages/Rejections.tsx:1:import { useState, useEffect, type FC } from 'react';
+web/src/pages/Rejections.tsx:32:  useEffect(() => {
+web/src/pages/PriceGap.candidates.test.ts:17:// PG-OPS-08 invariant (no useEffect body POSTs to /api/config) is tested
+web/src/pages/PriceGap.candidates.test.ts:18:// by parsing PriceGap.tsx as text and scanning every useEffect body — a
+web/src/pages/PriceGap.candidates.test.ts:33://   2. PG-OPS-08 invariant — mount: 0 /api/config POST in any useEffect body
+web/src/pages/PriceGap.candidates.test.ts:37://   6. PG-OPS-08 invariant — ESC dismiss: useEffect handler clears state, no postConfig
+web/src/pages/PriceGap.candidates.test.ts:209:// ─── PG-OPS-08 helper: extract every useEffect body and scan for /api/config POSTs ───
+web/src/pages/PriceGap.candidates.test.ts:211:// Walks PriceGap.tsx, finds every `useEffect(` invocation, balances braces
+web/src/pages/PriceGap.candidates.test.ts:226:  // Find each `useEffect(` start position.
+web/src/pages/PriceGap.candidates.test.ts:227:  const re = /useEffect\(\s*\(\s*\)\s*=>\s*\{/g;
+web/src/pages/PriceGap.candidates.test.ts:307:  // Tests 2-6: PG-OPS-08 carryover invariant — zero useEffect body posts to /api/config.
+web/src/pages/PriceGap.candidates.test.ts:310:  it('Test 2: PG-OPS-08 mount invariant — no useEffect body POSTs to /api/config', () => {
+web/src/pages/PriceGap.candidates.test.ts:312:    assert.ok(bodies.length > 0, 'expected at least one useEffect in PriceGap.tsx');
+web/src/pages/PriceGap.candidates.test.ts:318:      `PG-OPS-08 regression: ${offenders.length} useEffect bodies POST to /api/config:\n${
+web/src/pages/PriceGap.candidates.test.ts:325:    // openEditor is a useCallback, not a useEffect, but for completeness
+web/src/pages/PriceGap.candidates.test.ts:337:    const m = priceGapSrc.match(/useEffect\(\(\) => \{\s*if \(!disableTarget && !reenableTarget && !editorOpen && !deleteTarget\)[\s\S]*?\}, \[disableTarget, reenableTarget, editorOpen, deleteTarget\]\)/);
+web/src/pages/PriceGap.candidates.test.ts:338:    assert.ok(m, 'failed to locate ESC useEffect for the 4 modal/dialog states');
+web/src/pages/Analytics.tsx:1:import { useState, useEffect, useCallback } from 'react';
+web/src/pages/Analytics.tsx:56:  useEffect(() => {
+web/src/pages/Permissions.tsx:1:import { useState, useEffect, type FC } from 'react';
+web/src/pages/Permissions.tsx:34:  useEffect(() => {
