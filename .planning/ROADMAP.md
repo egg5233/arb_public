@@ -161,7 +161,11 @@ Phase numbers reuse 11 + 12 from the v2.1 deferred-numbering plan; 13 was consum
   3. `make probe-bingx` runs end-to-end and prints a successful BingX probe response.
   4. The new top-level "Price-Gap" dashboard tab consolidates paper toggle, ramp display, breaker threshold, scanner config, `PriceGapMaxCandidates`, `PriceGapAutoPromoteScore`, candidate CRUD, and bidirectional mode — and legacy controls in other tabs migrate or proxy to the new tab.
   5. EN + zh-TW i18n keys for the new tab are in lockstep (no missing translations).
-**Plans**: 5 plans
+**Plans**: 4 plans
+- [ ] 16-01-PLAN.md — PG-FIX-01: realized-slippage formula fix (capture exit mid, drop paper override)
+- [ ] 16-02-PLAN.md — PG-FIX-02: paper_mode write chokepoint (audit-first + operator_action server guard)
+- [ ] 16-03-PLAN.md — DEV-01: restore cmd/bingxprobe + make probe-bingx target
+- [ ] 16-04-PLAN.md — PG-OPS-09: Strategy 4 Configuration card consolidation + Config.tsx migration + i18n lockstep
 **UI hint**: yes
 
 ### Phase 17: v1.0 Tech-Debt Sweep
@@ -196,7 +200,7 @@ Phase numbers reuse 11 + 12 from the v2.1 deferred-numbering plan; 13 was consum
 | 12. Auto-Promotion | v2.2 | 4/4 | Complete    | 2026-04-30 |
 | 14. Daily Reconcile + Live Ramp Controller | v2.2 | 5/5 | Complete    | 2026-04-30 |
 | 15. Drawdown Circuit Breaker | v2.2 | 5/5 | Complete    | 2026-05-01 |
-| 16. Paper-Mode Cleanup + Dashboard Consolidation | v2.2 | 0/? | Not started | — |
+| 16. Paper-Mode Cleanup + Dashboard Consolidation | v2.2 | 0/4 | Not started | — |
 | 17. v1.0 Tech-Debt Sweep | v2.2 | 0/? | Not started | — |
 
 ## Backlog
