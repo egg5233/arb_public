@@ -88,13 +88,14 @@ The TWO API-layer reads (`internal/api/pricegap_handlers.go:177` and `internal/a
 ## HAR evidence
 
 - File: `.planning/phases/16-paper-mode-cleanup-dashboard-consolidation/uat-evidence/page-load.har`
-- Captured: pending — operator captures via DevTools (Task 1.5 checkpoint). Audit-doc-only fallback per CONTEXT D-09 acceptable if browser unavailable.
-- Findings: `<filled in by operator after HAR capture>`
+- Captured: **SKIPPED — audit-doc-only fallback per CONTEXT D-09** (browser/DevTools session unavailable to the executor; operator confirmed `skip har` on 2026-05-02).
+- Findings: HAR not captured. Audit-doc-only path invoked. Static-audit evidence (frontend grep + backend handler-chain enumeration + `IsPaperModeActive` chokepoint preservation check) substitutes for runtime HAR confirmation. The static evidence is consistent with "no reproduction in current code" — only one paper_mode write site (`PriceGap.tsx:368` operator-driven `togglePaper`), zero `useEffect` posters, both backend write paths (flat 1666–1668 + nested 1617–1619) are inside the same locked region the new guard will gate.
 
 ## Conclusion
 
-- Reproduce: NO under current code (static grep + handler-chain audit). Pending HAR confirmation at Task 1.5 checkpoint.
-- Root cause (if reproduced): To be filled by HAR analysis. Most likely candidates if HAR shows a stray POST: (a) a third-party library auto-replaying cached config; (b) a regressed hydration path that grep didn't catch (unlikely given the single write site found).
+- **Audit-doc-only path invoked per D-09.** HAR capture skipped (browser unavailable). Static audit + grep evidence stands as the documented investigation; D-05 protocol satisfied: the negative is established (no reproduction in current code) and the server-side guard ships regardless.
+- Reproduce: NO under current code (static grep + handler-chain audit). HAR runtime confirmation deferred — not blocking ship of the server guard.
+- Root cause (if/when reproduced in future): un-investigated by HAR; most likely candidates if a future regression surfaces: (a) a third-party library auto-replaying cached config; (b) a regressed hydration path that grep didn't catch (unlikely given the single write site found). The Task 2 server guard catches both classes regardless.
 - Defense: server-side guard at `internal/api/handlers.go` (Task 2) is the chokepoint. The guard sits in the same locked block as both nested + flat write paths and rejects with HTTP 409 unless `operator_action: true` is on the request body. Plan 04 (Wave 2, depends_on: [16-02]) ships the `togglePaper` wire-up. Both ship even if reproduction failed (D-05: "establishing the negative is required").
 - Phase 9 `pos.Mode` per-position immutability: untouched (engine path unchanged).
 - Phase 15 `IsPaperModeActive` sticky-flag chokepoint: untouched (engine reads still go through Tracker chokepoint; static test in `breaker_static_test.go` enforces).
