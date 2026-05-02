@@ -72,6 +72,15 @@ type PriceGapPosition struct {
 	LongMidAtDecision  float64 `json:"long_mid_at_decision"`
 	ShortMidAtDecision float64 `json:"short_mid_at_decision"`
 
+	// PG-FIX-01 D-01: BBO mid captured at close (closePair samples sampleLegs
+	// before placing the close legs). Used as the exit reference in the
+	// realized-slip formula (replaces *MidAtDecision as exit reference).
+	// Falls back to *MidAtDecision when BBO is stale (Pitfall 10) — slip then
+	// collapses to modeled-only contribution. Zero on pre-Phase-16 records
+	// (omitempty); legacy decode is safe.
+	LongMidAtExit  float64 `json:"long_mid_at_exit,omitempty"`  // PG-FIX-01 D-01: BBO mid at close, fallback to LongMidAtDecision when BBO stale
+	ShortMidAtExit float64 `json:"short_mid_at_exit,omitempty"` // PG-FIX-01 D-01: BBO mid at close, fallback to ShortMidAtDecision when BBO stale
+
 	// D-23 + D-24 (Phase 9): ModeledSlipBps is stamped at entry by openPair
 	// (internal/pricegaptrader/execution.go) from cand.ModeledSlippageBps;
 	// RealizedSlipBps is stamped at close by closePair
