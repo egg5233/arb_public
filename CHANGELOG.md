@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.38.1 — 2026-05-02
+
+### Phase 16 Plan 01 — Paper-mode realized-slippage fix (PG-FIX-01)
+
+**Bug fix.** The Phase-9 `RealizedSlipBps = ModeledSlipBps` paper-mode override at `internal/pricegaptrader/monitor.go:242-244` (originally PG-VAL-03 v0.34.10 closure) is removed. The slip formula now uses a true exit-side mid (`LongMidAtExit` / `ShortMidAtExit`, captured from live BBO at close with a `*MidAtDecision` fallback when BBO is stale) as the exit reference, and sums magnitudes via `math.Abs` so paper-mode synth contributions are additive. Realized slippage in paper mode is now non-zero and reflects modeled drift + actual mid movement between decision and close — Pitfall-7-class machine-zero closed.
+
+#### Added
+
+- `models.PriceGapPosition.LongMidAtExit` + `.ShortMidAtExit` fields with `omitempty` json tags (legacy decode safe).
+- `internal/pricegaptrader/realized_slip_test.go` regression tests: `TestRealizedSlip_PaperNonZero` (paper close with mid drift produces non-zero slip ≠ ModeledSlipBps), `TestRealizedSlip_PaperBBOStaleFallback` (BBO-stale fallback collapses slip to ModeledSlipBps), `TestRealizedSlip_LiveStillWorks` (live formula unchanged, no override leak).
+
+#### Changed
+
+- `internal/pricegaptrader/monitor.go` `closePair` samples `sampleLegs` BBO before placing the close legs and stamps `LongMidAtExit` / `ShortMidAtExit` (D-01); `*MidAtDecision` fallback applies when `sampleLegs` returns an error or zero mid (Pitfall 10).
+- Realized-slip formula exit term now references `*MidAtExit` (entry term continues to use `*MidAtDecision`); magnitudes summed via `math.Abs` per leg.
+
+#### Removed
+
+- Paper-mode override block at `monitor.go:242-244` and its preceding `PG-VAL-03 v0.34.10 closure` comment.
+- Synth path in `execution.go` is intentionally UNCHANGED (D-04 — fix is in measurement, not synthesis). Paper-mode chokepoints in `placeCloseLegIOC` + `closeLegMarketForPos` remain (required for paper synth fills).
+
+#### Reconciler
+
+- `internal/pricegaptrader/reconciler.go` anomaly detector at `:268` (compares against `cfg.PriceGapAnomalySlippageBps`) automatically benefits from real values; no reconciler change required (D-03).
+
 ## 0.38.0 — 2026-05-01
 
 ### Phase 15 — Drawdown Circuit Breaker (PG-LIVE-02)
