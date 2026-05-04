@@ -34,7 +34,7 @@
 
 ### Operations
 
-- [ ] **PG-OPS-09**: New top-level "Price-Gap" dashboard tab consolidates ALL Strategy 4 configuration in one place — paper-mode toggle, ramp tier display, breaker threshold input, scanner config (interval, universe size, score threshold), `PriceGapMaxCandidates`, `PriceGapAutoPromoteScore`, plus the existing candidate CRUD UI from Phase 10 and bidirectional mode from Phase 999.1. Sits alongside Exchanges / Perp-Perp / Spot-Futures. Existing Strategy 4 config controls in other tabs migrate or proxy to the new tab.
+- [x] **PG-OPS-09**: New top-level "Price-Gap" dashboard tab consolidates ALL Strategy 4 configuration in one place — paper-mode toggle, ramp tier display, breaker threshold input, scanner config (interval, universe size, score threshold), `PriceGapMaxCandidates`, `PriceGapAutoPromoteScore`, plus the existing candidate CRUD UI from Phase 10 and bidirectional mode from Phase 999.1. Sits alongside Exchanges / Perp-Perp / Spot-Futures. Existing Strategy 4 config controls in other tabs migrate or proxy to the new tab.
 
 ### Paper-Mode Bug Closure
 
@@ -93,7 +93,7 @@
 | PG-LIVE-01 | Phase 14 | Complete |
 | PG-LIVE-02 | Phase 15 | Complete |
 | PG-LIVE-03 | Phase 14 | Complete |
-| PG-OPS-09 | Phase 16 | Pending |
+| PG-OPS-09 | Phase 16 | Complete |
 | PG-FIX-01 | Phase 16 | Complete |
 | PG-FIX-02 | Phase 16 | Complete |
 | DEV-01 | Phase 16 | Complete |
