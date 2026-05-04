@@ -56,6 +56,11 @@ func (t *Tracker) openPair(
 	}
 	defer func() { _ = t.db.ReleasePriceGapLock(lockRes, token) }()
 
+	paperMode, paperModeErr := t.IsPaperModeActive(context.TODO())
+	if paperModeErr != nil {
+		t.log.Warn("execution: IsPaperModeActive site=entry-open returned err, fail-safe paper=true: %v", paperModeErr)
+	}
+
 	// PG-DIR-01: resolve wire-side leg roles. For bidirectional candidates an
 	// inverse-sign fire (det.SpreadBps < 0 means configured short_exch is
 	// cheaper than configured long_exch) flips the wire-side roles: BUY on
@@ -89,11 +94,11 @@ func (t *Tracker) openPair(
 	decL := t.sizeDecimals(wireLongExch, cand.Symbol)
 	decS := t.sizeDecimals(wireShortExch, cand.Symbol)
 
-	if err := t.preflightBingXPriceGapEntry(longEx, cand.LongExch, cand.Symbol, exchange.SideBuy, sizeBase, decL, det.MidLong); err != nil {
+	if err := t.preflightBingXPriceGapEntry(longEx, wireLongExch, cand.Symbol, exchange.SideBuy, sizeBase, decL, wireMidLong, paperMode); err != nil {
 		t.bumpFailures()
 		return nil, err
 	}
-	if err := t.preflightBingXPriceGapEntry(shortEx, cand.ShortExch, cand.Symbol, exchange.SideSell, sizeBase, decS, det.MidShort); err != nil {
+	if err := t.preflightBingXPriceGapEntry(shortEx, wireShortExch, cand.Symbol, exchange.SideSell, sizeBase, decS, wireMidShort, paperMode); err != nil {
 		t.bumpFailures()
 		return nil, err
 	}
@@ -109,11 +114,11 @@ func (t *Tracker) openPair(
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		longCh <- t.placeLeg(longEx, cand.Symbol, exchange.SideBuy, sizeBase, decL, "ioc", wireMidLong, modeledEdgeBps)
+		longCh <- t.placeLeg(longEx, cand.Symbol, exchange.SideBuy, sizeBase, decL, "ioc", wireMidLong, modeledEdgeBps, paperMode)
 	}()
 	go func() {
 		defer wg.Done()
-		shortCh <- t.placeLeg(shortEx, cand.Symbol, exchange.SideSell, sizeBase, decS, "ioc", wireMidShort, modeledEdgeBps)
+		shortCh <- t.placeLeg(shortEx, cand.Symbol, exchange.SideSell, sizeBase, decS, "ioc", wireMidShort, modeledEdgeBps, paperMode)
 	}()
 	wg.Wait()
 
@@ -140,12 +145,12 @@ func (t *Tracker) openPair(
 	// One leg zero-fill → market-close the other (D-10, §Pitfall 4).
 	if lr.filled == 0 && sr.filled > 0 {
 		// Closing short = BUY back.
-		t.closeLegMarket(shortEx, cand.Symbol, exchange.SideBuy, sr.filled, decS)
+		t.closeLegMarketWithMode(shortEx, cand.Symbol, exchange.SideBuy, sr.filled, decS, paperMode)
 		return nil, fmt.Errorf("openPair: long zero-filled, short closed defensively")
 	}
 	if sr.filled == 0 && lr.filled > 0 {
 		// Closing long = SELL.
-		t.closeLegMarket(longEx, cand.Symbol, exchange.SideSell, lr.filled, decL)
+		t.closeLegMarketWithMode(longEx, cand.Symbol, exchange.SideSell, lr.filled, decL, paperMode)
 		return nil, fmt.Errorf("openPair: short zero-filled, long closed defensively")
 	}
 	if lr.filled == 0 && sr.filled == 0 {
@@ -156,23 +161,19 @@ func (t *Tracker) openPair(
 	// (not IOC) per §Pitfall 4 to guarantee completion.
 	match := math.Min(lr.filled, sr.filled)
 	if lr.filled > match {
-		t.closeLegMarket(longEx, cand.Symbol, exchange.SideSell, lr.filled-match, decL)
+		t.closeLegMarketWithMode(longEx, cand.Symbol, exchange.SideSell, lr.filled-match, decL, paperMode)
 	}
 	if sr.filled > match {
-		t.closeLegMarket(shortEx, cand.Symbol, exchange.SideBuy, sr.filled-match, decS)
+		t.closeLegMarketWithMode(shortEx, cand.Symbol, exchange.SideBuy, sr.filled-match, decS, paperMode)
 	}
 
 	// Persist the matched position.
 	//
 	// Mode is stamped ONCE at entry (Pitfall 2 — immutability through lifecycle).
 	// All downstream monitors / close paths read pos.Mode, NEVER the global flag
-	// mid-life. Phase 15 D-07: paper-mode is read through the chokepoint helper
-	// (entry-order-placement site) so the breaker's sticky flag participates.
+	// mid-life. Phase 15 D-07: paper-mode is read once through the chokepoint
+	// helper so the breaker's sticky flag participates without leg divergence.
 	mode := models.PriceGapModeLive
-	paperMode, paperModeErr := t.IsPaperModeActive(context.TODO())
-	if paperModeErr != nil {
-		t.log.Warn("execution: IsPaperModeActive site=entry-order-placement returned err, fail-safe paper=true: %v", paperModeErr)
-	}
 	if paperMode {
 		mode = models.PriceGapModePaper
 	}
@@ -192,8 +193,8 @@ func (t *Tracker) openPair(
 		EntrySpreadBps:     det.SpreadBps, // KEEP signed value — analytics needs the sign
 		ThresholdBps:       cand.ThresholdBps,
 		NotionalUSDT:       match * ((lr.price + sr.price) / 2.0),
-		LongFillPrice:      lr.price,    // wire-side fill
-		ShortFillPrice:     sr.price,    // wire-side fill
+		LongFillPrice:      lr.price, // wire-side fill
+		ShortFillPrice:     sr.price, // wire-side fill
 		LongSize:           match,
 		ShortSize:          match,
 		LongMidAtDecision:  wireMidLong,  // wire-side mid (post-swap for inverse)
@@ -228,12 +229,8 @@ func (t *Tracker) openPair(
 // accounting, and persistence all run identically in paper mode.
 func (t *Tracker) placeLeg(
 	ex exchange.Exchange, symbol string, side exchange.Side,
-	sizeBase float64, decimals int, force string, fillPrice float64, modeledEdgeBps float64,
+	sizeBase float64, decimals int, force string, fillPrice float64, modeledEdgeBps float64, paperMode bool,
 ) fillResult {
-	paperMode, paperModeErr := t.IsPaperModeActive(context.TODO())
-	if paperModeErr != nil {
-		t.log.Warn("execution: IsPaperModeActive site=entry-synth-fill returned err, fail-safe paper=true: %v", paperModeErr)
-	}
 	if paperMode {
 		adverse := fillPrice * (modeledEdgeBps / 2.0) / 10_000.0
 		synth := fillPrice
@@ -275,12 +272,9 @@ func (t *Tracker) preflightBingXPriceGapEntry(
 	sizeBase float64,
 	decimals int,
 	refPrice float64,
+	paperMode bool,
 ) error {
 	// Phase 15 D-07: paper-mode skips the BingX preflight (no live order to test).
-	paperMode, paperModeErr := t.IsPaperModeActive(context.TODO())
-	if paperModeErr != nil {
-		t.log.Warn("execution: IsPaperModeActive site=entry-bingx-guard returned err, fail-safe paper=true: %v", paperModeErr)
-	}
 	if paperMode || !strings.EqualFold(exchName, "bingx") {
 		return nil
 	}
@@ -367,9 +361,8 @@ func priceGapBingXPriceFormat(ex exchange.Exchange, symbol string) (float64, int
 // the exchange, so there is no real position to reduce; hitting the wire here
 // would always be wrong (and was observed to fire reduceOnly market orders
 // against non-existent bingx positions in the 2026-04-24 UAT attempt). Every
-// caller of closeLegMarket originates from paths that already assume best-
-// effort — openPair's defensive-close and unwind-to-match — so a silent skip
-// preserves the invariant that paper mode makes zero PlaceOrder calls.
+// closeLegMarket is the legacy global-paper wrapper; openPair snapshots mode
+// and calls closeLegMarketWithMode directly to avoid mixed live/paper legs.
 func (t *Tracker) closeLegMarket(ex exchange.Exchange, symbol string, side exchange.Side, size float64, decimals int) {
 	if size <= 0 {
 		return
@@ -377,6 +370,13 @@ func (t *Tracker) closeLegMarket(ex exchange.Exchange, symbol string, side excha
 	paperMode, paperModeErr := t.IsPaperModeActive(context.TODO())
 	if paperModeErr != nil {
 		t.log.Warn("execution: IsPaperModeActive site=close-leg-paper returned err, fail-safe paper=true: %v", paperModeErr)
+	}
+	t.closeLegMarketWithMode(ex, symbol, side, size, decimals, paperMode)
+}
+
+func (t *Tracker) closeLegMarketWithMode(ex exchange.Exchange, symbol string, side exchange.Side, size float64, decimals int, paperMode bool) {
+	if size <= 0 {
+		return
 	}
 	if paperMode {
 		return

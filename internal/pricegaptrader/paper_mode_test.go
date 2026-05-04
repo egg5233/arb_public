@@ -3,6 +3,7 @@ package pricegaptrader
 import (
 	"math"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,6 +36,27 @@ func paperModeTracker(t *testing.T, paper bool) (*Tracker, *stubExchange, *stubE
 	}
 	tr := NewTracker(exch, store, newFakeDelistChecker(), cfg)
 	return tr, longEx, shortEx, store
+}
+
+type flipAfterFirstPaperStore struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (f *flipAfterFirstPaperStore) LoadBreakerState() (models.BreakerState, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.calls == 1 {
+		return models.BreakerState{}, true, nil
+	}
+	return models.BreakerState{PaperModeStickyUntil: 1<<63 - 1}, true, nil
+}
+
+func (f *flipAfterFirstPaperStore) Calls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
 }
 
 // paperModeCand/Det reused across Task 1 + Task 2 paper tests.
@@ -124,7 +146,7 @@ func TestPaperMode_SynthesizedFillPriceSell(t *testing.T) {
 // we don't have to smuggle the ID through the pos struct.
 func TestPaperMode_OrderIDPrefix(t *testing.T) {
 	tr, longEx, _, _ := paperModeTracker(t, true)
-	fr := tr.placeLeg(longEx, "SOON", exchange.SideBuy, 100, 6, "ioc", 100.0, 10.0)
+	fr := tr.placeLeg(longEx, "SOON", exchange.SideBuy, 100, 6, "ioc", 100.0, 10.0, true)
 	if fr.err != nil {
 		t.Fatalf("paper placeLeg err: %v", fr.err)
 	}
@@ -133,6 +155,29 @@ func TestPaperMode_OrderIDPrefix(t *testing.T) {
 	}
 	if n := len(longEx.placedOrders()); n != 0 {
 		t.Errorf("PlaceOrder calls in paper placeLeg = %d, want 0", n)
+	}
+}
+
+func TestPaperMode_OpenPairSnapshotsModeOnce(t *testing.T) {
+	tr, longEx, shortEx, _ := paperModeTracker(t, false)
+	breakerStore := &flipAfterFirstPaperStore{}
+	tr.SetBreakerStore(breakerStore)
+	longEx.queueFill(100, 100.0, nil)
+	shortEx.queueFill(100, 102.5, nil)
+
+	pos, err := tr.openPair(paperModeCand(), 100, paperModeDet())
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if breakerStore.Calls() != 1 {
+		t.Fatalf("LoadBreakerState calls=%d, want 1 snapshot per openPair", breakerStore.Calls())
+	}
+	if pos.Mode != models.PriceGapModeLive {
+		t.Fatalf("pos.Mode=%q, want live from first snapshot", pos.Mode)
+	}
+	if len(longEx.placedOrders()) != 1 || len(shortEx.placedOrders()) != 1 {
+		t.Fatalf("expected both live legs from one snapshot; long=%d short=%d",
+			len(longEx.placedOrders()), len(shortEx.placedOrders()))
 	}
 }
 

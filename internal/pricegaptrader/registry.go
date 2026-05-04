@@ -349,19 +349,17 @@ func (r *Registry) PauseAllOpenCandidates(positions []*models.PriceGapPosition) 
 
 	prior := append([]models.PriceGapCandidate(nil), r.cfg.PriceGapCandidates...)
 
-	// Build a set keyed by (symbol|long|short|direction) for O(1) match.
-	// Position carries Symbol, LongExchange, ShortExchange. Direction is not
-	// always present on legacy positions; treat missing direction as wildcard
-	// (match every candidate with the same exchanges-tuple).
+	// Build a set keyed by configured tuple for O(1) match.
 	type posKey struct {
 		symbol, long, short string
 	}
 	wanted := make(map[posKey]struct{}, len(positions))
 	for _, p := range positions {
-		if p == nil {
+		symbol, longExch, shortExch := positionConfiguredTuple(p)
+		if symbol == "" {
 			continue
 		}
-		wanted[posKey{p.Symbol, p.LongExchange, p.ShortExchange}] = struct{}{}
+		wanted[posKey{symbol, longExch, shortExch}] = struct{}{}
 	}
 
 	count := 0

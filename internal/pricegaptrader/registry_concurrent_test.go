@@ -380,6 +380,41 @@ func TestRegistry_PausedByBreaker_ConcurrentWrite(t *testing.T) {
 	}
 }
 
+func TestRegistry_PauseAllOpenCandidates_InverseUsesConfiguredTuple(t *testing.T) {
+	path := setupConcurrentSharedConfig(t, 100)
+	audit := &concurrentNopAudit{}
+	r := newConcurrentRegistry(t, path, 100, audit)
+
+	if err := r.Add(context.Background(), "seed", models.PriceGapCandidate{
+		Symbol:    "INVUSDT",
+		LongExch:  "binance",
+		ShortExch: "bybit",
+		Direction: models.PriceGapDirectionBidirectional,
+	}); err != nil {
+		t.Fatalf("seed add: %v", err)
+	}
+
+	count, err := r.PauseAllOpenCandidates([]*models.PriceGapPosition{{
+		Symbol:             "INVUSDT",
+		LongExchange:       "bybit",
+		ShortExchange:      "binance",
+		CandidateLongExch:  "binance",
+		CandidateShortExch: "bybit",
+		FiredDirection:     models.PriceGapFiredInverse,
+	}})
+	if err != nil {
+		t.Fatalf("PauseAllOpenCandidates: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("paused count=%d, want 1", count)
+	}
+
+	cands := loadCandidatesFromDisk(t, path)
+	if len(cands) != 1 || !cands[0].PausedByBreaker {
+		t.Fatalf("inverse configured tuple was not paused: %+v", cands)
+	}
+}
+
 // TestRegistry_RecoveryClearsPausedByBreaker_PreservesDisabled — D-11:
 // ClearAllPausedByBreaker only touches PausedByBreaker. Operator-set
 // Redis-backed disabled state (IsCandidateDisabled) is preserved.

@@ -267,6 +267,38 @@ func TestExecution_BingXLongPreflightRunsBeforeLiveOrders(t *testing.T) {
 	}
 }
 
+func TestExecution_BingXInverseWireLongPreflightBlocksBeforeLiveOrders(t *testing.T) {
+	tr, longEx, _, store := newExecTestTracker(t)
+	bingx := newStubExchange("bingx")
+	bingx.preflightErr = errors.New("bingx API error code=109400 msg=API orders are temporarily disabled")
+	tr.exchanges["bingx"] = bingx
+
+	cand := bidiCand()
+	cand.ShortExch = "bingx"
+
+	_, err := tr.openPair(cand, 100, bidiInverseDet())
+	if err == nil {
+		t.Fatal("openPair returned nil error, want inverse BingX preflight rejection")
+	}
+	if !strings.Contains(err.Error(), "pricegap: bingx preflight blocked SOON buy") {
+		t.Fatalf("error = %q, want inverse BingX buy preflight context", err.Error())
+	}
+	calls := bingx.preflightOrders()
+	if len(calls) != 1 {
+		t.Fatalf("BingX preflight calls = %d, want 1", len(calls))
+	}
+	if calls[0].Side != exchange.SideBuy {
+		t.Fatalf("BingX inverse preflight side = %s, want buy", calls[0].Side)
+	}
+	if len(longEx.placedOrders()) != 0 || len(bingx.placedOrders()) != 0 {
+		t.Fatalf("live orders before failed inverse preflight: long=%d bingx=%d",
+			len(longEx.placedOrders()), len(bingx.placedOrders()))
+	}
+	if len(store.saved) != 0 {
+		t.Fatalf("saved positions = %d, want 0", len(store.saved))
+	}
+}
+
 func TestExecution_CircuitBreakerOpensAfterFiveFailures(t *testing.T) {
 	tr, longEx, shortEx, _ := newExecTestTracker(t)
 	// Queue 3 rounds of both-legs-fail → 6 failure bumps total; breaker trips at 5.
@@ -422,8 +454,8 @@ func TestOpenPair_BidirectionalInverse(t *testing.T) {
 	// "longEx" var is configured-long (binance); "shortEx" is configured-short (gate).
 	// In an inverse fire, BUY goes to gate (configured short, wire long) and
 	// SELL goes to binance (configured long, wire short). Queue fills accordingly.
-	shortEx.queueFill(100, 1.00, nil)  // wire-side long fill
-	longEx.queueFill(100, 1.025, nil)  // wire-side short fill
+	shortEx.queueFill(100, 1.00, nil) // wire-side long fill
+	longEx.queueFill(100, 1.025, nil) // wire-side short fill
 
 	pos, err := tr.openPair(bidiCand(), 100, bidiInverseDet())
 	if err != nil {

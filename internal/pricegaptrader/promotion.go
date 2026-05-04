@@ -22,7 +22,7 @@
 //   - D-11 PromoteEventSink fans out to Redis LIST + WS hub (Plan 02).
 //   - D-13 Telegram cooldown key built from action + tuple + direction.
 //   - D-15 module-boundary preserved via narrow interfaces declared here; this
-//     file imports only context, errors, fmt, arb/internal/config,
+//     file imports only context, errors, fmt, sort, arb/internal/config,
 //     arb/internal/models, and arb/pkg/utils. No internal/api,
 //     no internal/database, no internal/notify.
 //   - D-16 Apply is called synchronously by Scanner.RunCycle (Plan 03 wiring);
@@ -47,6 +47,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"arb/internal/config"
 	"arb/internal/models"
@@ -91,8 +92,8 @@ const (
 // that introduces long_only/short_only universes will need a corresponding
 // CycleRecord.Direction field and a Direction-derivation logic change here.
 type PromoteEvent struct {
-	TS           int64  `json:"ts"`            // unix milliseconds at fire time
-	Action       string `json:"action"`        // "promote" | "demote"
+	TS           int64  `json:"ts"`     // unix milliseconds at fire time
+	Action       string `json:"action"` // "promote" | "demote"
 	Symbol       string `json:"symbol"`
 	LongExch     string `json:"long_exch"`
 	ShortExch    string `json:"short_exch"`
@@ -423,6 +424,14 @@ func (p *PromotionController) Apply(ctx context.Context, summary CycleSummary) e
 	//    accepted set this cycle either fell below threshold or are absent
 	//    entirely. Increment their demote streak; reset their promote streak.
 	//    Fire demote when threshold met AND guard does not block.
+	type pendingDemote struct {
+		key       string
+		idx       int
+		cand      models.PriceGapCandidate
+		lastScore int
+		streak    int
+	}
+	pendingDemotes := make([]pendingDemote, 0)
 	for key, idx := range currentTuples {
 		if _, isAccepted := accepted[key]; isAccepted {
 			// Still accepted-above-threshold; demote streak already deleted
@@ -487,21 +496,34 @@ func (p *PromotionController) Apply(ctx context.Context, summary CycleSummary) e
 			}
 		}
 
-		if err := p.registry.Delete(ctx, promoteSourceDemote, idx); err != nil {
+		pendingDemotes = append(pendingDemotes, pendingDemote{
+			key:       key,
+			idx:       idx,
+			cand:      cand,
+			lastScore: lastScore,
+			streak:    p.demoteStreaks[key],
+		})
+	}
+
+	sort.Slice(pendingDemotes, func(i, j int) bool {
+		return pendingDemotes[i].idx > pendingDemotes[j].idx
+	})
+	for _, demote := range pendingDemotes {
+		if err := p.registry.Delete(ctx, promoteSourceDemote, demote.idx); err != nil {
 			if errors.Is(err, ErrIndexOutOfRange) {
 				// Race: someone else (dashboard/pg-admin) deleted the
 				// candidate between List() and Delete. Reset both streaks —
 				// the candidate is gone.
-				delete(p.demoteStreaks, key)
-				delete(p.promoteStreaks, key)
+				delete(p.demoteStreaks, demote.key)
+				delete(p.promoteStreaks, demote.key)
 				continue
 			}
 			if p.log != nil {
-				p.log.Warn("[phase-12] registry.Delete(%s) failed: %v", key, err)
+				p.log.Warn("[phase-12] registry.Delete(%s) failed: %v", demote.key, err)
 			}
 			// HOLD streak; retry next cycle.
-			if p.demoteStreaks[key] > demoteStreakThreshold {
-				p.demoteStreaks[key] = demoteStreakThreshold
+			if p.demoteStreaks[demote.key] > demoteStreakThreshold {
+				p.demoteStreaks[demote.key] = demoteStreakThreshold
 			}
 			continue
 		}
@@ -512,17 +534,17 @@ func (p *PromotionController) Apply(ctx context.Context, summary CycleSummary) e
 		ev := PromoteEvent{
 			TS:           p.now(),
 			Action:       "demote",
-			Symbol:       cand.Symbol,
-			LongExch:     cand.LongExch,
-			ShortExch:    cand.ShortExch,
+			Symbol:       demote.cand.Symbol,
+			LongExch:     demote.cand.LongExch,
+			ShortExch:    demote.cand.ShortExch,
 			Direction:    promoteEventDirection,
-			Score:        lastScore,
-			StreakCycles: p.demoteStreaks[key],
+			Score:        demote.lastScore,
+			StreakCycles: demote.streak,
 			Reason:       promoteReasonBelow,
 		}
 		p.fireEvent(ctx, ev)
-		delete(p.demoteStreaks, key)
-		delete(p.promoteStreaks, key)
+		delete(p.demoteStreaks, demote.key)
+		delete(p.promoteStreaks, demote.key)
 	}
 
 	return nil

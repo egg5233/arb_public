@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.39.1 — 2026-05-04
+
+### Strategy 4 PriceGap safety fixes
+
+#### Fixed
+
+- Bidirectional inverse positions now use the configured candidate tuple for duplicate-entry and breaker-pause matching, with legacy fallback to wire-side exchange fields.
+- BingX entry preflight now runs against the actual wire-side exchange, side, and mid after inverse bidirectional role swaps.
+- PriceGap entry now snapshots paper/live mode once per open attempt so both legs, cleanup, preflight, and persisted position mode cannot diverge mid-entry.
+- Live position close remainder handling now follows immutable `pos.Mode` and does not skip real cleanup because the global paper flag changed after entry.
+- Auto-demotion now deletes multiple candidates in descending index order to avoid stale-index slice compaction errors.
+
+#### Tests
+
+- Added regressions for inverse duplicate lockout, inverse breaker pause, inverse BingX preflight, entry paper-mode snapshotting, live-close mode immutability, and multi-demote deletion order.
+
 ## 0.39.0 — 2026-05-04
 
 ### Phase 16 Plan 04 — Strategy 4 Configuration card consolidation (PG-OPS-09) + togglePaper wire-up restoration
@@ -1156,4 +1172,3 @@ No source additions beyond the 7 fix sites + 2 helper functions. `go build` clea
 
 ### Removed
 - **50% deviation guard** — removed spread deviation filter from allocator alternatives that blocked valid exchange pairs when primary pair had unusually high spread
-

@@ -19,9 +19,9 @@ type fakeStore struct {
 	active   []*models.PriceGapPosition
 
 	// Plan 05: record saved positions + simulate per-resource lock ownership.
-	saved        []*models.PriceGapPosition
-	heldLocks    map[string]string // resource -> token (presence means held)
-	lockCounter  int
+	saved         []*models.PriceGapPosition
+	heldLocks     map[string]string // resource -> token (presence means held)
+	lockCounter   int
 	forceLockBusy bool // tests set true to simulate contention
 	// PG-DIR-01: per-call lock-resource history (FIFO append on every
 	// AcquirePriceGapLock invocation, regardless of held/forceLockBusy outcome).
@@ -83,6 +83,7 @@ func (f *fakeStore) AppendSlippageSample(candidateID string, sample models.Slipp
 	f.slipWindow[candidateID] = append(f.slipWindow[candidateID], sample)
 	return nil
 }
+
 // GetSlippageWindow returns up to the most recent n samples, mimicking Redis LTRIM semantics.
 func (f *fakeStore) GetSlippageWindow(candidateID string, n int) ([]models.SlippageSample, error) {
 	all := f.slipWindow[candidateID]
@@ -453,6 +454,29 @@ func TestRiskGate_DuplicateCandidate_Blocks(t *testing.T) {
 	}
 	if res.Reason != "duplicate_candidate" {
 		t.Fatalf("reason=%q, want duplicate_candidate", res.Reason)
+	}
+}
+
+func TestRiskGate_DuplicateCandidate_InverseUsesConfiguredTuple(t *testing.T) {
+	store := newFakeStore()
+	tr := newGateTestTracker(t, store, newFakeDelistChecker(), defaultGateConfig())
+
+	cand := binanceBybitCand()
+	active := []*models.PriceGapPosition{{
+		ID:                 "pg_SOON_binance_bybit_inverse_1",
+		Symbol:             cand.Symbol,
+		LongExchange:       cand.ShortExch,
+		ShortExchange:      cand.LongExch,
+		CandidateLongExch:  cand.LongExch,
+		CandidateShortExch: cand.ShortExch,
+		FiredDirection:     models.PriceGapFiredInverse,
+		NotionalUSDT:       1000,
+		Status:             models.PriceGapStatusOpen,
+	}}
+
+	res := tr.preEntry(cand, 1000, freshDetection(), active)
+	if !errors.Is(res.Err, ErrPriceGapDuplicateCandidate) {
+		t.Fatalf("err=%v, want ErrPriceGapDuplicateCandidate", res.Err)
 	}
 }
 

@@ -382,5 +382,5 @@ func (t *Tracker) closeLegMarketForPos(
 		_ = fallbackPrice
 		return
 	}
-	t.closeLegMarket(ex, pos.Symbol, side, size, decimals)
+	t.closeLegMarketWithMode(ex, pos.Symbol, side, size, decimals, false)
 }

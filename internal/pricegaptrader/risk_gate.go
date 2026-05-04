@@ -64,9 +64,10 @@ func (t *Tracker) preEntry(
 	// No Telegram alert — this fires on sustained market signal, not an
 	// operational event worth paging.
 	for _, p := range activePositions {
-		if p.Symbol == cand.Symbol &&
-			p.LongExchange == cand.LongExch &&
-			p.ShortExchange == cand.ShortExch {
+		symbol, longExch, shortExch := positionConfiguredTuple(p)
+		if symbol == cand.Symbol &&
+			longExch == cand.LongExch &&
+			shortExch == cand.ShortExch {
 			return GateDecision{Err: ErrPriceGapDuplicateCandidate, Reason: "duplicate_candidate"}
 		}
 	}

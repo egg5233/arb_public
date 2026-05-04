@@ -215,6 +215,38 @@ func TestDemoteStreak(t *testing.T) {
 	}
 }
 
+func TestDemoteMultipleCandidatesDeletesDescendingIndexes(t *testing.T) {
+	c, reg, sink, _, _, _ := newTestController(t, 70, 12)
+	ctx := context.Background()
+	for _, sym := range []string{"AUSDT", "BUSDT", "CUSDT"} {
+		_ = reg.Add(ctx, "test-seed", models.PriceGapCandidate{
+			Symbol:    sym,
+			LongExch:  "binance",
+			ShortExch: "bybit",
+			Direction: "bidirectional",
+		})
+	}
+
+	for i := 0; i < 6; i++ {
+		_ = c.Apply(ctx, summaryWith())
+	}
+	if got := len(reg.List()); got != 0 {
+		t.Fatalf("remaining candidates=%d, want 0 after multi-demote", got)
+	}
+	wantIdx := []int{2, 1, 0}
+	if len(reg.delLog) != len(wantIdx) {
+		t.Fatalf("delete calls=%d, want %d", len(reg.delLog), len(wantIdx))
+	}
+	for i, want := range wantIdx {
+		if reg.delLog[i].Idx != want {
+			t.Fatalf("delete index order=%+v, want descending %v", reg.delLog, wantIdx)
+		}
+	}
+	if len(sink.events) != 3 {
+		t.Fatalf("demote events=%d, want 3", len(sink.events))
+	}
+}
+
 // TestDemoteBlockedByGuard — D-05: active-position guard blocks demote;
 // streak HELD; once unblocked the very next cycle fires.
 func TestDemoteBlockedByGuard(t *testing.T) {

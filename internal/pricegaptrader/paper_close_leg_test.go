@@ -63,6 +63,26 @@ func TestCloseLegMarket_LiveMode_DoesCall(t *testing.T) {
 	}
 }
 
+func TestCloseLegMarketForPos_LivePositionIgnoresGlobalPaperFlag(t *testing.T) {
+	stub := newStubExchange("gateio")
+	tr := NewTracker(
+		map[string]exchange.Exchange{"gateio": stub},
+		newFakeStore(),
+		newFakeDelistChecker(),
+		&config.Config{
+			PriceGapEnabled:   true,
+			PriceGapPaperMode: true,
+		},
+	)
+	pos := &models.PriceGapPosition{Symbol: "SOONUSDT", Mode: models.PriceGapModeLive}
+
+	tr.closeLegMarketForPos(stub, pos, exchange.SideSell, 100, 2, 1)
+
+	if len(stub.placedOrders()) != 1 {
+		t.Fatalf("live position close must call PlaceOrder despite global paper flag; got %d", len(stub.placedOrders()))
+	}
+}
+
 // Compile-time sanity — NewTracker accepts the full dependency set; a
 // configuration error here would catch us during edit rather than at the
 // deploy edge.

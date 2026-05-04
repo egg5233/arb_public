@@ -44,6 +44,21 @@ func NewDBActivePositionChecker(db *database.Client) *DBActivePositionChecker {
 	return &DBActivePositionChecker{db: db}
 }
 
+func positionConfiguredTuple(p *models.PriceGapPosition) (symbol, longExch, shortExch string) {
+	if p == nil {
+		return "", "", ""
+	}
+	longExch = p.CandidateLongExch
+	shortExch = p.CandidateShortExch
+	if longExch == "" {
+		longExch = p.LongExchange
+	}
+	if shortExch == "" {
+		shortExch = p.ShortExchange
+	}
+	return p.Symbol, longExch, shortExch
+}
+
 // IsActiveForCandidate consults pg:positions:active and reports whether any
 // active position matches the candidate's (Symbol, LongExch, ShortExch)
 // tuple — preferring the CONFIGURED tuple stamped on each position
@@ -63,16 +78,9 @@ func (g *DBActivePositionChecker) IsActiveForCandidate(c models.PriceGapCandidat
 		if p == nil {
 			continue
 		}
-		if p.Symbol != c.Symbol {
+		symbol, longExch, shortExch := positionConfiguredTuple(p)
+		if symbol != c.Symbol {
 			continue
-		}
-		// Prefer the CONFIGURED tuple (PG-DIR-01) when stamped; fall back to
-		// wire-side roles for pre-Phase-999.1 legacy positions.
-		longExch := p.CandidateLongExch
-		shortExch := p.CandidateShortExch
-		if longExch == "" && shortExch == "" {
-			longExch = p.LongExchange
-			shortExch = p.ShortExchange
 		}
 		if longExch == c.LongExch && shortExch == c.ShortExch {
 			return true, nil
