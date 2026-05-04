@@ -82,9 +82,10 @@ A multi-strategy arbitrage platform that monitors funding rate differentials and
 - [ ] PG-DISC-03 — Discovery telemetry: scanner cycle metrics, candidate score history, dashboard observability.
 
 **Paper-Mode Bug Closure (Priority 2)**
-- [ ] Fix `realized_slippage_bps` machine-zero in paper mode (formula bug)
-- [ ] Diagnose + fix dashboard auto-POST flipping `paper_mode=false` on page load
-- [ ] Promote `cmd/bingxprobe/` to `make probe-bingx`
+- [x] PG-FIX-01 — Fix `realized_slippage_bps` machine-zero in paper mode (formula bug). _Validated in Phase 16: BBO mid-at-exit replaces ModeledSlipBps band-aid (v0.38.1, 2026-05-02)._
+- [x] PG-FIX-02 — Diagnose + fix dashboard auto-POST flipping `paper_mode=false` on page load. _Validated in Phase 16: HTTP 409 server guard requires `operator_action: true` (v0.38.2, 2026-05-02)._
+- [x] DEV-01 — Promote `cmd/bingxprobe/` to `make probe-bingx`. _Validated in Phase 16: ticker-only safe variant (TestOrder rejected as unsafe per D-11 fallback) (v0.38.3, 2026-05-02)._
+- [x] PG-OPS-09 — Strategy 4 Configuration card consolidation on Price-Gap dashboard tab. _Validated in Phase 16: 4-subsection ConfigCard, 4 legacy Config.tsx controls migrated, EN+zh-TW lockstep (v0.39.0, 2026-05-04)._
 
 **v1.0 Tech Debt — Full Sweep (Priority 2)**
 - [ ] Phase 07 retrospective VERIFICATION.md + VALIDATION.md (SF-RISK-01)
@@ -157,4 +158,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-01 — Phase 15 (Drawdown Circuit Breaker, PG-LIVE-02) shipped on v0.38.0, default OFF behind `enable_pricegap_breaker`. Two-strike state machine on 24h realized-PnL aggregator with Bybit blackout suppression; D-15 atomicity flips paper-mode sticky FIRST when threshold breached twice ≥5 min apart; operator-only recovery via typed-phrase RECOVER (REST + pg-admin CLI + frontend modal); test-fire path (dry-run + real-trip); Telegram critical-bucket dispatch. Operator UAT approved 2026-05-01.*
+*Last updated: 2026-05-04 — Phase 16 (Paper-Mode Cleanup + Dashboard Consolidation) shipped on v0.39.0. PG-FIX-01 replaces the paper-mode `RealizedSlipBps = ModeledSlipBps` band-aid with BBO mid-at-exit (v0.38.1); PG-FIX-02 installs a 409 server guard at `/api/config` requiring `operator_action: true` for paper_mode writes (v0.38.2); DEV-01 restores `cmd/bingxprobe/` as a ticker-only probe (TestOrder rejected as unsafe per D-11 fallback) with `make probe-bingx` (v0.38.3); PG-OPS-09 consolidates ALL Strategy 4 configuration into a 4-subsection card at the top of the Price-Gap tab, migrating 4 legacy Config.tsx controls and wiring `togglePaper` with `operator_action: true` (v0.39.0). EN + zh-TW i18n lockstep, npm + config.json lockdown preserved. Operator UATs (16-03, 16-04) approved 2026-05-04 with 2 partial human-verif items (HAR re-capture, probe stdout) tracked in `16-HUMAN-UAT.md`.*
