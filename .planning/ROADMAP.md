@@ -200,7 +200,7 @@ Phase numbers reuse 11 + 12 from the v2.1 deferred-numbering plan; 13 was consum
 | 12. Auto-Promotion | v2.2 | 4/4 | Complete    | 2026-04-30 |
 | 14. Daily Reconcile + Live Ramp Controller | v2.2 | 5/5 | Complete    | 2026-04-30 |
 | 15. Drawdown Circuit Breaker | v2.2 | 5/5 | Complete    | 2026-05-01 |
-| 16. Paper-Mode Cleanup + Dashboard Consolidation | v2.2 | 4/4 | Complete   | 2026-05-04 |
+| 16. Paper-Mode Cleanup + Dashboard Consolidation | v2.2 | 4/4 | Complete    | 2026-05-04 |
 | 17. v1.0 Tech-Debt Sweep | v2.2 | 0/? | Not started | — |
 
 ## Backlog
