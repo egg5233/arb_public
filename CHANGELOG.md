@@ -2,6 +2,46 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.39.0 — 2026-05-04
+
+### Phase 16 Plan 04 — Strategy 4 Configuration card consolidation (PG-OPS-09) + togglePaper wire-up restoration
+
+**UI consolidation + Plan 02 wire-up.** All Strategy 4 editable configuration now lives in a single "Strategy 4 Configuration" card at the top of the Price-Gap dashboard tab. Operator one-stop: scanner, breaker, ramp display, live-capital + risk, plus 4 controls migrated from the legacy Config tab. Phase 14 ramp-reconcile widget and Phase 15 breaker subsection stay in their existing locations (D-19 — read-mostly status displays separated from editable inputs).
+
+**Restored:** the dashboard PaperMode toggle. Plan 02 shipped server-only and broke the existing toggle (HTTP 409 without `operator_action` marker). This release wires `togglePaper` to send `operator_action: true`, restoring the toggle and satisfying the PG-FIX-02 server guard. The interim pg-admin workaround documented in 0.38.1/0.38.2 is no longer needed.
+
+**D-21 architecture note:** ENABLE-LIVE-CAPITAL and ENABLE-BREAKER toggles use the typed-phrase modal as their sole safety mechanism — POST bodies do NOT include `operator_action: true`. The Plan 02 server guard is paper_mode-scoped only. Coupling unrelated safety surfaces silently was rejected per checker review (warning #6); future server-side guards for live-capital or breaker will add the marker explicitly when introduced.
+
+#### Added
+
+- `web/src/components/PriceGap/ConfigCard.tsx` — collapsible top-of-page Configuration card with 4 subsections (Scanner / Breaker / Ramp / Live-Capital).
+- Scanner subsection: `PriceGapDiscoveryEnabled`, `PriceGapScanIntervalSec`, `PriceGapMaxUniverse`, `PriceGapAutoPromoteScore`, `PriceGapMaxCandidates`.
+- Breaker subsection: `PriceGapBreakerEnabled` (typed-phrase ENABLE-BREAKER, no operator_action marker per D-21), `PriceGapDrawdownLimitUSDT`, `PriceGapBreakerIntervalSec`.
+- Ramp subsection: read-only display of stage sizes + hard ceiling + clean-day target (D-19 — edits through pg-admin CLI).
+- Live-Capital + Risk subsection: `PriceGapLiveCapital` (typed-phrase ENABLE-LIVE-CAPITAL, no operator_action marker per D-21), `PriceGapAnomalySlippageBps`, plus migrated gate fields.
+- `web/src/components/PriceGap/ConfigCard.test.ts` — render + interaction tests including assertion that ENABLE-LIVE-CAPITAL POST body has no `operator_action` field (D-21 invariant).
+- `web/src/i18n/lockstep.test.ts` — assertion that en.ts and zh-TW.ts have identical key sets (Pitfall 6 closure).
+- ~60 new i18n keys per locale (en + zh-TW lockstep).
+- Operator UAT evidence at `.planning/phases/16-paper-mode-cleanup-dashboard-consolidation/16-04-HUMAN-UAT.md` — verdict: pass; operator-attested green; screenshots not captured into this conversation.
+
+#### Changed
+
+- `web/src/pages/PriceGap.tsx` `togglePaper` POST body now includes `operator_action: true` (transferred from Plan 02 per checker blocker #1 — single owner of the file resolves scope-leak).
+- `web/src/pages/PriceGap.tsx` renders ConfigCard at top of layout (above existing sections).
+- `web/src/components/Ramp/BreakerConfirmModal.tsx` `Phrase` union extended to include `'ENABLE-LIVE-CAPITAL' | 'ENABLE-BREAKER'`. Interaction logic unchanged (case-sensitive, no trim, Esc closes, Enter does not submit) — magic strings NOT translated per CONTEXT D-18.
+
+#### Removed
+
+- `web/src/pages/Config.tsx` — 4 legacy Strategy 4 controls deleted: `price_gap_free_bps`, `max_price_gap_bps`, `enable_price_gap_gate`, `max_price_gap_pct`. All migrated to ConfigCard. Pre-delete grep verified no orphan references in other components.
+
+#### Preserved
+
+- Phase 14 `RampReconcileSection` widget — kept in original location (D-19).
+- Phase 15 `BreakerSubsection` widget — kept in original location (D-19).
+- CandidateRegistry chokepoint (Phase 11) — candidate CRUD writes unchanged.
+- PG-FIX-02 server guard (Plan 02) — togglePaper now sends `operator_action: true`; ENABLE-LIVE-CAPITAL and ENABLE-BREAKER do NOT (D-21 — typed-phrase is the safety surface for those).
+- npm lockdown — `package.json` and `package-lock.json` unchanged in this plan.
+
 ## 0.38.3 — 2026-05-02
 
 ### Phase 16 Plan 03 — Restored cmd/bingxprobe + make probe-bingx (DEV-01)
