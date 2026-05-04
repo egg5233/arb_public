@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.2
 milestone_name: Auto-Discovery & Live Strategy 4
-status: verifying
-stopped_at: Completed 16-04-PLAN.md (PG-OPS-09 ConfigCard consolidation + togglePaper restored; Phase 16 feature-complete; v0.39.0)
-last_updated: "2026-05-04T00:55:20.617Z"
+status: phase-17-pending
+stopped_at: Phase 16 shipped to origin/main (merge 825ab36); v0.39.0; Phase 17 not yet started
+last_updated: "2026-05-04T01:30:00.000Z"
 last_activity: 2026-05-04
 progress:
-  total_phases: 5
+  total_phases: 6
   completed_phases: 5
-  total_plans: 24
+  total_plans: 29
   completed_plans: 24
-  percent: 100
+  percent: 83
 ---
 
 # Project State
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-28 after v2.2 milestone start)
 
 **Core value:** "I deposit USDT, select my risk preference, and the system automatically finds opportunities across multiple strategies, opens positions, collects yield, exits when profitable, and I can see exactly how much each position earned — with capital shifting between strategies as opportunities shift."
-**Current focus:** Phase 16 — paper-mode-cleanup-dashboard-consolidation
+**Current focus:** Phase 17 — v1.0 tech-debt sweep (next pending)
 
 ## Current Position
 
-Phase: 16
-Plan: Not started
-Status: Phase complete — ready for verification
+Phase: 17 (not started — last completed: 16)
+Plan: None — Phase 17 needs decomposition
+Status: Phase 16 shipped to origin/main; Phase 17 ready to plan
 Last activity: 2026-05-04
 
 **v2.2 phase structure (6 phases, 14 reqs, 100% coverage):**
@@ -39,7 +39,7 @@ Last activity: 2026-05-04
 5. Phase 16 — Paper-Mode Cleanup + Dashboard Consolidation (PG-FIX-01, PG-FIX-02, DEV-01, PG-OPS-09)
 6. Phase 17 — v1.0 Tech-Debt Sweep (DEBT-V1-01, DEBT-V1-02, DEBT-V1-03)
 
-Progress (v2.2): [          ] 0%
+Progress (v2.2): [████████░░] 83% — 5/6 phases, 24/29 plans (Phase 17 remaining)
 
 **Phase ordering:** Validate-first (Architecture research) chosen over money-safe-first (Pitfalls). Hard constraint (PG-DISC-04 chokepoint must land before scanner is write-permitted) satisfied by co-locating chokepoint with scanner read-only build in Phase 11. Reconcile + Ramp consecutive in Phase 14. Tech-debt LAST per Pitfall 7.
 
@@ -200,16 +200,15 @@ v2.0 + v1.0 decisions retained (truncated for brevity — see git history for fu
 
 ### Pending Todos
 
-- `/gsd-plan-phase 11` — decompose Phase 11 (Auto-Discovery Scanner + Chokepoint + Telemetry) into executable plans
+- `/gsd-plan-phase 17` — decompose Phase 17 (v1.0 Tech-Debt Sweep, DEBT-V1-01/02/03) into executable plans
 
 ### Blockers/Concerns
 
 - `internal/pricegaptrader/` module-boundary rule still applies to all v2.2 work — no imports of `internal/engine/` or `internal/spotengine/`.
 - Redis namespace `pg:*` extends to `pg:scan:*`, `pg:promote:*`, `pg:ramp:*`, `pg:reconcile:*`, `pg:breaker:*` — must not collide with existing pg keys.
 - All v2.2 features default OFF (`PriceGapDiscoveryEnabled`, `PriceGapAutoPromote`, `PriceGapLiveCapital` etc).
-- npm lockdown still in force — Phase 16 dashboard consolidation uses existing Recharts/React only (`npm ci` only).
-- Live trading risk: every Phase 11–17 change lands behind config flag. Perp-perp + spot-futures + Strategy 4 paper engines must remain undisturbed during ramp + breaker work (Phases 14–15).
-- CandidateRegistry chokepoint MUST land before scanner is write-permitted (Phase 11 plan-phase decomposition must order this correctly within the phase).
+- npm lockdown still in force — Phase 17 tech-debt sweep uses existing deps only (`npm ci` only).
+- Live trading risk: Phase 17 retrospective re-exercises stale paths per Pitfall 7 — surfaced regressions spawn separate Phase 999.x hot-fix mini-phases per v2.1 precedent.
 
 ### Quick Tasks Completed
 
@@ -220,7 +219,7 @@ v2.0 + v1.0 decisions retained (truncated for brevity — see git history for fu
 
 ## Session Continuity
 
-Last session: 2026-05-04T00:40:23.517Z
-Stopped at: Completed 16-04-PLAN.md (PG-OPS-09 ConfigCard consolidation + togglePaper restored; Phase 16 feature-complete; v0.39.0)
+Last session: 2026-05-04T01:30:00.000Z
+Stopped at: Phase 16 shipped to origin/main (merge 825ab36); v0.39.0; planning state cleaned up (5/6 phases done, 83%)
 Resume file: None
-Next command: `/gsd-plan-phase 15` to decompose Phase 15 (Drawdown Circuit Breaker, PG-LIVE-02) into executable plans
+Next command: `/gsd-plan-phase 17` to decompose Phase 17 (v1.0 Tech-Debt Sweep, DEBT-V1-01/02/03) into executable plans

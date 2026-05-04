@@ -46,3 +46,6 @@ graphify-publish/
 CLAUDE.local.md
 .worktrees/
 scripts/config_watchdog.sh
+report_wipe.sh
+arb.bak.preFix
+/bingxprobe
