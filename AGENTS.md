@@ -49,7 +49,7 @@ Rules:
 - Always start with the appropriate router above, not repo-wide grep
 - `graphify-publish/wiki/` has 135 community pages — navigate those instead of reading raw files when available
 - `GRAPH_REPORT.md` in graphify-publish may surface noisy frontend/tooling symbols — treat global god nodes as hints, not authority; stay anchored to module-scoped routing
-- After modifying code files, if the graphify Python module is available, run `python3 -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('.'))"` to keep the graph current
+- After modifying code files, let the agent decide whether a graphify refresh is warranted based on the scope and risk of the change. Prefer refreshing after broad structural, routing, or cross-module changes; skip it for narrow fixes, tests, docs, or when tests already cover the touched behavior. If a refresh is needed on Windows, prefer `powershell -ExecutionPolicy Bypass -File scripts/refresh-graphify.ps1` so Python runs with UTF-8 console settings. On Unix-like shells, run `PYTHONUTF8=1 PYTHONIOENCODING=utf-8 python3 -X utf8 scripts/refresh_graphify.py`.
 
 ## Project
 

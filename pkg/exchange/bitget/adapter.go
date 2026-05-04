@@ -810,7 +810,7 @@ func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 	}
 
 	total, _ := strconv.ParseFloat(resp.Data.AccountEquity, 64)
-	avail, _ := strconv.ParseFloat(resp.Data.Available, 64)
+	var avail float64
 	crossedMaxAvail, _ := strconv.ParseFloat(resp.Data.CrossedMaxAvail, 64)
 	frozen, _ := strconv.ParseFloat(resp.Data.Frozen, 64)
 	marginRatio, _ := strconv.ParseFloat(resp.Data.CrossedRiskRate, 64)
@@ -821,8 +821,8 @@ func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 	// "field absent/empty" (API didn't return it, fall back to available).
 	if resp.Data.CrossedMaxAvail != "" {
 		avail = crossedMaxAvail // trust the value even if 0
-	} else if avail <= 0 && total > 0 {
-		avail = total - frozen
+	} else if resp.Data.Available != "" {
+		avail, _ = strconv.ParseFloat(resp.Data.Available, 64)
 	}
 
 	maxTransferOut, _ := strconv.ParseFloat(resp.Data.MaxTransferOut, 64)

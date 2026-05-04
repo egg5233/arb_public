@@ -288,6 +288,32 @@ Existing operators set `enable_pricegap_breaker: true` + `pricegap_drawdown_limi
 - **Threat model documented:** cap-full / dedupe / active-position guard / chokepoint discipline / Telegram fan-out each have STRIDE entries in `.planning/phases/12-auto-promotion/12-0{1,2,3}-PLAN.md` `<threat_model>` blocks. All severities medium-or-lower; no high blockers.
 - **Rollback:** set `cfg.PriceGapDiscoveryEnabled=false` via `POST /api/config` (NEVER edit `config.json` directly — CLAUDE.local.md). Restart `arb`. Optional cleanup: `redis-cli DEL pg:promote:events` (clears timeline) and `redis-cli HDEL pg:scan:metrics cap_full_skips:*` (clears counters). Existing manually-promoted candidates remain in `cfg.PriceGapCandidates` — only the AUTO-promotion path is disabled.
 
+## [0.35.5] - 2026-04-29
+
+### Fixed
+
+- Added endpoint-specific BingX signed REST throttling so balance, transfer, withdraw, and order APIs respect their documented per-second limits under concurrent entry/rebalance activity.
+- Fixed BingX entry preflight probes so non-marketable IOC checks stay above BingX minimum order value and far-price floors while remaining safely away from the live top of book.
+- Preserved specific entry abort reasons in trade history, including BingX preflight errors, stale depth, unavailable balances, margin caps, and circuit-breaker exits instead of collapsing them into generic depth-fill failures.
+- Simplified trade history reason display by removing the separate failure-reason column and renaming the exit reason label to reason.
+- Added UTF-8 graphify refresh wrappers to avoid Windows console encoding failures during code graph refreshes.
+
+## [0.35.4] - 2026-04-29
+
+### Fixed
+
+- Reverted the partial-entry after-the-fact top-up lifecycle so depth-fill recovery no longer leaves `entry_topup_pending` positions for later repair.
+- Kept the pre-entry effective order capacity and rebalance transfer sizing fixes so Bybit UTA raw available balance no longer suppresses required funding.
+
+## [0.35.3] - 2026-04-29
+
+### Fixed
+
+- Fixed perp-perp rebalance and risk sizing to use effective order capacity when an exchange reports a lower `MaxTransferOut` than raw available balance, preventing Bybit UTA entries from being misclassified as fully funded without a transfer.
+- Preserved partial entry evidence and changed partial depth-fill recovery to keep topping up the missing or smaller leg instead of immediately rolling back filled exposure.
+- Corrected exchange balance parsing for Binance, Bitget, Bybit, Gate.io, OKX, and BingX so adapter tests cover zero-valued API fields and exchange-specific available-margin semantics.
+- Paused spot-futures discovery and monitoring loops while `SpotFuturesEnabled` is disabled.
+
 ## [0.35.2] - 2026-04-28
 
 ### Added

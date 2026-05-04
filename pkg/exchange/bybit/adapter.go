@@ -788,34 +788,37 @@ func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 
 	var resp struct {
 		List []struct {
-			AccountMMRate string `json:"accountMMRate"`
-			Coin          []struct {
-				Coin                string `json:"coin"`
-				Equity              string `json:"equity"`
-				AvailableToWithdraw string `json:"availableToWithdraw"`
-				Locked              string `json:"locked"`
-			} `json:"coin"`
+			AccountMMRate          string `json:"accountMMRate"`
+			TotalAvailableBalance  string `json:"totalAvailableBalance"`
+			TotalMarginBalance     string `json:"totalMarginBalance"`
+			TotalInitialMargin     string `json:"totalInitialMargin"`
+			TotalMaintenanceMargin string `json:"totalMaintenanceMargin"`
+			TotalEquity            string `json:"totalEquity"`
 		} `json:"list"`
 	}
 	if err := json.Unmarshal(result, &resp); err != nil {
 		return nil, fmt.Errorf("bybit GetFuturesBalance parse: %w", err)
 	}
 
-	if len(resp.List) == 0 || len(resp.List[0].Coin) == 0 {
+	if len(resp.List) == 0 {
 		return &exchange.Balance{Currency: "USDT"}, nil
 	}
 
-	marginRatio, _ := strconv.ParseFloat(resp.List[0].AccountMMRate, 64)
+	acct := resp.List[0]
+	available, _ := strconv.ParseFloat(acct.TotalAvailableBalance, 64)
+	total, _ := strconv.ParseFloat(acct.TotalMarginBalance, 64)
+	totalMarginBalance := total
+	if strings.TrimSpace(acct.TotalMarginBalance) == "" {
+		total, _ = strconv.ParseFloat(acct.TotalEquity, 64)
+	}
+	frozen, _ := strconv.ParseFloat(acct.TotalInitialMargin, 64)
+	maintenanceMargin, _ := strconv.ParseFloat(acct.TotalMaintenanceMargin, 64)
 
-	c := resp.List[0].Coin[0]
-	total, _ := strconv.ParseFloat(c.Equity, 64)
-	available, _ := strconv.ParseFloat(c.AvailableToWithdraw, 64)
-	locked, _ := strconv.ParseFloat(c.Locked, 64)
-
-	// Bybit unified account may report availableToWithdraw=0 even when funds
-	// are fully available for trading. Fall back to equity minus locked.
-	if available <= 0 && total > 0 {
-		available = total - locked
+	var marginRatio float64
+	if strings.TrimSpace(acct.AccountMMRate) != "" {
+		marginRatio, _ = strconv.ParseFloat(acct.AccountMMRate, 64)
+	} else if maintenanceMargin > 0 && totalMarginBalance > 0 {
+		marginRatio = maintenanceMargin / totalMarginBalance
 	}
 
 	// Query precise transferable amount via dedicated endpoint (availableToWithdraw deprecated for UNIFIED since 2025-01-09)
@@ -837,7 +840,7 @@ func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 	return &exchange.Balance{
 		Total:                       total,
 		Available:                   available,
-		Frozen:                      locked,
+		Frozen:                      frozen,
 		Currency:                    "USDT",
 		MarginRatio:                 marginRatio,
 		MaxTransferOut:              maxTransferOut,

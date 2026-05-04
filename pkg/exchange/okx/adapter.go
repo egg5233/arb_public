@@ -818,6 +818,7 @@ func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 			Ccy       string `json:"ccy"`
 			Eq        string `json:"eq"`
 			AvailEq   string `json:"availEq"`
+			AvailBal  string `json:"availBal"`
 			FrozenBal string `json:"frozenBal"`
 			MgnRatio  string `json:"mgnRatio"`
 			Mmr       string `json:"mmr"`
@@ -856,13 +857,12 @@ func (a *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 		for _, d := range raw[0].Details {
 			if d.Ccy == "USDT" {
 				total, _ := strconv.ParseFloat(d.Eq, 64)
-				available, _ := strconv.ParseFloat(d.AvailEq, 64)
-				frozen, _ := strconv.ParseFloat(d.FrozenBal, 64)
-
-				// Defensive: if availEq is 0 but equity exists, fall back.
-				if available <= 0 && total > 0 {
-					available = total - frozen
+				availableSource := d.AvailEq
+				if strings.TrimSpace(availableSource) == "" {
+					availableSource = d.AvailBal
 				}
+				available, _ := strconv.ParseFloat(availableSource, 64)
+				frozen, _ := strconv.ParseFloat(d.FrozenBal, 64)
 
 				// Query precise max transferable via dedicated endpoint
 				var maxTransferOut float64

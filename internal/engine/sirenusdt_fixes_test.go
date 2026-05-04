@@ -55,7 +55,7 @@ func (s *fullStubExchange) storeOrder(oid string, upd exchange.OrderUpdate) {
 
 // --- Exchange interface implementation ---
 
-func (s *fullStubExchange) Name() string { return "stub" }
+func (s *fullStubExchange) Name() string                                   { return "stub" }
 func (s *fullStubExchange) SetMetricsCallback(fn exchange.MetricsCallback) {}
 func (s *fullStubExchange) PlaceOrder(p exchange.PlaceOrderParams) (string, error) {
 	if s.placeOrderFn != nil {
@@ -63,7 +63,7 @@ func (s *fullStubExchange) PlaceOrder(p exchange.PlaceOrderParams) (string, erro
 	}
 	return "oid-default", nil
 }
-func (s *fullStubExchange) CancelOrder(symbol, orderID string) error    { return nil }
+func (s *fullStubExchange) CancelOrder(symbol, orderID string) error { return nil }
 func (s *fullStubExchange) GetPendingOrders(sym string) ([]exchange.Order, error) {
 	return nil, nil
 }
@@ -73,10 +73,10 @@ func (s *fullStubExchange) GetOrderFilledQty(orderID, symbol string) (float64, e
 	}
 	return 0, nil
 }
-func (s *fullStubExchange) GetPosition(sym string) ([]exchange.Position, error)  { return nil, nil }
-func (s *fullStubExchange) GetAllPositions() ([]exchange.Position, error)         { return nil, nil }
-func (s *fullStubExchange) SetLeverage(sym, leverage, holdSide string) error      { return nil }
-func (s *fullStubExchange) SetMarginMode(sym, mode string) error                  { return nil }
+func (s *fullStubExchange) GetPosition(sym string) ([]exchange.Position, error) { return nil, nil }
+func (s *fullStubExchange) GetAllPositions() ([]exchange.Position, error)       { return nil, nil }
+func (s *fullStubExchange) SetLeverage(sym, leverage, holdSide string) error    { return nil }
+func (s *fullStubExchange) SetMarginMode(sym, mode string) error                { return nil }
 func (s *fullStubExchange) LoadAllContracts() (map[string]exchange.ContractInfo, error) {
 	return nil, nil
 }
@@ -104,18 +104,18 @@ func (s *fullStubExchange) TransferToFutures(coin, amount string) error { return
 func (s *fullStubExchange) GetOrderbook(sym string, depth int) (*exchange.Orderbook, error) {
 	return nil, nil
 }
-func (s *fullStubExchange) StartPriceStream(syms []string)        {}
-func (s *fullStubExchange) SubscribeSymbol(sym string) bool       { return true }
+func (s *fullStubExchange) StartPriceStream(syms []string)  {}
+func (s *fullStubExchange) SubscribeSymbol(sym string) bool { return true }
 func (s *fullStubExchange) GetBBO(sym string) (exchange.BBO, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.bbo, s.bboOK
 }
-func (s *fullStubExchange) GetPriceStore() *sync.Map { return &sync.Map{} }
-func (s *fullStubExchange) SubscribeDepth(sym string) bool  { return true }
-func (s *fullStubExchange) UnsubscribeDepth(sym string) bool { return true }
+func (s *fullStubExchange) GetPriceStore() *sync.Map                        { return &sync.Map{} }
+func (s *fullStubExchange) SubscribeDepth(sym string) bool                  { return true }
+func (s *fullStubExchange) UnsubscribeDepth(sym string) bool                { return true }
 func (s *fullStubExchange) GetDepth(sym string) (*exchange.Orderbook, bool) { return nil, false }
-func (s *fullStubExchange) StartPrivateStream()                              {}
+func (s *fullStubExchange) StartPrivateStream()                             {}
 func (s *fullStubExchange) GetOrderUpdate(orderID string) (exchange.OrderUpdate, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -140,9 +140,9 @@ func (s *fullStubExchange) GetFundingFees(sym string, since time.Time) ([]exchan
 func (s *fullStubExchange) GetClosePnL(sym string, since time.Time) ([]exchange.ClosePnL, error) {
 	return nil, nil
 }
-func (s *fullStubExchange) EnsureOneWayMode() error  { return nil }
+func (s *fullStubExchange) EnsureOneWayMode() error          { return nil }
 func (s *fullStubExchange) CancelAllOrders(sym string) error { return nil }
-func (s *fullStubExchange) Close()                          {}
+func (s *fullStubExchange) Close()                           {}
 
 // ---------------------------------------------------------------------------
 // Minimal Engine builder for unit tests (no DB, no discovery).
@@ -175,8 +175,8 @@ func newMinimalEngine() *Engine {
 // ---------------------------------------------------------------------------
 
 func TestRetrySecondLegUsesGetOrderUpdateAvgPrice(t *testing.T) {
-	const refPrice = 1.58  // realistic SIRENUSDT price
-	const realAvg = 1.59   // real fill price from WS
+	const refPrice = 1.58 // realistic SIRENUSDT price
+	const realAvg = 1.59  // real fill price from WS
 	const corruptBid = 41.56
 	const corruptAsk = 42.00
 
@@ -623,8 +623,8 @@ func TestStopIndexMatchesTPID(t *testing.T) {
 	e.registerStopOrders(pos)
 
 	cases := []struct {
-		key     string
-		wantLeg string
+		key      string
+		wantLeg  string
 		wantKind string
 	}{
 		{"binance:tp-long-999", "long", "tp"},
@@ -854,7 +854,7 @@ func TestReconcileTier1AcceptsUnknownLongSize(t *testing.T) {
 	pos := makeTestPos("pos-mixed", 100, 100, 0, 0)
 	var siblings []*models.ArbitragePosition
 
-	longExpected := pos.LongCloseSize + sumSiblingCloseSize(siblings, "long")   // 100
+	longExpected := pos.LongCloseSize + sumSiblingCloseSize(siblings, "long")    // 100
 	shortExpected := pos.ShortCloseSize + sumSiblingCloseSize(siblings, "short") // 100
 
 	longAgg := exchange.ClosePnL{CloseSize: 0, CloseSizeUnknown: true}
@@ -876,7 +876,7 @@ func TestReconcileTier1RejectsKnownShortShortfall(t *testing.T) {
 	pos := makeTestPos("pos-mixed", 100, 100, 0, 0)
 	var siblings []*models.ArbitragePosition
 
-	longExpected := pos.LongCloseSize + sumSiblingCloseSize(siblings, "long")   // 100
+	longExpected := pos.LongCloseSize + sumSiblingCloseSize(siblings, "long")    // 100
 	shortExpected := pos.ShortCloseSize + sumSiblingCloseSize(siblings, "short") // 100
 
 	longAgg := exchange.ClosePnL{CloseSize: 0, CloseSizeUnknown: true}

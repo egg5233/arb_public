@@ -724,12 +724,11 @@ func (b *Adapter) GetFuturesBalance() (*exchange.Balance, error) {
 			// Use marginBalance (= walletBalance + unrealizedPnL) for Total
 			// so the dashboard reflects true equity including open position PnL.
 			total, _ := strconv.ParseFloat(asset.MarginBalance, 64)
-			available, _ := strconv.ParseFloat(asset.AvailableBalance, 64)
-
-			// Defensive: if availableBalance is 0 but wallet has funds, fall back.
-			if available <= 0 && total > 0 {
-				available = total
+			availableSource := asset.AvailableBalance
+			if strings.TrimSpace(availableSource) == "" {
+				availableSource = resp.AvailableBalance
 			}
+			available, _ := strconv.ParseFloat(availableSource, 64)
 
 			maxTransferOut, _ := strconv.ParseFloat(asset.MaxWithdrawAmount, 64)
 

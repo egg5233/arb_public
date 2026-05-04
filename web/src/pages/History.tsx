@@ -97,7 +97,6 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
               <th className="pb-2 text-right">{t('hist.rotations')}</th>
               <th className="pb-2">{t('hist.exitReason')}</th>
               <th className="pb-2 whitespace-nowrap">{t('hist.status')}</th>
-              <th className="pb-2 whitespace-nowrap">{t('hist.failureReason')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-800">
@@ -150,13 +149,10 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
                     <span className="px-2 py-0.5 rounded text-xs font-medium bg-green-500/20 text-green-400">{t('hist.statusSuccess')}</span>
                   )}
                 </td>
-                <td className="py-2 text-red-400 text-xs max-w-[200px]">
-                  <span className="block truncate">{tr.failure_reason || ''}</span>
-                </td>
               </tr>
               {expandedRow === tr.id && (
                 <tr className="bg-gray-800/50">
-                  <td colSpan={15} className="px-4 py-3">
+                  <td colSpan={16} className="px-4 py-3">
                     <PnLBreakdown position={tr} />
                   </td>
                 </tr>
@@ -165,7 +161,7 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
             ))}
             {filteredTrades.length === 0 && (
               <tr>
-                <td colSpan={17} className="py-4 text-center text-gray-500">{t('hist.noHistory')}</td>
+                <td colSpan={16} className="py-4 text-center text-gray-500">{t('hist.noHistory')}</td>
               </tr>
             )}
           </tbody>
@@ -256,11 +252,6 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
                     </div>
                   </div>
                 </div>
-
-                {/* Failure reason on failed trades */}
-                {isFailed && tr.failure_reason && !expanded && (
-                  <div className="mt-2 text-[11px] text-red-400/80 truncate">{tr.failure_reason}</div>
-                )}
               </button>
 
               {/* Expanded — dates, prices, exit reason, PnL breakdown */}
@@ -296,12 +287,6 @@ const History: FC<HistoryProps> = ({ getHistory }) => {
                     <div>
                       <div className="text-gray-500 uppercase tracking-wide text-[9px]">{t('hist.exitReason')}</div>
                       <div className="text-gray-300 text-xs">{tr.exit_reason}</div>
-                    </div>
-                  )}
-                  {isFailed && tr.failure_reason && (
-                    <div>
-                      <div className="text-red-500 uppercase tracking-wide text-[9px]">{t('hist.failureReason')}</div>
-                      <div className="text-red-400 text-xs">{tr.failure_reason}</div>
                     </div>
                   )}
                   <div className="border-t border-gray-800/50 pt-3">

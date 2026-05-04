@@ -338,3 +338,55 @@ func TestTestOrderRejectsUnsafeProbeParamsWithoutSending(t *testing.T) {
 		t.Fatalf("unsafe probes sent %d requests, want 0", requests)
 	}
 }
+
+func TestGetFuturesBalancePreservesZeroAvailableMarginAndParsesUsedFreezed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/openApi/swap/v3/user/balance" {
+			t.Fatalf("path = %s, want /openApi/swap/v3/user/balance", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"code": 0,
+			"msg": "",
+			"data": [
+				{
+					"asset": "USDT",
+					"balance": "100",
+					"equity": "150",
+					"availableMargin": "0",
+					"usedMargin": "12.5",
+					"freezedMargin": "7.25"
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewAdapter(exchange.ExchangeConfig{
+		ApiKey:    "test-key",
+		SecretKey: "test-secret",
+	})
+	adapter.client.baseURL = server.URL
+	adapter.client.httpClient = server.Client()
+
+	bal, err := adapter.GetFuturesBalance()
+	if err != nil {
+		t.Fatalf("GetFuturesBalance: %v", err)
+	}
+
+	if bal.Available != 0 {
+		t.Fatalf("Available = %v, want 0; availableMargin=\"0\" must not fall back", bal.Available)
+	}
+	if bal.Frozen != 12.5 {
+		t.Fatalf("Frozen = %v, want usedMargin 12.5", bal.Frozen)
+	}
+	if bal.MaxTransferOut != 80.25 {
+		t.Fatalf("MaxTransferOut = %v, want balance-used-freezed = 80.25", bal.MaxTransferOut)
+	}
+	if bal.MarginRatio != 1 {
+		t.Fatalf("MarginRatio = %v, want 1 when availableMargin is 0 and equity is positive", bal.MarginRatio)
+	}
+	if !bal.MarginRatioUnavailable {
+		t.Fatal("MarginRatioUnavailable = false, want true")
+	}
+}

@@ -2,6 +2,7 @@ package binance
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -49,6 +50,106 @@ func TestGetClosePnL_Binance_CloseSizeUnknown(t *testing.T) {
 	}
 	if pnls[0].CloseSize != 0 {
 		t.Errorf("CloseSize = %.4f, want 0 (not derivable)", pnls[0].CloseSize)
+	}
+}
+
+func TestGetFuturesBalance_Binance_TrustsZeroAssetAvailableBalance(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/fapi/v2/account" {
+			http.NotFound(w, r)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"totalMarginBalance": "100",
+			"totalMaintMargin":   "5",
+			"availableBalance":   "88",
+			"assets": []map[string]interface{}{
+				{
+					"asset":             "USDT",
+					"walletBalance":     "100",
+					"marginBalance":     "100",
+					"availableBalance":  "0",
+					"maxWithdrawAmount": "0",
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	adapter := &Adapter{
+		client:    NewClient("testkey", "testsecret").WithBaseURL(srv.URL),
+		apiKey:    "testkey",
+		secretKey: "testsecret",
+	}
+
+	bal, err := adapter.GetFuturesBalance()
+	if err != nil {
+		t.Fatalf("GetFuturesBalance: %v", err)
+	}
+	if bal.Available != 0 {
+		t.Fatalf("Available = %v, want 0", bal.Available)
+	}
+	if bal.Total != 100 {
+		t.Fatalf("Total = %v, want 100", bal.Total)
+	}
+}
+
+func TestGetFuturesBalance_Binance_FallsBackToTopLevelAvailableWhenAssetMissing(t *testing.T) {
+	tests := []struct {
+		name  string
+		asset map[string]interface{}
+	}{
+		{
+			name: "missing",
+			asset: map[string]interface{}{
+				"asset":             "USDT",
+				"walletBalance":     "100",
+				"marginBalance":     "100",
+				"maxWithdrawAmount": "12.5",
+			},
+		},
+		{
+			name: "empty",
+			asset: map[string]interface{}{
+				"asset":             "USDT",
+				"walletBalance":     "100",
+				"marginBalance":     "100",
+				"availableBalance":  "",
+				"maxWithdrawAmount": "12.5",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/fapi/v2/account" {
+					http.NotFound(w, r)
+					return
+				}
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"totalMarginBalance": "100",
+					"totalMaintMargin":   "5",
+					"availableBalance":   "42.25",
+					"assets":             []map[string]interface{}{tt.asset},
+				})
+			}))
+			defer srv.Close()
+
+			adapter := &Adapter{
+				client:    NewClient("testkey", "testsecret").WithBaseURL(srv.URL),
+				apiKey:    "testkey",
+				secretKey: "testsecret",
+			}
+
+			bal, err := adapter.GetFuturesBalance()
+			if err != nil {
+				t.Fatalf("GetFuturesBalance: %v", err)
+			}
+			if math.Abs(bal.Available-42.25) > 1e-9 {
+				t.Fatalf("Available = %v, want 42.25", bal.Available)
+			}
+		})
 	}
 }
 

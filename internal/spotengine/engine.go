@@ -166,6 +166,16 @@ func (e *SpotEngine) stopping() bool {
 	}
 }
 
+func (e *SpotEngine) spotFuturesEnabled() bool {
+	if e.cfg == nil {
+		return true
+	}
+	e.cfg.RLock()
+	enabled := e.cfg.SpotFuturesEnabled
+	e.cfg.RUnlock()
+	return enabled
+}
+
 func (e *SpotEngine) getSpotExchange(name string) (exchange.SpotExchange, bool) {
 	if e.spotMarkets != nil {
 		if spotExch, ok := e.spotMarkets[name]; ok {
@@ -231,11 +241,48 @@ func (e *SpotEngine) discoveryLoop() {
 		e.pushOppsToAPI(cached)
 	}
 
-	// Initial scan on startup.
-	e.log.Info("spot-futures discovery scan (interval: %s)", scanInterval)
+	if e.spotFuturesEnabled() {
+		e.log.Info("spot-futures discovery scan (interval: %s)", scanInterval)
+		if !e.runDiscoveryCycle(true) {
+			return
+		}
+	}
+
+	for {
+		select {
+		case <-e.stopCh:
+			return
+		case <-ticker.C:
+			if !e.spotFuturesEnabled() {
+				continue
+			}
+			e.log.Info("spot-futures discovery scan")
+			if !e.runDiscoveryCycle(true) {
+				return
+			}
+		case <-e.configChanged:
+			newInterval := time.Duration(e.cfg.SpotFuturesScanIntervalMin) * time.Minute
+			if newInterval < time.Minute {
+				newInterval = 10 * time.Minute
+			}
+			ticker.Reset(newInterval)
+			if !e.spotFuturesEnabled() {
+				e.log.Info("spot-futures disabled; discovery loop paused")
+				e.pushOppsToAPI(nil)
+				continue
+			}
+			e.log.Info("spot-futures config updated, scan interval now %s - running immediate scan", newInterval)
+			if !e.runDiscoveryCycle(false) {
+				return
+			}
+		}
+	}
+}
+
+func (e *SpotEngine) runDiscoveryCycle(sweepMargin bool) bool {
 	opps := e.runDiscoveryScan()
 	if e.stopping() {
-		return
+		return false
 	}
 	passed := filterPassed(opps)
 	e.logDiscoveryResults(passed)
@@ -244,46 +291,10 @@ func (e *SpotEngine) discoveryLoop() {
 	e.updatePersistenceCounts(passed)
 	e.updateAllocation() // refresh allocation before auto-entries
 	e.attemptAutoEntries(passed)
-	e.sweepIsolatedMargin()
-
-	for {
-		select {
-		case <-e.stopCh:
-			return
-		case <-ticker.C:
-			e.log.Info("spot-futures discovery scan")
-			opps := e.runDiscoveryScan()
-			if e.stopping() {
-				return
-			}
-			passed := filterPassed(opps)
-			e.logDiscoveryResults(passed)
-			e.launchBacktestPrefetch(passed)
-			e.pushOppsToAPI(opps)
-			e.updatePersistenceCounts(passed)
-			e.updateAllocation() // refresh allocation before auto-entries
-			e.attemptAutoEntries(passed)
-			e.sweepIsolatedMargin()
-		case <-e.configChanged:
-			newInterval := time.Duration(e.cfg.SpotFuturesScanIntervalMin) * time.Minute
-			if newInterval < time.Minute {
-				newInterval = 10 * time.Minute
-			}
-			ticker.Reset(newInterval)
-			e.log.Info("spot-futures config updated, scan interval now %s — running immediate scan", newInterval)
-			opps := e.runDiscoveryScan()
-			if e.stopping() {
-				return
-			}
-			passed := filterPassed(opps)
-			e.logDiscoveryResults(passed)
-			e.launchBacktestPrefetch(passed)
-			e.pushOppsToAPI(opps)
-			e.updatePersistenceCounts(passed)
-			e.updateAllocation() // refresh allocation before auto-entries
-			e.attemptAutoEntries(passed)
-		}
+	if sweepMargin {
+		e.sweepIsolatedMargin()
 	}
+	return true
 }
 
 // pushOppsToAPI sends discovery results to the API server for /api/spot/opportunities

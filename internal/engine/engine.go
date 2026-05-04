@@ -2569,6 +2569,8 @@ func deriveFailureStage(reason string) string {
 	switch {
 	case strings.Contains(r, "depth data not available"), strings.Contains(r, "depth subscribe"):
 		return "depth_subscribe"
+	case strings.Contains(r, "preflight"):
+		return "order_preflight"
 	case strings.Contains(r, "depth fill"), strings.Contains(r, "below minimum"):
 		return "depth_fill"
 	case strings.Contains(r, "circuit breaker"), strings.Contains(r, "consecutive fail"):
@@ -2762,7 +2764,7 @@ func (e *Engine) preflightBingXEntryOrder(exch exchange.Exchange, exchName, symb
 	if !ok {
 		return nil
 	}
-	probePriceStr, err := e.bingXEntryProbePrice(exch, exchName, symbol, side, refPrice)
+	probePriceStr, err := e.bingXEntryProbePriceForSize(exch, exchName, symbol, side, refPrice, size)
 	if err != nil {
 		return err
 	}
@@ -2792,7 +2794,7 @@ func (e *Engine) bingXEntryProbePrice(exch exchange.Exchange, exchName, symbol s
 	}
 
 	priceStep, priceDecimals := e.bingXContractPriceFormat(exch, exchName, symbol)
-	probePrice := refPrice * 0.01
+	probePrice := refPrice * 0.21
 	if side == exchange.SideSell {
 		probePrice = refPrice * 1.99
 	}
@@ -2823,6 +2825,68 @@ func (e *Engine) bingXEntryProbePrice(exch exchange.Exchange, exchName, symbol s
 		return "", fmt.Errorf("bingx preflight cannot build non-marketable sell probe for %s: ref=%.8f probe=%s", symbol, refPrice, priceStr)
 	}
 	return priceStr, nil
+}
+
+const bingXMinProbeNotionalUSDT = 2.05
+
+func (e *Engine) bingXEntryProbePriceForSize(exch exchange.Exchange, exchName, symbol string, side exchange.Side, refPrice float64, size string) (string, error) {
+	probePriceStr, err := e.bingXEntryProbePrice(exch, exchName, symbol, side, refPrice)
+	if err != nil {
+		return "", err
+	}
+	qty, err := strconv.ParseFloat(size, 64)
+	if err != nil || qty <= 0 {
+		return "", fmt.Errorf("bingx preflight invalid size for %s: %s", symbol, size)
+	}
+	price, err := strconv.ParseFloat(probePriceStr, 64)
+	if err != nil || price <= 0 {
+		return "", fmt.Errorf("bingx preflight invalid probe price for %s: %s", symbol, probePriceStr)
+	}
+	if price*qty >= bingXMinProbeNotionalUSDT {
+		return probePriceStr, nil
+	}
+
+	priceStep, priceDecimals := e.bingXContractPriceFormat(exch, exchName, symbol)
+	minProbePrice := bingXMinProbeNotionalUSDT / qty
+	if priceStep > 0 {
+		minProbePrice = utils.RoundUpToStep(minProbePrice, priceStep)
+	}
+	if side == exchange.SideBuy && minProbePrice >= refPrice {
+		return "", fmt.Errorf("bingx preflight probe notional below %.2f USDT and cannot stay non-marketable (ref=%.8f size=%s)", bingXMinProbeNotionalUSDT, refPrice, size)
+	}
+	if side == exchange.SideSell && minProbePrice <= refPrice {
+		minProbePrice = refPrice
+		if priceStep > 0 {
+			minProbePrice = utils.RoundUpToStep(refPrice+priceStep, priceStep)
+		} else {
+			minProbePrice = refPrice * 1.01
+		}
+	}
+
+	for attempt := 0; attempt < 10; attempt++ {
+		priceStr := utils.FormatPrice(minProbePrice, priceDecimals)
+		parsed, _ := strconv.ParseFloat(priceStr, 64)
+		if side == exchange.SideBuy && parsed >= refPrice {
+			return "", fmt.Errorf("bingx preflight cannot build min-notional non-marketable buy probe for %s: ref=%.8f probe=%s size=%s", symbol, refPrice, priceStr, size)
+		}
+		if side == exchange.SideSell && parsed <= refPrice {
+			return "", fmt.Errorf("bingx preflight cannot build min-notional non-marketable sell probe for %s: ref=%.8f probe=%s size=%s", symbol, refPrice, priceStr, size)
+		}
+		if parsed*qty >= bingXMinProbeNotionalUSDT {
+			return priceStr, nil
+		}
+
+		if priceStep > 0 {
+			minProbePrice = utils.RoundUpToStep(minProbePrice+priceStep, priceStep)
+		} else {
+			scale := math.Pow10(priceDecimals)
+			if priceDecimals < 0 {
+				scale = 1e8
+			}
+			minProbePrice = math.Ceil(minProbePrice*scale+1) / scale
+		}
+	}
+	return "", fmt.Errorf("bingx preflight probe notional below %.2f USDT after formatting (ref=%.8f size=%s)", bingXMinProbeNotionalUSDT, refPrice, size)
 }
 
 func (e *Engine) bingXContractPriceFormat(exch exchange.Exchange, exchName, symbol string) (float64, int) {
@@ -3215,10 +3279,11 @@ func (e *Engine) refetchMarginCappedSize(exch exchange.Exchange, longExchange, s
 	if err != nil {
 		return 0, nil, err
 	}
-	downsized := (liveBal.Available * leverage) / price
+	available := risk.EffectiveOrderAvailable(liveBal)
+	downsized := (available * leverage) / price
 	downsized = e.commonTradeableSize(longExchange, shortExchange, symbol, downsized)
 	if downsized <= 0 || downsized >= currentSize || downsized < minSize || downsized*price < minChunkUSDT {
-		return 0, liveBal, fmt.Errorf("refetched size below minimum (avail=%.2f price=%.6f)", liveBal.Available, price)
+		return 0, liveBal, fmt.Errorf("refetched size below minimum (effectiveAvail=%.2f rawAvail=%.2f maxTransferOut=%.2f price=%.6f)", available, liveBal.Available, liveBal.MaxTransferOut, price)
 	}
 	return downsized, liveBal, nil
 }
@@ -3437,6 +3502,20 @@ func (e *Engine) executeTradeV2WithPos(opp models.Opportunity, pos *models.Arbit
 	var lastBalCheck time.Time
 
 	var abortFillLoop bool
+	var entryAbortReason string
+	var lastSkipReason string
+	noteSkip := func(format string, args ...interface{}) {
+		lastSkipReason = fmt.Sprintf(format, args...)
+	}
+	setAbortReason := func(format string, args ...interface{}) {
+		entryAbortReason = fmt.Sprintf(format, args...)
+	}
+	describeLastSkip := func() string {
+		if lastSkipReason == "" {
+			return "none"
+		}
+		return lastSkipReason
+	}
 
 fillLoop:
 	for {
@@ -3459,16 +3538,21 @@ fillLoop:
 		if time.Now().After(deadline) {
 			e.log.Warn("depth fill loop: timeout for %s (long=%.6f short=%.6f)",
 				opp.Symbol, confirmedLong, confirmedShort)
+			if entryAbortReason == "" {
+				setAbortReason("depth fill timeout after %ds; last skip: %s", e.cfg.EntryTimeoutSec, describeLastSkip())
+			}
 			break
 		}
 		if longConsecFails >= maxConsecFails || shortConsecFails >= maxConsecFails {
+			failedExchange := opp.ShortExchange
+			if longConsecFails >= maxConsecFails {
+				failedExchange = opp.LongExchange
+			}
 			e.log.Error("depth fill loop: circuit breaker for %s ??%s has %d consecutive failures, aborting",
-				opp.Symbol, func() string {
-					if longConsecFails >= maxConsecFails {
-						return opp.LongExchange
-					}
-					return opp.ShortExchange
-				}(), max(longConsecFails, shortConsecFails))
+				opp.Symbol, failedExchange, max(longConsecFails, shortConsecFails))
+			if entryAbortReason == "" {
+				setAbortReason("depth fill circuit breaker on %s after %d consecutive failures", failedExchange, max(longConsecFails, shortConsecFails))
+			}
 			break
 		}
 
@@ -3476,6 +3560,9 @@ fillLoop:
 		case <-ticker.C:
 		case <-e.stopCh:
 			e.log.Info("depth fill loop: engine stopped")
+			if entryAbortReason == "" {
+				setAbortReason("engine stopped during depth fill; last skip: %s", describeLastSkip())
+			}
 			break fillLoop
 		}
 
@@ -3483,6 +3570,14 @@ fillLoop:
 		shortDepth, sok := shortExch.GetDepth(opp.Symbol)
 		longDepth, lok := longExch.GetDepth(opp.Symbol)
 		if !sok || !lok || len(shortDepth.Bids) == 0 || len(longDepth.Asks) == 0 {
+			shortBids, longAsks := 0, 0
+			if sok && shortDepth != nil {
+				shortBids = len(shortDepth.Bids)
+			}
+			if lok && longDepth != nil {
+				longAsks = len(longDepth.Asks)
+			}
+			noteSkip("depth unavailable/empty (shortDepth=%v shortBids=%d longDepth=%v longAsks=%d)", sok, shortBids, lok, longAsks)
 			if time.Now().After(deadline.Add(-290 * time.Second)) { // log once near start
 				e.log.Debug("depth fill %s: no depth (short=%v long=%v)", opp.Symbol, sok, lok)
 			}
@@ -3493,6 +3588,7 @@ fillLoop:
 		shortAge := time.Since(shortDepth.Time)
 		longAge := time.Since(longDepth.Time)
 		if shortAge > 5*time.Second || longAge > 5*time.Second {
+			noteSkip("stale depth (shortAge=%.1fs longAge=%.1fs)", shortAge.Seconds(), longAge.Seconds())
 			if time.Now().After(deadline.Add(-290 * time.Second)) { // log once near start
 				e.log.Debug("depth fill %s: stale (short=%.1fs long=%.1fs)", opp.Symbol, shortAge.Seconds(), longAge.Seconds())
 			}
@@ -3506,6 +3602,7 @@ fillLoop:
 		bestBid := shortDepth.Bids[0].Price
 		bestAsk := longDepth.Asks[0].Price
 		if bestBid <= 0 || bestAsk <= 0 {
+			noteSkip("invalid top of book (bestBid=%.8f bestAsk=%.8f)", bestBid, bestAsk)
 			continue
 		}
 
@@ -3516,6 +3613,7 @@ fillLoop:
 		// Top-of-book spread check
 		spreadBPS := (bestAsk/bestBid - 1) * 10000
 		if spreadBPS > maxSpread {
+			noteSkip("spread too wide (spread=%.1fbps max=%.1fbps bid=%.8f ask=%.8f)", spreadBPS, maxSpread, bestBid, bestAsk)
 			if !spreadRejected {
 				e.log.Debug("depth tick: %s spread=%.1fbps > max=%.1fbps (ask=%.6f bid=%.6f), waiting...",
 					opp.Symbol, spreadBPS, maxSpread, bestAsk, bestBid)
@@ -3552,6 +3650,7 @@ fillLoop:
 		}
 
 		if bidQty <= 0 || askQty <= 0 {
+			noteSkip("no executable depth inside spread (bidQty=%.6f askQty=%.6f maxSpread=%.1fbps)", bidQty, askQty, maxSpread)
 			continue
 		}
 
@@ -3559,13 +3658,16 @@ fillLoop:
 		size := math.Min(remaining, math.Min(bidQty, askQty))
 
 		// Round to contract step size that both exchanges can represent.
+		rawSize := size
 		size = e.commonTradeableSize(opp.LongExchange, opp.ShortExchange, opp.Symbol, size)
 		if size <= 0 || size < minSize {
+			noteSkip("rounded size not tradeable (rawSize=%.6f rounded=%.6f minSize=%.6f)", rawSize, size, minSize)
 			continue
 		}
 
 		// Min notional check
 		if size*bidPrice < e.cfg.MinChunkUSDT {
+			noteSkip("slice below min chunk (size=%.6f bidPrice=%.8f notional=%.2f minChunk=%.2f)", size, bidPrice, size*bidPrice, e.cfg.MinChunkUSDT)
 			continue
 		}
 
@@ -3609,13 +3711,16 @@ fillLoop:
 		}
 		// Fail-closed: if we have no cached balance, skip this tick (don't place orders blind)
 		if cachedLongBal == nil || cachedShortBal == nil {
+			noteSkip("balance snapshot unavailable (longBalance=%v shortBalance=%v)", cachedLongBal != nil, cachedShortBal != nil)
 			e.log.Warn("depth tick: no cached balance for %s, skipping tick", opp.Symbol)
 			continue
 		}
 		{
-			// Max affordable size per leg = (available * leverage) / price
-			maxLongSize := (cachedLongBal.Available * leverage) / askPrice
-			maxShortSize := (cachedShortBal.Available * leverage) / bidPrice
+			// Max affordable size per leg = (effective available * leverage) / price.
+			longAvail := risk.EffectiveOrderAvailable(cachedLongBal)
+			shortAvail := risk.EffectiveOrderAvailable(cachedShortBal)
+			maxLongSize := (longAvail * leverage) / askPrice
+			maxShortSize := (shortAvail * leverage) / bidPrice
 			affordableSize := math.Min(maxLongSize, maxShortSize)
 
 			if affordableSize < size {
@@ -3623,20 +3728,22 @@ fillLoop:
 				affordableSize = e.commonTradeableSize(opp.LongExchange, opp.ShortExchange, opp.Symbol, affordableSize)
 				if affordableSize > 0 && affordableSize*bidPrice >= e.cfg.MinChunkUSDT {
 					e.log.Info("depth tick: margin cap %s size %.6f ??%.6f (longAvail=%.2f shortAvail=%.2f)",
-						opp.Symbol, size, affordableSize, cachedLongBal.Available, cachedShortBal.Available)
+						opp.Symbol, size, affordableSize, longAvail, shortAvail)
 					size = affordableSize
 					// Re-format sizes after capping
 					shortSizeStr = e.formatSize(opp.ShortExchange, opp.Symbol, size)
 					longSizeStr = e.formatSize(opp.LongExchange, opp.Symbol, size)
 				} else {
+					noteSkip("insufficient margin for min chunk (longAvail=%.2f shortAvail=%.2f affordableSize=%.6f minChunk=%.2f)", longAvail, shortAvail, affordableSize, e.cfg.MinChunkUSDT)
 					e.log.Warn("depth tick: insufficient margin for %s min chunk (longAvail=%.2f shortAvail=%.2f), skipping tick",
-						opp.Symbol, cachedLongBal.Available, cachedShortBal.Available)
+						opp.Symbol, longAvail, shortAvail)
 					continue
 				}
 			}
 		}
 
 		if err := e.preflightBingXEntryOrder(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, askPrice, longSizeStr); err != nil {
+			setAbortReason("preflight blocked long leg before order on %s: %v", opp.LongExchange, err)
 			e.log.Warn("depth fill preflight blocked %s long leg before any new orders: %v", opp.Symbol, err)
 			if e.discovery != nil {
 				e.discovery.SetReEnterCooldown(opp.Symbol, 30*time.Minute)
@@ -3644,6 +3751,7 @@ fillLoop:
 			break fillLoop
 		}
 		if err := e.preflightBingXEntryOrder(shortExch, opp.ShortExchange, opp.Symbol, exchange.SideSell, bidPrice, shortSizeStr); err != nil {
+			setAbortReason("preflight blocked short leg before order on %s: %v", opp.ShortExchange, err)
 			e.log.Warn("depth fill preflight blocked %s short leg before any new orders: %v", opp.Symbol, err)
 			if e.discovery != nil {
 				e.discovery.SetReEnterCooldown(opp.Symbol, 30*time.Minute)
@@ -3676,6 +3784,7 @@ fillLoop:
 					cachedShortBal = liveBal
 				}
 				if resizeErr != nil {
+					setAbortReason("short IOC margin insufficient after live balance refetch on %s: %v", opp.ShortExchange, resizeErr)
 					e.log.Warn("depth tick: short IOC margin insufficient for %s after refetch, aborting entry: %v", opp.Symbol, resizeErr)
 					break fillLoop
 				}
@@ -3718,6 +3827,9 @@ fillLoop:
 					return errPartialEntry
 				}
 				shortConsecFails++
+				if entryAbortReason == "" {
+					setAbortReason("short first-leg fill state unknown on %s after order %s: %v", opp.ShortExchange, shortOID, shortCFErr)
+				}
 				// Break out of depth loop to trigger post-loop reconciliation
 				// which will use the force checkpoint to persist actual state.
 				break
@@ -3962,6 +4074,7 @@ fillLoop:
 					cachedLongBal = liveBal
 				}
 				if resizeErr != nil {
+					setAbortReason("long IOC margin insufficient after live balance refetch on %s: %v", opp.LongExchange, resizeErr)
 					e.log.Warn("depth tick: long IOC margin insufficient for %s after refetch, aborting entry: %v", opp.Symbol, resizeErr)
 					break fillLoop
 				}
@@ -4002,6 +4115,9 @@ fillLoop:
 					return errPartialEntry
 				}
 				longConsecFails++
+				if entryAbortReason == "" {
+					setAbortReason("long first-leg fill state unknown on %s after order %s: %v", opp.LongExchange, longOID, longCFErr)
+				}
 				break // freeze depth loop ??post-loop reconciliation handles
 			}
 			if longFilled == 0 {
@@ -4289,9 +4405,22 @@ fillLoop:
 			}
 		}
 		reason := fmt.Sprintf("depth fills below minimum (%s: long=%.6f short=%.6f)", opp.Symbol, confirmedLong, confirmedShort)
+		if minFill <= 0 {
+			detail := entryAbortReason
+			if detail == "" && lastSkipReason != "" {
+				detail = "no executable depth before loop ended; last skip: " + lastSkipReason
+			}
+			if detail == "" {
+				detail = "no matched fills before loop ended"
+			}
+			reason = fmt.Sprintf("entry produced no matched fills: %s (%s: long=%.6f short=%.6f)", detail, opp.Symbol, confirmedLong, confirmedShort)
+		} else {
+			reason = fmt.Sprintf("entry fills below $%.2f minimum notional (%s: longQty=%.6f longNotional=%.2f shortQty=%.6f shortNotional=%.2f)",
+				minPositionUSDT, opp.Symbol, confirmedLong, longNotional, confirmedShort, shortNotional)
+		}
 		pos.Status = models.StatusClosed
 		pos.FailureReason = reason
-		pos.FailureStage = "depth_fill"
+		pos.FailureStage = deriveFailureStage(reason)
 		pos.ExitReason = "entry_failed: " + reason
 		pos.UpdatedAt = time.Now().UTC()
 		e.log.Info("[reconcile-debug] AddToHistory %s: LongTotalFees=%.6f ShortTotalFees=%.6f LongFunding=%.6f ShortFunding=%.6f LongClosePnL=%.6f ShortClosePnL=%.6f HasReconciled=%v",

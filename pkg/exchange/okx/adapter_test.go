@@ -205,3 +205,102 @@ func TestCtValRoundTrip(t *testing.T) {
 		t.Errorf("WS FilledVolume: expected %.0f base units, got %.0f", baseUnits, wsUpdate.FilledVolume)
 	}
 }
+
+func TestGetFuturesBalance_OKX_TrustsZeroAvailEq(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respond := func(data interface{}) {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"code": "0",
+				"msg":  "",
+				"data": data,
+			})
+		}
+
+		switch r.URL.Path {
+		case "/api/v5/account/balance":
+			respond([]map[string]interface{}{{
+				"mgnRatio": "",
+				"details": []map[string]interface{}{
+					{
+						"ccy":       "USDT",
+						"eq":        "100",
+						"availEq":   "0",
+						"availBal":  "77",
+						"frozenBal": "0",
+						"mmr":       "5",
+					},
+				},
+			}})
+		case "/api/v5/account/max-withdrawal":
+			respond([]map[string]interface{}{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	adapter := &Adapter{
+		client:    NewClientWithBase(srv.URL),
+		priceSyms: make(map[string]bool),
+		depthSyms: make(map[string]bool),
+	}
+
+	bal, err := adapter.GetFuturesBalance()
+	if err != nil {
+		t.Fatalf("GetFuturesBalance: %v", err)
+	}
+	if bal.Available != 0 {
+		t.Fatalf("Available = %v, want 0", bal.Available)
+	}
+	if bal.Total != 100 {
+		t.Fatalf("Total = %v, want 100", bal.Total)
+	}
+}
+
+func TestGetFuturesBalance_OKX_FallsBackToAvailBalWhenAvailEqEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respond := func(data interface{}) {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"code": "0",
+				"msg":  "",
+				"data": data,
+			})
+		}
+
+		switch r.URL.Path {
+		case "/api/v5/account/balance":
+			respond([]map[string]interface{}{{
+				"mgnRatio": "",
+				"details": []map[string]interface{}{
+					{
+						"ccy":       "USDT",
+						"eq":        "100",
+						"availEq":   "",
+						"availBal":  "42.25",
+						"frozenBal": "0",
+						"mmr":       "5",
+					},
+				},
+			}})
+		case "/api/v5/account/max-withdrawal":
+			respond([]map[string]interface{}{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	adapter := &Adapter{
+		client:    NewClientWithBase(srv.URL),
+		priceSyms: make(map[string]bool),
+		depthSyms: make(map[string]bool),
+	}
+
+	bal, err := adapter.GetFuturesBalance()
+	if err != nil {
+		t.Fatalf("GetFuturesBalance: %v", err)
+	}
+	if math.Abs(bal.Available-42.25) > 1e-9 {
+		t.Fatalf("Available = %v, want 42.25", bal.Available)
+	}
+}

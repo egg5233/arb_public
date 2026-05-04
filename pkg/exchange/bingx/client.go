@@ -19,6 +19,12 @@ import (
 
 const (
 	defaultBaseURL = "https://open-api.bingx.com"
+
+	bingxGlobalSignedInterval  = 100 * time.Millisecond
+	bingxDefaultSignedInterval = 150 * time.Millisecond
+	bingxTenPerSecondInterval  = 110 * time.Millisecond
+	bingxFivePerSecondInterval = 220 * time.Millisecond
+	bingxTwoPerSecondInterval  = 550 * time.Millisecond
 )
 
 // retryable BingX API error codes.
@@ -52,10 +58,11 @@ type Client struct {
 	httpClient      *http.Client
 	metricsCallback exchange.MetricsCallback
 
-	// Rate limiter: serialize signed API calls with minimum interval
-	// to avoid BingX 100410 frequency limit bans.
-	rateMu   sync.Mutex
-	lastCall time.Time
+	// Rate limiter: serialize signed API calls and apply endpoint-specific
+	// cooldowns to avoid BingX 100410 frequency limit bans.
+	rateMu           sync.Mutex
+	lastCall         time.Time
+	lastCallByBucket map[string]time.Time
 }
 
 // NewClient creates a new BingX REST API client.
@@ -130,6 +137,8 @@ func (c *Client) Delete(path string, params map[string]string) (json.RawMessage,
 // DoRequestRaw performs an authenticated HTTP request and returns the raw response body.
 // Use for endpoints that don't follow the standard {"code":0,"data":...} wrapper.
 func (c *Client) DoRequestRaw(method, path string, params map[string]string) ([]byte, error) {
+	c.waitRateLimit(method, path)
+
 	start := time.Now()
 	var err error
 	defer func() {
@@ -263,17 +272,92 @@ func isRetryable(err error) bool {
 		strings.Contains(errMsg, "connection reset")
 }
 
-// retryDo performs an HTTP request with exponential backoff retry on transient errors.
-// All calls are serialized with a minimum 150ms interval to stay under BingX's
-// 10/s per-UID rate limit across concurrent goroutines.
-func (c *Client) retryDo(method, path string, params map[string]string, maxRetries int) (json.RawMessage, error) {
-	// Rate limit: serialize and enforce minimum interval between calls.
-	c.rateMu.Lock()
-	if elapsed := time.Since(c.lastCall); elapsed < 150*time.Millisecond {
-		time.Sleep(150*time.Millisecond - elapsed)
+func bingxRateLimitRule(method, path string) (string, time.Duration) {
+	method = strings.ToUpper(method)
+	key := method + " " + path
+
+	switch path {
+	case "/openApi/spot/v1/account/balance",
+		"/openApi/fund/v1/account/balance",
+		"/openApi/swap/v2/user/balance",
+		"/openApi/swap/v3/user/balance",
+		"/openApi/swap/v2/user/positions",
+		"/openApi/swap/v2/user/income",
+		"/openApi/swap/v2/user/commissionRate",
+		"/openApi/swap/v2/trade/openOrders",
+		"/openApi/swap/v2/trade/allOrders",
+		"/openApi/swap/v2/trade/allFillOrders",
+		"/openApi/swap/v1/trade/positionHistory":
+		return key, bingxFivePerSecondInterval
+
+	case "/openApi/api/v3/post/asset/transfer",
+		"/openApi/api/asset/v1/transfer",
+		"/openApi/wallets/v1/capital/withdraw/apply",
+		"/openApi/wallets/v1/capital/config/getall",
+		"/openApi/swap/v2/trade/leverage",
+		"/openApi/swap/v2/trade/marginType",
+		"/openApi/swap/v1/positionSide/dual":
+		return key, bingxTwoPerSecondInterval
+
+	case "/openApi/swap/v2/trade/order":
+		switch method {
+		case "POST":
+			return key, bingxTenPerSecondInterval
+		case "GET", "DELETE":
+			return key, bingxFivePerSecondInterval
+		default:
+			return key, bingxDefaultSignedInterval
+		}
+
+	case "/openApi/spot/v1/trade/order":
+		if method == "POST" {
+			return key, bingxFivePerSecondInterval
+		}
+		return key, bingxDefaultSignedInterval
+
+	case "/openApi/user/auth/userDataStream":
+		return key, bingxTwoPerSecondInterval
 	}
-	c.lastCall = time.Now()
-	c.rateMu.Unlock()
+
+	return key, bingxDefaultSignedInterval
+}
+
+func (c *Client) waitRateLimit(method, path string) {
+	bucket, interval := bingxRateLimitRule(method, path)
+
+	c.rateMu.Lock()
+	defer c.rateMu.Unlock()
+
+	if c.lastCallByBucket == nil {
+		c.lastCallByBucket = make(map[string]time.Time)
+	}
+
+	now := time.Now()
+	wait := time.Duration(0)
+	if !c.lastCall.IsZero() {
+		if d := bingxGlobalSignedInterval - now.Sub(c.lastCall); d > wait {
+			wait = d
+		}
+	}
+	if last, ok := c.lastCallByBucket[bucket]; ok {
+		if d := interval - now.Sub(last); d > wait {
+			wait = d
+		}
+	}
+
+	if wait > 0 {
+		time.Sleep(wait)
+		now = time.Now()
+	}
+	c.lastCall = now
+	c.lastCallByBucket[bucket] = now
+}
+
+// retryDo performs an HTTP request with exponential backoff retry on transient errors.
+// All calls are serialized and throttled by endpoint to stay under BingX's
+// per-UID limits across concurrent goroutines.
+func (c *Client) retryDo(method, path string, params map[string]string, maxRetries int) (json.RawMessage, error) {
+	c.waitRateLimit(method, path)
 
 	var lastErr error
 
