@@ -23,7 +23,14 @@ export type BreakerConfirmAction = 'recover' | 'test-fire';
 // strings are LITERAL — never translated, never lowercased, never trimmed.
 // Interaction logic (case-sensitive match, Esc closes, Enter does not submit,
 // real-trip warning banner) is unchanged from the Phase 15 contract.
-export type Phrase = 'RECOVER' | 'TEST-FIRE' | 'ENABLE-LIVE-CAPITAL' | 'ENABLE-BREAKER';
+export type Phrase =
+  | 'RECOVER'
+  | 'TEST-FIRE'
+  | 'ENABLE-LIVE-CAPITAL'
+  | 'ENABLE-BREAKER'
+  | 'RESET-RAMP'
+  | 'FORCE-PROMOTE'
+  | 'FORCE-DEMOTE';
 
 interface Props {
   open: boolean;

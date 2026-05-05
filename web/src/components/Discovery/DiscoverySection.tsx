@@ -16,7 +16,7 @@
 //   enabled=true,  errors==0, !cycle_failed → Scanner ON   (green pill)
 //   enabled=false                            → Scanner OFF  (gray pill + banner)
 //   enabled=true,  errors>0 || cycle_failed  → Scanner ERR  (red pill + banner)
-import type { FC } from 'react';
+import { useState, type FC } from 'react';
 import { useLocale } from '../../i18n/index.ts';
 import { usePgDiscovery } from '../../hooks/usePgDiscovery.ts';
 import { DiscoveryBanner } from './DiscoveryBanner.tsx';
@@ -35,6 +35,14 @@ function formatLastRunPill(ts: number | null): string {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
+function authHeaders(): Record<string, string> {
+  const token = localStorage.getItem('arb_token') || '';
+  return {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${token}`,
+  };
+}
+
 export const DiscoverySection: FC = () => {
   const { t } = useLocale();
   const {
@@ -45,17 +53,48 @@ export const DiscoverySection: FC = () => {
     errored,
     enabled,
     lastRunAt,
+    refresh,
   } = usePgDiscovery();
+  const [enableBusy, setEnableBusy] = useState(false);
+  const [enableError, setEnableError] = useState<string | null>(null);
+  const [optimisticEnabled, setOptimisticEnabled] = useState(false);
+
+  const scannerEnabled = enabled || optimisticEnabled;
+
+  const enableDiscovery = async () => {
+    setEnableBusy(true);
+    setEnableError(null);
+    try {
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ price_gap: { discovery_enabled: true } }),
+      });
+      const body = (await res.json().catch(() => null)) as {
+        ok?: boolean;
+        error?: string;
+      } | null;
+      if (!res.ok || !body?.ok) {
+        throw new Error(body?.error || `HTTP ${res.status}`);
+      }
+      setOptimisticEnabled(true);
+      await refresh();
+    } catch (err) {
+      setEnableError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setEnableBusy(false);
+    }
+  };
 
   // Variant resolution.
   let pillLabel = t('pricegap.discovery.scannerOff');
   let pillColor = 'bg-gray-700/50 text-gray-300 border-gray-600';
   let bannerVariant: 'disabled' | 'errored' | null = 'disabled';
-  if (enabled && errored) {
+  if (scannerEnabled && errored) {
     pillLabel = t('pricegap.discovery.scannerErrored');
     pillColor = 'bg-[#f6465d]/15 text-[#f6465d] border-[#f6465d]/40';
     bannerVariant = 'errored';
-  } else if (enabled) {
+  } else if (scannerEnabled) {
     pillLabel = t('pricegap.discovery.scannerOn');
     pillColor = 'bg-[#0ecb81]/15 text-[#0ecb81] border-[#0ecb81]/40';
     bannerVariant = null;
@@ -109,7 +148,13 @@ export const DiscoverySection: FC = () => {
       </div>
 
       {/* Conditional banner */}
-      <DiscoveryBanner variant={bannerVariant} errorContext={errorContext} />
+      <DiscoveryBanner
+        variant={bannerVariant}
+        errorContext={errorContext}
+        onEnable={enableDiscovery}
+        enableBusy={enableBusy}
+        enableError={enableError}
+      />
 
       {/* Cycle stats — full width */}
       <CycleStatsCard state={state} />

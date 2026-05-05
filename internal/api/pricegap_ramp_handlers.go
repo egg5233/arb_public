@@ -1,19 +1,17 @@
-// Package api — pricegap_ramp_handlers.go: Phase 14 / Plan 14-05 REST
-// surface for the live-capital ramp + daily reconcile (PG-LIVE-01 / PG-LIVE-03).
+// Package api — REST surface for the live-capital ramp + daily reconcile
+// (PG-LIVE-01 / PG-LIVE-03).
 //
 // Routes (registered in server.go alongside the existing /api/pg/* surface):
 //
-//	GET /api/pg/ramp                      — 5-field RampState + size/ceiling sidecar + live_capital flag
-//	GET /api/pg/reconcile/{date}          — typed DailyReconcileRecord (404 when day not reconciled)
+//	GET  /api/pg/ramp                     — RampState + size/ceiling sidecar + live_capital flag
+//	POST /api/pg/ramp/reset               — typed-phrase guarded reset
+//	POST /api/pg/ramp/force-promote       — typed-phrase guarded promotion
+//	POST /api/pg/ramp/force-demote        — typed-phrase guarded demotion
+//	GET  /api/pg/reconcile/{date}         — typed DailyReconcileRecord (404 when day not reconciled)
+//	POST /api/pg/reconcile/{date}/run     — run daily reconcile for a UTC date
 //
-// Both routes inherit the Bearer-token auth middleware. The Pricegap-tracker
-// dashboard tab calls them on mount to render the read-only Ramp + Reconcile
-// widget.
-//
-// D-14 (read-only): NO mutators surface here. Force-promote / force-demote /
-// reset / reconcile run live in pg-admin CLI only this phase. Phase 16
-// (PG-OPS-09) will absorb the widget into the new top-level Pricegap tab and
-// MAY introduce mutators behind a separate auth layer.
+// All routes inherit Bearer-token auth middleware; POST routes are also marked
+// mutating so passwordless deployments reject them.
 //
 // T-14-15 mitigation: handlePgReconcileDay validates the {date} path param
 // against `^\d{4}-\d{2}-\d{2}$` regex BEFORE forwarding to LoadRecord. Anything
@@ -24,8 +22,12 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"regexp"
+	"strings"
+	"time"
 )
 
 // pgReconcileDateRegex defines the allowed shape for the {date} path param.
@@ -34,6 +36,12 @@ import (
 // for those, but the date path is at minimum guarded against traversal
 // (e.g. "../etc/passwd") which is the actual T-14-15 concern.
 var pgReconcileDateRegex = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+
+type pgRampActionRequest struct {
+	ConfirmationPhrase string `json:"confirmation_phrase"`
+	Reason             string `json:"reason"`
+	Operator           string `json:"operator,omitempty"`
+}
 
 // handlePgRampState — GET /api/pg/ramp.
 //
@@ -91,6 +99,70 @@ func (s *Server) handlePgRampState(w http.ResponseWriter, r *http.Request) {
 	}})
 }
 
+func (s *Server) handlePgRampReset(w http.ResponseWriter, r *http.Request) {
+	s.handlePgRampAction(w, r, "RESET-RAMP", "reset", func(operator, reason string) error {
+		return s.pgRamp.Reset(operator, reason)
+	})
+}
+
+func (s *Server) handlePgRampForcePromote(w http.ResponseWriter, r *http.Request) {
+	s.handlePgRampAction(w, r, "FORCE-PROMOTE", "force_promote", func(operator, reason string) error {
+		return s.pgRamp.ForcePromote(operator, reason)
+	})
+}
+
+func (s *Server) handlePgRampForceDemote(w http.ResponseWriter, r *http.Request) {
+	s.handlePgRampAction(w, r, "FORCE-DEMOTE", "force_demote", func(operator, reason string) error {
+		return s.pgRamp.ForceDemote(operator, reason)
+	})
+}
+
+func (s *Server) handlePgRampAction(w http.ResponseWriter, r *http.Request, phrase, action string, fn func(operator, reason string) error) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.pgRamp == nil {
+		writeJSON(w, http.StatusServiceUnavailable, Response{Error: "ramp controller not configured"})
+		return
+	}
+	var body pgRampActionRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "invalid request body"})
+		return
+	}
+	if body.ConfirmationPhrase != phrase {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "confirmation_phrase must equal '" + phrase + "'"})
+		return
+	}
+	if strings.TrimSpace(body.Reason) == "" {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "reason required"})
+		return
+	}
+	if len(body.Reason) > priceGapReasonMaxBytes {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "reason too long"})
+		return
+	}
+	operator := strings.TrimSpace(body.Operator)
+	if operator == "" {
+		operator = "dashboard"
+	}
+	reason := sanitizeReason(body.Reason)
+	if err := fn(operator, reason); err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "already at") {
+			status = http.StatusConflict
+		}
+		writeJSON(w, status, Response{Error: err.Error()})
+		return
+	}
+	snap := s.pgRamp.Snapshot()
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: map[string]interface{}{
+		"action": action,
+		"state":  snap,
+	}})
+}
+
 // handlePgReconcileDay — GET /api/pg/reconcile/{date}.
 //
 // Returns the typed DailyReconcileRecord for the requested UTC date when
@@ -120,3 +192,62 @@ func (s *Server) handlePgReconcileDay(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: rec})
 }
+
+func (s *Server) handlePgReconcileRun(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.pgReconciler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, Response{Error: "reconciler not configured"})
+		return
+	}
+	date := r.PathValue("date")
+	if err := validatePgReconcileDate(date); err != nil {
+		writeJSON(w, http.StatusBadRequest, Response{Error: err.Error()})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+	_, existed, _ := s.pgReconciler.LoadRecord(ctx, date)
+	if err := s.pgReconciler.RunForDate(ctx, date); err != nil {
+		writeJSON(w, http.StatusInternalServerError, Response{Error: err.Error()})
+		return
+	}
+	rec, exists, err := s.pgReconciler.LoadRecord(ctx, date)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, Response{Error: err.Error()})
+		return
+	}
+	data := map[string]interface{}{
+		"date":            date,
+		"already_existed": existed,
+	}
+	if exists {
+		data["record"] = rec
+	}
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: data})
+}
+
+func validatePgReconcileDate(date string) error {
+	if !pgReconcileDateRegex.MatchString(date) {
+		return errInvalidPgReconcileDate
+	}
+	parsed, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return errInvalidPgReconcileDate
+	}
+	if parsed.After(time.Now().UTC().AddDate(0, 0, 1)) {
+		return errFuturePgReconcileDate
+	}
+	return nil
+}
+
+var (
+	errInvalidPgReconcileDate = apiError("invalid date format (expect YYYY-MM-DD)")
+	errFuturePgReconcileDate  = apiError("invalid future date")
+)
+
+type apiError string
+
+func (e apiError) Error() string { return string(e) }

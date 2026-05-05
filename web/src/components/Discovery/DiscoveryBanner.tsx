@@ -13,6 +13,9 @@ import { useLocale } from '../../i18n/index.ts';
 export interface DiscoveryBannerProps {
   variant: 'disabled' | 'errored' | null;
   errorContext?: { n: number; exchanges: string[] };
+  onEnable?: () => void;
+  enableBusy?: boolean;
+  enableError?: string | null;
 }
 
 function replaceTokens(
@@ -29,6 +32,9 @@ function replaceTokens(
 export const DiscoveryBanner: FC<DiscoveryBannerProps> = ({
   variant,
   errorContext,
+  onEnable,
+  enableBusy,
+  enableError,
 }) => {
   const { t } = useLocale();
 
@@ -41,11 +47,31 @@ export const DiscoveryBanner: FC<DiscoveryBannerProps> = ({
         data-testid="discovery-banner-disabled"
         className="bg-gray-800 text-gray-400 border border-gray-700 rounded-lg p-4"
       >
-        <div className="text-sm font-bold mb-1">
-          {t('pricegap.discovery.banner.disabled.heading')}
-        </div>
-        <div className="text-xs">
-          {t('pricegap.discovery.banner.disabled.body')}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <div className="text-sm font-bold mb-1">
+              {t('pricegap.discovery.banner.disabled.heading')}
+            </div>
+            <div className="text-xs">
+              {t('pricegap.discovery.banner.disabled.body')}
+            </div>
+            {enableError && (
+              <div className="text-xs text-[#f6465d] mt-2">{enableError}</div>
+            )}
+          </div>
+          {onEnable && (
+            <button
+              type="button"
+              className="btn-primary px-3 py-1.5 rounded text-sm whitespace-nowrap disabled:opacity-50"
+              onClick={onEnable}
+              disabled={enableBusy}
+              data-testid="discovery-enable-button"
+            >
+              {enableBusy
+                ? t('pricegap.discovery.banner.disabled.enabling')
+                : t('pricegap.discovery.banner.disabled.enableButton')}
+            </button>
+          )}
         </div>
       </div>
     );

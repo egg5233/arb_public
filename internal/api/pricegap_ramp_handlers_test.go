@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,11 +18,44 @@ import (
 
 // fakeRampSnapshotter implements RampSnapshotter for handler tests.
 type fakeRampSnapshotter struct {
-	snap models.RampState
+	snap   models.RampState
+	err    error
+	calls  []string
+	reason string
 }
 
 func (f *fakeRampSnapshotter) Snapshot() models.RampState {
 	return f.snap
+}
+
+func (f *fakeRampSnapshotter) ForcePromote(operator, reason string) error {
+	f.calls = append(f.calls, "force_promote:"+operator)
+	f.reason = reason
+	if f.err != nil {
+		return f.err
+	}
+	f.snap.CurrentStage++
+	return nil
+}
+
+func (f *fakeRampSnapshotter) ForceDemote(operator, reason string) error {
+	f.calls = append(f.calls, "force_demote:"+operator)
+	f.reason = reason
+	if f.err != nil {
+		return f.err
+	}
+	f.snap.CurrentStage--
+	return nil
+}
+
+func (f *fakeRampSnapshotter) Reset(operator, reason string) error {
+	f.calls = append(f.calls, "reset:"+operator)
+	f.reason = reason
+	if f.err != nil {
+		return f.err
+	}
+	f.snap = models.RampState{CurrentStage: 1}
+	return nil
 }
 
 // fakeReconcileLoader implements ReconcileRecordLoader for handler tests.
@@ -29,7 +63,19 @@ type fakeReconcileLoader struct {
 	rec    pricegaptrader.DailyReconcileRecord
 	exists bool
 	err    error
+	runErr error
 	calls  []string
+	runs   []string
+}
+
+func (f *fakeReconcileLoader) RunForDate(_ context.Context, date string) error {
+	f.runs = append(f.runs, date)
+	if f.runErr != nil {
+		return f.runErr
+	}
+	f.rec.Date = date
+	f.exists = true
+	return nil
 }
 
 func (f *fakeReconcileLoader) LoadRecord(_ context.Context, date string) (pricegaptrader.DailyReconcileRecord, bool, error) {
@@ -332,5 +378,90 @@ func TestHandlePgReconcileDay_LoadRecordError_Returns500(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("got %d want 500; body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandlePgRampForcePromote_HappyPath(t *testing.T) {
+	s, _, token, td := newPriceGapTestServer(t)
+	defer td()
+	ramp := &fakeRampSnapshotter{snap: models.RampState{CurrentStage: 1}}
+	s.SetPgRamp(ramp)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/pg/ramp/force-promote", s.authMiddleware(s.handlePgRampForcePromote))
+	req := httptest.NewRequest(http.MethodPost, "/api/pg/ramp/force-promote",
+		strings.NewReader(`{"confirmation_phrase":"FORCE-PROMOTE","reason":"operator review"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d want 200; body=%s", w.Code, w.Body.String())
+	}
+	if len(ramp.calls) != 1 || ramp.calls[0] != "force_promote:dashboard" {
+		t.Fatalf("calls=%v", ramp.calls)
+	}
+	if ramp.reason != "operator review" {
+		t.Fatalf("reason=%q", ramp.reason)
+	}
+}
+
+func TestHandlePgRampReset_BadPhraseReturns400(t *testing.T) {
+	s, _, token, td := newPriceGapTestServer(t)
+	defer td()
+	ramp := &fakeRampSnapshotter{snap: models.RampState{CurrentStage: 2}}
+	s.SetPgRamp(ramp)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/pg/ramp/reset", s.authMiddleware(s.handlePgRampReset))
+	req := httptest.NewRequest(http.MethodPost, "/api/pg/ramp/reset",
+		strings.NewReader(`{"confirmation_phrase":"reset-ramp","reason":"test"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("got %d want 400; body=%s", w.Code, w.Body.String())
+	}
+	if len(ramp.calls) != 0 {
+		t.Fatalf("calls=%v want none", ramp.calls)
+	}
+}
+
+func TestHandlePgReconcileRun_HappyPath(t *testing.T) {
+	s, _, token, td := newPriceGapTestServer(t)
+	defer td()
+	rec := &fakeReconcileLoader{}
+	s.SetPgReconciler(rec)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/pg/reconcile/{date}/run", s.authMiddleware(s.handlePgReconcileRun))
+	req := httptest.NewRequest(http.MethodPost, "/api/pg/reconcile/2026-04-29/run", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d want 200; body=%s", w.Code, w.Body.String())
+	}
+	if len(rec.runs) != 1 || rec.runs[0] != "2026-04-29" {
+		t.Fatalf("runs=%v", rec.runs)
+	}
+}
+
+func TestPgRampMutatingEndpointRequiresPasswordWhenUnset(t *testing.T) {
+	s, _, _, td := newPriceGapTestServer(t)
+	defer td()
+	s.cfg.DashboardPassword = ""
+	s.SetPgRamp(&fakeRampSnapshotter{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/pg/ramp/reset",
+		strings.NewReader(`{"confirmation_phrase":"RESET-RAMP","reason":"test"}`))
+	w := httptest.NewRecorder()
+	handler := s.authMiddleware(s.handlePgRampReset)
+	handler(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("got %d want 403; body=%s", w.Code, w.Body.String())
 	}
 }

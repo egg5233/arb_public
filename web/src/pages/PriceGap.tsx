@@ -17,8 +17,8 @@ interface PriceGapCandidate {
   max_position_usdt: number;
   modeled_slippage_bps?: number;
   // Phase 999.1 PG-DIR-01: bidirectional candidates fire on either sign of the
-  // spread. Empty/missing → defaults to 'pinned' (backward compat with pre-999.1
-  // config.json rows). Server normalizes via models.NormalizeDirection (Plan 02).
+  // spread. Empty/missing → defaults to 'pinned'. Server normalizes via
+  // models.NormalizeDirection (Plan 02).
   direction?: 'pinned' | 'bidirectional';
   disabled: boolean;
   reason?: string;
@@ -790,10 +790,7 @@ const PriceGap: FC = () => {
           lift it to a top-level tab without restructuring this page. */}
       <DiscoverySection />
 
-      {/* Phase 14 Plan 14-05 — Ramp + Reconcile sub-section (PG-LIVE-01 / PG-LIVE-03).
-          READ-ONLY (D-14): force-promote / force-demote / reset live in pg-admin
-          CLI only this phase. Phase 16 (PG-OPS-09) will lift this widget into
-          the new top-level Pricegap tab alongside DiscoverySection. */}
+      {/* Ramp + Reconcile operator surface (PG-LIVE-01 / PG-LIVE-03). */}
       <RampReconcileSection />
 
       {/* Section 2: Candidates */}

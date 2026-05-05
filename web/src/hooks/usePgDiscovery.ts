@@ -92,6 +92,7 @@ interface UsePgDiscoveryResult {
   state: DiscoveryState | null;
   scores: Record<string, ScoresResponse>;
   loadScoresFor: (symbol: string) => void;
+  refresh: () => Promise<void>;
   loadingSymbol: string | null;
   errored: boolean;
   enabled: boolean;
@@ -321,6 +322,7 @@ export function usePgDiscovery(): UsePgDiscoveryResult {
     state,
     scores,
     loadScoresFor,
+    refresh: seed,
     loadingSymbol,
     errored,
     enabled,

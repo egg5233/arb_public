@@ -1,23 +1,16 @@
 // Phase 14 Plan 14-05 — RampReconcileSection (PG-LIVE-01 / PG-LIVE-03).
 //
-// READ-ONLY widget per D-14. Force-promote / force-demote / reset live in
-// pg-admin CLI only this phase. Phase 16 (PG-OPS-09) will absorb this widget
-// into the new top-level Pricegap tab and MAY introduce mutators behind a
-// separate auth layer.
-//
-// DO NOT add buttons that POST/PUT/PATCH/DELETE anywhere — that's Phase 16
-// territory. T-14-17 mitigation: this comment + the absence of any mutation
-// fetch is the read-only invariant. A reviewer must reject any PR that
-// introduces a mutating fetch in this file.
+// Dashboard operator surface for ramp state and daily reconcile.
 //
 // T-14-18 mitigation: live-capital badge reads `live_capital` from the
 // /api/pg/ramp response, which is server-authoritative (see
 // internal/api/pricegap_ramp_handlers.go — server reads cfg directly, NOT a
 // client cache). Big color-coded badge (red ON / gray OFF) so the operator
 // can never confuse paper-mode for live-mode at a glance.
-import { useEffect, useState, type FC } from 'react';
+import { useCallback, useEffect, useState, type FC } from 'react';
 import { useLocale } from '../../i18n/index.ts';
 import { BreakerSubsection } from './BreakerSubsection.tsx';
+import { BreakerConfirmModal } from './BreakerConfirmModal.tsx';
 
 interface RampState {
   current_stage: number;
@@ -62,6 +55,8 @@ interface ApiEnvelope<T> {
   error?: string;
 }
 
+type RampAction = 'reset' | 'force-promote' | 'force-demote';
+
 // Yesterday in UTC, formatted as YYYY-MM-DD. The reconciler runs at UTC 00:30
 // for the previous UTC day, so "yesterday UTC" is the latest available
 // reconcile when the dashboard mounts.
@@ -79,23 +74,32 @@ function formatNullableDate(s: string): string {
   return s.slice(0, 10);
 }
 
+function authHeaders(): Record<string, string> {
+  const token = localStorage.getItem('arb_token');
+  return {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
 export const RampReconcileSection: FC = () => {
   const { t } = useLocale();
   const [ramp, setRamp] = useState<RampState | null>(null);
   const [reconcile, setReconcile] = useState<DailyRecord | null>(null);
   const [rampError, setRampError] = useState<string | null>(null);
   const [reconcileMissing, setReconcileMissing] = useState(false);
+  const [reconcileDate, setReconcileDate] = useState(yesterdayUTC);
+  const [rampReason, setRampReason] = useState('');
+  const [modalAction, setModalAction] = useState<RampAction | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [reconcileBusy, setReconcileBusy] = useState(false);
+  const [reconcileError, setReconcileError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const token = localStorage.getItem('arb_token');
-    const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
-
-    let cancelled = false;
-
-    fetch('/api/pg/ramp', { headers })
+  const loadRamp = useCallback(async () => {
+    fetch('/api/pg/ramp', { headers: authHeaders() })
       .then((r) => r.json() as Promise<ApiEnvelope<RampState>>)
       .then((j) => {
-        if (cancelled) return;
         if (j.ok && j.data) {
           setRamp(j.data);
           setRampError(null);
@@ -104,34 +108,85 @@ export const RampReconcileSection: FC = () => {
         }
       })
       .catch((err) => {
-        if (!cancelled) setRampError(String(err));
+        setRampError(String(err));
       });
+  }, []);
 
-    const dateStr = yesterdayUTC();
-    fetch(`/api/pg/reconcile/${dateStr}`, { headers })
+  const loadReconcile = useCallback(async (dateStr: string) => {
+    setReconcile(null);
+    setReconcileMissing(false);
+    fetch(`/api/pg/reconcile/${dateStr}`, { headers: authHeaders() })
       .then(async (r) => {
         if (r.status === 404) {
-          if (!cancelled) setReconcileMissing(true);
+          setReconcileMissing(true);
           return null;
         }
         return r.json() as Promise<ApiEnvelope<DailyRecord>>;
       })
       .then((j) => {
-        if (cancelled || !j) return;
+        if (!j) return;
         if (j.ok && j.data) {
           setReconcile(j.data);
         }
       })
       .catch(() => {
-        // Silent: reconcile may simply not exist yet — UI shows the "no reconcile"
-        // empty state. Real transport errors are surfaced through ramp's loading
-        // path so the operator sees that the API is unhealthy.
+        setReconcileMissing(true);
       });
-
-    return () => {
-      cancelled = true;
-    };
   }, []);
+
+  useEffect(() => {
+    void loadRamp();
+    void loadReconcile(reconcileDate);
+  }, [loadRamp, loadReconcile, reconcileDate]);
+
+  const runRampAction = useCallback(async (action: RampAction) => {
+    setActionBusy(true);
+    setActionError(null);
+    const phrase =
+      action === 'reset'
+        ? 'RESET-RAMP'
+        : action === 'force-promote'
+          ? 'FORCE-PROMOTE'
+          : 'FORCE-DEMOTE';
+    try {
+      const res = await fetch(`/api/pg/ramp/${action}`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          confirmation_phrase: phrase,
+          reason: rampReason,
+        }),
+      });
+      const body = (await res.json().catch(() => null)) as ApiEnvelope<unknown> | null;
+      if (!res.ok || !body?.ok) throw new Error(body?.error || `HTTP ${res.status}`);
+      setModalAction(null);
+      await loadRamp();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActionBusy(false);
+    }
+  }, [loadRamp, rampReason]);
+
+  const runReconcile = useCallback(async () => {
+    setReconcileBusy(true);
+    setReconcileError(null);
+    try {
+      const res = await fetch(`/api/pg/reconcile/${reconcileDate}/run`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({}),
+      });
+      const body = (await res.json().catch(() => null)) as ApiEnvelope<unknown> | null;
+      if (!res.ok || !body?.ok) throw new Error(body?.error || `HTTP ${res.status}`);
+      await loadReconcile(reconcileDate);
+      await loadRamp();
+    } catch (err) {
+      setReconcileError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReconcileBusy(false);
+    }
+  }, [loadRamp, loadReconcile, reconcileDate]);
 
   if (rampError && !ramp) {
     return (
@@ -201,6 +256,49 @@ export const RampReconcileSection: FC = () => {
         </div>
       </div>
 
+      <div className="mt-5 rounded border border-gray-700 bg-gray-900/40 p-3">
+        <label className="block text-xs text-gray-400 mb-1">
+          {t('pricegap.ramp.actionReason')}
+        </label>
+        <input
+          type="text"
+          value={rampReason}
+          onChange={(e) => setRampReason(e.target.value)}
+          className="w-full bg-gray-950 border border-gray-700 rounded px-2 py-1 text-sm text-white"
+          placeholder={t('pricegap.ramp.actionReasonPlaceholder')}
+          data-test="ramp-action-reason"
+        />
+        <div className="flex flex-wrap gap-2 mt-3">
+          <button
+            type="button"
+            disabled={!rampReason.trim()}
+            onClick={() => setModalAction('reset')}
+            className="px-3 py-1.5 rounded bg-red-600 text-white text-sm disabled:opacity-50"
+            data-test="ramp-reset-button"
+          >
+            {t('pricegap.ramp.resetButton')}
+          </button>
+          <button
+            type="button"
+            disabled={!rampReason.trim() || ramp.current_stage >= 3}
+            onClick={() => setModalAction('force-promote')}
+            className="px-3 py-1.5 rounded bg-blue-600 text-white text-sm disabled:opacity-50"
+            data-test="ramp-promote-button"
+          >
+            {t('pricegap.ramp.forcePromoteButton')}
+          </button>
+          <button
+            type="button"
+            disabled={!rampReason.trim() || ramp.current_stage <= 1}
+            onClick={() => setModalAction('force-demote')}
+            className="px-3 py-1.5 rounded bg-orange-600 text-white text-sm disabled:opacity-50"
+            data-test="ramp-demote-button"
+          >
+            {t('pricegap.ramp.forceDemoteButton')}
+          </button>
+        </div>
+      </div>
+
       {reconcile ? (
         <div className="mt-6 pt-4 border-t border-gray-200" data-test="reconcile-summary">
           <h3 className="text-md font-semibold mb-2">
@@ -240,11 +338,85 @@ export const RampReconcileSection: FC = () => {
         </div>
       )}
 
+      <div className="mt-4 rounded border border-gray-700 bg-gray-900/40 p-3">
+        <label className="block text-xs text-gray-400 mb-1">
+          {t('pricegap.reconcile.runDate')}
+        </label>
+        <div className="flex flex-wrap gap-2">
+          <input
+            type="date"
+            value={reconcileDate}
+            onChange={(e) => setReconcileDate(e.target.value)}
+            className="bg-gray-950 border border-gray-700 rounded px-2 py-1 text-sm text-white"
+            data-test="reconcile-date-input"
+          />
+          <button
+            type="button"
+            disabled={reconcileBusy || !reconcileDate}
+            onClick={() => void runReconcile()}
+            className="px-3 py-1.5 rounded bg-blue-600 text-white text-sm disabled:opacity-50"
+            data-test="reconcile-run-button"
+          >
+            {reconcileBusy ? t('pricegap.reconcile.running') : t('pricegap.reconcile.runButton')}
+          </button>
+        </div>
+        {reconcileError && (
+          <div className="mt-2 text-xs text-red-400">{reconcileError}</div>
+        )}
+      </div>
+
       {/* Phase 15 Plan 15-05 — Drawdown Circuit Breaker subsection (PG-LIVE-02).
           Renders status badge + recover/test-fire controls. Phase 16
           (PG-OPS-09) will lift this widget into the new top-level Pricegap
           tab without restructuring the BreakerSubsection component. */}
       <BreakerSubsection />
+      <BreakerConfirmModal
+        open={modalAction === 'reset'}
+        action="recover"
+        magicPhrase="RESET-RAMP"
+        promptKey="pricegap.ramp.confirmResetPrompt"
+        titleKey="pricegap.ramp.confirmResetTitle"
+        submitKey="pricegap.ramp.confirmSubmit"
+        hideDryRun
+        destructiveSubmit
+        busy={actionBusy}
+        errorMessage={actionError}
+        onClose={() => {
+          if (!actionBusy) setModalAction(null);
+        }}
+        onConfirm={() => void runRampAction('reset')}
+      />
+      <BreakerConfirmModal
+        open={modalAction === 'force-promote'}
+        action="recover"
+        magicPhrase="FORCE-PROMOTE"
+        promptKey="pricegap.ramp.confirmPromotePrompt"
+        titleKey="pricegap.ramp.confirmPromoteTitle"
+        submitKey="pricegap.ramp.confirmSubmit"
+        hideDryRun
+        busy={actionBusy}
+        errorMessage={actionError}
+        onClose={() => {
+          if (!actionBusy) setModalAction(null);
+        }}
+        onConfirm={() => void runRampAction('force-promote')}
+      />
+      <BreakerConfirmModal
+        open={modalAction === 'force-demote'}
+        action="recover"
+        magicPhrase="FORCE-DEMOTE"
+        promptKey="pricegap.ramp.confirmDemotePrompt"
+        titleKey="pricegap.ramp.confirmDemoteTitle"
+        submitKey="pricegap.ramp.confirmSubmit"
+        hideDryRun
+        destructiveSubmit
+        busy={actionBusy}
+        errorMessage={actionError}
+        onClose={() => {
+          if (!actionBusy) setModalAction(null);
+        }}
+        onConfirm={() => void runRampAction('force-demote')}
+      />
     </section>
   );
 };

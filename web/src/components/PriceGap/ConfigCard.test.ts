@@ -112,34 +112,29 @@ test('ConfigCard wires ENABLE-BREAKER via BreakerConfirmModal (literal phrase)',
 
 test('D-21 invariant: live-capital postConfig() argument literal excludes operator_action', () => {
   const src = read(SRC);
-  // Narrowly capture the OBJECT LITERAL passed to postConfig() inside the
-  // submitLiveCapital callback. Comments, i18n key strings, error-handler
-  // branches, and unrelated source are excluded by the targeted regex.
-  const fnSlice = src.match(/submitLiveCapital[\s\S]+?postConfig\((\{[^}]+\})\)/);
-  assert.ok(fnSlice, 'submitLiveCapital -> postConfig({...}) call not found');
-  const argLiteral = fnSlice[1];
+  const fnSlice = src.match(/submitLiveCapital[\s\S]+?setConfig/);
+  assert.ok(fnSlice, 'submitLiveCapital function body not found');
+  const body = fnSlice[0];
+  const postLine = body.match(/await postConfig\(([^;]+)\);/);
+  assert.ok(postLine, 'live-capital postConfig call not found');
+  assert.ok(postLine[1].includes('price_gap: { live_capital: next }'), 'live-capital POST must use nested price_gap.live_capital');
   assert.ok(
-    argLiteral.includes('price_gap_live_capital'),
-    'live-capital POST argument missing price_gap_live_capital',
-  );
-  assert.ok(
-    !argLiteral.includes('operator_action'),
-    `D-21 violated: live-capital POST argument includes operator_action: ${argLiteral}`,
+    !postLine[1].includes('operator_action'),
+    `D-21 violated: live-capital POST path includes operator_action: ${postLine[1]}`,
   );
 });
 
 test('D-21 invariant: breaker-enabled postConfig() argument literal excludes operator_action', () => {
   const src = read(SRC);
-  const fnSlice = src.match(/submitBreaker[\s\S]+?postConfig\((\{[^}]+\})\)/);
-  assert.ok(fnSlice, 'submitBreaker -> postConfig({...}) call not found');
-  const argLiteral = fnSlice[1];
+  const fnSlice = src.match(/submitBreaker[\s\S]+?setConfig/);
+  assert.ok(fnSlice, 'submitBreaker function body not found');
+  const body = fnSlice[0];
+  const postLine = body.match(/await postConfig\(([^;]+)\);/);
+  assert.ok(postLine, 'breaker postConfig call not found');
+  assert.ok(postLine[1].includes('price_gap: { breaker_enabled: next }'), 'breaker POST must use nested price_gap.breaker_enabled');
   assert.ok(
-    argLiteral.includes('price_gap_breaker_enabled'),
-    'breaker POST argument missing price_gap_breaker_enabled',
-  );
-  assert.ok(
-    !argLiteral.includes('operator_action'),
-    `D-21 violated: breaker POST argument includes operator_action: ${argLiteral}`,
+    !postLine[1].includes('operator_action'),
+    `D-21 violated: breaker POST path includes operator_action: ${postLine[1]}`,
   );
 });
 
@@ -198,12 +193,18 @@ test('Config.tsx legacy controls are deleted (no live references)', () => {
   }
 });
 
-test('Phase 14 RampReconcileSection still in PriceGap.tsx (D-19)', () => {
+test('RampReconcileSection still in PriceGap.tsx', () => {
   const src = read(PRICEGAP_PAGE);
   assert.ok(
     src.includes('RampReconcileSection'),
-    'D-19 violated: RampReconcileSection removed from PriceGap.tsx',
+    'RampReconcileSection removed from PriceGap.tsx',
   );
+});
+
+test('ConfigCard no longer points operators to CLI or config file edits', () => {
+  const src = read(SRC);
+  assert.ok(!/pg-admin/i.test(src), 'ConfigCard still references pg-admin');
+  assert.ok(!/config\.json/i.test(src), 'ConfigCard still references config.json');
 });
 
 test('localStorage key for expanded state matches UI-SPEC', () => {

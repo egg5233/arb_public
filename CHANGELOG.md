@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.39.2 — 2026-05-04
+
+### Strategy 4 dashboard-first operations
+
+#### Added
+
+- Dashboard CTA to enable PriceGap discovery without editing files.
+- Editable Strategy 4 scanner, breaker, ramp, live-capital, and anomaly controls backed by `/api/config`.
+- Authenticated dashboard APIs for ramp reset, force-promote, force-demote, and on-demand daily reconcile.
+
+#### Changed
+
+- `/api/config` now returns and accepts a full `price_gap` block for dashboard-managed PriceGap settings.
+- PriceGap discovery scanner wiring now starts the scan loop while disabled, so a dashboard enable takes effect on the next cycle without restart.
+- Removed normal dashboard copy that directed operators to `pg-admin` or manual config file edits.
+
+#### Tests
+
+- Added API regressions for dashboard PriceGap discovery writes, ramp mutators, reconcile run, and auth protection.
+- Updated frontend static/i18n checks for the dashboard-first controls and copy.
+
 ## 0.39.1 — 2026-05-04
 
 ### Strategy 4 PriceGap safety fixes

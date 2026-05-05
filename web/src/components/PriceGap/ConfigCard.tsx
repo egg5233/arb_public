@@ -3,13 +3,9 @@
 // Top-of-page collapsible card consolidating ALL Strategy 4 editable config
 // in one place. Composes 4 subsections per UI-SPEC §"Composition shape":
 //
-//   1. Scanner       — read-only display of scanner config (config.json only;
-//                      D-17 enumerates fields but Phase 16 backend exposure is
-//                      out of scope for `files_modified`).
-//   2. Breaker       — read-only display + ENABLE-BREAKER typed-phrase toggle
-//                      (toggle attempts POST; full numeric editing deferred to
-//                      pg-admin per scope alignment with Ramp section D-19).
-//   3. Ramp          — read-only display banner per D-19 (edits via pg-admin).
+//   1. Scanner       — editable discovery controls.
+//   2. Breaker       — typed-phrase toggle plus editable numeric settings.
+//   3. Ramp          — editable ramp sizing parameters.
 //   4. Live-Capital  — ENABLE-LIVE-CAPITAL typed-phrase toggle + 4 migrated
 //                      gate fields (price_gap_free_bps, max_price_gap_bps,
 //                      enable_price_gap_gate, max_price_gap_pct). The gate
@@ -54,6 +50,17 @@ function replaceTokens(s: string, tokens: Record<string, string | number>): stri
 
 const STORAGE_KEY = 'arb_pg_config_expanded';
 
+function joinList(values: string[] | undefined): string {
+  return (values ?? []).join(', ');
+}
+
+function splitList(value: string): string[] {
+  return value
+    .split(/[\n,]/)
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
 // ─── Snapshot of read-only config values ─────────────────────────────────
 // The dashboard consumes /api/config GET which returns the full Config
 // snapshot. The shape we care about is a subset; we rely on duck typing.
@@ -64,6 +71,9 @@ interface ConfigSnapshot {
     discovery_enabled?: boolean;
     discovery_interval_sec?: number;
     discovery_universe?: string[];
+    discovery_denylist?: string[];
+    discovery_threshold_bps?: number;
+    discovery_min_depth_usdt?: number;
     auto_promote_score?: number;
     max_candidates?: number;
     breaker_enabled?: boolean;
@@ -71,6 +81,9 @@ interface ConfigSnapshot {
     breaker_interval_sec?: number;
     live_capital?: boolean;
     anomaly_slippage_bps?: number;
+    stage_1_size_usdt?: number;
+    stage_2_size_usdt?: number;
+    stage_3_size_usdt?: number;
     ramp_stage_sizes_usdt?: number[];
     hard_ceiling_usdt?: number;
     clean_days_to_promote?: number;
@@ -170,6 +183,39 @@ const NumberRow: FC<NumberRowProps> = ({
         step={step}
         disabled={disabled}
         className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm text-white tabular-nums focus:outline-none focus:border-yellow-400"
+      />
+      <p className="text-xs text-gray-500 mt-1">{t(helpKey)}</p>
+    </div>
+  );
+};
+
+interface TextAreaRowProps {
+  labelKey: TranslationKey;
+  helpKey: TranslationKey;
+  value: string;
+  onChange: (v: string) => void;
+  disabled?: boolean;
+}
+
+const TextAreaRow: FC<TextAreaRowProps> = ({
+  labelKey,
+  helpKey,
+  value,
+  onChange,
+  disabled,
+}) => {
+  const { t } = useLocale();
+  return (
+    <div>
+      <label className="block text-sm font-normal text-gray-200 mb-1">
+        {t(labelKey)}
+      </label>
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        rows={3}
+        className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-yellow-400"
       />
       <p className="text-xs text-gray-500 mt-1">{t(helpKey)}</p>
     </div>
@@ -276,7 +322,7 @@ export const ConfigCard: FC = () => {
         // D-21 (CRITICAL): live-capital POST does NOT include operator_action.
         // Typed-phrase modal IS the safety mechanism. The Plan 02 server
         // guard is paper_mode-scoped only.
-        await postConfig({ price_gap_live_capital: next });
+        await postConfig({ price_gap: { live_capital: next } });
         setConfig((prev) => prev ? { ...prev, price_gap: { ...prev.price_gap, live_capital: next } } : prev);
         setModal(null);
       } catch (e: unknown) {
@@ -303,8 +349,9 @@ export const ConfigCard: FC = () => {
       setModalError(null);
       try {
         // D-21: no operator_action; typed-phrase modal is the safety surface.
-        await postConfig({ price_gap_breaker_enabled: next });
+        await postConfig({ price_gap: { breaker_enabled: next } });
         setConfig((prev) => prev ? { ...prev, price_gap: { ...prev.price_gap, breaker_enabled: next } } : prev);
+        setBreakerDraft((prev) => prev ? { ...prev, enabled: next } : prev);
         setModal(null);
       } catch (e: unknown) {
         const err = e as Error & { status?: number };
@@ -322,6 +369,193 @@ export const ConfigCard: FC = () => {
     [t],
   );
 
+  // ── Scanner config draft ───────────────────────────────────────────────
+
+  const [scannerDraft, setScannerDraft] = useState<{
+    enabled: boolean;
+    interval: number;
+    universe: string;
+    denylist: string;
+    thresholdBps: number;
+    minDepthUSDT: number;
+    autoPromoteScore: number;
+    maxCandidates: number;
+  } | null>(null);
+  const [scannerSaving, setScannerSaving] = useState(false);
+  const [scannerError, setScannerError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!config || scannerDraft) return;
+    setScannerDraft({
+      enabled: config.price_gap?.discovery_enabled ?? false,
+      interval: config.price_gap?.discovery_interval_sec ?? 300,
+      universe: joinList(config.price_gap?.discovery_universe),
+      denylist: joinList(config.price_gap?.discovery_denylist),
+      thresholdBps: config.price_gap?.discovery_threshold_bps ?? 100,
+      minDepthUSDT: config.price_gap?.discovery_min_depth_usdt ?? 1000,
+      autoPromoteScore: config.price_gap?.auto_promote_score ?? 60,
+      maxCandidates: config.price_gap?.max_candidates ?? 12,
+    });
+  }, [config, scannerDraft]);
+
+  const scannerDirty = useMemo(() => {
+    if (!scannerDraft || !config) return false;
+    return (
+      scannerDraft.enabled !== (config.price_gap?.discovery_enabled ?? false) ||
+      scannerDraft.interval !== (config.price_gap?.discovery_interval_sec ?? 300) ||
+      scannerDraft.universe !== joinList(config.price_gap?.discovery_universe) ||
+      scannerDraft.denylist !== joinList(config.price_gap?.discovery_denylist) ||
+      scannerDraft.thresholdBps !== (config.price_gap?.discovery_threshold_bps ?? 100) ||
+      scannerDraft.minDepthUSDT !== (config.price_gap?.discovery_min_depth_usdt ?? 1000) ||
+      scannerDraft.autoPromoteScore !== (config.price_gap?.auto_promote_score ?? 60) ||
+      scannerDraft.maxCandidates !== (config.price_gap?.max_candidates ?? 12)
+    );
+  }, [scannerDraft, config]);
+
+  const saveScanner = useCallback(async () => {
+    if (!scannerDraft) return;
+    setScannerSaving(true);
+    setScannerError(null);
+    try {
+      const next = {
+        discovery_enabled: scannerDraft.enabled,
+        discovery_interval_sec: scannerDraft.interval,
+        discovery_universe: splitList(scannerDraft.universe),
+        discovery_denylist: splitList(scannerDraft.denylist),
+        discovery_threshold_bps: scannerDraft.thresholdBps,
+        discovery_min_depth_usdt: scannerDraft.minDepthUSDT,
+        auto_promote_score: scannerDraft.autoPromoteScore,
+        max_candidates: scannerDraft.maxCandidates,
+      };
+      await postConfig({ price_gap: next });
+      setConfig((prev) => prev ? { ...prev, price_gap: { ...prev.price_gap, ...next } } : prev);
+      setScannerDraft({
+        ...scannerDraft,
+        universe: joinList(next.discovery_universe),
+        denylist: joinList(next.discovery_denylist),
+      });
+    } catch (e: unknown) {
+      const err = e as Error & { status?: number };
+      setScannerError(err.status === 422
+        ? replaceTokens(t('pricegap.config.error.serverValidation'), { reason: err.message })
+        : t('pricegap.config.error.saveNetwork'));
+    } finally {
+      setScannerSaving(false);
+    }
+  }, [scannerDraft, t]);
+
+  // ── Breaker + ramp config drafts ───────────────────────────────────────
+
+  const [breakerDraft, setBreakerDraft] = useState<{
+    enabled: boolean;
+    drawdownLimit: number;
+    interval: number;
+  } | null>(null);
+  const [breakerSaving, setBreakerSaving] = useState(false);
+  const [breakerError, setBreakerError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!config || breakerDraft) return;
+    setBreakerDraft({
+      enabled: config.price_gap?.breaker_enabled ?? false,
+      drawdownLimit: config.price_gap?.drawdown_limit_usdt ?? 0,
+      interval: config.price_gap?.breaker_interval_sec ?? 300,
+    });
+  }, [config, breakerDraft]);
+
+  const breakerDirty = useMemo(() => {
+    if (!breakerDraft || !config) return false;
+    return (
+      breakerDraft.enabled !== (config.price_gap?.breaker_enabled ?? false) ||
+      breakerDraft.drawdownLimit !== (config.price_gap?.drawdown_limit_usdt ?? 0) ||
+      breakerDraft.interval !== (config.price_gap?.breaker_interval_sec ?? 300)
+    );
+  }, [breakerDraft, config]);
+
+  const saveBreakerConfig = useCallback(async () => {
+    if (!breakerDraft) return;
+    setBreakerSaving(true);
+    setBreakerError(null);
+    try {
+      const next = {
+        drawdown_limit_usdt: breakerDraft.drawdownLimit,
+        breaker_interval_sec: breakerDraft.interval,
+      };
+      await postConfig({ price_gap: next });
+      setConfig((prev) => prev ? { ...prev, price_gap: { ...prev.price_gap, ...next } } : prev);
+    } catch (e: unknown) {
+      const err = e as Error & { status?: number };
+      setBreakerError(err.status === 422
+        ? replaceTokens(t('pricegap.config.error.serverValidation'), { reason: err.message })
+        : t('pricegap.config.error.saveNetwork'));
+    } finally {
+      setBreakerSaving(false);
+    }
+  }, [breakerDraft, t]);
+
+  const [rampDraft, setRampDraft] = useState<{
+    stage1: number;
+    stage2: number;
+    stage3: number;
+    hardCeiling: number;
+    cleanDays: number;
+  } | null>(null);
+  const [rampSaving, setRampSaving] = useState(false);
+  const [rampError, setRampError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!config || rampDraft) return;
+    setRampDraft({
+      stage1: config.price_gap?.stage_1_size_usdt ?? config.price_gap?.ramp_stage_sizes_usdt?.[0] ?? 100,
+      stage2: config.price_gap?.stage_2_size_usdt ?? config.price_gap?.ramp_stage_sizes_usdt?.[1] ?? 500,
+      stage3: config.price_gap?.stage_3_size_usdt ?? config.price_gap?.ramp_stage_sizes_usdt?.[2] ?? 1000,
+      hardCeiling: config.price_gap?.hard_ceiling_usdt ?? 1000,
+      cleanDays: config.price_gap?.clean_days_to_promote ?? 7,
+    });
+  }, [config, rampDraft]);
+
+  const rampDirty = useMemo(() => {
+    if (!rampDraft || !config) return false;
+    return (
+      rampDraft.stage1 !== (config.price_gap?.stage_1_size_usdt ?? config.price_gap?.ramp_stage_sizes_usdt?.[0] ?? 100) ||
+      rampDraft.stage2 !== (config.price_gap?.stage_2_size_usdt ?? config.price_gap?.ramp_stage_sizes_usdt?.[1] ?? 500) ||
+      rampDraft.stage3 !== (config.price_gap?.stage_3_size_usdt ?? config.price_gap?.ramp_stage_sizes_usdt?.[2] ?? 1000) ||
+      rampDraft.hardCeiling !== (config.price_gap?.hard_ceiling_usdt ?? 1000) ||
+      rampDraft.cleanDays !== (config.price_gap?.clean_days_to_promote ?? 7)
+    );
+  }, [rampDraft, config]);
+
+  const saveRampConfig = useCallback(async () => {
+    if (!rampDraft) return;
+    setRampSaving(true);
+    setRampError(null);
+    try {
+      const next = {
+        stage_1_size_usdt: rampDraft.stage1,
+        stage_2_size_usdt: rampDraft.stage2,
+        stage_3_size_usdt: rampDraft.stage3,
+        hard_ceiling_usdt: rampDraft.hardCeiling,
+        clean_days_to_promote: rampDraft.cleanDays,
+      };
+      await postConfig({ price_gap: next });
+      setConfig((prev) => prev ? {
+        ...prev,
+        price_gap: {
+          ...prev.price_gap,
+          ...next,
+          ramp_stage_sizes_usdt: [rampDraft.stage1, rampDraft.stage2, rampDraft.stage3],
+        },
+      } : prev);
+    } catch (e: unknown) {
+      const err = e as Error & { status?: number };
+      setRampError(err.status === 422
+        ? replaceTokens(t('pricegap.config.error.serverValidation'), { reason: err.message })
+        : t('pricegap.config.error.saveNetwork'));
+    } finally {
+      setRampSaving(false);
+    }
+  }, [rampDraft, t]);
+
   // ── Migrated gate field state (editable; existing nested write paths) ──
 
   // Local-edit mirror so unsaved edits don't fight the server snapshot.
@@ -330,6 +564,7 @@ export const ConfigCard: FC = () => {
     max_bps: number;
     sf_enable: boolean;
     sf_max_pct: number;
+    anomaly_bps: number;
   } | null>(null);
   const [gateSaving, setGateSaving] = useState(false);
   const [gateError, setGateError] = useState<string | null>(null);
@@ -342,6 +577,7 @@ export const ConfigCard: FC = () => {
       max_bps: config.strategy?.discovery?.max_price_gap_bps ?? 0,
       sf_enable: config.spot_futures?.enable_price_gap_gate ?? false,
       sf_max_pct: config.spot_futures?.max_price_gap_pct ?? 0,
+      anomaly_bps: config.price_gap?.anomaly_slippage_bps ?? 50,
     });
   }, [config, gateDraft]);
 
@@ -352,12 +588,14 @@ export const ConfigCard: FC = () => {
       max_bps: config.strategy?.discovery?.max_price_gap_bps ?? 0,
       sf_enable: config.spot_futures?.enable_price_gap_gate ?? false,
       sf_max_pct: config.spot_futures?.max_price_gap_pct ?? 0,
+      anomaly_bps: config.price_gap?.anomaly_slippage_bps ?? 50,
     };
     return (
       cur.free_bps !== gateDraft.free_bps ||
       cur.max_bps !== gateDraft.max_bps ||
       cur.sf_enable !== gateDraft.sf_enable ||
-      cur.sf_max_pct !== gateDraft.sf_max_pct
+      cur.sf_max_pct !== gateDraft.sf_max_pct ||
+      cur.anomaly_bps !== gateDraft.anomaly_bps
     );
   }, [gateDraft, config]);
 
@@ -378,6 +616,9 @@ export const ConfigCard: FC = () => {
           enable_price_gap_gate: gateDraft.sf_enable,
           max_price_gap_pct: gateDraft.sf_max_pct,
         },
+        price_gap: {
+          anomaly_slippage_bps: gateDraft.anomaly_bps,
+        },
       });
       // Sync mirror.
       setConfig((prev) =>
@@ -396,6 +637,10 @@ export const ConfigCard: FC = () => {
                 ...prev.spot_futures,
                 enable_price_gap_gate: gateDraft.sf_enable,
                 max_price_gap_pct: gateDraft.sf_max_pct,
+              },
+              price_gap: {
+                ...prev.price_gap,
+                anomaly_slippage_bps: gateDraft.anomaly_bps,
               },
             }
           : prev,
@@ -476,36 +721,115 @@ export const ConfigCard: FC = () => {
                 <h3 className="text-base font-semibold text-gray-100">
                   {t('pricegap.config.section.scanner')}
                 </h3>
-                <p className="text-xs text-gray-500 mb-3">
-                  {t('pricegap.config.ramp.readOnlyNote')}
-                </p>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <ReadOnlyRow
-                    labelKey="pricegap.config.scanner.discovery.label"
-                    helpKey="pricegap.config.scanner.discovery.help"
-                    value={fmtBool(config.price_gap?.discovery_enabled)}
-                  />
-                  <ReadOnlyRow
-                    labelKey="pricegap.config.scanner.interval.label"
-                    helpKey="pricegap.config.scanner.interval.help"
-                    value={fmtNum(config.price_gap?.discovery_interval_sec)}
-                  />
-                  <ReadOnlyRow
-                    labelKey="pricegap.config.scanner.maxUniverse.label"
-                    helpKey="pricegap.config.scanner.maxUniverse.help"
-                    value={String(config.price_gap?.discovery_universe?.length ?? 0)}
-                  />
-                  <ReadOnlyRow
-                    labelKey="pricegap.config.scanner.promoteScore.label"
-                    helpKey="pricegap.config.scanner.promoteScore.help"
-                    value={fmtNum(config.price_gap?.auto_promote_score)}
-                  />
-                  <ReadOnlyRow
-                    labelKey="pricegap.config.scanner.maxCandidates.label"
-                    helpKey="pricegap.config.scanner.maxCandidates.help"
-                    value={fmtNum(config.price_gap?.max_candidates)}
-                  />
-                </div>
+                {scannerDraft && (
+                  <>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                      <ToggleRow
+                        labelKey="pricegap.config.scanner.discovery.label"
+                        helpKey="pricegap.config.scanner.discovery.help"
+                        on={scannerDraft.enabled}
+                        onChange={() =>
+                          setScannerDraft((d) => (d ? { ...d, enabled: !d.enabled } : d))
+                        }
+                        disabled={scannerSaving}
+                      />
+                      <NumberRow
+                        labelKey="pricegap.config.scanner.interval.label"
+                        helpKey="pricegap.config.scanner.interval.help"
+                        value={scannerDraft.interval}
+                        min={60}
+                        max={3600}
+                        step={1}
+                        onChange={(v) =>
+                          setScannerDraft((d) => (d ? { ...d, interval: v } : d))
+                        }
+                        disabled={scannerSaving}
+                      />
+                      <TextAreaRow
+                        labelKey="pricegap.config.scanner.universe.label"
+                        helpKey="pricegap.config.scanner.universe.help"
+                        value={scannerDraft.universe}
+                        onChange={(v) =>
+                          setScannerDraft((d) => (d ? { ...d, universe: v } : d))
+                        }
+                        disabled={scannerSaving}
+                      />
+                      <TextAreaRow
+                        labelKey="pricegap.config.scanner.denylist.label"
+                        helpKey="pricegap.config.scanner.denylist.help"
+                        value={scannerDraft.denylist}
+                        onChange={(v) =>
+                          setScannerDraft((d) => (d ? { ...d, denylist: v } : d))
+                        }
+                        disabled={scannerSaving}
+                      />
+                      <NumberRow
+                        labelKey="pricegap.config.scanner.thresholdBps.label"
+                        helpKey="pricegap.config.scanner.thresholdBps.help"
+                        value={scannerDraft.thresholdBps}
+                        min={10}
+                        step={1}
+                        onChange={(v) =>
+                          setScannerDraft((d) => (d ? { ...d, thresholdBps: v } : d))
+                        }
+                        disabled={scannerSaving}
+                      />
+                      <NumberRow
+                        labelKey="pricegap.config.scanner.minDepth.label"
+                        helpKey="pricegap.config.scanner.minDepth.help"
+                        value={scannerDraft.minDepthUSDT}
+                        min={0}
+                        step={100}
+                        onChange={(v) =>
+                          setScannerDraft((d) => (d ? { ...d, minDepthUSDT: v } : d))
+                        }
+                        disabled={scannerSaving}
+                      />
+                      <NumberRow
+                        labelKey="pricegap.config.scanner.promoteScore.label"
+                        helpKey="pricegap.config.scanner.promoteScore.help"
+                        value={scannerDraft.autoPromoteScore}
+                        min={50}
+                        max={100}
+                        step={1}
+                        onChange={(v) =>
+                          setScannerDraft((d) => (d ? { ...d, autoPromoteScore: v } : d))
+                        }
+                        disabled={scannerSaving}
+                      />
+                      <NumberRow
+                        labelKey="pricegap.config.scanner.maxCandidates.label"
+                        helpKey="pricegap.config.scanner.maxCandidates.help"
+                        value={scannerDraft.maxCandidates}
+                        min={1}
+                        max={50}
+                        step={1}
+                        onChange={(v) =>
+                          setScannerDraft((d) => (d ? { ...d, maxCandidates: v } : d))
+                        }
+                        disabled={scannerSaving}
+                      />
+                    </div>
+                    {scannerError && (
+                      <p className="text-red-400 text-xs mt-2">{scannerError}</p>
+                    )}
+                    <div className="mt-4 flex justify-end">
+                      <button
+                        type="button"
+                        disabled={!scannerDirty || scannerSaving}
+                        onClick={saveScanner}
+                        className="btn-primary px-3 py-1.5 text-sm rounded disabled:opacity-50"
+                        data-test="pg-config-save-scanner"
+                      >
+                        {scannerSaving
+                          ? t('pricegap.config.saving')
+                          : replaceTokens(t('pricegap.config.saveButton'), {
+                              section: t('pricegap.config.section.scanner'),
+                            })}
+                      </button>
+                    </div>
+                  </>
+                )}
               </section>
 
               {/* ── Subsection 2: Drawdown Circuit Breaker ─────────────── */}
@@ -548,20 +872,55 @@ export const ConfigCard: FC = () => {
                       {t('pricegap.config.breaker.enabled.help')}
                     </p>
                   </div>
-                  <ReadOnlyRow
-                    labelKey="pricegap.config.breaker.limit.label"
-                    helpKey="pricegap.config.breaker.limit.help"
-                    value={fmtNum(config.price_gap?.drawdown_limit_usdt)}
-                  />
-                  <ReadOnlyRow
-                    labelKey="pricegap.config.breaker.interval.label"
-                    helpKey="pricegap.config.breaker.interval.help"
-                    value={fmtNum(config.price_gap?.breaker_interval_sec)}
-                  />
+                  {breakerDraft && (
+                    <>
+                      <NumberRow
+                        labelKey="pricegap.config.breaker.limit.label"
+                        helpKey="pricegap.config.breaker.limit.help"
+                        value={breakerDraft.drawdownLimit}
+                        max={0}
+                        step={10}
+                        onChange={(v) =>
+                          setBreakerDraft((d) => (d ? { ...d, drawdownLimit: v } : d))
+                        }
+                        disabled={breakerSaving}
+                      />
+                      <NumberRow
+                        labelKey="pricegap.config.breaker.interval.label"
+                        helpKey="pricegap.config.breaker.interval.help"
+                        value={breakerDraft.interval}
+                        min={60}
+                        max={3600}
+                        step={1}
+                        onChange={(v) =>
+                          setBreakerDraft((d) => (d ? { ...d, interval: v } : d))
+                        }
+                        disabled={breakerSaving}
+                      />
+                    </>
+                  )}
+                </div>
+                {breakerError && (
+                  <p className="text-red-400 text-xs mt-2">{breakerError}</p>
+                )}
+                <div className="mt-4 flex justify-end">
+                  <button
+                    type="button"
+                    disabled={!breakerDirty || breakerSaving}
+                    onClick={saveBreakerConfig}
+                    className="btn-primary px-3 py-1.5 text-sm rounded disabled:opacity-50"
+                    data-test="pg-config-save-breaker"
+                  >
+                    {breakerSaving
+                      ? t('pricegap.config.saving')
+                      : replaceTokens(t('pricegap.config.saveButton'), {
+                          section: t('pricegap.config.section.breaker'),
+                        })}
+                  </button>
                 </div>
               </section>
 
-              {/* ── Subsection 3: Live-Capital Ramp (read-only D-19) ───── */}
+              {/* ── Subsection 3: Live-Capital Ramp ────────────────────── */}
               <section
                 className="mt-6 pt-4 border-t border-gray-700"
                 data-test="pg-config-section-ramp"
@@ -569,35 +928,90 @@ export const ConfigCard: FC = () => {
                 <h3 className="text-base font-semibold text-gray-100">
                   {t('pricegap.config.section.ramp')}
                 </h3>
-                <div className="mt-2 mb-3 p-3 rounded border border-yellow-700 bg-yellow-900/20 text-yellow-300 text-xs">
-                  {t('pricegap.config.ramp.readOnlyNote')}
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-sm font-normal text-gray-200 mb-1">
-                      Stage sizes (USDT)
-                    </label>
-                    <div className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm text-gray-100 tabular-nums">
-                      {fmtList(config.price_gap?.ramp_stage_sizes_usdt)}
+                {rampDraft && (
+                  <>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                      <NumberRow
+                        labelKey="pricegap.config.ramp.stage1.label"
+                        helpKey="pricegap.config.ramp.stage1.help"
+                        value={rampDraft.stage1}
+                        min={0}
+                        max={1000}
+                        step={10}
+                        onChange={(v) =>
+                          setRampDraft((d) => (d ? { ...d, stage1: v } : d))
+                        }
+                        disabled={rampSaving}
+                      />
+                      <NumberRow
+                        labelKey="pricegap.config.ramp.stage2.label"
+                        helpKey="pricegap.config.ramp.stage2.help"
+                        value={rampDraft.stage2}
+                        min={0}
+                        max={1000}
+                        step={10}
+                        onChange={(v) =>
+                          setRampDraft((d) => (d ? { ...d, stage2: v } : d))
+                        }
+                        disabled={rampSaving}
+                      />
+                      <NumberRow
+                        labelKey="pricegap.config.ramp.stage3.label"
+                        helpKey="pricegap.config.ramp.stage3.help"
+                        value={rampDraft.stage3}
+                        min={0}
+                        max={1000}
+                        step={10}
+                        onChange={(v) =>
+                          setRampDraft((d) => (d ? { ...d, stage3: v } : d))
+                        }
+                        disabled={rampSaving}
+                      />
+                      <NumberRow
+                        labelKey="pricegap.config.ramp.hardCeiling.label"
+                        helpKey="pricegap.config.ramp.hardCeiling.help"
+                        value={rampDraft.hardCeiling}
+                        min={0}
+                        max={1000}
+                        step={10}
+                        onChange={(v) =>
+                          setRampDraft((d) => (d ? { ...d, hardCeiling: v } : d))
+                        }
+                        disabled={rampSaving}
+                      />
+                      <NumberRow
+                        labelKey="pricegap.config.ramp.cleanDays.label"
+                        helpKey="pricegap.config.ramp.cleanDays.help"
+                        value={rampDraft.cleanDays}
+                        min={1}
+                        max={30}
+                        step={1}
+                        onChange={(v) =>
+                          setRampDraft((d) => (d ? { ...d, cleanDays: v } : d))
+                        }
+                        disabled={rampSaving}
+                      />
                     </div>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-normal text-gray-200 mb-1">
-                      Hard ceiling (USDT/leg)
-                    </label>
-                    <div className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm text-gray-100 tabular-nums">
-                      {fmtNum(config.price_gap?.hard_ceiling_usdt)}
+                    {rampError && (
+                      <p className="text-red-400 text-xs mt-2">{rampError}</p>
+                    )}
+                    <div className="mt-4 flex justify-end">
+                      <button
+                        type="button"
+                        disabled={!rampDirty || rampSaving}
+                        onClick={saveRampConfig}
+                        className="btn-primary px-3 py-1.5 text-sm rounded disabled:opacity-50"
+                        data-test="pg-config-save-ramp"
+                      >
+                        {rampSaving
+                          ? t('pricegap.config.saving')
+                          : replaceTokens(t('pricegap.config.saveButton'), {
+                              section: t('pricegap.config.section.ramp'),
+                            })}
+                      </button>
                     </div>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-normal text-gray-200 mb-1">
-                      Clean days to promote
-                    </label>
-                    <div className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm text-gray-100 tabular-nums">
-                      {fmtNum(config.price_gap?.clean_days_to_promote)}
-                    </div>
-                  </div>
-                </div>
+                  </>
+                )}
               </section>
 
               {/* ── Subsection 4: Live-Capital + Risk ─────────────────── */}
@@ -640,15 +1054,21 @@ export const ConfigCard: FC = () => {
                       {t('pricegap.config.liveCapital.master.help')}
                     </p>
                   </div>
-                  <ReadOnlyRow
-                    labelKey="pricegap.config.liveCapital.anomalyBps.label"
-                    helpKey="pricegap.config.liveCapital.anomalyBps.help"
-                    value={fmtNum(config.price_gap?.anomaly_slippage_bps)}
-                  />
-
                   {/* Migrated gate fields — fully editable */}
                   {gateDraft && (
                     <>
+                      <NumberRow
+                        labelKey="pricegap.config.liveCapital.anomalyBps.label"
+                        helpKey="pricegap.config.liveCapital.anomalyBps.help"
+                        value={gateDraft.anomaly_bps}
+                        min={0}
+                        max={500}
+                        step={1}
+                        onChange={(v) =>
+                          setGateDraft((d) => (d ? { ...d, anomaly_bps: v } : d))
+                        }
+                        disabled={gateSaving}
+                      />
                       <NumberRow
                         labelKey="pricegap.config.gate.freeBps.label"
                         helpKey="pricegap.config.gate.freeBps.help"

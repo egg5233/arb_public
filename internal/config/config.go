@@ -60,6 +60,12 @@ func validatePriceGapDiscovery(c *Config) error {
 	return nil
 }
 
+// ValidatePriceGapDiscovery exposes the PriceGap discovery validator to API
+// handlers that apply dashboard writes before persisting config.json.
+func ValidatePriceGapDiscovery(c *Config) error {
+	return validatePriceGapDiscovery(c)
+}
+
 // validatePriceGapLive verifies the Phase 14 live-capital ramp schema (D-06,
 // D-09, PG-LIVE-01). Returns the first violation as an error.
 //
@@ -108,6 +114,12 @@ func validatePriceGapLive(c *Config) error {
 		}
 	}
 	return nil
+}
+
+// ValidatePriceGapLive exposes the live-capital/ramp/breaker validator to API
+// handlers that apply dashboard writes before persisting config.json.
+func ValidatePriceGapLive(c *Config) error {
+	return validatePriceGapLive(c)
 }
 
 func parseBoolEnv(raw string) (bool, bool) {
@@ -498,9 +510,9 @@ type jsonPriceGap struct {
 
 	// Phase 15 (PG-LIVE-02) — Drawdown circuit breaker. Pointer-optional so
 	// omission preserves defaults installed by Load(); D-22 safe-off semantics.
-	BreakerEnabled       *bool    `json:"enable_pricegap_breaker,omitempty"`
-	DrawdownLimitUSDT    *float64 `json:"pricegap_drawdown_limit_usdt,omitempty"`
-	BreakerIntervalSec   *int     `json:"pricegap_breaker_interval_sec,omitempty"`
+	BreakerEnabled     *bool    `json:"enable_pricegap_breaker,omitempty"`
+	DrawdownLimitUSDT  *float64 `json:"pricegap_drawdown_limit_usdt,omitempty"`
+	BreakerIntervalSec *int     `json:"pricegap_breaker_interval_sec,omitempty"`
 }
 
 type jsonAnalytics struct {

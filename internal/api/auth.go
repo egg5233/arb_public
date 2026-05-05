@@ -152,6 +152,8 @@ func (s *Server) isMutatingEndpoint(r *http.Request) bool {
 		path == "/api/transfer" ||
 		path == "/api/spot/open" ||
 		strings.HasPrefix(path, "/api/pricegap/candidate/") ||
+		strings.HasPrefix(path, "/api/pg/ramp/") ||
+		(strings.HasPrefix(path, "/api/pg/reconcile/") && strings.HasSuffix(path, "/run")) ||
 		path == "/api/pg/breaker/recover" ||
 		path == "/api/pg/breaker/test-fire"
 }

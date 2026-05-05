@@ -312,6 +312,41 @@ type configResponse struct {
 	Safety      configSafetyResponse              `json:"safety"`
 	Analytics   configAnalyticsResponse           `json:"analytics"`
 	Allocation  configAllocationResponse          `json:"allocation"`
+	PriceGap    configPriceGapResponse            `json:"price_gap"`
+}
+
+type configPriceGapResponse struct {
+	Enabled               bool                       `json:"enabled"`
+	PaperMode             bool                       `json:"paper_mode"`
+	DebugLog              bool                       `json:"debug_log"`
+	Budget                float64                    `json:"budget"`
+	MaxConcurrent         int                        `json:"max_concurrent"`
+	GateConcentrationPct  float64                    `json:"gate_concentration_pct"`
+	MaxHoldMin            int                        `json:"max_hold_min"`
+	ExitReversionFactor   float64                    `json:"exit_reversion_factor"`
+	BarPersistence        int                        `json:"bar_persistence"`
+	KlineStalenessSec     int                        `json:"kline_staleness_sec"`
+	PollIntervalSec       int                        `json:"poll_interval_sec"`
+	Candidates            []models.PriceGapCandidate `json:"candidates"`
+	DiscoveryEnabled      bool                       `json:"discovery_enabled"`
+	DiscoveryUniverse     []string                   `json:"discovery_universe"`
+	DiscoveryDenylist     []string                   `json:"discovery_denylist"`
+	DiscoveryIntervalSec  int                        `json:"discovery_interval_sec"`
+	DiscoveryThresholdBps int                        `json:"discovery_threshold_bps"`
+	DiscoveryMinDepthUSDT int                        `json:"discovery_min_depth_usdt"`
+	AutoPromoteScore      int                        `json:"auto_promote_score"`
+	MaxCandidates         int                        `json:"max_candidates"`
+	LiveCapital           bool                       `json:"live_capital"`
+	Stage1SizeUSDT        float64                    `json:"stage_1_size_usdt"`
+	Stage2SizeUSDT        float64                    `json:"stage_2_size_usdt"`
+	Stage3SizeUSDT        float64                    `json:"stage_3_size_usdt"`
+	RampStageSizesUSDT    []float64                  `json:"ramp_stage_sizes_usdt"`
+	HardCeilingUSDT       float64                    `json:"hard_ceiling_usdt"`
+	AnomalySlippageBps    float64                    `json:"anomaly_slippage_bps"`
+	CleanDaysToPromote    int                        `json:"clean_days_to_promote"`
+	BreakerEnabled        bool                       `json:"breaker_enabled"`
+	DrawdownLimitUSDT     float64                    `json:"drawdown_limit_usdt"`
+	BreakerIntervalSec    int                        `json:"breaker_interval_sec"`
 }
 
 type configAllocationResponse struct {
@@ -663,6 +698,43 @@ func (s *Server) buildConfigResponse() configResponse {
 			AllocationCeilingPct:   s.cfg.AllocationCeilingPct,
 			SizeMultiplier:         s.cfg.SizeMultiplier,
 		},
+		PriceGap: configPriceGapResponse{
+			Enabled:               s.cfg.PriceGapEnabled,
+			PaperMode:             s.cfg.PriceGapPaperMode,
+			DebugLog:              s.cfg.PriceGapDebugLog,
+			Budget:                s.cfg.PriceGapBudget,
+			MaxConcurrent:         s.cfg.PriceGapMaxConcurrent,
+			GateConcentrationPct:  s.cfg.PriceGapGateConcentrationPct,
+			MaxHoldMin:            s.cfg.PriceGapMaxHoldMin,
+			ExitReversionFactor:   s.cfg.PriceGapExitReversionFactor,
+			BarPersistence:        s.cfg.PriceGapBarPersistence,
+			KlineStalenessSec:     s.cfg.PriceGapKlineStalenessSec,
+			PollIntervalSec:       s.cfg.PriceGapPollIntervalSec,
+			Candidates:            append([]models.PriceGapCandidate(nil), s.cfg.PriceGapCandidates...),
+			DiscoveryEnabled:      s.cfg.PriceGapDiscoveryEnabled,
+			DiscoveryUniverse:     append([]string(nil), s.cfg.PriceGapDiscoveryUniverse...),
+			DiscoveryDenylist:     append([]string(nil), s.cfg.PriceGapDiscoveryDenylist...),
+			DiscoveryIntervalSec:  s.cfg.PriceGapDiscoveryIntervalSec,
+			DiscoveryThresholdBps: s.cfg.PriceGapDiscoveryThresholdBps,
+			DiscoveryMinDepthUSDT: s.cfg.PriceGapDiscoveryMinDepthUSDT,
+			AutoPromoteScore:      s.cfg.PriceGapAutoPromoteScore,
+			MaxCandidates:         s.cfg.PriceGapMaxCandidates,
+			LiveCapital:           s.cfg.PriceGapLiveCapital,
+			Stage1SizeUSDT:        s.cfg.PriceGapStage1SizeUSDT,
+			Stage2SizeUSDT:        s.cfg.PriceGapStage2SizeUSDT,
+			Stage3SizeUSDT:        s.cfg.PriceGapStage3SizeUSDT,
+			RampStageSizesUSDT: []float64{
+				s.cfg.PriceGapStage1SizeUSDT,
+				s.cfg.PriceGapStage2SizeUSDT,
+				s.cfg.PriceGapStage3SizeUSDT,
+			},
+			HardCeilingUSDT:    s.cfg.PriceGapHardCeilingUSDT,
+			AnomalySlippageBps: s.cfg.PriceGapAnomalySlippageBps,
+			CleanDaysToPromote: s.cfg.PriceGapCleanDaysToPromote,
+			BreakerEnabled:     s.cfg.PriceGapBreakerEnabled,
+			DrawdownLimitUSDT:  s.cfg.PriceGapDrawdownLimitUSDT,
+			BreakerIntervalSec: s.cfg.PriceGapBreakerIntervalSec,
+		},
 	}
 	resp.SpotFutures = &configSpotFuturesResponse{
 		Enabled:                    s.cfg.SpotFuturesEnabled,
@@ -797,10 +869,150 @@ type configUpdate struct {
 // provided" and empty slice = "intentional delete-all" (Pitfall 2). Full
 // replace, last-write-wins per D-16.
 type priceGapUpdate struct {
-	Enabled    *bool                       `json:"enabled"`
-	PaperMode  *bool                       `json:"paper_mode"`
-	DebugLog   *bool                       `json:"debug_log"`
-	Candidates *[]models.PriceGapCandidate `json:"candidates"`
+	Enabled               *bool                       `json:"enabled"`
+	PaperMode             *bool                       `json:"paper_mode"`
+	DebugLog              *bool                       `json:"debug_log"`
+	Candidates            *[]models.PriceGapCandidate `json:"candidates"`
+	DiscoveryEnabled      *bool                       `json:"discovery_enabled"`
+	DiscoveryUniverse     *[]string                   `json:"discovery_universe"`
+	DiscoveryDenylist     *[]string                   `json:"discovery_denylist"`
+	DiscoveryIntervalSec  *int                        `json:"discovery_interval_sec"`
+	DiscoveryThresholdBps *int                        `json:"discovery_threshold_bps"`
+	DiscoveryMinDepthUSDT *int                        `json:"discovery_min_depth_usdt"`
+	AutoPromoteScore      *int                        `json:"auto_promote_score"`
+	MaxCandidates         *int                        `json:"max_candidates"`
+	LiveCapital           *bool                       `json:"live_capital"`
+	Stage1SizeUSDT        *float64                    `json:"stage_1_size_usdt"`
+	Stage2SizeUSDT        *float64                    `json:"stage_2_size_usdt"`
+	Stage3SizeUSDT        *float64                    `json:"stage_3_size_usdt"`
+	HardCeilingUSDT       *float64                    `json:"hard_ceiling_usdt"`
+	AnomalySlippageBps    *float64                    `json:"anomaly_slippage_bps"`
+	CleanDaysToPromote    *int                        `json:"clean_days_to_promote"`
+	BreakerEnabled        *bool                       `json:"breaker_enabled"`
+	DrawdownLimitUSDT     *float64                    `json:"drawdown_limit_usdt"`
+	BreakerIntervalSec    *int                        `json:"breaker_interval_sec"`
+}
+
+type priceGapConfigSnapshot struct {
+	Enabled               bool
+	PaperMode             bool
+	DebugLog              bool
+	DiscoveryEnabled      bool
+	DiscoveryUniverse     []string
+	DiscoveryDenylist     []string
+	DiscoveryIntervalSec  int
+	DiscoveryThresholdBps int
+	DiscoveryMinDepthUSDT int
+	AutoPromoteScore      int
+	MaxCandidates         int
+	LiveCapital           bool
+	Stage1SizeUSDT        float64
+	Stage2SizeUSDT        float64
+	Stage3SizeUSDT        float64
+	HardCeilingUSDT       float64
+	AnomalySlippageBps    float64
+	CleanDaysToPromote    int
+	BreakerEnabled        bool
+	DrawdownLimitUSDT     float64
+	BreakerIntervalSec    int
+}
+
+func snapshotPriceGapConfig(c *config.Config) priceGapConfigSnapshot {
+	return priceGapConfigSnapshot{
+		Enabled:               c.PriceGapEnabled,
+		PaperMode:             c.PriceGapPaperMode,
+		DebugLog:              c.PriceGapDebugLog,
+		DiscoveryEnabled:      c.PriceGapDiscoveryEnabled,
+		DiscoveryUniverse:     append([]string(nil), c.PriceGapDiscoveryUniverse...),
+		DiscoveryDenylist:     append([]string(nil), c.PriceGapDiscoveryDenylist...),
+		DiscoveryIntervalSec:  c.PriceGapDiscoveryIntervalSec,
+		DiscoveryThresholdBps: c.PriceGapDiscoveryThresholdBps,
+		DiscoveryMinDepthUSDT: c.PriceGapDiscoveryMinDepthUSDT,
+		AutoPromoteScore:      c.PriceGapAutoPromoteScore,
+		MaxCandidates:         c.PriceGapMaxCandidates,
+		LiveCapital:           c.PriceGapLiveCapital,
+		Stage1SizeUSDT:        c.PriceGapStage1SizeUSDT,
+		Stage2SizeUSDT:        c.PriceGapStage2SizeUSDT,
+		Stage3SizeUSDT:        c.PriceGapStage3SizeUSDT,
+		HardCeilingUSDT:       c.PriceGapHardCeilingUSDT,
+		AnomalySlippageBps:    c.PriceGapAnomalySlippageBps,
+		CleanDaysToPromote:    c.PriceGapCleanDaysToPromote,
+		BreakerEnabled:        c.PriceGapBreakerEnabled,
+		DrawdownLimitUSDT:     c.PriceGapDrawdownLimitUSDT,
+		BreakerIntervalSec:    c.PriceGapBreakerIntervalSec,
+	}
+}
+
+func (snap priceGapConfigSnapshot) restore(c *config.Config) {
+	c.PriceGapEnabled = snap.Enabled
+	c.PriceGapPaperMode = snap.PaperMode
+	c.PriceGapDebugLog = snap.DebugLog
+	c.PriceGapDiscoveryEnabled = snap.DiscoveryEnabled
+	c.PriceGapDiscoveryUniverse = append([]string(nil), snap.DiscoveryUniverse...)
+	c.PriceGapDiscoveryDenylist = append([]string(nil), snap.DiscoveryDenylist...)
+	c.PriceGapDiscoveryIntervalSec = snap.DiscoveryIntervalSec
+	c.PriceGapDiscoveryThresholdBps = snap.DiscoveryThresholdBps
+	c.PriceGapDiscoveryMinDepthUSDT = snap.DiscoveryMinDepthUSDT
+	c.PriceGapAutoPromoteScore = snap.AutoPromoteScore
+	c.PriceGapMaxCandidates = snap.MaxCandidates
+	c.PriceGapLiveCapital = snap.LiveCapital
+	c.PriceGapStage1SizeUSDT = snap.Stage1SizeUSDT
+	c.PriceGapStage2SizeUSDT = snap.Stage2SizeUSDT
+	c.PriceGapStage3SizeUSDT = snap.Stage3SizeUSDT
+	c.PriceGapHardCeilingUSDT = snap.HardCeilingUSDT
+	c.PriceGapAnomalySlippageBps = snap.AnomalySlippageBps
+	c.PriceGapCleanDaysToPromote = snap.CleanDaysToPromote
+	c.PriceGapBreakerEnabled = snap.BreakerEnabled
+	c.PriceGapDrawdownLimitUSDT = snap.DrawdownLimitUSDT
+	c.PriceGapBreakerIntervalSec = snap.BreakerIntervalSec
+}
+
+func normalizeDiscoveryUniverse(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, raw := range in {
+		sym := strings.ToUpper(strings.TrimSpace(raw))
+		if sym != "" {
+			out = append(out, sym)
+		}
+	}
+	return out
+}
+
+func normalizeDiscoveryDenylist(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, raw := range in {
+		item := strings.TrimSpace(raw)
+		if item == "" {
+			continue
+		}
+		if before, after, ok := strings.Cut(item, "@"); ok {
+			out = append(out, strings.ToUpper(strings.TrimSpace(before))+"@"+strings.ToLower(strings.TrimSpace(after)))
+			continue
+		}
+		out = append(out, strings.ToUpper(item))
+	}
+	return out
+}
+
+func applyPriceGapLiveDefaultsForAPI(c *config.Config, pg *priceGapUpdate) {
+	if c.PriceGapStage1SizeUSDT == 0 && (pg == nil || pg.Stage1SizeUSDT == nil) {
+		c.PriceGapStage1SizeUSDT = 100
+	}
+	if c.PriceGapStage2SizeUSDT == 0 && (pg == nil || pg.Stage2SizeUSDT == nil) {
+		c.PriceGapStage2SizeUSDT = 500
+	}
+	if c.PriceGapStage3SizeUSDT == 0 && (pg == nil || pg.Stage3SizeUSDT == nil) {
+		c.PriceGapStage3SizeUSDT = 1000
+	}
+	if c.PriceGapHardCeilingUSDT == 0 && (pg == nil || pg.HardCeilingUSDT == nil) {
+		c.PriceGapHardCeilingUSDT = 1000
+	}
+	if c.PriceGapCleanDaysToPromote == 0 && (pg == nil || pg.CleanDaysToPromote == nil) {
+		c.PriceGapCleanDaysToPromote = 7
+	}
+	if c.PriceGapBreakerIntervalSec == 0 && (pg == nil || pg.BreakerIntervalSec == nil) {
+		c.PriceGapBreakerIntervalSec = 300
+	}
 }
 
 type allocationUpdate struct {
@@ -1635,15 +1847,91 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	// acquisition (T-11-24).
 	var pendingCandidates []models.PriceGapCandidate
 	pendingCandidatesSet := false
+	priceGapOriginal := snapshotPriceGapConfig(s.cfg)
+	priceGapDiscoveryDirty := false
+	priceGapLiveDirty := false
 	if pg := upd.PriceGap; pg != nil {
 		if pg.Enabled != nil {
 			s.cfg.PriceGapEnabled = *pg.Enabled
 		}
 		if pg.PaperMode != nil {
 			s.cfg.PriceGapPaperMode = *pg.PaperMode
+			priceGapLiveDirty = true
 		}
 		if pg.DebugLog != nil {
 			s.cfg.PriceGapDebugLog = *pg.DebugLog
+		}
+		if pg.DiscoveryEnabled != nil {
+			s.cfg.PriceGapDiscoveryEnabled = *pg.DiscoveryEnabled
+			priceGapDiscoveryDirty = true
+		}
+		if pg.DiscoveryUniverse != nil {
+			s.cfg.PriceGapDiscoveryUniverse = normalizeDiscoveryUniverse(*pg.DiscoveryUniverse)
+			priceGapDiscoveryDirty = true
+		}
+		if pg.DiscoveryDenylist != nil {
+			s.cfg.PriceGapDiscoveryDenylist = normalizeDiscoveryDenylist(*pg.DiscoveryDenylist)
+			priceGapDiscoveryDirty = true
+		}
+		if pg.DiscoveryIntervalSec != nil {
+			s.cfg.PriceGapDiscoveryIntervalSec = *pg.DiscoveryIntervalSec
+			priceGapDiscoveryDirty = true
+		}
+		if pg.DiscoveryThresholdBps != nil {
+			s.cfg.PriceGapDiscoveryThresholdBps = *pg.DiscoveryThresholdBps
+			priceGapDiscoveryDirty = true
+		}
+		if pg.DiscoveryMinDepthUSDT != nil {
+			s.cfg.PriceGapDiscoveryMinDepthUSDT = *pg.DiscoveryMinDepthUSDT
+			priceGapDiscoveryDirty = true
+		}
+		if pg.AutoPromoteScore != nil {
+			s.cfg.PriceGapAutoPromoteScore = *pg.AutoPromoteScore
+			priceGapDiscoveryDirty = true
+		}
+		if pg.MaxCandidates != nil {
+			s.cfg.PriceGapMaxCandidates = *pg.MaxCandidates
+			priceGapDiscoveryDirty = true
+		}
+		if pg.LiveCapital != nil {
+			s.cfg.PriceGapLiveCapital = *pg.LiveCapital
+			priceGapLiveDirty = true
+		}
+		if pg.Stage1SizeUSDT != nil {
+			s.cfg.PriceGapStage1SizeUSDT = *pg.Stage1SizeUSDT
+			priceGapLiveDirty = true
+		}
+		if pg.Stage2SizeUSDT != nil {
+			s.cfg.PriceGapStage2SizeUSDT = *pg.Stage2SizeUSDT
+			priceGapLiveDirty = true
+		}
+		if pg.Stage3SizeUSDT != nil {
+			s.cfg.PriceGapStage3SizeUSDT = *pg.Stage3SizeUSDT
+			priceGapLiveDirty = true
+		}
+		if pg.HardCeilingUSDT != nil {
+			s.cfg.PriceGapHardCeilingUSDT = *pg.HardCeilingUSDT
+			priceGapLiveDirty = true
+		}
+		if pg.AnomalySlippageBps != nil {
+			s.cfg.PriceGapAnomalySlippageBps = *pg.AnomalySlippageBps
+			priceGapLiveDirty = true
+		}
+		if pg.CleanDaysToPromote != nil {
+			s.cfg.PriceGapCleanDaysToPromote = *pg.CleanDaysToPromote
+			priceGapLiveDirty = true
+		}
+		if pg.BreakerEnabled != nil {
+			s.cfg.PriceGapBreakerEnabled = *pg.BreakerEnabled
+			priceGapLiveDirty = true
+		}
+		if pg.DrawdownLimitUSDT != nil {
+			s.cfg.PriceGapDrawdownLimitUSDT = *pg.DrawdownLimitUSDT
+			priceGapLiveDirty = true
+		}
+		if pg.BreakerIntervalSec != nil {
+			s.cfg.PriceGapBreakerIntervalSec = *pg.BreakerIntervalSec
+			priceGapLiveDirty = true
 		}
 		if pg.Candidates != nil {
 			// Phase 10 D-16 / Pitfall 2: nil = untouched, empty slice = delete-all.
@@ -1690,6 +1978,26 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if upd.PriceGapPaperMode != nil && (upd.PriceGap == nil || upd.PriceGap.PaperMode == nil) {
 		s.cfg.PriceGapPaperMode = *upd.PriceGapPaperMode
+		priceGapLiveDirty = true
+	}
+	if priceGapLiveDirty {
+		applyPriceGapLiveDefaultsForAPI(s.cfg, upd.PriceGap)
+	}
+	if priceGapDiscoveryDirty {
+		if err := config.ValidatePriceGapDiscovery(s.cfg); err != nil {
+			priceGapOriginal.restore(s.cfg)
+			s.cfg.Unlock()
+			writeJSON(w, http.StatusUnprocessableEntity, Response{Error: err.Error()})
+			return
+		}
+	}
+	if priceGapLiveDirty {
+		if err := config.ValidatePriceGapLive(s.cfg); err != nil {
+			priceGapOriginal.restore(s.cfg)
+			s.cfg.Unlock()
+			writeJSON(w, http.StatusUnprocessableEntity, Response{Error: err.Error()})
+			return
+		}
 	}
 
 	// Persist config fields to Redis HASH (arb:config) using flat keys.
@@ -1822,6 +2130,29 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	fields["allocation_floor_pct"] = strconv.FormatFloat(snapshot.Allocation.AllocationFloorPct, 'f', -1, 64)
 	fields["allocation_ceiling_pct"] = strconv.FormatFloat(snapshot.Allocation.AllocationCeilingPct, 'f', -1, 64)
 	fields["size_multiplier"] = strconv.FormatFloat(snapshot.Allocation.SizeMultiplier, 'f', -1, 64)
+
+	// PriceGap fields
+	fields["price_gap_enabled"] = strconv.FormatBool(snapshot.PriceGap.Enabled)
+	fields["price_gap_paper_mode"] = strconv.FormatBool(snapshot.PriceGap.PaperMode)
+	fields["price_gap_debug_log"] = strconv.FormatBool(snapshot.PriceGap.DebugLog)
+	fields["price_gap_discovery_enabled"] = strconv.FormatBool(snapshot.PriceGap.DiscoveryEnabled)
+	fields["price_gap_discovery_universe"] = strings.Join(snapshot.PriceGap.DiscoveryUniverse, ",")
+	fields["price_gap_discovery_denylist"] = strings.Join(snapshot.PriceGap.DiscoveryDenylist, ",")
+	fields["price_gap_discovery_interval_sec"] = strconv.Itoa(snapshot.PriceGap.DiscoveryIntervalSec)
+	fields["price_gap_discovery_threshold_bps"] = strconv.Itoa(snapshot.PriceGap.DiscoveryThresholdBps)
+	fields["price_gap_discovery_min_depth_usdt"] = strconv.Itoa(snapshot.PriceGap.DiscoveryMinDepthUSDT)
+	fields["price_gap_auto_promote_score"] = strconv.Itoa(snapshot.PriceGap.AutoPromoteScore)
+	fields["price_gap_max_candidates"] = strconv.Itoa(snapshot.PriceGap.MaxCandidates)
+	fields["price_gap_live_capital"] = strconv.FormatBool(snapshot.PriceGap.LiveCapital)
+	fields["price_gap_stage_1_size_usdt"] = strconv.FormatFloat(snapshot.PriceGap.Stage1SizeUSDT, 'f', -1, 64)
+	fields["price_gap_stage_2_size_usdt"] = strconv.FormatFloat(snapshot.PriceGap.Stage2SizeUSDT, 'f', -1, 64)
+	fields["price_gap_stage_3_size_usdt"] = strconv.FormatFloat(snapshot.PriceGap.Stage3SizeUSDT, 'f', -1, 64)
+	fields["price_gap_hard_ceiling_usdt"] = strconv.FormatFloat(snapshot.PriceGap.HardCeilingUSDT, 'f', -1, 64)
+	fields["price_gap_anomaly_slippage_bps"] = strconv.FormatFloat(snapshot.PriceGap.AnomalySlippageBps, 'f', -1, 64)
+	fields["price_gap_clean_days_to_promote"] = strconv.Itoa(snapshot.PriceGap.CleanDaysToPromote)
+	fields["price_gap_breaker_enabled"] = strconv.FormatBool(snapshot.PriceGap.BreakerEnabled)
+	fields["price_gap_drawdown_limit_usdt"] = strconv.FormatFloat(snapshot.PriceGap.DrawdownLimitUSDT, 'f', -1, 64)
+	fields["price_gap_breaker_interval_sec"] = strconv.Itoa(snapshot.PriceGap.BreakerIntervalSec)
 
 	// Safety fields
 	fields["enable_loss_limits"] = strconv.FormatBool(snapshot.Safety.EnableLossLimits)

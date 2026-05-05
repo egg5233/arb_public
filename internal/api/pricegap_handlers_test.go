@@ -429,6 +429,63 @@ func TestConfig_PaperMode_FlatRoundTrip(t *testing.T) {
 	}
 }
 
+func TestConfig_PriceGapDiscoveryDashboardWrite(t *testing.T) {
+	s, _, token, td := newPriceGapTestServer(t)
+	defer td()
+
+	body := `{"price_gap":{"discovery_enabled":true,"discovery_universe":["ethusdt","BTCUSDT"],"discovery_denylist":["ethusdt@BYBIT"],"discovery_interval_sec":300,"discovery_threshold_bps":120,"discovery_min_depth_usdt":2500,"auto_promote_score":70,"max_candidates":13}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/config", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler := s.authMiddleware(s.handleConfig)
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !s.cfg.PriceGapDiscoveryEnabled {
+		t.Fatalf("PriceGapDiscoveryEnabled=false, want true")
+	}
+	if got := strings.Join(s.cfg.PriceGapDiscoveryUniverse, ","); got != "ETHUSDT,BTCUSDT" {
+		t.Fatalf("universe=%q", got)
+	}
+	if got := strings.Join(s.cfg.PriceGapDiscoveryDenylist, ","); got != "ETHUSDT@bybit" {
+		t.Fatalf("denylist=%q", got)
+	}
+	if s.cfg.PriceGapAutoPromoteScore != 70 || s.cfg.PriceGapMaxCandidates != 13 {
+		t.Fatalf("promotion config score=%d max=%d", s.cfg.PriceGapAutoPromoteScore, s.cfg.PriceGapMaxCandidates)
+	}
+}
+
+func TestConfig_PriceGapValidationRollbackRestoresMixedFields(t *testing.T) {
+	s, _, token, td := newPriceGapTestServer(t)
+	defer td()
+	s.cfg.PriceGapEnabled = false
+	s.cfg.PriceGapDebugLog = false
+	s.cfg.PriceGapDiscoveryIntervalSec = 300
+	s.cfg.PriceGapDiscoveryThresholdBps = 120
+	s.cfg.PriceGapAutoPromoteScore = 70
+
+	body := `{"price_gap":{"enabled":true,"debug_log":true,"discovery_interval_sec":59}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/config", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler := s.authMiddleware(s.handleConfig)
+	handler(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if s.cfg.PriceGapEnabled || s.cfg.PriceGapDebugLog {
+		t.Fatalf("mixed fields not rolled back: enabled=%v debug=%v", s.cfg.PriceGapEnabled, s.cfg.PriceGapDebugLog)
+	}
+	if s.cfg.PriceGapDiscoveryIntervalSec != 300 {
+		t.Fatalf("interval=%d, want original 300", s.cfg.PriceGapDiscoveryIntervalSec)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Broadcaster interface
 // ---------------------------------------------------------------------------
