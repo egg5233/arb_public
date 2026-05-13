@@ -28,7 +28,7 @@ func TestPreflightBingXEntryOrderHardRejectsAPIOrdersDisabled(t *testing.T) {
 	}
 
 	var e Engine
-	err := e.preflightBingXEntryOrder(stub, "bingx", "SPORTFUNUSDT", exchange.SideSell, 0.003733, "1000")
+	err := e.preflightEntryOrder(stub, "bingx", "SPORTFUNUSDT", exchange.SideSell, 0.003733, "1000")
 	if err == nil {
 		t.Fatal("preflight returned nil, want hard reject")
 	}
@@ -53,19 +53,56 @@ func TestPreflightBingXEntryOrderHardRejectsAPIOrdersDisabled(t *testing.T) {
 	}
 }
 
-func TestPreflightBingXEntryOrderSkipsNonBingX(t *testing.T) {
+func TestPreflightOrderSkipsExchangeWithoutPreflight(t *testing.T) {
+	stub := newFullStub(exchange.BBO{}, false)
+
+	var e Engine
+	err := e.preflightEntryOrder(stub, "bybit", "SPORTFUNUSDT", exchange.SideSell, 0.003733, "1000")
+	if err != nil {
+		t.Fatalf("preflight returned error for exchange without OrderPreflight: %v", err)
+	}
+}
+
+func TestPreflightOrderUsesGenericNonMarketableProbe(t *testing.T) {
+	stub := &bingXPreflightStub{fullStubExchange: newFullStub(exchange.BBO{}, false)}
+	e := Engine{contracts: map[string]map[string]exchange.ContractInfo{
+		"bybit": {
+			"HOODUSDT": {PriceStep: 0.01, PriceDecimals: 2},
+		},
+	}}
+
+	err := e.preflightEntryOrder(stub, "bybit", "HOODUSDT", exchange.SideSell, 77.40, "1.00")
+	if err != nil {
+		t.Fatalf("preflight returned error: %v", err)
+	}
+	if len(stub.calls) != 1 {
+		t.Fatalf("TestOrder calls = %d, want 1", len(stub.calls))
+	}
+	call := stub.calls[0]
+	if call.Symbol != "HOODUSDT" || call.Side != exchange.SideSell || call.OrderType != "limit" || call.Price != "116.10" || call.Size != "1.00" || call.Force != "ioc" {
+		t.Fatalf("TestOrder params = %+v", call)
+	}
+	if call.ReduceOnly {
+		t.Fatal("entry preflight TestOrder must not send reduceOnly")
+	}
+}
+
+func TestPreflightOrderGenericErrorBlocksBeforeOrder(t *testing.T) {
 	stub := &bingXPreflightStub{
 		fullStubExchange: newFullStub(exchange.BBO{}, false),
-		err:              errors.New("should not be called"),
+		err:              errors.New("bybit API error code=110126 msg=You must sign the required agreement before trading this contract."),
 	}
 
 	var e Engine
-	err := e.preflightBingXEntryOrder(stub, "bybit", "SPORTFUNUSDT", exchange.SideSell, 0.003733, "1000")
-	if err != nil {
-		t.Fatalf("preflight returned error for non-BingX exchange: %v", err)
+	err := e.preflightEntryOrder(stub, "bybit", "HOODUSDT", exchange.SideSell, 77.40, "1.00")
+	if err == nil {
+		t.Fatal("preflight returned nil, want Bybit agreement error")
 	}
-	if len(stub.calls) != 0 {
-		t.Fatalf("TestOrder calls = %d, want 0", len(stub.calls))
+	if !strings.Contains(err.Error(), "bybit preflight failed for HOODUSDT") || !strings.Contains(err.Error(), "110126") {
+		t.Fatalf("error = %q, want bybit preflight context with 110126", err.Error())
+	}
+	if len(stub.calls) != 1 {
+		t.Fatalf("TestOrder calls = %d, want 1", len(stub.calls))
 	}
 }
 
@@ -75,7 +112,7 @@ func TestPreflightBingXEntryOrderRaisesBuyProbeToBingXMinNotional(t *testing.T) 
 	}
 
 	var e Engine
-	err := e.preflightBingXEntryOrder(stub, "bingx", "SKYAIUSDT", exchange.SideBuy, 0.23056, "352")
+	err := e.preflightEntryOrder(stub, "bingx", "SKYAIUSDT", exchange.SideBuy, 0.23056, "352")
 	if err != nil {
 		t.Fatalf("preflight returned error: %v", err)
 	}
@@ -109,7 +146,7 @@ func TestPreflightBingXEntryOrderRejectsMinNotionalProbeThatWouldMarketBuy(t *te
 	}
 
 	var e Engine
-	err := e.preflightBingXEntryOrder(stub, "bingx", "TINYUSDT", exchange.SideBuy, 0.5, "1")
+	err := e.preflightEntryOrder(stub, "bingx", "TINYUSDT", exchange.SideBuy, 0.5, "1")
 	if err == nil {
 		t.Fatal("preflight returned nil, want min-notional probe error")
 	}

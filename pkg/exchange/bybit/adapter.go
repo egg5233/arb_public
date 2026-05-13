@@ -177,25 +177,7 @@ func toBybitOrderType(orderType string) string {
 func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 	log.Info("PlaceOrder: symbol=%s side=%s type=%s size=%s price=%s force=%s reduceOnly=%v",
 		req.Symbol, req.Side, req.OrderType, req.Size, req.Price, req.Force, req.ReduceOnly)
-	params := map[string]string{
-		"category":    "linear",
-		"symbol":      req.Symbol,
-		"side":        toBybitSide(req.Side),
-		"orderType":   toBybitOrderType(req.OrderType),
-		"qty":         req.Size,
-		"timeInForce": toBybitTIF(req.Force),
-	}
-	if req.Price != "" && strings.ToLower(req.OrderType) == "limit" {
-		params["price"] = req.Price
-	}
-	if req.ReduceOnly {
-		params["reduceOnly"] = "true"
-	}
-	if req.ClientOid != "" {
-		params["orderLinkId"] = req.ClientOid
-	}
-
-	result, err := a.client.Post("/v5/order/create", params)
+	result, err := a.createOrder(req)
 	if err != nil {
 		return "", fmt.Errorf("bybit PlaceOrder: %w", err)
 	}
@@ -215,6 +197,75 @@ func (a *Adapter) PlaceOrder(req exchange.PlaceOrderParams) (string, error) {
 		})
 	}
 	return resp.OrderID, nil
+}
+
+func (a *Adapter) createOrder(req exchange.PlaceOrderParams) (json.RawMessage, error) {
+	params := map[string]string{
+		"category":    "linear",
+		"symbol":      req.Symbol,
+		"side":        toBybitSide(req.Side),
+		"orderType":   toBybitOrderType(req.OrderType),
+		"qty":         req.Size,
+		"timeInForce": toBybitTIF(req.Force),
+	}
+	if req.Price != "" && strings.ToLower(req.OrderType) == "limit" {
+		params["price"] = req.Price
+	}
+	if req.ReduceOnly {
+		params["reduceOnly"] = "true"
+	}
+	if req.ClientOid != "" {
+		params["orderLinkId"] = req.ClientOid
+	}
+	return a.client.Post("/v5/order/create", params)
+}
+
+func (a *Adapter) TestOrder(req exchange.PlaceOrderParams) error {
+	if err := validateBybitTestOrderProbe(req); err != nil {
+		return err
+	}
+	result, err := a.createOrder(req)
+	if err != nil {
+		return fmt.Errorf("bybit TestOrder: %w", err)
+	}
+
+	var resp struct {
+		OrderID string `json:"orderId"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return fmt.Errorf("bybit TestOrder parse probe order: %w", err)
+	}
+	if resp.OrderID == "" {
+		return fmt.Errorf("bybit TestOrder missing probe order id")
+	}
+	if err := a.CancelOrder(req.Symbol, resp.OrderID); err != nil {
+		return fmt.Errorf("bybit TestOrder cancel probe order %s: %w", resp.OrderID, err)
+	}
+	return nil
+}
+
+func validateBybitTestOrderProbe(req exchange.PlaceOrderParams) error {
+	if req.ReduceOnly {
+		return fmt.Errorf("bybit TestOrder unsafe probe: reduceOnly is not allowed")
+	}
+	if req.Side != exchange.SideBuy && req.Side != exchange.SideSell {
+		return fmt.Errorf("bybit TestOrder unsafe probe: invalid side %q", req.Side)
+	}
+	if strings.ToLower(req.OrderType) != "limit" {
+		return fmt.Errorf("bybit TestOrder unsafe probe: order type must be limit")
+	}
+	if strings.ToLower(req.Force) != "ioc" {
+		return fmt.Errorf("bybit TestOrder unsafe probe: force must be ioc")
+	}
+	price, err := strconv.ParseFloat(req.Price, 64)
+	if err != nil || price <= 0 {
+		return fmt.Errorf("bybit TestOrder unsafe probe: price must be positive")
+	}
+	size, err := strconv.ParseFloat(req.Size, 64)
+	if err != nil || size <= 0 {
+		return fmt.Errorf("bybit TestOrder unsafe probe: size must be positive")
+	}
+	return nil
 }
 
 // CancelOrder cancels an order. Idempotent: returns nil if already cancelled/filled.

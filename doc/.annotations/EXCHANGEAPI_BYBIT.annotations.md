@@ -17,6 +17,9 @@ All Bybit accounts are now UTA. `TransferToFutures` is a no-op because the unifi
 ### Error Code 170213
 Used alongside 110001 for idempotent cancel handling. This code is not in the official error code list but appears in practice for certain cancel scenarios.
 
+### Error Code 110126
+`POST /v5/order/create` may return `110126` (`You must sign the required agreement before trading this contract`) for symbols whose contract agreement has not been accepted by the account. Treat as a hard preflight reject before placing the opposite leg.
+
 ### Orderbook Depth Level
 Code comments reference "top-5" depth but the actual subscription is `orderbook.50` (50 levels). The subscription depth and comment are mismatched — the 50-level subscription is correct for the use case.
 

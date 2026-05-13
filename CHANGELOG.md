@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.39.3 — 2026-05-08
+
+### Perp-perp entry hardening
+
+#### Fixed
+
+- Bybit entry now preflights with a non-marketable IOC probe before any opposite leg is placed, catching contract-agreement rejects such as API error `110126` before creating orphan exposure.
+- Failed-entry rollback closes now record price PnL on the failed history row, so orphan leg losses are counted by history and analytics instead of appearing as zero-PnL failures.
+
+#### Tests
+
+- Added Bybit preflight probe tests, generalized engine preflight regressions, and failed-entry rollback accounting coverage.
+
 ## 0.39.2 — 2026-05-04
 
 ### Strategy 4 dashboard-first operations

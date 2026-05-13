@@ -2756,15 +2756,13 @@ done:
 	return totalFilled, avgPrice, nil
 }
 
-func (e *Engine) preflightBingXEntryOrder(exch exchange.Exchange, exchName, symbol string, side exchange.Side, refPrice float64, size string) error {
-	if !strings.EqualFold(exchName, "bingx") {
-		return nil
-	}
+func (e *Engine) preflightEntryOrder(exch exchange.Exchange, exchName, symbol string, side exchange.Side, refPrice float64, size string) error {
 	preflight, ok := exch.(exchange.OrderPreflight)
 	if !ok {
 		return nil
 	}
-	probePriceStr, err := e.bingXEntryProbePriceForSize(exch, exchName, symbol, side, refPrice, size)
+
+	probePriceStr, err := e.entryProbePriceForSize(exch, exchName, symbol, side, refPrice, size)
 	if err != nil {
 		return err
 	}
@@ -2779,10 +2777,43 @@ func (e *Engine) preflightBingXEntryOrder(exch exchange.Exchange, exchName, symb
 	if err == nil {
 		return nil
 	}
-	if isBingXAPIOrdersTemporarilyDisabled(err) {
+	if strings.EqualFold(exchName, "bingx") && isBingXAPIOrdersTemporarilyDisabled(err) {
 		return fmt.Errorf("bingx preflight hard reject for %s: %w", symbol, err)
 	}
-	return fmt.Errorf("bingx preflight failed for %s: %w", symbol, err)
+	return fmt.Errorf("%s preflight failed for %s: %w", exchName, symbol, err)
+}
+
+func (e *Engine) entryProbePriceForSize(exch exchange.Exchange, exchName, symbol string, side exchange.Side, refPrice float64, size string) (string, error) {
+	if strings.EqualFold(exchName, "bingx") {
+		return e.bingXEntryProbePriceForSize(exch, exchName, symbol, side, refPrice, size)
+	}
+	return e.genericEntryProbePrice(exchName, symbol, side, refPrice)
+}
+
+func (e *Engine) genericEntryProbePrice(exchName, symbol string, side exchange.Side, refPrice float64) (string, error) {
+	if refPrice <= 0 {
+		return "", fmt.Errorf("%s preflight invalid reference price for %s: %.8f", exchName, symbol, refPrice)
+	}
+	if side != exchange.SideBuy && side != exchange.SideSell {
+		return "", fmt.Errorf("%s preflight invalid side for %s: %s", exchName, symbol, side)
+	}
+
+	probePrice := refPrice * 0.5
+	if side == exchange.SideSell {
+		probePrice = refPrice * 1.5
+	}
+	priceStr := e.formatPrice(exchName, symbol, probePrice)
+	parsed, _ := strconv.ParseFloat(priceStr, 64)
+	if parsed <= 0 {
+		return "", fmt.Errorf("%s preflight invalid probe price for %s: ref=%.8f probe=%s", exchName, symbol, refPrice, priceStr)
+	}
+	if side == exchange.SideBuy && parsed >= refPrice {
+		return "", fmt.Errorf("%s preflight cannot build non-marketable buy probe for %s: ref=%.8f probe=%s", exchName, symbol, refPrice, priceStr)
+	}
+	if side == exchange.SideSell && parsed <= refPrice {
+		return "", fmt.Errorf("%s preflight cannot build non-marketable sell probe for %s: ref=%.8f probe=%s", exchName, symbol, refPrice, priceStr)
+	}
+	return priceStr, nil
 }
 
 func (e *Engine) bingXEntryProbePrice(exch exchange.Exchange, exchName, symbol string, side exchange.Side, refPrice float64) (string, error) {
@@ -2904,6 +2935,57 @@ func (e *Engine) bingXContractPriceFormat(exch exchange.Exchange, exchName, symb
 		}
 	}
 	return 0, 8
+}
+
+func (e *Engine) rollbackEntryLegWithAccounting(pos *models.ArbitragePosition, exch exchange.Exchange, symbol string, closeSide exchange.Side, qty float64, entryAvg float64, leg string) float64 {
+	filled, closeAvg := e.closeFullyWithRetryPriced(context.Background(), exch, symbol, closeSide, qty)
+	rem := qty - filled
+	if rem < 0 {
+		rem = 0
+	}
+	if rem > 0 {
+		var minSize float64
+		if e.contracts != nil {
+			if exContracts, ok := e.contracts[exch.Name()]; ok {
+				if ci, ok := exContracts[symbol]; ok {
+					minSize = ci.MinSize
+				}
+			}
+		}
+		if minSize > 0 && rem < minSize {
+			rem = 0
+		}
+		if rem > 0 {
+			if sizeF, _ := strconv.ParseFloat(e.formatSize(exch.Name(), symbol, rem), 64); sizeF <= 0 {
+				rem = 0
+			}
+		}
+	}
+	if filled <= 0 || closeAvg <= 0 || entryAvg <= 0 {
+		if qty > 0 {
+			pos.PartialReconcile = true
+		}
+		return rem
+	}
+
+	var pnl float64
+	if leg == "long" {
+		pnl = (closeAvg - entryAvg) * filled
+		pos.LongExit = closeAvg
+		pos.LongClosePnL += pnl
+	} else {
+		pnl = (entryAvg - closeAvg) * filled
+		pos.ShortExit = closeAvg
+		pos.ShortClosePnL += pnl
+	}
+	pos.BasisGainLoss += pnl
+	pos.RealizedPnL += pnl
+	if rem == 0 {
+		pos.HasReconciled = true
+	} else {
+		pos.PartialReconcile = true
+	}
+	return rem
 }
 
 // executeTrade opens a delta-neutral position across two exchanges using
@@ -3742,7 +3824,7 @@ fillLoop:
 			}
 		}
 
-		if err := e.preflightBingXEntryOrder(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, askPrice, longSizeStr); err != nil {
+		if err := e.preflightEntryOrder(longExch, opp.LongExchange, opp.Symbol, exchange.SideBuy, askPrice, longSizeStr); err != nil {
 			setAbortReason("preflight blocked long leg before order on %s: %v", opp.LongExchange, err)
 			e.log.Warn("depth fill preflight blocked %s long leg before any new orders: %v", opp.Symbol, err)
 			if e.discovery != nil {
@@ -3750,7 +3832,7 @@ fillLoop:
 			}
 			break fillLoop
 		}
-		if err := e.preflightBingXEntryOrder(shortExch, opp.ShortExchange, opp.Symbol, exchange.SideSell, bidPrice, shortSizeStr); err != nil {
+		if err := e.preflightEntryOrder(shortExch, opp.ShortExchange, opp.Symbol, exchange.SideSell, bidPrice, shortSizeStr); err != nil {
 			setAbortReason("preflight blocked short leg before order on %s: %v", opp.ShortExchange, err)
 			e.log.Warn("depth fill preflight blocked %s short leg before any new orders: %v", opp.Symbol, err)
 			if e.discovery != nil {
@@ -4393,13 +4475,17 @@ fillLoop:
 	if longNotional < minPositionUSDT || shortNotional < minPositionUSDT {
 		e.log.Warn("depth fill too small for %s (long=$%.2f short=$%.2f), aborting", posID, longNotional, shortNotional)
 		if confirmedLong > 0 {
-			rem := e.closeFullyWithRetry(longExch, opp.Symbol, exchange.SideSell, confirmedLong)
+			pos.LongSize = confirmedLong
+			pos.LongEntry = longVWAP
+			rem := e.rollbackEntryLegWithAccounting(pos, longExch, opp.Symbol, exchange.SideSell, confirmedLong, longVWAP, "long")
 			if rem > 0 {
 				e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s ??manual intervention needed", opp.Symbol, exchange.SideSell, rem, longExch.Name())
 			}
 		}
 		if confirmedShort > 0 {
-			rem := e.closeFullyWithRetry(shortExch, opp.Symbol, exchange.SideBuy, confirmedShort)
+			pos.ShortSize = confirmedShort
+			pos.ShortEntry = shortVWAP
+			rem := e.rollbackEntryLegWithAccounting(pos, shortExch, opp.Symbol, exchange.SideBuy, confirmedShort, shortVWAP, "short")
 			if rem > 0 {
 				e.log.Error("ORPHAN EXPOSURE: %s %s %.6f on %s ??manual intervention needed", opp.Symbol, exchange.SideBuy, rem, shortExch.Name())
 			}
