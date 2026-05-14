@@ -194,6 +194,10 @@ func (s *Server) Start() {
 	mux.HandleFunc("/api/tradfi-status", s.cors(s.authMiddleware(s.handleTradFiStatus)))
 	mux.HandleFunc("/api/sign-tradfi", s.cors(s.authMiddleware(s.handleSignTradFi)))
 
+	// Bybit agreement skip-list
+	mux.HandleFunc("GET /api/agreement-blocks", s.cors(s.authMiddleware(s.handleListAgreementBlocks)))
+	mux.HandleFunc("POST /api/agreement-blocks/clear", s.cors(s.authMiddleware(s.handleClearAgreementBlock)))
+
 	// Spot-futures routes
 	mux.HandleFunc("/api/spot/positions", s.cors(s.authMiddleware(s.handleGetSpotPositions)))
 	mux.HandleFunc("/api/spot/history", s.cors(s.authMiddleware(s.handleGetSpotHistory)))
@@ -371,6 +375,21 @@ func (s *Server) BroadcastStats() {
 // BroadcastAlert sends an alert to all WebSocket clients.
 func (s *Server) BroadcastAlert(alert interface{}) {
 	s.hub.Broadcast("alert", alert)
+}
+
+// BroadcastAgreementBlock notifies dashboard clients that a Bybit symbol has been
+// agreement-blocked. Sends an alert banner event plus the full updated block list.
+func (s *Server) BroadcastAgreementBlock(block database.AgreementBlock) {
+	s.hub.Broadcast("alert", map[string]string{
+		"type":     "agreement_blocked",
+		"message":  "Bybit " + block.Symbol + " needs agreement sign-off — sign on Bybit UI, then clear here",
+		"severity": "warning",
+	})
+	blocks := s.db.ListAgreementBlocks()
+	if blocks == nil {
+		blocks = []database.AgreementBlock{}
+	}
+	s.hub.Broadcast("agreement_blocks", blocks)
 }
 
 // BroadcastLossLimits sends loss limit status to all WebSocket clients.

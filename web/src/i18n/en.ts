@@ -436,6 +436,12 @@ const en = {
   'cfg.safety.enablePerpTelegramDesc': 'Send Telegram for SL triggers, emergency closes, API errors',
   'cfg.safety.telegramCooldown': 'Alert Cooldown (seconds)',
   'cfg.safety.telegramCooldownDesc': 'Minimum seconds between same-type notifications',
+  'cfg.safety.agreementSkiplist': 'Bybit Agreement Skip-List',
+  'cfg.safety.agreementSkiplistDesc': 'Persistently exclude Bybit symbols that require a manual agreement sign-off. Operator must sign on Bybit UI, then clear the block here. Default ON.',
+  'cfg.safety.agreementBlockedSymbols': 'Agreement-Blocked Symbols',
+  'cfg.safety.agreementBlockedEmpty': 'No symbols currently agreement-blocked',
+  'cfg.safety.agreementClear': 'Clear',
+  'cfg.safety.agreementBlockedAt': 'Blocked',
 
   // Config - Allocation
   'cfg.tab.allocation': 'Allocation',
@@ -682,6 +688,10 @@ const en = {
   'update.failed': 'Update failed',
   'update.checking': 'Checking for updates...',
   'update.upToDate': 'Already up to date',
+
+  // Agreement skip-list banner
+  'agreement.banner': 'Bybit contract agreement required for: {symbols} — sign on Bybit UI, then clear here',
+  'agreement.bannerAction': 'Go to Safety',
 
   // TradFi
   'tradfi.banner': 'Binance TradFi-Perps agreement not signed — commodity contracts cannot trade',

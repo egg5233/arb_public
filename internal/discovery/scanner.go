@@ -1090,6 +1090,35 @@ func (s *Scanner) applyEntryFilters(verified []models.Opportunity, scanType Scan
 		verified = notDelisted
 	}
 
+	// 9. Filter agreement-blocked symbols (all scan types).
+	// Only drop an opp when the blocked exchange is actually a leg of that opp —
+	// a Bybit block on HOODUSDT must NOT exclude a Binance/Gate HOODUSDT pair.
+	if s.cfg.EnableAgreementSkiplist {
+		var notBlocked []models.Opportunity
+		for _, opp := range verified {
+			longBlocked := s.db.IsAgreementBlocked(opp.LongExchange, opp.Symbol)
+			shortBlocked := s.db.IsAgreementBlocked(opp.ShortExchange, opp.Symbol)
+			if longBlocked || shortBlocked {
+				blockedExch := opp.LongExchange
+				if shortBlocked {
+					blockedExch = opp.ShortExchange
+				}
+				reason := "agreement-blocked on " + blockedExch + " (110126: sign required on Bybit UI)"
+				s.log.Warn("filtering %s (%s/%s): %s",
+					opp.Symbol, opp.LongExchange, opp.ShortExchange, reason)
+				if s.rejStore != nil {
+					s.rejStore.AddOpp(opp, "scanner", reason)
+				}
+				continue
+			}
+			notBlocked = append(notBlocked, opp)
+		}
+		if len(notBlocked) < len(verified) {
+			s.log.Info("Agreement filter: %d/%d passed", len(notBlocked), len(verified))
+		}
+		verified = notBlocked
+	}
+
 	return verified
 }
 

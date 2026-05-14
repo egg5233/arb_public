@@ -57,4 +57,3 @@ func (e *Engine) isDust(exchName, symbol string, remainder float64) bool {
 	}
 	return false
 }
-

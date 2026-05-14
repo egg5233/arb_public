@@ -50,12 +50,12 @@ func TestComputeDeficit(t *testing.T) {
 	)
 
 	tests := []struct {
-		name        string
-		totalNeed   float64
-		available   float64
+		name         string
+		totalNeed    float64
+		available    float64
 		futuresTotal float64
-		wantMin     float64 // result must be >= wantMin
-		wantMax     float64 // result must be <= wantMax
+		wantMin      float64 // result must be >= wantMin
+		wantMax      float64 // result must be <= wantMax
 		// which deficit should dominate
 		wantDominant string // "margin", "ratio", or "none"
 	}{
@@ -119,13 +119,13 @@ func TestComputeDeficit(t *testing.T) {
 			// futuresTotal=200, targetRatio=0.75, freeTarget=0.25
 			// ratioDeficit = (0.25*200 - 80 + 100) / 0.75 = 70/0.75 ≈ 93.33
 			// max(20, 93.33) → ratio wins, result ≈ 93.33
-			name:                "edge: marginSafetyMultiplier = 0 (actualMargin falls back to totalNeed)",
-			totalNeed:           100,
-			available:           80,
-			futuresTotal:        200,
-			wantMin:             92,
-			wantMax:             95,
-			wantDominant:        "ratio",
+			name:         "edge: marginSafetyMultiplier = 0 (actualMargin falls back to totalNeed)",
+			totalNeed:    100,
+			available:    80,
+			futuresTotal: 200,
+			wantMin:      92,
+			wantMax:      95,
+			wantDominant: "ratio",
 		},
 	}
 
@@ -197,8 +197,8 @@ func TestComputeDeficitNeverNegative(t *testing.T) {
 		{1, 1, 1, 2.0},
 		{50, 200, 1000, 2.0},
 		{0.001, 0.001, 0, 2.0},
-		{100, 100, 0, 0},     // multiplier=0 edge + no futures
-		{0, 0, 1000, 0},      // zero need, large futures, multiplier=0
+		{100, 100, 0, 0}, // multiplier=0 edge + no futures
+		{0, 0, 1000, 0},  // zero need, large futures, multiplier=0
 	}
 
 	for _, c := range cases {

@@ -698,6 +698,94 @@ func (c *Client) IsDelisted(symbol string) bool {
 }
 
 // ---------------------------------------------------------------------------
+// Agreement-block skip-list (Bybit 110126 — no TTL, operator-cleared)
+// ---------------------------------------------------------------------------
+
+const keyAgreementBlockPrefix = "arb:agreement_block:"
+
+// AgreementBlock records a persistent agreement-gate block for a symbol on a
+// specific exchange. Cleared only by operator action via the dashboard.
+type AgreementBlock struct {
+	Exchange  string    `json:"exchange"`
+	Symbol    string    `json:"symbol"`
+	Reason    string    `json:"reason"`
+	BlockedAt time.Time `json:"blocked_at"`
+}
+
+type agreementBlockValue struct {
+	Reason    string    `json:"reason"`
+	BlockedAt time.Time `json:"blocked_at"`
+}
+
+// SetAgreementBlock persists an agreement-gate block for exchange+symbol with
+// no TTL. The block survives restarts and is only removed by ClearAgreementBlock.
+func (c *Client) SetAgreementBlock(exchange, symbol, reason string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	val, err := json.Marshal(agreementBlockValue{Reason: reason, BlockedAt: time.Now().UTC()})
+	if err != nil {
+		return fmt.Errorf("agreement block marshal: %w", err)
+	}
+	return c.rdb.Set(ctx, keyAgreementBlockPrefix+exchange+":"+symbol, val, 0).Err()
+}
+
+// IsAgreementBlocked reports whether exchange+symbol has an active agreement block.
+// Fail-open: Redis errors return false so a transient outage never blocks trading.
+func (c *Client) IsAgreementBlocked(exchange, symbol string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	val, err := c.rdb.Get(ctx, keyAgreementBlockPrefix+exchange+":"+symbol).Result()
+	return err == nil && val != ""
+}
+
+// ListAgreementBlocks returns all active agreement blocks across all exchanges.
+func (c *Client) ListAgreementBlocks() []AgreementBlock {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	keys, err := c.rdb.Keys(ctx, keyAgreementBlockPrefix+"*").Result()
+	if err != nil {
+		log.Printf("database: ListAgreementBlocks scan error: %v", err)
+		return nil
+	}
+
+	blocks := make([]AgreementBlock, 0, len(keys))
+	for _, key := range keys {
+		// key format: arb:agreement_block:<exchange>:<symbol>
+		suffix := strings.TrimPrefix(key, keyAgreementBlockPrefix)
+		sep := strings.Index(suffix, ":")
+		if sep < 0 {
+			continue
+		}
+		exchange := suffix[:sep]
+		symbol := suffix[sep+1:]
+
+		raw, err := c.rdb.Get(ctx, key).Result()
+		if err != nil {
+			continue
+		}
+		var v agreementBlockValue
+		if err := json.Unmarshal([]byte(raw), &v); err != nil {
+			continue
+		}
+		blocks = append(blocks, AgreementBlock{
+			Exchange:  exchange,
+			Symbol:    symbol,
+			Reason:    v.Reason,
+			BlockedAt: v.BlockedAt,
+		})
+	}
+	return blocks
+}
+
+// ClearAgreementBlock removes the agreement block for exchange+symbol.
+func (c *Client) ClearAgreementBlock(exchange, symbol string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return c.rdb.Del(ctx, keyAgreementBlockPrefix+exchange+":"+symbol).Err()
+}
+
+// ---------------------------------------------------------------------------
 // Loss event tracking (rolling window sorted set)
 // ---------------------------------------------------------------------------
 

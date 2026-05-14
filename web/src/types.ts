@@ -196,6 +196,13 @@ export interface PriceGapResult {
   direction: string;
 }
 
+export interface AgreementBlock {
+  exchange: string;
+  symbol: string;
+  reason: string;
+  blocked_at: string;
+}
+
 export interface LossLimitStatus {
   enabled: boolean;
   daily_loss: number;

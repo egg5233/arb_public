@@ -156,6 +156,7 @@ function App() {
       setSpotScannerMode(readSpotScannerMode(config) ?? 'native');
     }).catch(() => {});
     api.getBlacklist().then(setBlacklist).catch(() => {});
+    api.getAgreementBlocks().then(ws.setAgreementBlocks).catch(() => {});
     const loadExchanges = () => {
       api.getExchanges().then(setExchanges).catch(() => {});
     };
@@ -249,7 +250,17 @@ function App() {
       case 'analytics':
         return <Analytics getAnalyticsPnL={api.getAnalyticsPnL} getAnalyticsSummary={api.getAnalyticsSummary} />;
       case 'config':
-        return <Config getConfig={api.getConfig} updateConfig={handleUpdateConfig} blacklist={blacklist} onBlacklistRemove={async (s) => { await api.removeFromBlacklist(s); setBlacklist(prev => prev.filter(x => x !== s)); }} />;
+        return <Config
+          getConfig={api.getConfig}
+          updateConfig={handleUpdateConfig}
+          blacklist={blacklist}
+          onBlacklistRemove={async (s) => { await api.removeFromBlacklist(s); setBlacklist(prev => prev.filter(x => x !== s)); }}
+          agreementBlocks={ws.agreementBlocks}
+          onClearAgreementBlock={async (exchange, symbol) => {
+            await api.clearAgreementBlock(exchange, symbol);
+            ws.setAgreementBlocks(prev => prev.filter(b => !(b.exchange === exchange && b.symbol === symbol)));
+          }}
+        />;
       case 'transfers':
         return (
           <Transfers
@@ -350,6 +361,35 @@ function App() {
           aria-label="Dismiss"
         >
           ✕
+        </button>
+      </div>
+    );
+  };
+
+  const renderAgreementBlocksBanner = () => {
+    if (ws.agreementBlocks.length === 0) return null;
+    const symbols = ws.agreementBlocks.map((b) => b.symbol).join(', ');
+    if (theme === 'classic') {
+      return (
+        <div className="bg-orange-600 text-white px-4 py-2 flex items-center justify-between text-sm">
+          <span>{t('agreement.banner').replace('{symbols}', symbols)}</span>
+          <button
+            onClick={() => setPage('config')}
+            className="ml-4 bg-white/20 hover:bg-white/30 px-3 py-1 rounded text-xs font-medium"
+          >
+            {t('agreement.bannerAction')}
+          </button>
+        </div>
+      );
+    }
+    return (
+      <div className="bg-[#2a1002] border-b border-orange-500/40 text-orange-400 px-4 py-2 flex items-center justify-between text-sm">
+        <span className="font-medium">{t('agreement.banner').replace('{symbols}', symbols)}</span>
+        <button
+          onClick={() => setPage('config')}
+          className="ml-4 bg-orange-500 text-white hover:bg-orange-400 px-3 py-1 rounded-full text-xs font-semibold transition-colors"
+        >
+          {t('agreement.bannerAction')}
         </button>
       </div>
     );
@@ -503,6 +543,7 @@ function App() {
           <div className="flex-1 flex flex-col overflow-auto">
             {renderMobileHeader()}
             {renderUpdateBanner()}
+            {renderAgreementBlocksBanner()}
             {renderTradFiBanner()}
             <main className={`flex-1 ${theme === 'classic' ? 'p-3 md:p-6' : 'p-4 md:p-8'}`}>
               {renderPage()}

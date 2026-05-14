@@ -4,11 +4,12 @@ import "testing"
 
 // Step 2 of PLAN-allocator-unified.md added per-leg margin fields to
 // allocatorChoice. These helpers must:
-//   (a) fall back to symmetric requiredMargin when per-leg fields are zero,
-//       so legacy call sites keep working unchanged;
-//   (b) return the per-leg values when both are populated;
-//   (c) maxRequiredMargin reports the larger of the two per-leg values
-//       (or the symmetric fallback).
+//
+//	(a) fall back to symmetric requiredMargin when per-leg fields are zero,
+//	    so legacy call sites keep working unchanged;
+//	(b) return the per-leg values when both are populated;
+//	(c) maxRequiredMargin reports the larger of the two per-leg values
+//	    (or the symmetric fallback).
 func TestAllocatorChoiceMarginNeeds(t *testing.T) {
 	// (a) symmetric fallback when per-leg fields zero
 	c := allocatorChoice{requiredMargin: 100}

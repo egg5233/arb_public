@@ -429,6 +429,12 @@ const zhTW: Record<TranslationKey, string> = {
   'cfg.safety.enablePerpTelegramDesc': '發送停損觸發、緊急平倉、API錯誤的Telegram通知',
   'cfg.safety.telegramCooldown': '通知冷卻時間（秒）',
   'cfg.safety.telegramCooldownDesc': '同類通知之間的最短間隔秒數',
+  'cfg.safety.agreementSkiplist': 'Bybit 協議跳過清單',
+  'cfg.safety.agreementSkiplistDesc': '永久排除需要手動簽署協議的 Bybit 幣種。操作員需在 Bybit UI 上簽署後，再於此處清除封鎖。預設開啟。',
+  'cfg.safety.agreementBlockedSymbols': '協議封鎖幣種',
+  'cfg.safety.agreementBlockedEmpty': '目前無協議封鎖的幣種',
+  'cfg.safety.agreementClear': '清除',
+  'cfg.safety.agreementBlockedAt': '封鎖時間',
 
   // Config - Allocation
   'cfg.tab.allocation': '資金分配',
@@ -673,6 +679,10 @@ const zhTW: Record<TranslationKey, string> = {
   'update.failed': '更新失敗',
   'update.checking': '正在檢查更新...',
   'update.upToDate': '已是最新版本',
+
+  // Agreement skip-list banner
+  'agreement.banner': 'Bybit 合約協議待簽署：{symbols} — 請在 Bybit UI 簽署後於此清除',
+  'agreement.bannerAction': '前往安全設定',
 
   // TradFi
   'tradfi.banner': 'Binance TradFi-Perps 協議未簽署，商品合約無法交易',

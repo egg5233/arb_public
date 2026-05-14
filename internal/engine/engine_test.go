@@ -130,4 +130,3 @@ func TestAPIErrorCounterDisabled(t *testing.T) {
 		t.Errorf("expected 0 when disabled, got %d", e.apiErrCounts["binance"])
 	}
 }
-

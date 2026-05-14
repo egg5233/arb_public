@@ -60,6 +60,15 @@ func isBingXAPIOrdersTemporarilyDisabled(err error) bool {
 		strings.Contains(msg, "large market fluctuations")
 }
 
+func isBybitAgreementError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "110126") ||
+		strings.Contains(msg, "sign the required agreement")
+}
+
 // Engine is the core arbitrage engine. It orchestrates discovery, risk
 // approval, trade execution, position management and exit logic.
 type Engine struct {
@@ -3828,7 +3837,13 @@ fillLoop:
 			setAbortReason("preflight blocked long leg before order on %s: %v", opp.LongExchange, err)
 			e.log.Warn("depth fill preflight blocked %s long leg before any new orders: %v", opp.Symbol, err)
 			if e.discovery != nil {
-				e.discovery.SetReEnterCooldown(opp.Symbol, 30*time.Minute)
+				if strings.EqualFold(opp.LongExchange, "bybit") && isBybitAgreementError(err) && e.cfg.EnableAgreementSkiplist {
+					reason := fmt.Sprintf("Bybit API 110126: sign required agreement for %s on Bybit UI", opp.Symbol)
+					e.log.Warn("agreement block: %s needs manual sign on Bybit UI — blocking from discovery", opp.Symbol)
+					e.discovery.SetAgreementBlock("bybit", opp.Symbol, reason)
+				} else {
+					e.discovery.SetReEnterCooldown(opp.Symbol, 30*time.Minute)
+				}
 			}
 			break fillLoop
 		}
@@ -3836,7 +3851,13 @@ fillLoop:
 			setAbortReason("preflight blocked short leg before order on %s: %v", opp.ShortExchange, err)
 			e.log.Warn("depth fill preflight blocked %s short leg before any new orders: %v", opp.Symbol, err)
 			if e.discovery != nil {
-				e.discovery.SetReEnterCooldown(opp.Symbol, 30*time.Minute)
+				if strings.EqualFold(opp.ShortExchange, "bybit") && isBybitAgreementError(err) && e.cfg.EnableAgreementSkiplist {
+					reason := fmt.Sprintf("Bybit API 110126: sign required agreement for %s on Bybit UI", opp.Symbol)
+					e.log.Warn("agreement block: %s needs manual sign on Bybit UI — blocking from discovery", opp.Symbol)
+					e.discovery.SetAgreementBlock("bybit", opp.Symbol, reason)
+				} else {
+					e.discovery.SetReEnterCooldown(opp.Symbol, 30*time.Minute)
+				}
 			}
 			break fillLoop
 		}

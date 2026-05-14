@@ -2,12 +2,15 @@ import { useState, useEffect, useRef } from 'react';
 import type { FC, FormEvent } from 'react';
 import { useLocale, type TranslationKey } from '../i18n/index.ts';
 import { useTheme, type Theme } from '../theme/index.ts';
+import type { AgreementBlock } from '../types.ts';
 
 interface ConfigProps {
   getConfig: () => Promise<Record<string, unknown>>;
   updateConfig: (data: Record<string, unknown>) => Promise<Record<string, unknown>>;
   blacklist?: string[];
   onBlacklistRemove?: (symbol: string) => Promise<void>;
+  agreementBlocks?: AgreementBlock[];
+  onClearAgreementBlock?: (exchange: string, symbol: string) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -320,7 +323,7 @@ const ReadOnlyNumberField: FC<{
 // ---------------------------------------------------------------------------
 // Main Config Component
 // ---------------------------------------------------------------------------
-const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBlacklistRemove }) => {
+const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBlacklistRemove, agreementBlocks = [], onClearAgreementBlock }) => {
   const { t } = useLocale();
   const { theme, setTheme } = useTheme();
   const [config, setConfig] = useState<Record<string, unknown>>({});
@@ -1931,6 +1934,46 @@ const Config: FC<ConfigProps> = ({ getConfig, updateConfig, blacklist = [], onBl
           unit="sec"
           onChange={(v) => handleChange(['safety', 'telegram_cooldown_sec'], v)}
         />
+      </div>
+
+      {/* Bybit Agreement Skip-List */}
+      <h4 className="text-sm font-semibold text-gray-400 border-t border-gray-800 pt-4">{t('cfg.safety.agreementSkiplist')}</h4>
+      <ToggleField
+        label={t('cfg.safety.agreementSkiplist')}
+        desc={t('cfg.safety.agreementSkiplistDesc')}
+        value={getByPath(config, ['strategy', 'discovery', 'enable_agreement_skiplist']) !== false}
+        onChange={(v) => handleBoolChange(['strategy', 'discovery', 'enable_agreement_skiplist'], v)}
+      />
+
+      {/* Blocked symbols list */}
+      <div className="bg-gray-900 rounded-xl p-4 border border-gray-800 space-y-2">
+        <label className="text-sm font-medium">{t('cfg.safety.agreementBlockedSymbols')}</label>
+        {agreementBlocks.length === 0 ? (
+          <p className="text-sm text-gray-500">{t('cfg.safety.agreementBlockedEmpty')}</p>
+        ) : (
+          <div className="space-y-2 mt-2">
+            {agreementBlocks.map((block) => {
+              const blockedAt = new Date(block.blocked_at).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' });
+              return (
+                <div key={`${block.exchange}:${block.symbol}`} className="flex items-center justify-between gap-2 text-sm">
+                  <div className="flex flex-col min-w-0">
+                    <span className="font-mono font-semibold text-yellow-400">{block.symbol}</span>
+                    <span className="text-xs text-gray-500 truncate">{block.reason}</span>
+                    <span className="text-xs text-gray-600">{t('cfg.safety.agreementBlockedAt')}: {blockedAt}</span>
+                  </div>
+                  {onClearAgreementBlock && (
+                    <button
+                      onClick={() => onClearAgreementBlock(block.exchange, block.symbol)}
+                      className="shrink-0 px-3 py-1 text-xs font-medium bg-red-900/50 hover:bg-red-800 text-red-300 hover:text-red-100 rounded-lg border border-red-800/50 transition-colors"
+                    >
+                      {t('cfg.safety.agreementClear')}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
     </div>

@@ -108,16 +108,16 @@ func (s *Server) handlePgBreakerStateGet(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusOK, Response{OK: true, Data: map[string]interface{}{
-		"enabled":              enabled,
-		"pending_strike":       state.PendingStrike,
-		"strike1_ts_ms":        state.Strike1Ts,
-		"sticky_until_ms":      state.PaperModeStickyUntil,
-		"last_eval_pnl_usdt":   state.LastEvalPnLUSDT,
-		"last_eval_ts_ms":      state.LastEvalTs,
-		"threshold_usdt":       threshold,
-		"armed":                armed,
-		"tripped":              tripped,
-		"last_trip":            lastTrip,
+		"enabled":            enabled,
+		"pending_strike":     state.PendingStrike,
+		"strike1_ts_ms":      state.Strike1Ts,
+		"sticky_until_ms":    state.PaperModeStickyUntil,
+		"last_eval_pnl_usdt": state.LastEvalPnLUSDT,
+		"last_eval_ts_ms":    state.LastEvalTs,
+		"threshold_usdt":     threshold,
+		"armed":              armed,
+		"tripped":            tripped,
+		"last_trip":          lastTrip,
 	}})
 }
 

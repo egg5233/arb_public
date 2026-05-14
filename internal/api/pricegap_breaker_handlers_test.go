@@ -18,14 +18,14 @@ import (
 
 // fakeBreakerCtl satisfies BreakerControllerAPI for handler tests.
 type fakeBreakerCtl struct {
-	mu             sync.Mutex
-	state          models.BreakerState
-	snapshotErr    error
-	recoverCalls   []string
-	recoverErr     error
-	testFireCalls  []bool
-	testFireRec    models.BreakerTripRecord
-	testFireErr    error
+	mu            sync.Mutex
+	state         models.BreakerState
+	snapshotErr   error
+	recoverCalls  []string
+	recoverErr    error
+	testFireCalls []bool
+	testFireRec   models.BreakerTripRecord
+	testFireErr   error
 }
 
 func (f *fakeBreakerCtl) Snapshot() (models.BreakerState, error) {

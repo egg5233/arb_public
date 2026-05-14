@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import type { Position, Opportunity, Stats, ExchangeInfo, TransferRecord, LogEntry, RejectedOpportunity, FundingEvent, FundingHistoryResult, SpotPosition, SpotStats, SpotOpportunity, PriceGapResult, PnLSnapshot, StrategySummary, ExchangeMetric } from '../types.ts';
+import type { Position, Opportunity, Stats, ExchangeInfo, TransferRecord, LogEntry, RejectedOpportunity, FundingEvent, FundingHistoryResult, SpotPosition, SpotStats, SpotOpportunity, PriceGapResult, PnLSnapshot, StrategySummary, ExchangeMetric, AgreementBlock } from '../types.ts';
 
 const TOKEN_KEY = 'arb_token';
 
@@ -303,6 +303,17 @@ export function useApi() {
     return request<{ signed: boolean }>('/api/sign-tradfi', { method: 'POST' });
   }, []);
 
+  const getAgreementBlocks = useCallback(() => {
+    return request<AgreementBlock[]>('/api/agreement-blocks');
+  }, []);
+
+  const clearAgreementBlock = useCallback((exchange: string, symbol: string) => {
+    return request<void>('/api/agreement-blocks/clear', {
+      method: 'POST',
+      body: JSON.stringify({ exchange, symbol }),
+    });
+  }, []);
+
   const logout = useCallback(() => {
     clearToken();
     _setToken(null);
@@ -350,5 +361,7 @@ export function useApi() {
     batchCheckBorrowable,
     getTradFiStatus,
     signTradFi,
+    getAgreementBlocks,
+    clearAgreementBlock,
   };
 }

@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.40.0 — 2026-05-14
+
+### Bybit contract-agreement skip-list (110126)
+
+#### Added
+
+- **Persistent agreement skip-list**: Bybit entry preflight errors with code `110126` ("must sign the required agreement") now call `SetAgreementBlock("bybit", symbol, reason)` instead of the generic 30-min cooldown. Blocks survive restarts (no TTL in Redis) and are only cleared by operator action.
+- **Discovery exclusion filter**: agreement-blocked symbols are excluded from all scan types when `enable_agreement_skiplist` is ON. Only drops opps where the *blocked* exchange is actually a leg — a Bybit block on HOODUSDT never affects Binance/Gate pairs with the same symbol.
+- **Dashboard alert banner**: a top-of-page banner appears in the dashboard whenever agreement-blocked symbols exist, with a link to the Safety tab.
+- **Safety tab UI**: toggle for `enable_agreement_skiplist` (default ON); blocked-symbols list showing symbol, reason, and blocked-at time (Asia/Taipei); per-row "Clear" button calling `POST /api/agreement-blocks/clear`.
+- **REST API**: `GET /api/agreement-blocks` (list) and `POST /api/agreement-blocks/clear` (clear by exchange+symbol), both auth-gated and returning the standard `{ok,data,error}` envelope.
+- **WS push**: `BroadcastAgreementBlock` sends an `alert` event (for the banner) and `agreement_blocks` event (full list update) to all dashboard WS clients.
+- **Config switch**: `EnableAgreementSkiplist bool` / `enable_agreement_skiplist` JSON tag in the discovery sub-block. Default ON (documented deviation from "default OFF" convention — corrects a defect retry loop).
+- **i18n**: new keys added to both `en.ts` and `zh-TW.ts` (agreement skip-list section, banner, Safety tab labels).
+
+#### Tests
+
+- Engine: `isBybitAgreementError` true/false cases.
+- Database: set/is/list/clear round-trip; no-TTL persistence; exchange isolation.
+- Discovery: agreement-blocked Bybit leg dropped; same symbol on non-Bybit pair kept; filter no-op when switch OFF; short-leg block drops opp.
+- API: list and clear handlers (200/400/405); BroadcastAgreementBlock smoke test.
+
 ## 0.39.3 — 2026-05-08
 
 ### Perp-perp entry hardening

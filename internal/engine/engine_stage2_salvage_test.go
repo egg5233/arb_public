@@ -94,12 +94,12 @@ func buildStage2SalvageEngine(t *testing.T, opts ...option) (*Engine, *miniredis
 	t.Helper()
 	mr, db := newMiniredisDB(t)
 	cfg := &config.Config{
-		MaxPositions:            5,
-		CapitalPerLeg:           100,
-		Leverage:                2,
-		MarginSafetyMultiplier:  2.0,
-		MarginL4Threshold:       0.80,
-		EnablePoolAllocator:     true,
+		MaxPositions:           5,
+		CapitalPerLeg:          100,
+		Leverage:               2,
+		MarginSafetyMultiplier: 2.0,
+		MarginL4Threshold:      0.80,
+		EnablePoolAllocator:    true,
 	}
 	exchanges := map[string]exchange.Exchange{
 		"binance": newRankFirstStub(300, 1000, 0),

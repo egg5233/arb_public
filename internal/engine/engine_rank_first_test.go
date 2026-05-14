@@ -207,10 +207,10 @@ func TestRankFirst_Scenario1_BothApprovedNoFallback(t *testing.T) {
 func TestRankFirst_Scenario2_Rank1CapitalRescueViaDonor(t *testing.T) {
 	cfg := rankFirstCfg()
 	exchanges := map[string]exchange.Exchange{
-		"binance": poorStub(),  // rank-1 long leg: Capital-rejected
-		"gateio":  richStub(),  // rank-1 short + donor
-		"okx":     richStub(),  // donor
-		"bingx":   richStub(),  // rank-2 legs
+		"binance": poorStub(), // rank-1 long leg: Capital-rejected
+		"gateio":  richStub(), // rank-1 short + donor
+		"okx":     richStub(), // donor
+		"bingx":   richStub(), // rank-2 legs
 		"bybit":   richStub(),
 	}
 	e := buildRankFirstEngine(t, exchanges, cfg)

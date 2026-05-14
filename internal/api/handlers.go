@@ -2882,6 +2882,46 @@ func (s *Server) handleTradFiStatus(w http.ResponseWriter, r *http.Request) {
 	}})
 }
 
+// handleListAgreementBlocks returns all agreement-blocked symbols from Redis.
+func (s *Server) handleListAgreementBlocks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	blocks := s.db.ListAgreementBlocks()
+	if blocks == nil {
+		blocks = []database.AgreementBlock{}
+	}
+	writeJSON(w, http.StatusOK, Response{OK: true, Data: blocks})
+}
+
+// handleClearAgreementBlock removes an agreement block and broadcasts the updated list.
+func (s *Server) handleClearAgreementBlock(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Exchange string `json:"exchange"`
+		Symbol   string `json:"symbol"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Exchange == "" || req.Symbol == "" {
+		writeJSON(w, http.StatusBadRequest, Response{Error: "exchange and symbol required"})
+		return
+	}
+	if err := s.db.ClearAgreementBlock(req.Exchange, req.Symbol); err != nil {
+		writeJSON(w, http.StatusInternalServerError, Response{Error: fmt.Sprintf("failed to clear agreement block: %v", err)})
+		return
+	}
+	// Broadcast updated list so Safety tab refreshes without reload.
+	blocks := s.db.ListAgreementBlocks()
+	if blocks == nil {
+		blocks = []database.AgreementBlock{}
+	}
+	s.hub.Broadcast("agreement_blocks", blocks)
+	writeJSON(w, http.StatusOK, Response{OK: true})
+}
+
 // handleSignTradFi signs the Binance TradFi-Perps agreement via API.
 func (s *Server) handleSignTradFi(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

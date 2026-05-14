@@ -40,13 +40,13 @@ func newRavenStub(futuresAvail, futuresTotal float64) *rankFirstStub {
 //   - Three valid outcomes are accepted:
 //     (1) kept>0: rescue succeeded, transfer planned, override published.
 //     (2) kept=0, pass2=0: case-(a) approved without top-up (simulator saw
-//         sufficient balance without needing TransferablePerExchange).
+//     sufficient balance without needing TransferablePerExchange).
 //     (3) kept=0, pass2>0: case-(b) rescue attempted; post-transfer replay
-//         failed on this stub fixture's real margin constraints. The important
-//         invariant is that candidates was non-empty (rescue was entered), not
-//         that rescue always succeeds. With Task 3 (top-up routing fix), the
-//         simulator may return approved-with-topup → case (b) → replay fails
-//         on stub balances → pass2. This is correct new behavior.
+//     failed on this stub fixture's real margin constraints. The important
+//     invariant is that candidates was non-empty (rescue was entered), not
+//     that rescue always succeeds. With Task 3 (top-up routing fix), the
+//     simulator may return approved-with-topup → case (b) → replay fails
+//     on stub balances → pass2. This is correct new behavior.
 //   - No panic, no Fatal on stub gaps.
 //
 // Full transfer-amount assertion (≥147 USDT gateio→okx) is SKIPPED because
